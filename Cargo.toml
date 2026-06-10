@@ -1,0 +1,37 @@
+[package]
+name = "opys"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "File-based feature inventory for human + AI codebases — one markdown file per feature, verified in CI"
+license = "Apache-2.0"
+repository = "https://github.com/BohdanTkachenko/opys"
+readme = "README.md"
+keywords = ["feature-inventory", "traceability", "cli", "markdown", "ci"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = [".github/", ".claude/"]
+
+[lib]
+name = "opys"
+path = "src/lib.rs"
+
+[[bin]]
+name = "opys"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_norway = "0.9"
+toml = "0.8"
+regex = "1"
+walkdir = "2"
+anyhow = "1"
+thiserror = "1"
+time = { version = "0.3", features = ["formatting", "local-offset", "macros"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+assert_fs = "1"
+tempfile = "3"

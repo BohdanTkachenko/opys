@@ -1,0 +1,98 @@
+//! Command-line interface (clap derive).
+
+use clap::{Parser, Subcommand, ValueEnum};
+
+#[derive(Parser)]
+#[command(name = "opys", version, about = "File-based feature inventory manager")]
+pub struct Cli {
+    /// Project root (the directory containing features/).
+    #[arg(long, default_value = ".", global = true)]
+    pub root: String,
+
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+pub enum ListFormat {
+    Table,
+    Ids,
+    Paths,
+}
+
+#[derive(Subcommand)]
+pub enum Command {
+    /// Bootstrap features/ and config; print the CLAUDE.md snippet.
+    Init,
+
+    /// Create a feature file with the next ID.
+    New {
+        #[arg(long)]
+        title: String,
+        /// Comma-separated, kebab-case.
+        #[arg(long)]
+        tags: String,
+        #[arg(long, default_value = "planned")]
+        status: String,
+        /// Custom field key=value (repeatable).
+        #[arg(long = "field")]
+        field: Vec<String>,
+    },
+
+    /// Print a feature file.
+    Show { id: String },
+
+    /// Filtered listing.
+    List {
+        #[arg(long)]
+        tag: Option<String>,
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long, value_enum, default_value_t = ListFormat::Table)]
+        format: ListFormat,
+    },
+
+    /// Guarded status transition.
+    SetStatus {
+        id: String,
+        status: String,
+        /// Required when moving to wontfix.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+
+    /// Add/remove tags.
+    Tag {
+        id: String,
+        #[arg(long)]
+        add: Option<String>,
+        #[arg(long)]
+        remove: Option<String>,
+    },
+
+    /// Delete a feature; its ID is never reused.
+    Retire {
+        id: String,
+        #[arg(long)]
+        reason: String,
+    },
+
+    /// Integrity check (CI gate).
+    Verify,
+
+    /// Regenerate INDEX.md and views/.
+    SyncViews,
+
+    /// Progress and parity stats.
+    Report,
+
+    /// Aggregate manual items into a runbook.
+    ManualRunbook {
+        /// Write to file (e.g. runbooks/release-0.3.md).
+        #[arg(long)]
+        out: Option<String>,
+        /// Runbook title suffix.
+        #[arg(long)]
+        name: Option<String>,
+    },
+}
