@@ -2,7 +2,7 @@
 name = "opys"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.88"
 description = "File-based feature inventory for human + AI codebases — one markdown file per feature, verified in CI"
 license = "Apache-2.0"
 repository = "https://github.com/BohdanTkachenko/opys"
