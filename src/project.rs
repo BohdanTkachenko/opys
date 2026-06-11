@@ -104,8 +104,9 @@ impl Project {
         out
     }
 
-    /// Next ID: max numeric part across live and retired IDs, plus one.
-    pub fn next_id(&self, feats: &[Feature]) -> String {
+    /// Highest numeric ID part across live and retired IDs (`0` if none),
+    /// the basis for allocating the next ID(s).
+    pub fn max_id_number(&self, feats: &[Feature]) -> u64 {
         let re = id_number_re(&self.cfg.prefix);
         let mut max = 0u64;
         let live = feats.iter().filter_map(|f| f.id().map(str::to_string));
@@ -116,7 +117,17 @@ impl Project {
                 }
             }
         }
-        format!("{}-{:0pad$}", self.cfg.prefix, max + 1, pad = self.cfg.pad)
+        max
+    }
+
+    /// Render a numeric ID part as a padded `PREFIX-NNNN` id.
+    pub fn format_id(&self, n: u64) -> String {
+        format!("{}-{:0pad$}", self.cfg.prefix, n, pad = self.cfg.pad)
+    }
+
+    /// Next ID: max numeric part across live and retired IDs, plus one.
+    pub fn next_id(&self, feats: &[Feature]) -> String {
+        self.format_id(self.max_id_number(feats) + 1)
     }
 
     pub fn path_for(&self, id: &str) -> PathBuf {

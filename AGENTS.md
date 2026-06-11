@@ -85,14 +85,18 @@ Layering, roughly outermost-in:
   both live *and* retired IDs. `retire` appends to `features/_retired.txt`;
   `verify` rejects any reuse.
 - **Status lifecycle** (`config::CORE_STATUSES`): `planned`, `partial`,
-  `implemented`, `wontfix`, plus configured `extra_statuses`. Guards live in
-  `set_status`: `wontfix` requires a reason; `implemented` requires at least one
-  checked `## Test plan` item. `verify` re-checks these independently.
-- **Test references**: backticked refs (`` `mod::test_name` ``) on checked
-  test-plan items must resolve. `verify`'s `TestIndex` does this in one of three
-  modes from `test_reference_check`: `grep` (substring across
-  `test_search_paths`), `extract` (regex-extract real names via
-  `test_name_pattern`), or `none`.
+  `implemented`, `wontfix`, plus configured `extra_statuses`. The guards
+  (`wontfix` requires a reason; `implemented` requires at least one checked
+  `## Test plan` item; unknown statuses rejected) are enforced at *every* write
+  point — `set_status`, `new`, and `import` — and `verify` re-checks them
+  independently. (`new` can never be `implemented`: a fresh file has no test
+  plan, so it is rejected outright rather than deferred to verify.)
+- **Test references**: a backtick span is a test reference only when it
+  contains `::` (`` `mod::test_name` ``); prose code spans on a checked item are
+  ignored (`body::is_test_ref`). Referenced tests must resolve — `verify`'s
+  `TestIndex` does this in one of three modes from `test_reference_check`:
+  `grep` (substring across `test_search_paths`), `extract` (regex-extract real
+  names via `test_name_pattern`), or `none`.
 - **Frontmatter is closed**: only `RESERVED_FIELDS` (`frontmatter.rs`) plus
   fields declared in `[fields.*]` are allowed; unknown keys fail `verify`.
   Declared custom fields are type-checked.

@@ -1,6 +1,7 @@
 //! Subcommand implementations. Each `run` takes the invocation [`Ctx`] plus
 //! its parsed arguments.
 
+pub mod import;
 pub mod init;
 pub mod list;
 pub mod new;

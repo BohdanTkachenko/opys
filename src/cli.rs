@@ -51,9 +51,21 @@ pub enum Command {
         tags: String,
         #[arg(long, default_value = "planned")]
         status: String,
+        /// Required when creating directly as wontfix.
+        #[arg(long)]
+        reason: Option<String>,
         /// Custom field key=value (repeatable).
         #[arg(long = "field")]
         field: Vec<String>,
+    },
+
+    /// Bulk-create features from a JSONL file (one JSON object per line),
+    /// allocating sequential IDs and syncing once. Run `verify` afterwards.
+    Import {
+        /// Path to a `.jsonl` file. Each line is an object with `title` and
+        /// `tags` (required), optional `status`/`spec`/custom fields, and an
+        /// optional `body` (markdown placed under the title heading).
+        file: String,
     },
 
     /// Print a feature file.

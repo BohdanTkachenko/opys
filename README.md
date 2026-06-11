@@ -56,6 +56,7 @@ after editing files by hand.
 |---|---|
 | `init` | bootstrap `docs/features/_config.toml`, print a CLAUDE.md snippet |
 | `new` | allocate the next ID and write a skeleton feature file (auto-syncs) |
+| `import` | bulk-create features from a JSONL file (sequential IDs, one sync) — for migrations |
 | `show` / `list` | retrieval (`--tag`, `--status`, `--format table\|ids\|paths`) |
 | `set-status` | guarded transitions (wontfix needs a reason; implemented needs a checked test item) |
 | `tag` | add/remove tags (`--add a,b --remove c`) |

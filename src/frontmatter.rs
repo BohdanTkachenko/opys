@@ -118,10 +118,24 @@ pub fn parse(text: &str, path_display: &str) -> Result<(Frontmatter, String), Pa
     let map: Mapping = if yaml.trim().is_empty() {
         Mapping::new()
     } else {
-        serde_norway::from_str(yaml)
-            .map_err(|e| ParseError(format!("{path_display}: invalid frontmatter YAML: {e}")))?
+        serde_norway::from_str(yaml).map_err(|e| ParseError(yaml_error(path_display, &e)))?
     };
     Ok((Frontmatter { map }, body.to_string()))
+}
+
+/// Build a frontmatter parse-error message, adding a targeted hint for the
+/// most common footgun: an unquoted scalar containing a colon followed by a
+/// space, which YAML reads as a nested mapping. (`opys`'s own serializer
+/// quotes these, but files written by hand or by a script can trip it.)
+fn yaml_error(path_display: &str, e: &serde_norway::Error) -> String {
+    let mut msg = format!("{path_display}: invalid frontmatter YAML: {e}");
+    if e.to_string().contains("mapping values are not allowed") {
+        msg.push_str(
+            " (hint: a value containing a colon followed by a space is read as nested \
+             YAML — quote the whole value, e.g. key: \"text: more text\")",
+        );
+    }
+    msg
 }
 
 /// Serialize frontmatter + body back into a complete file.
@@ -218,6 +232,15 @@ mod tests {
     #[test]
     fn unterminated() {
         assert!(parse("---\nid: A\n", "x.md").is_err());
+    }
+
+    #[test]
+    fn unquoted_colon_space_value_gets_a_hint() {
+        let text =
+            "---\nid: A\nstatus: planned\ntags: [a]\nreason: MVP scope: containers\n---\n\n# T\n";
+        let err = parse(text, "x.md").unwrap_err();
+        assert!(err.0.contains("mapping values are not allowed"));
+        assert!(err.0.contains("quote the whole value"));
     }
 
     #[test]

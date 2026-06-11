@@ -57,9 +57,14 @@ pub fn run(cli: Cli) -> Result<i32> {
             title,
             tags,
             status,
+            reason,
             field,
         } => {
-            commands::new::run(&ctx, &title, &tags, &status, &field)?;
+            commands::new::run(&ctx, &title, &tags, &status, reason.as_deref(), &field)?;
+            Ok(0)
+        }
+        Command::Import { file } => {
+            commands::import::run(&ctx, &file)?;
             Ok(0)
         }
         Command::Show { id } => {

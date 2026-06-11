@@ -289,6 +289,185 @@ fn verify_checks_manual_item_shape() {
 }
 
 #[test]
+fn new_enforces_status_guards() {
+    let dir = project();
+
+    // implemented is impossible at creation — a new file has no test plan yet.
+    opys(&dir)
+        .args([
+            "new",
+            "--title",
+            "X",
+            "--tags",
+            "a",
+            "--status",
+            "implemented",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "cannot create a feature as implemented",
+        ));
+
+    // Unknown status is rejected at write time, not deferred to verify.
+    opys(&dir)
+        .args(["new", "--title", "X", "--tags", "a", "--status", "bogus"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown status"));
+
+    // wontfix needs a reason...
+    opys(&dir)
+        .args(["new", "--title", "X", "--tags", "a", "--status", "wontfix"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("wontfix requires --reason"));
+
+    // ...and succeeds with one, recording it.
+    opys(&dir)
+        .args([
+            "new",
+            "--title",
+            "X",
+            "--tags",
+            "a",
+            "--status",
+            "wontfix",
+            "--reason",
+            "out of scope",
+        ])
+        .assert()
+        .success();
+    dir.child("docs/features/VIK-0001.md")
+        .assert(predicate::str::contains("wontfix_reason: out of scope"));
+    // The rejected attempts wrote nothing — only the successful one exists.
+    dir.child("docs/features/VIK-0002.md")
+        .assert(predicate::path::missing());
+}
+
+#[test]
+fn verify_ignores_prose_code_span_on_checked_item() {
+    let config = r#"prefix = "VIK"
+test_search_paths = ["src"]
+test_reference_check = "grep"
+"#;
+    let dir = project_with(config);
+    dir.child("src/lib.rs")
+        .write_str("fn sftp_uri_rewrites_to_ssh() {}\n")
+        .unwrap();
+    // The prose span `ssh -t exec $SHELL` (no `::`) is not in the source, but
+    // it must not be treated as a reference — only the trailing
+    // `lib.rs::sftp_uri_rewrites_to_ssh` ref is validated.
+    dir.child("docs/features/VIK-0001.md")
+        .write_str(
+            "---\nid: VIK-0001\nstatus: implemented\ntags: [ssh]\n---\n\n# Sftp\n\n## Test plan\n- [x] sftp:// rewrites to `ssh -t exec $SHELL` not a path — `lib.rs::sftp_uri_rewrites_to_ssh`\n",
+        )
+        .unwrap();
+    opys(&dir).arg("verify").assert().success();
+}
+
+#[test]
+fn verify_hints_at_unquoted_colon() {
+    let dir = project();
+    dir.child("docs/features/VIK-0001.md")
+        .write_str(
+            "---\nid: VIK-0001\nstatus: wontfix\ntags: [a]\nwontfix_reason: MVP scope: containers\n---\n\n# F\n",
+        )
+        .unwrap();
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("quote the whole value"));
+}
+
+#[test]
+fn import_bulk_creates_sequential_ids_and_syncs_once() {
+    let dir = project();
+    // A pre-existing feature so import continues numbering after it.
+    opys(&dir)
+        .args(["new", "--title", "Zero", "--tags", "a"])
+        .assert()
+        .success();
+
+    let jsonl = dir.child("import.jsonl");
+    jsonl
+        .write_str(
+            "{\"title\": \"One\", \"tags\": [\"osc\"], \"ptyxis_ref\": \"src/a.c\"}\n\
+             {\"title\": \"Two\", \"tags\": [\"tabs\"], \"status\": \"partial\"}\n",
+        )
+        .unwrap();
+
+    opys(&dir)
+        .args(["import", jsonl.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "imported 2 feature(s): VIK-0002..VIK-0003",
+        ));
+
+    let one = dir.child("docs/features/VIK-0002.md");
+    one.assert(predicate::str::contains("# One"));
+    one.assert(predicate::str::contains("ptyxis_ref: src/a.c"));
+    dir.child("docs/features/VIK-0003.md")
+        .assert(predicate::str::contains("status: partial"));
+    // Auto-sync ran once for the whole batch.
+    dir.child("docs/features/INDEX.md")
+        .assert(predicate::str::contains("VIK-0003"));
+    opys(&dir).arg("verify").assert().success();
+}
+
+#[test]
+fn import_is_transactional_on_bad_record() {
+    let dir = project();
+    let jsonl = dir.child("bad.jsonl");
+    // First record valid, second missing tags — the whole batch is rejected.
+    jsonl
+        .write_str("{\"title\": \"Good\", \"tags\": [\"a\"]}\n{\"title\": \"NoTags\"}\n")
+        .unwrap();
+    opys(&dir)
+        .args(["import", jsonl.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("import aborted"))
+        .stderr(predicate::str::contains("line 2"));
+    // Nothing was written, not even the valid first record.
+    dir.child("docs/features/VIK-0001.md")
+        .assert(predicate::path::missing());
+}
+
+#[test]
+fn import_supports_implemented_with_test_plan_in_body() {
+    let dir = project(); // test_reference_check = "none"
+    let jsonl = dir.child("impl.jsonl");
+    jsonl
+        .write_str(
+            "{\"title\": \"Done\", \"tags\": [\"a\"], \"status\": \"implemented\", \"body\": \"## Test plan\\n- [x] works `mod::it_works`\"}\n",
+        )
+        .unwrap();
+    opys(&dir)
+        .args(["import", jsonl.path().to_str().unwrap()])
+        .assert()
+        .success();
+    dir.child("docs/features/VIK-0001.md")
+        .assert(predicate::str::contains("status: implemented"));
+    opys(&dir).arg("verify").assert().success();
+
+    // implemented without a checked item in the body is rejected.
+    let bad = dir.child("impl-bad.jsonl");
+    bad.write_str("{\"title\": \"NotDone\", \"tags\": [\"a\"], \"status\": \"implemented\"}\n")
+        .unwrap();
+    opys(&dir)
+        .args(["import", bad.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "implemented requires a checked test-plan item",
+        ));
+}
+
+#[test]
 fn verify_extract_mode_resolves_real_tests() {
     let config = r#"prefix = "VIK"
 test_search_paths = ["src"]

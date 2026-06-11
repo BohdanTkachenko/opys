@@ -88,6 +88,14 @@ Complex custom values are written as block YAML under their key. Hand edits may
 use any valid YAML; running a write command re-canonicalizes scalar fields and
 may reflow the formatting (not the meaning) of complex values.
 
+> **Quote any value containing a colon-followed-by-space (`: `).** In YAML
+> `wontfix_reason: MVP scope: containers` parses the value as a nested mapping
+> and fails verify; write `wontfix_reason: "MVP scope: containers"`. (A colon
+> with no following space, like `ptyxis_ref: ptyxis-tab.c:1621`, is fine.) The
+> CLI's own writers quote correctly; this bites files written by hand or by a
+> script — verify's parse error includes a hint when it sees this shape. The
+> bulk-import path below sidesteps it entirely, since JSON quotes every string.
+
 | Field | Required | Rules |
 |---|---|---|
 | `id` | yes | `PREFIX-NNNN`; must match filename; unique forever |
@@ -135,6 +143,11 @@ there.
   tests), and one test may legitimately be referenced by several cases.
 - Reference format: `module::test_name`, or `path/to/file::test_name` when the
   project uses `extract` mode and you want to pin the test to its file.
+- **Only backtick spans containing `::` are parsed as references.** A checked
+  item may therefore carry other inline code in its *prose* — a shell snippet,
+  an escape sequence, a literal argument — without it being mistaken for a test
+  reference. (`` `ssh -t … exec $SHELL` `` is prose; `` `app.rs::sftp_rewrite` ``
+  is the reference.)
 - Unit vs e2e is not a structural boundary — annotate informally, e.g.
   `(waydriver)`.
 - Items are permanent. Once covered, shorten — never delete. The enumeration
@@ -146,11 +159,21 @@ there.
 
 - `"grep"` (default): the test name (the part after the last `::`) must appear
   as a substring somewhere under `test_search_paths`. Language-agnostic but
-  weak — a comment mentioning the name passes.
+  **unsound** — it matches any occurrence, so a comment, a string literal, or
+  another test's body that happens to contain the name passes. Use it only
+  before `extract` is set up; prefer `extract` once tests exist.
 - `"extract"`: `test_name_pattern` (a regex with one capture group) extracts
-  the real test names from every file under `test_search_paths`. A
-  `module::name` ref must match an extracted name; a `path::name` ref must
-  resolve the file *and* find `name` defined in it. Strongest option.
+  the real test names from every file under `test_search_paths`, so a reference
+  resolves against a *defined test*, not any substring. The strongest option.
+  How a reference's prefix is classified:
+  - **Module ref** — the prefix has no `/` or `.` (e.g. `window::grid_px`):
+    `name` need only appear among the extracted names anywhere under the search
+    paths.
+  - **Path ref** — the prefix contains `/` or `.` (e.g. `window.rs::grid_px` or
+    `src/window.rs::grid_px`): the file is resolved relative to the project
+    root *and* to each `test_search_paths` entry, and `name` must be defined in
+    that file. So a bare `window.rs::name` resolves `src/window.rs` when that is
+    where it lives; write `src/window.rs::name` to pin the file unambiguously.
 - `"none"`: skip existence checking (e.g. before any tests exist).
 
 ## Manual verification rules
@@ -177,6 +200,37 @@ the only coverage a case has.
   values, and the precise defect to look for.
 - Procedures longer than ~10 lines or shared across features move to a shared
   doc and are referenced.
+
+## Bulk creation and migration
+
+`opys new` creates one feature per process and regenerates `INDEX.md` + all
+`views/` each time — fine interactively, far too slow for migrating hundreds or
+thousands of features. Two supported bulk paths avoid that:
+
+- **`opys import <file.jsonl>`** — one JSON object per line, each describing a
+  feature. `title` and `tags` are required; `status` (default `planned`),
+  `spec`, and any declared custom fields are optional top-level keys; `body` is
+  optional markdown placed under the `# Title` heading (use it to carry a
+  `## Test plan` or `## Manual verification`). One ID allocation and one view
+  sync cover the whole batch, and it is **transactional** — if any record is
+  rejected, nothing is written. The same write-time status guards as `new`
+  apply (a record with `"status": "implemented"` must include a checked
+  test-plan item in its `body`). Run `opys verify` afterwards for the deep
+  checks (tag shape, reference resolution, field types). Example line:
+
+  ```json
+  {"title": "Tab title follows OSC 0/2", "tags": ["osc", "tabs"], "status": "implemented", "ptyxis_ref": "src/ptyxis-tab.c", "body": "## Test plan\n- [x] OSC 2 updates title — `tab::osc_title`"}
+  ```
+
+- **Write the files directly** — `opys` reads plain markdown, so you can emit
+  canonical `PREFIX-NNNN.md` files yourself (matching the frontmatter rules
+  above), then run `opys sync-views` once and `opys verify`. This is a fully
+  supported escape hatch when your source data does not map cleanly onto the
+  JSONL schema; allocate IDs monotonically and never reuse a retired one.
+
+Either way: do **not** loop `opys new` over a large migration. After import,
+review in batches per tag using the generated views, exactly as for a
+hand-built inventory.
 
 ## What never goes in feature files
 
