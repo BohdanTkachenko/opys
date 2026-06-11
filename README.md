@@ -11,7 +11,7 @@ parallel agents don't collide; reads are plain `grep` + targeted file reads.
 A `verify` subcommand is the CI gate. It is deliberately *not* a task board —
 no sprints, assignees, or priorities.
 
-It pairs with the `feature-inventory` skill (under `.claude/skills/`), which
+It pairs with the `feature-inventory` skill (under `skills/`), which
 documents the format and the authoring/implementation workflows for coding
 agents.
 
@@ -82,53 +82,33 @@ tags: [osc, tabs]
 - [ ] Invalid UTF-8 in title payload — uncovered
 ```
 
-See `.claude/skills/feature-inventory/references/format.md` for the normative
-format specification.
+See `skills/feature-inventory/references/format.md` for the normative format
+specification.
 
 ## The `feature-inventory` skill
 
-This repo ships a Claude Code skill that drives `opys` (authoring interviews,
-the implementation workflow, retrieval discipline). This repo also doubles as a
-single-plugin marketplace, so installing it is a one-liner:
+This repo ships an agent skill that drives `opys` (authoring interviews, the
+implementation workflow, retrieval discipline). It lives, once, in
+[`skills/feature-inventory/`](skills/feature-inventory/) and is tool-agnostic —
+the same `SKILL.md` works for every assistant; only the install directory
+differs. To use it in a project, copy that folder into wherever your tool looks
+for skills:
 
-```text
-/plugin marketplace add BohdanTkachenko/opys
-/plugin install feature-inventory@opys
-```
-
-Then invoke it with `/feature-inventory`. Alternatively, drop the skill into any
-project (or `~/.claude/skills/` for all projects) by copying the directory:
-
-```sh
-git clone https://github.com/BohdanTkachenko/opys /tmp/opys \
-  && cp -r /tmp/opys/.claude/skills/feature-inventory ~/.claude/skills/
-```
-
-## Other agent tools
-
-The `opys` CLI is plain and universal — any agent or editor that can run a shell
-command can use it; nothing is Claude-specific. The skill itself is
-**single-sourced** in [`.rulesync/skills/feature-inventory/`](.rulesync/skills/feature-inventory/)
-and the per-tool copies are *generated* with [`rulesync`](https://github.com/dyoshikawa/rulesync),
-so there is exactly one file to edit:
-
-```sh
-npx rulesync@8 generate          # regenerate after editing .rulesync/
-npx rulesync@8 generate --check  # CI gate: fail if generated files are stale
-```
-
-Targets are pinned in `rulesync.jsonc`; the generated, committed skill files are:
-
-| Tool | Generated location |
+| Tool | Copy it to |
 |---|---|
-| Claude Code | `.claude/skills/feature-inventory/` (also installable via the marketplace one-liner above) |
+| Claude Code | `.claude/skills/feature-inventory/` (per-project) or `~/.claude/skills/` (all projects) |
 | Cursor | `.cursor/skills/feature-inventory/` |
 | Google Antigravity | `.agents/skills/feature-inventory/` |
 
-Never hand-edit those — edit `.rulesync/` and regenerate. To support another
-tool, add its target to `rulesync.jsonc`. For tools without a skill format, the
-cross-tool standard is **AGENTS.md** (this repo ships one). The substance is
-identical everywhere: `opys new/set-status/verify/...` for writes, `opys`/`rg` +
+```sh
+git clone --depth 1 https://github.com/BohdanTkachenko/opys /tmp/opys
+cp -r /tmp/opys/skills/feature-inventory <your-project>/.claude/skills/   # or .cursor/skills/ , .agents/skills/
+```
+
+The CLI itself is universal — any agent that can run a shell command can use
+`opys`. For tools that read project instructions instead of skills, the
+cross-tool standard is **AGENTS.md** (this repo ships one). The substance is the
+same everywhere: `opys new/set-status/verify/...` for writes, `opys`/`rg` +
 `docs/features/INDEX.md` for reads.
 
 ## License

@@ -1,17 +1,8 @@
 ---
 name: feature-inventory
-description: >-
-  Set up and operate a file-based feature inventory ("file-based JIRA") — one
-  markdown file per feature with YAML frontmatter, stable IDs, tags, test plans,
-  manual-verification runbooks, and a verify gate for CI. Use this skill
-  whenever the user wants to track implemented features, requirements coverage,
-  feature parity with another product, a traceability matrix between features
-  and tests, or asks how to share a large feature list between themselves and
-  LLM agents. Also use it when working inside a project that already has a
-  docs/features/ directory with _config.toml — for creating features, changing
-  status, updating test plans, running verify, or generating views, reports, and
-  manual-test runbooks.
+description: Set up and operate a file-based feature inventory ("file-based JIRA") — one markdown file per feature with YAML frontmatter, stable IDs, tags, test plans, manual-verification runbooks, and a verify gate for CI. Use this skill whenever the user wants to track implemented features, requirements coverage, feature parity with another product, a traceability matrix between features and tests, or asks how to share a large feature list between themselves and LLM agents. Also use it when working inside a project that already has a docs/features/ directory with _config.toml — for creating features, changing status, updating test plans, running verify, or generating views, reports, and manual-test runbooks.
 ---
+
 # Feature Inventory
 
 A version-controlled inventory of what a product does: one markdown file per
