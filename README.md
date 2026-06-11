@@ -85,6 +85,42 @@ tags: [osc, tabs]
 See `.claude/skills/feature-inventory/references/format.md` for the normative
 format specification.
 
+## The `feature-inventory` skill
+
+This repo ships a Claude Code skill that drives `opys` (authoring interviews,
+the implementation workflow, retrieval discipline). This repo also doubles as a
+single-plugin marketplace, so installing it is a one-liner:
+
+```text
+/plugin marketplace add BohdanTkachenko/opys
+/plugin install feature-inventory@opys
+```
+
+Then invoke it with `/feature-inventory`. Alternatively, drop the skill into any
+project (or `~/.claude/skills/` for all projects) by copying the directory:
+
+```sh
+git clone https://github.com/BohdanTkachenko/opys /tmp/opys \
+  && cp -r /tmp/opys/.claude/skills/feature-inventory ~/.claude/skills/
+```
+
+## Other agent tools
+
+The `opys` CLI is plain and universal — any agent or editor that can run a shell
+command can use it; nothing is Claude-specific. Only the *skill wrapper* is
+Claude Code's format. To use the same guidance elsewhere, point the tool's
+instruction file at `opys` and at the format spec:
+
+- **AGENTS.md** (the cross-tool standard, read by Google Antigravity, Cursor,
+  Codex, and others): this repo's own `AGENTS.md` is an example to adapt.
+- **Google Antigravity** also supports task skills under `.agents/skills/*.md`
+  (objective / rules / instructions) and workspace rules in `.agents/rules/`.
+- **Cursor** `.cursor/rules/`, **GitHub Copilot**
+  `.github/copilot-instructions.md`, **Windsurf** `.windsurf/rules/`.
+
+In every case the substance is the same: `opys new/verify/...` for writes and
+`opys`/`rg` for reads, per `references/format.md`.
+
 ## License
 
 Apache-2.0
