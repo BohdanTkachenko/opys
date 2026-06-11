@@ -1,0 +1,40 @@
+---
+description: How to operate this project's file-based feature inventory with the opys CLI. Apply when creating or changing features, statuses, tags, or test plans, or when touching anything under docs/features/.
+globs: docs/features/**/*.md
+alwaysApply: false
+---
+
+# Feature inventory (opys)
+
+This project tracks what it does as a file-based inventory: one markdown file
+per feature under `docs/features/`, managed by the [`opys`](https://github.com/BohdanTkachenko/opys)
+CLI and verified in CI. `docs/features/INDEX.md` and `docs/views/` are
+generated — read them, never edit them.
+
+## Reading
+
+Start from `docs/features/INDEX.md` (the small whole-inventory map), then `rg`
+by tag/status, then open only the 2–5 relevant feature files. Do not bulk-read
+`docs/features/`.
+
+## Writing — always via the CLI, never hand-edit frontmatter or status
+
+- New feature: `opys new --title "..." --tags a,b`
+- Change status: `opys set-status <ID> implemented` (rejected unless a
+  test-plan item is checked; `wontfix` requires `--reason`)
+- Tags: `opys tag <ID> --add x --remove y`
+
+These commands regenerate `INDEX.md`/`views/` automatically. Spec prose and
+test-plan edits are normal file edits; run `opys verify` afterward — it is the
+CI gate.
+
+## Implementing a feature
+
+1. Read the feature file fully.
+2. Implement and add tests.
+3. Check the covered test-plan items and append backticked test references
+   (`module::test_name`); a single case may be covered by several tests.
+4. `opys set-status <ID> implemented`, then `opys verify`.
+
+Never record test results, dates, or completion claims in feature files — CI
+owns automated results and committed runbooks own manual ones.

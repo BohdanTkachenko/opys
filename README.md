@@ -108,18 +108,20 @@ git clone https://github.com/BohdanTkachenko/opys /tmp/opys \
 
 The `opys` CLI is plain and universal — any agent or editor that can run a shell
 command can use it; nothing is Claude-specific. Only the *skill wrapper* is
-Claude Code's format. To use the same guidance elsewhere, point the tool's
-instruction file at `opys` and at the format spec:
+Claude Code's format, so this repo ships the same guidance in two other tools'
+native formats. Copy the file into your own project to use it there:
 
-- **AGENTS.md** (the cross-tool standard, read by Google Antigravity, Cursor,
-  Codex, and others): this repo's own `AGENTS.md` is an example to adapt.
-- **Google Antigravity** also supports task skills under `.agents/skills/*.md`
-  (objective / rules / instructions) and workspace rules in `.agents/rules/`.
-- **Cursor** `.cursor/rules/`, **GitHub Copilot**
-  `.github/copilot-instructions.md`, **Windsurf** `.windsurf/rules/`.
+- **Cursor** — [`.cursor/rules/feature-inventory.mdc`](.cursor/rules/feature-inventory.mdc).
+  Drop it in your repo's `.cursor/rules/`; it activates contextually (and on
+  `docs/features/**`). Cursor 2.5+ also has a plugin marketplace (`/add-plugin`).
+- **Google Antigravity** — [`.agents/skills/feature-inventory.md`](.agents/skills/feature-inventory.md).
+  Place it in your repo's `.agents/skills/`; Antigravity auto-registers it as a
+  slash command.
 
-In every case the substance is the same: `opys new/verify/...` for writes and
-`opys`/`rg` for reads, per `references/format.md`.
+For any other tool, the cross-tool standard is **AGENTS.md** (this repo ships
+one). The substance is identical everywhere: `opys new/set-status/verify/...`
+for writes, `opys`/`rg` + `docs/features/INDEX.md` for reads, per
+`references/format.md`.
 
 ## License
 
