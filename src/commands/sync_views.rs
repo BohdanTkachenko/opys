@@ -3,9 +3,21 @@ use std::collections::BTreeMap;
 use crate::error::{usage, Result};
 use crate::feature::Feature;
 use crate::project::Project;
+use crate::Ctx;
 
-pub fn run(root: &str) -> Result<()> {
-    let prj = Project::open(root)?;
+pub fn run(ctx: &Ctx) -> Result<()> {
+    let prj = ctx.open()?;
+    let count = regenerate(&prj)?;
+    println!(
+        "wrote {} and {count} view files",
+        prj.fdir.join("INDEX.md").display()
+    );
+    Ok(())
+}
+
+/// Regenerate `features/INDEX.md` and `views/{by-tag,status}`. Returns the
+/// number of view files written. Errors if any feature fails to parse.
+pub fn regenerate(prj: &Project) -> Result<usize> {
     let (mut feats, errors) = prj.load();
     if !errors.is_empty() {
         return Err(usage("fix parse errors first (run verify)"));
@@ -25,7 +37,7 @@ pub fn run(root: &str) -> Result<()> {
     std::fs::write(prj.fdir.join("INDEX.md"), lines.join("\n") + "\n")?;
 
     // views/
-    let views = prj.root.join("views");
+    let views = &prj.views_dir;
     for sub in ["by-tag", "status"] {
         let d = views.join(sub);
         std::fs::create_dir_all(&d)?;
@@ -36,7 +48,6 @@ pub fn run(root: &str) -> Result<()> {
         }
     }
 
-    // Buckets, preserving id-sorted order within each.
     let mut buckets: BTreeMap<(&str, String), Vec<&Feature>> = BTreeMap::new();
     for f in &feats {
         for t in f.frontmatter.tags().unwrap_or_default() {
@@ -66,16 +77,12 @@ pub fn run(root: &str) -> Result<()> {
         )?;
     }
 
-    let count = walkdir::WalkDir::new(&views)
+    let count = walkdir::WalkDir::new(views)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "md"))
         .count();
-    println!(
-        "wrote {} and {count} view files",
-        prj.fdir.join("INDEX.md").display()
-    );
-    Ok(())
+    Ok(count)
 }
 
 fn index_line(f: &Feature) -> String {

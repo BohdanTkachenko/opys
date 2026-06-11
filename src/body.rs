@@ -71,6 +71,16 @@ pub struct ManualItem {
     pub setup: Option<String>,
     pub steps: Vec<String>,
     pub expect: Option<String>,
+    /// Backticked test references on the item's description line. An item with
+    /// no refs has no automated coverage and is prioritized for manual runs.
+    pub refs: Vec<String>,
+}
+
+impl ManualItem {
+    /// True when no automated test backs this manual check.
+    pub fn uncovered(&self) -> bool {
+        self.refs.is_empty()
+    }
 }
 
 /// Structured items under `## Manual verification`. A column-0 `- ` line
@@ -84,6 +94,7 @@ pub fn manual_items(body: &str) -> Vec<ManualItem> {
                 setup: None,
                 steps: Vec::new(),
                 expect: None,
+                refs: test_refs(rest),
             });
             continue;
         }

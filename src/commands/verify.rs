@@ -1,27 +1,25 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use regex::Regex;
 use serde_norway::Value;
 use walkdir::WalkDir;
 
 use crate::body;
 use crate::config::FieldType;
 use crate::error::Result;
+use crate::feature::Feature;
 use crate::frontmatter::{Frontmatter, RESERVED_FIELDS};
 use crate::project::{id_format_re, Project, KEBAB_RE};
+use crate::Ctx;
 
-pub fn run(root: &str) -> Result<i32> {
-    let prj = Project::open(root)?;
+pub fn run(ctx: &Ctx) -> Result<i32> {
+    let prj = ctx.open()?;
     let (feats, mut errors) = prj.load();
 
     let statuses = prj.cfg.statuses();
     let retired = prj.retired_ids();
     let id_rx = id_format_re(&prj.cfg.prefix, prj.cfg.pad);
-    let grep_mode = prj.cfg.grep_mode();
-    let corpus = if grep_mode {
-        build_corpus(&prj)
-    } else {
-        String::new()
-    };
+    let index = TestIndex::build(&prj, &mut errors);
 
     let mut seen: HashMap<String, String> = HashMap::new();
 
@@ -73,8 +71,7 @@ pub fn run(root: &str) -> Result<i32> {
         }
 
         check_custom_fields(&prj, m, fid, &mut errors);
-
-        check_test_plan(f, fid, status, grep_mode, &corpus, &prj, &mut errors);
+        check_test_plan(f, fid, status, &index, &prj, &mut errors);
         check_manual(f, fid, &mut errors);
     }
 
@@ -131,34 +128,30 @@ fn check_custom_fields(prj: &Project, m: &Frontmatter, fid: &str, errors: &mut V
 }
 
 fn check_test_plan(
-    f: &crate::feature::Feature,
+    f: &Feature,
     fid: &str,
     status: Option<&str>,
-    grep_mode: bool,
-    corpus: &str,
+    index: &TestIndex,
     prj: &Project,
     errors: &mut Vec<String>,
 ) {
     let mut checked_any = false;
     for item in body::test_plan_items(&f.body) {
         let refs = body::test_refs(&item.line);
-        if item.checked {
-            checked_any = true;
-            if refs.is_empty() {
-                errors.push(format!(
-                    "{fid}: checked test-plan item has no `test reference`: {}",
-                    item.line.trim()
-                ));
-            } else if grep_mode {
-                for r in &refs {
-                    let name = r.rsplit("::").next().unwrap_or(r);
-                    if !corpus.contains(name) {
-                        errors.push(format!(
-                            "{fid}: test reference `{r}` not found under {:?}",
-                            prj.cfg.test_search_paths
-                        ));
-                    }
-                }
+        if !item.checked {
+            continue;
+        }
+        checked_any = true;
+        if refs.is_empty() {
+            errors.push(format!(
+                "{fid}: checked test-plan item has no `test reference`: {}",
+                item.line.trim()
+            ));
+            continue;
+        }
+        for r in &refs {
+            if let Some(problem) = index.resolve(r, prj) {
+                errors.push(format!("{fid}: {problem}"));
             }
         }
     }
@@ -167,7 +160,7 @@ fn check_test_plan(
     }
 }
 
-fn check_manual(f: &crate::feature::Feature, fid: &str, errors: &mut Vec<String>) {
+fn check_manual(f: &Feature, fid: &str, errors: &mut Vec<String>) {
     for it in body::manual_items(&f.body) {
         let d: String = it.desc.chars().take(50).collect();
         if it.setup.is_none() {
@@ -189,8 +182,94 @@ fn check_manual(f: &crate::feature::Feature, fid: &str, errors: &mut Vec<String>
     }
 }
 
-fn build_corpus(prj: &Project) -> String {
-    let mut corpus = String::new();
+/// How `verify` checks that a referenced test exists.
+enum TestIndex {
+    /// No existence checking.
+    Off,
+    /// Test name must appear as a substring anywhere under `test_search_paths`.
+    Grep(String),
+    /// Test names extracted via the configured regex.
+    Extract { names: HashSet<String>, re: Regex },
+}
+
+impl TestIndex {
+    fn build(prj: &Project, errors: &mut Vec<String>) -> TestIndex {
+        if prj.cfg.grep_mode() {
+            let mut corpus = String::new();
+            for (_, text) in scan_files(prj) {
+                corpus.push_str(&text);
+            }
+            return TestIndex::Grep(corpus);
+        }
+        if prj.cfg.extract_mode() {
+            let Some(pat) = &prj.cfg.test_name_pattern else {
+                errors.push(
+                    "config: test_reference_check = \"extract\" requires test_name_pattern".into(),
+                );
+                return TestIndex::Off;
+            };
+            let re = match Regex::new(pat) {
+                Ok(re) => re,
+                Err(e) => {
+                    errors.push(format!("config: invalid test_name_pattern: {e}"));
+                    return TestIndex::Off;
+                }
+            };
+            let mut names = HashSet::new();
+            for (_, text) in scan_files(prj) {
+                for c in re.captures_iter(&text) {
+                    if let Some(g) = c.get(1) {
+                        names.insert(g.as_str().to_string());
+                    }
+                }
+            }
+            return TestIndex::Extract { names, re };
+        }
+        TestIndex::Off
+    }
+
+    /// Returns a problem message if the reference does not resolve.
+    fn resolve(&self, reference: &str, prj: &Project) -> Option<String> {
+        let (prefix, name) = match reference.rsplit_once("::") {
+            Some((p, n)) => (p, n),
+            None => ("", reference),
+        };
+        match self {
+            TestIndex::Off => None,
+            TestIndex::Grep(corpus) => (!corpus.contains(name)).then(|| {
+                format!(
+                    "test reference `{reference}` not found under {:?}",
+                    prj.cfg.test_search_paths
+                )
+            }),
+            TestIndex::Extract { names, re } => {
+                if is_path_ref(prefix) {
+                    match resolve_file(prj, prefix) {
+                        None => Some(format!("test file `{prefix}` not found")),
+                        Some(text) => {
+                            let in_file = re
+                                .captures_iter(&text)
+                                .filter_map(|c| c.get(1))
+                                .any(|g| g.as_str() == name);
+                            (!in_file).then(|| format!("test `{name}` not defined in `{prefix}`"))
+                        }
+                    }
+                } else {
+                    (!names.contains(name)).then(|| {
+                        format!(
+                            "test reference `{reference}` not found under {:?}",
+                            prj.cfg.test_search_paths
+                        )
+                    })
+                }
+            }
+        }
+    }
+}
+
+/// All readable files under `test_search_paths`, as (path, contents).
+fn scan_files(prj: &Project) -> Vec<(std::path::PathBuf, String)> {
+    let mut out = Vec::new();
     for d in &prj.cfg.test_search_paths {
         for entry in WalkDir::new(prj.root.join(d))
             .into_iter()
@@ -198,12 +277,31 @@ fn build_corpus(prj: &Project) -> String {
         {
             if entry.file_type().is_file() {
                 if let Ok(bytes) = std::fs::read(entry.path()) {
-                    corpus.push_str(&String::from_utf8_lossy(&bytes));
+                    out.push((
+                        entry.path().to_path_buf(),
+                        String::from_utf8_lossy(&bytes).into_owned(),
+                    ));
                 }
             }
         }
     }
-    corpus
+    out
+}
+
+fn is_path_ref(prefix: &str) -> bool {
+    prefix.contains('/') || prefix.contains('.')
+}
+
+/// Resolve a `path::name` file prefix against the root and the search paths.
+fn resolve_file(prj: &Project, prefix: &str) -> Option<String> {
+    let mut candidates = vec![prj.root.join(prefix)];
+    for d in &prj.cfg.test_search_paths {
+        candidates.push(prj.root.join(d).join(prefix));
+    }
+    candidates
+        .into_iter()
+        .find(|p| p.is_file())
+        .and_then(|p| std::fs::read_to_string(p).ok())
 }
 
 fn type_ok(v: &Value, want: FieldType) -> bool {

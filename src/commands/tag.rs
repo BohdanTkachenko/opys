@@ -1,9 +1,10 @@
-use crate::commands::split_csv;
+use crate::commands::{maybe_sync, split_csv};
 use crate::error::{usage, Result};
-use crate::project::{self, Project};
+use crate::project;
+use crate::Ctx;
 
-pub fn run(root: &str, id: &str, add: Option<&str>, remove: Option<&str>) -> Result<()> {
-    let prj = Project::open(root)?;
+pub fn run(ctx: &Ctx, id: &str, add: Option<&str>, remove: Option<&str>) -> Result<()> {
+    let prj = ctx.open()?;
     let (mut feats, _) = prj.load();
     let f = prj.find_mut(&mut feats, id)?;
 
@@ -23,5 +24,6 @@ pub fn run(root: &str, id: &str, add: Option<&str>, remove: Option<&str>) -> Res
     f.frontmatter.set_tags(&tags);
     project::write_feature(f)?;
     println!("{id} tags: {}", tags.join(", "));
+    maybe_sync(ctx, &prj);
     Ok(())
 }

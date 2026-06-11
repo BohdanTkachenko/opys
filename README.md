@@ -27,35 +27,44 @@ Or build from source:
 cargo build --release   # target/release/opys
 ```
 
+The inventory lives under a base directory (default `docs/`, configurable with
+`--dir`/`OPYS_DIR`), so it stays out of the repo root: `docs/features/`
+(config + feature files + `INDEX.md`), `docs/views/`, `docs/runbooks/`.
+
 ## Quick start
 
 ```sh
-opys init                                   # bootstrap features/ + _config.toml
-# edit features/_config.toml: prefix, test_search_paths, custom [fields.*]
+opys init                                   # bootstrap docs/features/ + _config.toml
+# edit docs/features/_config.toml: prefix, test_search_paths, custom [fields.*]
 
 opys new --title "Tab title follows OSC 0/2" --tags osc,tabs
 opys list --status planned
 opys set-status VIK-0001 implemented        # rejected unless a test item is checked
 opys verify                                 # integrity check; nonzero exit on problems
-opys sync-views                             # regenerate INDEX.md + views/
-opys report                                 # parity % and coverage gaps
-opys manual-runbook --out runbooks/release-0.3.md
+opys report                                 # status, coverage gaps (parity if enabled)
+opys manual-runbook --out docs/runbooks/release-0.3.md
+opys schema --kind frontmatter              # JSON Schema for editor/CI validation
 ```
+
+Mutating commands (`new`, `set-status`, `tag`, `retire`) regenerate
+`INDEX.md`/`views/` automatically; pass `--no-sync` to skip, or run `sync-views`
+after editing files by hand.
 
 ## Commands
 
 | Command | Purpose |
 |---|---|
-| `init` | bootstrap `features/_config.toml`, print a CLAUDE.md snippet |
-| `new` | allocate the next ID and write a skeleton feature file |
+| `init` | bootstrap `docs/features/_config.toml`, print a CLAUDE.md snippet |
+| `new` | allocate the next ID and write a skeleton feature file (auto-syncs) |
 | `show` / `list` | retrieval (`--tag`, `--status`, `--format table\|ids\|paths`) |
 | `set-status` | guarded transitions (wontfix needs a reason; implemented needs a checked test item) |
 | `tag` | add/remove tags (`--add a,b --remove c`) |
 | `retire` | delete a feature; its ID is logged and never reused |
 | `verify` | full integrity check — wire into CI |
-| `sync-views` | regenerate `features/INDEX.md` and `views/` |
-| `report` | counts, parity %, coverage gaps |
+| `sync-views` | regenerate `INDEX.md` and `views/` (for hand edits) |
+| `report` | status counts, coverage gaps, opt-in parity % |
 | `manual-runbook` | aggregate manual items into an executable checklist |
+| `schema` | emit a JSON Schema for `_config.toml` or feature frontmatter |
 
 A feature file looks like:
 

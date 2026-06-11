@@ -1,9 +1,11 @@
 use crate::body;
+use crate::commands::maybe_sync;
 use crate::error::{usage, Result};
-use crate::project::{self, Project};
+use crate::project;
+use crate::Ctx;
 
-pub fn run(root: &str, id: &str, status: &str, reason: Option<&str>) -> Result<()> {
-    let prj = Project::open(root)?;
+pub fn run(ctx: &Ctx, id: &str, status: &str, reason: Option<&str>) -> Result<()> {
+    let prj = ctx.open()?;
     let (mut feats, _) = prj.load();
     let statuses = prj.cfg.statuses();
     let f = prj.find_mut(&mut feats, id)?;
@@ -35,5 +37,6 @@ pub fn run(root: &str, id: &str, status: &str, reason: Option<&str>) -> Result<(
     f.frontmatter.set_str("status", status);
     project::write_feature(f)?;
     println!("{id} -> {status}");
+    maybe_sync(ctx, &prj);
     Ok(())
 }

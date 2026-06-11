@@ -1,4 +1,8 @@
-//! The project: the `features/` directory, its config, and feature discovery.
+//! The project: the inventory directory, its config, and feature discovery.
+//!
+//! The inventory lives under a base directory (default `docs/`, relative to
+//! the project root), holding `features/` (config + feature files + INDEX.md),
+//! `views/`, and `runbooks/` as siblings.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -11,20 +15,41 @@ use crate::config::Config;
 use crate::error::{usage, OpysError, Result};
 use crate::feature::Feature;
 
+/// Resolve the inventory base directory from the project root and `dir`
+/// (default `docs`). An absolute `dir` is used as-is.
+pub fn resolve_base(root: &str, dir: &str) -> PathBuf {
+    let d = Path::new(dir);
+    if d.is_absolute() {
+        d.to_path_buf()
+    } else {
+        Path::new(root).join(d)
+    }
+}
+
 pub struct Project {
     pub root: PathBuf,
+    pub base: PathBuf,
     pub fdir: PathBuf,
+    pub views_dir: PathBuf,
+    pub runbooks_dir: PathBuf,
     pub cfg: Config,
 }
 
 impl Project {
-    /// Open the project rooted at `root` (which must contain
-    /// `features/_config.toml`).
-    pub fn open(root: impl AsRef<Path>) -> Result<Project> {
-        let root = root.as_ref().to_path_buf();
-        let fdir = root.join("features");
+    /// Open the project whose inventory base is `<root>/<dir>` (or an absolute
+    /// `dir`). Requires `<base>/features/_config.toml`.
+    pub fn open(root: &str, dir: &str) -> Result<Project> {
+        let base = resolve_base(root, dir);
+        let fdir = base.join("features");
         let cfg = Config::load(&fdir.join("_config.toml"))?;
-        Ok(Project { root, fdir, cfg })
+        Ok(Project {
+            root: PathBuf::from(root),
+            views_dir: base.join("views"),
+            runbooks_dir: base.join("runbooks"),
+            base,
+            fdir,
+            cfg,
+        })
     }
 
     /// All feature files, sorted by path: `features/**/*.md`, excluding `_*`

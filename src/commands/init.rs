@@ -1,11 +1,11 @@
-use std::path::Path;
-
 use crate::error::Result;
+use crate::project::resolve_base;
 use crate::templates::{CLAUDE_MD_SNIPPET, DEFAULT_CONFIG};
+use crate::Ctx;
 
-pub fn run(root: &str) -> Result<()> {
-    let root = Path::new(root);
-    let fdir = root.join("features");
+pub fn run(ctx: &Ctx) -> Result<()> {
+    let base = resolve_base(&ctx.root, &ctx.dir);
+    let fdir = base.join("features");
     std::fs::create_dir_all(&fdir)?;
 
     let cfg = fdir.join("_config.toml");
@@ -19,7 +19,7 @@ pub fn run(root: &str) -> Result<()> {
         );
     }
 
-    std::fs::create_dir_all(root.join("runbooks"))?;
+    std::fs::create_dir_all(base.join("runbooks"))?;
 
     println!("\nAdd this to your CLAUDE.md / agent instructions:\n");
     println!("{CLAUDE_MD_SNIPPET}");

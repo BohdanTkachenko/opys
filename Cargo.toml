@@ -20,9 +20,10 @@ name = "opys"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_norway = "0.9"
+serde_json = "1"
 toml = "0.8"
 regex = "1"
 walkdir = "2"

@@ -2,29 +2,35 @@
 
 ## Layout
 
+The inventory lives under a base directory, default `docs/` (configurable with
+`--dir` / `OPYS_DIR`), so it stays out of the repo root:
+
 ```
-features/
-  _config.toml        # project configuration (see below)
-  _retired.txt        # append-only log of deleted IDs (never reused)
-  PREFIX-0001.md
-  ...
-  INDEX.md            # generated — never hand-edit
-views/                # generated — never hand-edit
-runbooks/             # dated manual-runbook instances, committed after execution
+docs/
+  features/
+    _config.toml        # project configuration (see below)
+    _retired.txt        # append-only log of deleted IDs (never reused)
+    PREFIX-0001.md
+    ...
+    INDEX.md            # generated — never hand-edit
+  views/                # generated — never hand-edit
+  runbooks/             # dated manual-runbook instances, committed after execution
 ```
 
-If `ls features/` becomes unwieldy (~2000+ files), shard mechanically by ID
-prefix (`features/04/PREFIX-0421.md`). Sharding is cosmetic only; tooling
-treats the tree as flat. Directory structure must never encode taxonomy.
+If `ls docs/features/` becomes unwieldy (~2000+ files), shard mechanically by
+ID prefix (`docs/features/04/PREFIX-0421.md`). Sharding is cosmetic only;
+tooling treats the tree as flat. Directory structure must never encode taxonomy.
 
-## Configuration: `features/_config.toml`
+## Configuration: `docs/features/_config.toml`
 
 ```toml
 prefix = "VIK"                      # -> VIK-0001
 pad = 4                             # zero-padding width
 test_search_paths = ["src", "tests"]
-test_reference_check = "grep"       # "grep" | "none"
+test_reference_check = "grep"       # "grep" | "extract" | "none"
+# test_name_pattern = "fn\\s+(\\w+)\\s*\\("  # required for "extract" mode
 extra_statuses = []                 # beyond the four core statuses
+parity = false                      # report feature-parity % (parity projects only)
 
 [fields.ptyxis_ref]                 # per-project custom frontmatter fields
 type = "string"                     # string | list | bool | int
@@ -34,7 +40,9 @@ description = "Pointer into Ptyxis source establishing reference behavior"
 
 Custom fields are the per-project extension point. A field used in any
 feature file must be declared here or verify fails — undeclared fields are
-how schema drift starts.
+how schema drift starts. `opys schema --kind config` and `--kind frontmatter`
+emit JSON Schemas (the frontmatter one is derived from your declared fields)
+for editor (Even Better TOML) or CI validation.
 
 ## A complete feature file
 
@@ -120,11 +128,13 @@ there.
 
 ## Test plan rules
 
-- Checkbox items. `[x]` means "an automated test covering this case exists" —
-  plan-state, not run-results.
-- Every checked item ends with ≥1 backticked test reference
-  (`module::test_name`); verify confirms each exists under
-  `test_search_paths`.
+- A test-plan item is a *behavioral case*, not a single test. `[x]` means "at
+  least one automated test covers this case" — plan-state, not run-results.
+- Every checked item ends with ≥1 backticked test reference; verify confirms
+  each exists (see below). A case may list **several** refs (covered by several
+  tests), and one test may legitimately be referenced by several cases.
+- Reference format: `module::test_name`, or `path/to/file::test_name` when the
+  project uses `extract` mode and you want to pin the test to its file.
 - Unit vs e2e is not a structural boundary — annotate informally, e.g.
   `(waydriver)`.
 - Items are permanent. Once covered, shorten — never delete. The enumeration
@@ -132,15 +142,36 @@ there.
   only gaps cannot be reviewed, and it is how you catch an implementation
   that covered three of seven edge cases.
 
+### How references are validated (`test_reference_check`)
+
+- `"grep"` (default): the test name (the part after the last `::`) must appear
+  as a substring somewhere under `test_search_paths`. Language-agnostic but
+  weak — a comment mentioning the name passes.
+- `"extract"`: `test_name_pattern` (a regex with one capture group) extracts
+  the real test names from every file under `test_search_paths`. A
+  `module::name` ref must match an extracted name; a `path::name` ref must
+  resolve the file *and* find `name` defined in it. Strongest option.
+- `"none"`: skip existence checking (e.g. before any tests exist).
+
 ## Manual verification rules
+
+Manual verification is independent of automation — it is not reserved for the
+unautomatable. A manual item may re-check, in a user-friendly way, behavior
+that automated tests already cover (an end-to-end sanity pass), or it may be
+the only coverage a case has.
 
 - Plain list items, never checkboxes — manual cases have no in-file state;
   they are executed per release and results live in runbook instances.
-- Each item: description ending in *manual: \<why it cannot be automated\>*,
-  then a sublist with `Setup:` (single bullet — preconditions), `Steps:`
-  (numbered — the sequence), `Expect:` (single bullet — a judgment-free pass
-  criterion). If a crisp Expect cannot be written, the case is
-  under-specified.
+- Each item: a one-line description, then a sublist with `Setup:` (single
+  bullet — preconditions), `Steps:` (numbered — the sequence), `Expect:`
+  (single bullet — a judgment-free pass criterion). If a crisp Expect cannot
+  be written, the case is under-specified.
+- **Automated-coverage signal:** add ≥1 backticked test ref on the item's
+  description line to mark it as also automated. Items with **no** ref have no
+  automated coverage — `report` counts them and `manual-runbook` flags them ⚠
+  and lists them first, since they are the most important to run by hand. When
+  an item exists *because* it cannot be automated, say so in the description
+  (e.g. *manual: cannot assert rendering quality*) so the reason is recorded.
 - Write for a competent operator who knows the project but not this case:
   assume they can run the app; spell out exact escape sequences, config
   values, and the precise defect to look for.

@@ -1,11 +1,11 @@
 use std::io::Write;
 
-use crate::commands::today;
+use crate::commands::{maybe_sync, today};
 use crate::error::Result;
-use crate::project::Project;
+use crate::Ctx;
 
-pub fn run(root: &str, id: &str, reason: &str) -> Result<()> {
-    let prj = Project::open(root)?;
+pub fn run(ctx: &Ctx, id: &str, reason: &str) -> Result<()> {
+    let prj = ctx.open()?;
     let (feats, _) = prj.load();
     let f = prj.find(&feats, id)?;
     let path = f.path.clone();
@@ -19,5 +19,6 @@ pub fn run(root: &str, id: &str, reason: &str) -> Result<()> {
 
     std::fs::remove_file(&path)?;
     println!("retired {id} (ID will never be reused)");
+    maybe_sync(ctx, &prj);
     Ok(())
 }

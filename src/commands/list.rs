@@ -1,7 +1,7 @@
 use crate::cli::ListFormat;
 use crate::error::Result;
 use crate::feature::Feature;
-use crate::project::Project;
+use crate::Ctx;
 
 fn matches(f: &Feature, tag: Option<&str>, status: Option<&str>) -> bool {
     if let Some(tag) = tag {
@@ -22,8 +22,8 @@ fn matches(f: &Feature, tag: Option<&str>, status: Option<&str>) -> bool {
     true
 }
 
-pub fn run(root: &str, tag: Option<&str>, status: Option<&str>, format: ListFormat) -> Result<()> {
-    let prj = Project::open(root)?;
+pub fn run(ctx: &Ctx, tag: Option<&str>, status: Option<&str>, format: ListFormat) -> Result<()> {
+    let prj = ctx.open()?;
     let (feats, _) = prj.load();
     for f in feats.iter().filter(|f| matches(f, tag, status)) {
         match format {

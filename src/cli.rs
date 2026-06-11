@@ -5,9 +5,18 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[derive(Parser)]
 #[command(name = "opys", version, about = "File-based feature inventory manager")]
 pub struct Cli {
-    /// Project root (the directory containing features/).
+    /// Project root.
     #[arg(long, default_value = ".", global = true)]
     pub root: String,
+
+    /// Inventory base directory under the root (holds features/, views/,
+    /// runbooks/). Absolute paths are used as-is. Env: OPYS_DIR.
+    #[arg(long, default_value = "docs", env = "OPYS_DIR", global = true)]
+    pub dir: String,
+
+    /// Skip the automatic INDEX.md/views regeneration after mutating commands.
+    #[arg(long, global = true)]
+    pub no_sync: bool,
 
     #[command(subcommand)]
     pub command: Command,
@@ -20,9 +29,17 @@ pub enum ListFormat {
     Paths,
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+pub enum SchemaKind {
+    /// JSON Schema for `_config.toml`.
+    Config,
+    /// JSON Schema for feature frontmatter, derived from the project's config.
+    Frontmatter,
+}
+
 #[derive(Subcommand)]
 pub enum Command {
-    /// Bootstrap features/ and config; print the CLAUDE.md snippet.
+    /// Bootstrap the inventory directory and config; print the CLAUDE.md snippet.
     Init,
 
     /// Create a feature file with the next ID.
@@ -83,7 +100,7 @@ pub enum Command {
     /// Regenerate INDEX.md and views/.
     SyncViews,
 
-    /// Progress and parity stats.
+    /// Progress, coverage, and (optionally) parity stats.
     Report,
 
     /// Aggregate manual items into a runbook.
@@ -94,5 +111,14 @@ pub enum Command {
         /// Runbook title suffix.
         #[arg(long)]
         name: Option<String>,
+    },
+
+    /// Emit a JSON Schema for editor/CI validation.
+    Schema {
+        #[arg(long, value_enum, default_value_t = SchemaKind::Config)]
+        kind: SchemaKind,
+        /// Write to file instead of stdout.
+        #[arg(long)]
+        out: Option<String>,
     },
 }
