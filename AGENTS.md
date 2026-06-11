@@ -12,11 +12,12 @@ hold at write time and parallel agents don't collide; reads are plain `grep` +
 targeted file reads. `verify` is the CI gate. It is deliberately *not* a task
 board — no sprints, assignees, or priorities.
 
-The tool ships alongside the `feature-inventory` skill in
-`.claude/skills/feature-inventory/`. The normative format spec lives at
-`.claude/skills/feature-inventory/references/format.md` — consult it before
-changing parsing, serialization, or `verify` semantics, and keep the two in
-sync.
+The tool ships alongside the tool-agnostic `feature-inventory` skill in
+`skills/feature-inventory/`. The normative format spec lives at
+`skills/feature-inventory/references/format.md` — consult it before changing
+parsing, serialization, or `verify` semantics, and keep the two in sync. The
+README explains how users copy that one folder into their tool's skills
+directory (`.claude/skills/`, `.cursor/skills/`, `.agents/skills/`).
 
 ## Development Environment
 

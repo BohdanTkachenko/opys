@@ -11,7 +11,7 @@ parallel agents don't collide; reads are plain `grep` + targeted file reads.
 A `verify` subcommand is the CI gate. It is deliberately *not* a task board —
 no sprints, assignees, or priorities.
 
-It pairs with the `feature-inventory` skill (under `.claude/skills/`), which
+It pairs with the `feature-inventory` skill (under `skills/`), which
 documents the format and the authoring/implementation workflows for coding
 agents.
 
@@ -82,8 +82,34 @@ tags: [osc, tabs]
 - [ ] Invalid UTF-8 in title payload — uncovered
 ```
 
-See `.claude/skills/feature-inventory/references/format.md` for the normative
-format specification.
+See `skills/feature-inventory/references/format.md` for the normative format
+specification.
+
+## The `feature-inventory` skill
+
+This repo ships an agent skill that drives `opys` (authoring interviews, the
+implementation workflow, retrieval discipline). It lives, once, in
+[`skills/feature-inventory/`](skills/feature-inventory/) and is tool-agnostic —
+the same `SKILL.md` works for every assistant; only the install directory
+differs. To use it in a project, copy that folder into wherever your tool looks
+for skills:
+
+| Tool | Copy it to |
+|---|---|
+| Claude Code | `.claude/skills/feature-inventory/` (per-project) or `~/.claude/skills/` (all projects) |
+| Cursor | `.cursor/skills/feature-inventory/` |
+| Google Antigravity | `.agents/skills/feature-inventory/` |
+
+```sh
+git clone --depth 1 https://github.com/BohdanTkachenko/opys /tmp/opys
+cp -r /tmp/opys/skills/feature-inventory <your-project>/.claude/skills/   # or .cursor/skills/ , .agents/skills/
+```
+
+The CLI itself is universal — any agent that can run a shell command can use
+`opys`. For tools that read project instructions instead of skills, the
+cross-tool standard is **AGENTS.md** (this repo ships one). The substance is the
+same everywhere: `opys new/set-status/verify/...` for writes, `opys`/`rg` +
+`docs/features/INDEX.md` for reads.
 
 ## License
 

@@ -9,7 +9,7 @@ repository = "https://github.com/BohdanTkachenko/opys"
 readme = "README.md"
 keywords = ["feature-inventory", "traceability", "cli", "markdown", "ci"]
 categories = ["command-line-utilities", "development-tools"]
-exclude = [".github/", ".claude/"]
+exclude = [".github/", "skills/"]
 
 [lib]
 name = "opys"
