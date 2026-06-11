@@ -107,21 +107,29 @@ git clone https://github.com/BohdanTkachenko/opys /tmp/opys \
 ## Other agent tools
 
 The `opys` CLI is plain and universal — any agent or editor that can run a shell
-command can use it; nothing is Claude-specific. Only the *skill wrapper* is
-Claude Code's format, so this repo ships the same guidance in two other tools'
-native formats. Copy the file into your own project to use it there:
+command can use it; nothing is Claude-specific. The skill itself is
+**single-sourced** in [`.rulesync/skills/feature-inventory/`](.rulesync/skills/feature-inventory/)
+and the per-tool copies are *generated* with [`rulesync`](https://github.com/dyoshikawa/rulesync),
+so there is exactly one file to edit:
 
-- **Cursor** — [`.cursor/rules/feature-inventory.mdc`](.cursor/rules/feature-inventory.mdc).
-  Drop it in your repo's `.cursor/rules/`; it activates contextually (and on
-  `docs/features/**`). Cursor 2.5+ also has a plugin marketplace (`/add-plugin`).
-- **Google Antigravity** — [`.agents/skills/feature-inventory.md`](.agents/skills/feature-inventory.md).
-  Place it in your repo's `.agents/skills/`; Antigravity auto-registers it as a
-  slash command.
+```sh
+npx rulesync@8 generate          # regenerate after editing .rulesync/
+npx rulesync@8 generate --check  # CI gate: fail if generated files are stale
+```
 
-For any other tool, the cross-tool standard is **AGENTS.md** (this repo ships
-one). The substance is identical everywhere: `opys new/set-status/verify/...`
-for writes, `opys`/`rg` + `docs/features/INDEX.md` for reads, per
-`references/format.md`.
+Targets are pinned in `rulesync.jsonc`; the generated, committed skill files are:
+
+| Tool | Generated location |
+|---|---|
+| Claude Code | `.claude/skills/feature-inventory/` (also installable via the marketplace one-liner above) |
+| Cursor | `.cursor/skills/feature-inventory/` |
+| Google Antigravity | `.agents/skills/feature-inventory/` |
+
+Never hand-edit those — edit `.rulesync/` and regenerate. To support another
+tool, add its target to `rulesync.jsonc`. For tools without a skill format, the
+cross-tool standard is **AGENTS.md** (this repo ships one). The substance is
+identical everywhere: `opys new/set-status/verify/...` for writes, `opys`/`rg` +
+`docs/features/INDEX.md` for reads.
 
 ## License
 

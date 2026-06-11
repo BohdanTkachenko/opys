@@ -1,0 +1,13 @@
+{
+  // Single source of truth for the feature-inventory skill lives in
+  // .rulesync/skills/. The per-tool skill files (.claude/, .cursor/, .agent/,
+  // .agents/) are GENERATED from it — never hand-edit them.
+  //
+  //   npx rulesync@8 generate          # regenerate after editing .rulesync/
+  //   npx rulesync@8 generate --check  # CI: fail if generated files are stale
+  "$schema": "https://github.com/dyoshikawa/rulesync/releases/latest/download/config-schema.json",
+  "targets": ["claudecode", "cursor", "antigravity-ide"],
+  "features": ["skills"],
+  "outputRoots": ["."],
+  "delete": true
+}

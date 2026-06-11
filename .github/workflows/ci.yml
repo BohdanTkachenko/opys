@@ -34,3 +34,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --all-targets
+
+  skills:
+    name: Skills in sync (rulesync)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check generated skill files are up to date
+        run: npx -y rulesync@8.27.0 generate --check
