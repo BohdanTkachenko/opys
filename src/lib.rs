@@ -1,0 +1,107 @@
+//! opys — a file-based feature inventory: one markdown file per feature, with
+//! YAML frontmatter, stable IDs, tags, test plans, manual-verification
+//! runbooks, and a `verify` gate for CI.
+//!
+//! The binary is a thin wrapper around [`run`]. The modules are public so the
+//! crate can be used as a library.
+
+pub mod body;
+pub mod cli;
+pub mod commands;
+pub mod config;
+pub mod error;
+pub mod feature;
+pub mod frontmatter;
+pub mod project;
+pub mod schema;
+pub mod templates;
+
+pub use config::Config;
+pub use error::{OpysError, Result};
+pub use feature::Feature;
+pub use frontmatter::Frontmatter;
+pub use project::Project;
+
+use cli::{Cli, Command};
+
+/// Shared invocation context: where the inventory lives and global flags.
+pub struct Ctx {
+    pub root: String,
+    pub dir: String,
+    pub no_sync: bool,
+}
+
+impl Ctx {
+    pub fn open(&self) -> Result<Project> {
+        Project::open(&self.root, &self.dir)
+    }
+}
+
+/// Execute a parsed CLI invocation, returning the process exit code.
+///
+/// `verify` returns `1` when it finds problems (the CI-gate contract); all
+/// other commands return `0` on success and surface failures as
+/// [`OpysError`], which the binary maps to exit code `2`.
+pub fn run(cli: Cli) -> Result<i32> {
+    let ctx = Ctx {
+        root: cli.root,
+        dir: cli.dir,
+        no_sync: cli.no_sync,
+    };
+    match cli.command {
+        Command::Init => {
+            commands::init::run(&ctx)?;
+            Ok(0)
+        }
+        Command::New {
+            title,
+            tags,
+            status,
+            field,
+        } => {
+            commands::new::run(&ctx, &title, &tags, &status, &field)?;
+            Ok(0)
+        }
+        Command::Show { id } => {
+            commands::show::run(&ctx, &id)?;
+            Ok(0)
+        }
+        Command::List {
+            tag,
+            status,
+            format,
+        } => {
+            commands::list::run(&ctx, tag.as_deref(), status.as_deref(), format)?;
+            Ok(0)
+        }
+        Command::SetStatus { id, status, reason } => {
+            commands::set_status::run(&ctx, &id, &status, reason.as_deref())?;
+            Ok(0)
+        }
+        Command::Tag { id, add, remove } => {
+            commands::tag::run(&ctx, &id, add.as_deref(), remove.as_deref())?;
+            Ok(0)
+        }
+        Command::Retire { id, reason } => {
+            commands::retire::run(&ctx, &id, &reason)?;
+            Ok(0)
+        }
+        Command::Verify => commands::verify::run(&ctx),
+        Command::SyncViews => {
+            commands::sync_views::run(&ctx)?;
+            Ok(0)
+        }
+        Command::Report => {
+            commands::report::run(&ctx)?;
+            Ok(0)
+        }
+        Command::ManualRunbook { out, name } => {
+            commands::runbook::run(&ctx, out.as_deref(), name.as_deref())?;
+            Ok(0)
+        }
+        Command::Schema { kind, out } => {
+            commands::schema::run(&ctx, kind, out.as_deref())?;
+            Ok(0)
+        }
+    }
+}
