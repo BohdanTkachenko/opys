@@ -1,33 +1,31 @@
 # Skill: Feature Inventory (opys)
 
+This project tracks features with **opys** — a file-based inventory under
+`docs/features/`, managed by the `opys` CLI and verified in CI.
+
 ## Objective
 
-Maintain this project's file-based feature inventory — one markdown file per
-feature under `docs/features/`, managed by the
-[`opys`](https://github.com/BohdanTkachenko/opys) CLI and verified in CI —
-without corrupting generated artifacts.
+Maintain the inventory without corrupting generated artifacts.
 
 ## Rules of Engagement
 
-- Source of truth is the feature files. `docs/features/INDEX.md` and
-  `docs/views/` are generated — read them, never edit them.
-- All metadata writes (new feature, status, tags) go through the `opys` CLI so
-  invariants hold at write time and parallel agents don't collide. Never
-  hand-edit frontmatter or status.
-- Never record test results, dates, or completion claims in feature files.
-- Run `opys verify` before considering work done; it is the CI gate.
+- Operate it **only** through the CLI — run `opys --help`; the writes are
+  `new`, `set-status`, `tag`, `retire`. Never hand-edit frontmatter or status.
+- `docs/features/INDEX.md` and `docs/views/` are generated — read them, never
+  edit them.
+- Run `opys verify` before finishing (it is the CI gate). Never record test
+  results, dates, or completion claims in feature files.
 
 ## Instructions
 
-1. To find a feature: read `docs/features/INDEX.md`, then `rg` by tag/status,
-   then open only the relevant files. Do not bulk-read `docs/features/`.
-2. To create one: `opys new --title "<title>" --tags <a,b>`.
-3. To change status: `opys set-status <ID> <status> [--reason R]`
-   (`implemented` requires ≥1 checked test-plan item; `wontfix` needs a reason).
-4. To adjust tags: `opys tag <ID> --add <x> --remove <y>`.
-5. When implementing a feature: read its file fully; implement; add tests;
-   check the covered test-plan items and append backticked test references
-   (`module::test_name`, a case may need several); then
-   `opys set-status <ID> implemented` and `opys verify`.
+- Find a feature: read `docs/features/INDEX.md`, then `rg`; open only the
+  relevant files.
+- Create / update: `opys new ...`, `opys set-status <ID> <status>`,
+  `opys tag <ID> --add/--remove ...`.
+- When implementing: add tests, append backticked test refs
+  (`module::test_name`) to the covered test-plan items, then
+  `opys set-status <ID> implemented` and `opys verify`.
 
-Mutating commands regenerate `INDEX.md`/`views/` automatically.
+Canonical workflow + normative format spec live in the opys skill —
+`.claude/skills/feature-inventory/` — and at
+<https://github.com/BohdanTkachenko/opys>.
