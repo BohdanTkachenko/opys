@@ -5,7 +5,14 @@ use crate::frontmatter::Frontmatter;
 use crate::project::{self, Project};
 use crate::Ctx;
 
-pub fn run(ctx: &Ctx, title: &str, tags: &str, status: &str, fields: &[String]) -> Result<()> {
+pub fn run(
+    ctx: &Ctx,
+    title: &str,
+    tags: &str,
+    status: &str,
+    reason: Option<&str>,
+    fields: &[String],
+) -> Result<()> {
     let prj = Project::open(&ctx.root, &ctx.dir)?;
     let (feats, _) = prj.load();
     let id = prj.next_id(&feats);
@@ -15,6 +22,24 @@ pub fn run(ctx: &Ctx, title: &str, tags: &str, status: &str, fields: &[String]) 
         return Err(usage("at least one tag is required (--tags a,b)"));
     }
 
+    // Enforce the status lifecycle at write time, the same way set-status and
+    // verify do — `new` previously accepted any status and deferred these to
+    // verify.
+    let statuses = prj.cfg.statuses();
+    if !statuses.iter().any(|s| s == status) {
+        return Err(usage(format!(
+            "unknown status {status:?} (allowed: {})",
+            statuses.join(", ")
+        )));
+    }
+    if status == "implemented" {
+        return Err(usage(
+            "cannot create a feature as implemented: a new file has no test plan yet \
+             — create it as planned/partial, add a checked test-plan item, then run \
+             `opys set-status <id> implemented`",
+        ));
+    }
+
     let mut fm = Frontmatter::new();
     fm.set_str("id", &id);
     fm.set_str("status", status);
@@ -22,6 +47,17 @@ pub fn run(ctx: &Ctx, title: &str, tags: &str, status: &str, fields: &[String]) 
     for kv in fields {
         let (k, v) = project::parse_field(kv)?;
         fm.insert(&k, v);
+    }
+    if status == "wontfix" {
+        if let Some(r) = reason {
+            fm.set_str("wontfix_reason", r);
+        }
+        if fm.wontfix_reason().is_none() {
+            return Err(usage(
+                "creating a feature as wontfix requires --reason \
+                 (or --field wontfix_reason=...)",
+            ));
+        }
     }
 
     let body = format!("# {title}\n");

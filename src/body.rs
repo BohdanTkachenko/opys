@@ -57,12 +57,26 @@ pub fn test_plan_items(body: &str) -> Vec<TestPlanItem> {
     out
 }
 
-/// Backticked test references on a test-plan line.
+/// Backticked test references on a test-plan or manual-verification line.
+///
+/// Only spans shaped like a reference — containing the `::` module/path
+/// separator (`mod::test_name`, `path/to/file.rs::test_name`) — are returned.
+/// Inline code spans used in the item's *prose* (shell snippets, literals,
+/// escape sequences) are deliberately ignored, so a checked item can explain
+/// itself with backticked code without that code being mistaken for a ref.
 pub fn test_refs(line: &str) -> Vec<String> {
     TEST_REF_RE
         .captures_iter(line)
         .map(|c| c[1].to_string())
+        .filter(|s| is_test_ref(s))
         .collect()
+}
+
+/// Whether a backtick span has the shape of a test reference. A reference is
+/// always `module::name` or `path/to/file::name`, so the `::` separator is
+/// what distinguishes a real reference from a prose code span.
+pub fn is_test_ref(span: &str) -> bool {
+    span.contains("::")
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +149,26 @@ mod tests {
             test_refs(&items[0].line),
             vec!["tab::osc_title".to_string()]
         );
+    }
+
+    #[test]
+    fn ignores_prose_code_spans() {
+        // A real ref plus a prose code span on the same checked item: only the
+        // `::`-shaped span is a reference; the shell snippet is left as prose.
+        let line = "- [x] sftp:// rewrites to `ssh -t exec $SHELL -l` not a path — \
+                    `application.rs::sftp_uri_rewrites_to_ssh`";
+        assert_eq!(
+            test_refs(line),
+            vec!["application.rs::sftp_uri_rewrites_to_ssh".to_string()]
+        );
+    }
+
+    #[test]
+    fn prose_only_span_is_not_a_ref() {
+        // No `::` anywhere: nothing is treated as a reference (so verify will
+        // correctly flag a checked item that lacks a real ref).
+        let line = "- [x] split_command handles quotes (`bash -c \"echo hi\"` is 3 argv)";
+        assert!(test_refs(line).is_empty());
     }
 
     #[test]

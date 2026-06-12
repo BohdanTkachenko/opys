@@ -44,7 +44,8 @@ or `OPYS_DIR`): `docs/features/` (config + feature files + `INDEX.md`),
 | Command | Purpose |
 |---|---|
 | `init` | bootstrap `docs/features/_config.toml`, print CLAUDE.md snippet |
-| `new --title T --tags a,b [--status S] [--field k=v]` | create file with next ID (auto-syncs) |
+| `new --title T --tags a,b [--status S] [--reason R] [--field k=v]` | create file with next ID (auto-syncs) |
+| `import FILE.jsonl` | bulk-create features from JSONL (sequential IDs, one sync, transactional) — for migrations |
 | `show ID` / `list [--tag T] [--status S] [--format table\|ids\|paths]` | retrieval |
 | `set-status ID S [--reason R]` | guarded transitions (wontfix needs reason; implemented needs a checked test item) |
 | `tag ID --add a,b --remove c` | tag maintenance |
@@ -69,10 +70,14 @@ or `OPYS_DIR`): `docs/features/` (config + feature files + `INDEX.md`),
    hallucinated fields.
 2. Add the printed snippet to the project's CLAUDE.md.
 3. Add `opys verify` (and optionally a `sync-views` freshness diff) to CI.
-4. If migrating an existing feature list: convert each entry with `new`
-   (status `planned`, best-effort tags), then review in batches per tag using
-   generated views; archive the source document. Do not write spec prose
-   during migration unless the source contains real behavioral detail.
+4. If migrating an existing feature list: at small scale, convert each entry
+   with `new` (status `planned`, best-effort tags). At scale (hundreds+), do
+   **not** loop `new` — emit a JSONL file and run `opys import` once, or write
+   canonical `PREFIX-NNNN.md` files directly then `opys sync-views` + `opys
+   verify` (see "Bulk creation and migration" in `references/format.md`). Then
+   review in batches per tag using generated views; archive the source
+   document. Do not write spec prose during migration unless the source
+   contains real behavioral detail.
 
 ## Workflow: implementing a feature (for coding agents)
 
