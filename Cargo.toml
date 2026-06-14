@@ -1,6 +1,6 @@
 [package]
 name = "opys"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.88"
 description = "File-based feature inventory for human + AI codebases — one markdown file per feature, verified in CI"

@@ -1,6 +1,6 @@
 {
   "name": "opys",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Operate the opys file-based feature inventory and work items. Requires the `opys` CLI (cargo install opys).",
   "author": {
     "name": "Bohdan Tkachenko",
