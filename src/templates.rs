@@ -1,7 +1,12 @@
-//! String templates emitted by `opys init`.
+//! String templates emitted by `opys init` and `opys agent-rules`.
 
-pub const DEFAULT_CONFIG: &str = r#"# feature-inventory project configuration
-prefix = "FEAT"        # feature ID prefix -> FEAT-0001
+/// The canonical always-on agent rule, the single source for every per-editor
+/// rule file `opys agent-rules` generates. Embedded at build time so there is
+/// exactly one copy in the repo.
+pub const AGENT_RULE: &str = include_str!("../skills/opys/agent-rule.md");
+
+pub const DEFAULT_CONFIG: &str = r#"# opys feature inventory configuration
+# Feature IDs are always FEAT-NNNN (the prefix is fixed, not configurable).
 pad = 4                # zero-padding width for the numeric part
 
 # Directories searched (recursively) when verifying that test references
@@ -35,10 +40,10 @@ parity = false
 
 pub const CLAUDE_MD_SNIPPET: &str = r#"## Feature inventory
 
-- The feature inventory lives in `docs/features/`, one markdown file per
-  feature. Source of truth is the feature files; `docs/features/INDEX.md` and
-  `docs/views/` are generated — read them, never edit them.
-- To find features: read `docs/features/INDEX.md` first, then `rg` by
+- The feature inventory lives in `docs/opys/features/`, one markdown file per
+  feature. Source of truth is the feature files; `docs/opys/features/INDEX.md`
+  and `docs/opys/views/` are generated — read them, never edit them.
+- To find features: read `docs/opys/features/INDEX.md` first, then `rg` by
   tag/status, then read only the relevant feature files. Do not bulk-read the
   inventory.
 - To create features or change status/tags, use `opys` (new, set-status, tag,
@@ -50,4 +55,40 @@ pub const CLAUDE_MD_SNIPPET: &str = r#"## Feature inventory
 - If a test plan's case enumeration looks incomplete, raise it — do not
   silently implement only the listed cases.
 - Never record test results, dates, or completion claims in feature files.
+- Track in-flight implementation work in *work items* (`opys work-item …`),
+  not in feature files. Run `opys work-item init` to enable them.
+"#;
+
+pub const DEFAULT_WI_CONFIG: &str = r#"# work-item subsystem configuration
+# Work-item IDs are always WI-NNNN (the prefix is fixed, not configurable).
+pad = 4                # zero-padding width for the numeric part
+
+# Additional statuses beyond todo | in-progress | blocked | done.
+extra_statuses = []
+
+# Body sections every work item must contain (verified; scaffolded by `new`).
+required_sections = ["Tasks", "Progress"]
+
+# Per-project custom frontmatter fields. Example:
+# [fields.pr]
+# type = "string"          # string | list | bool | int
+# required = false
+# description = "Primary pull-request URL for this effort"
+"#;
+
+pub const WI_CLAUDE_MD_SNIPPET: &str = r#"## Work items
+
+- Work items are the ephemeral companions to features: one markdown file per
+  in-flight change in `docs/opys/work-items/`, holding `## Tasks` and a
+  `## Progress` log (branch/commit/PR links). They are deleted on completion.
+- Start work: `opys work-item new --title "…" --features FEAT-0001`. Every work
+  item must link at least one existing feature. Editing Tasks/Progress is a
+  normal file edit.
+- opys keeps cross-references in sync automatically: a feature's `references`
+  map and a work item's `references` map are kept bidirectional and titled, and
+  bare FEAT-/WI- mentions in prose are rewritten into markdown links.
+- Finish: fold anything durable back into the feature (test plan, status, spec),
+  then `opys work-item close WI-0001`. Close deletes the file and strikes the
+  reference through in the feature as a tombstone — nothing else survives.
+- Never put permanent docs in a work item, or implementation logs in a feature.
 "#;

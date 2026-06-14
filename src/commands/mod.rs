@@ -1,6 +1,7 @@
 //! Subcommand implementations. Each `run` takes the invocation [`Ctx`] plus
 //! its parsed arguments.
 
+pub mod agent_rules;
 pub mod import;
 pub mod init;
 pub mod list;
@@ -11,9 +12,11 @@ pub mod runbook;
 pub mod schema;
 pub mod set_status;
 pub mod show;
+pub mod sync;
 pub mod sync_views;
 pub mod tag;
 pub mod verify;
+pub mod work_item;
 
 use time::{format_description::FormatItem, macros::format_description, OffsetDateTime};
 
@@ -37,14 +40,14 @@ pub fn split_csv(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// Regenerate INDEX.md/views after a mutating command, unless `--no-sync`.
-/// Best-effort: a parse error elsewhere is reported but does not fail the
-/// mutation that already succeeded.
+/// Reconcile references, linkify bodies, and regenerate INDEX.md/views after a
+/// mutating command, unless `--no-sync`. Best-effort: a parse error elsewhere
+/// is reported but does not fail the mutation that already succeeded.
 pub fn maybe_sync(ctx: &Ctx, prj: &Project) {
     if ctx.no_sync {
         return;
     }
-    if sync_views::regenerate(prj).is_err() {
-        eprintln!("note: skipped view regeneration (run `opys verify` to find the problem)");
+    if sync::run(prj).is_err() {
+        eprintln!("note: skipped sync (run `opys verify` to find the problem)");
     }
 }

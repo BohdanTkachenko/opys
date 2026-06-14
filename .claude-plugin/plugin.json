@@ -1,0 +1,13 @@
+{
+  "name": "opys",
+  "version": "0.1.1",
+  "description": "Operate the opys file-based feature inventory and work items — track what a project does and its in-flight changes. Requires the `opys` CLI (cargo install opys).",
+  "author": {
+    "name": "Bohdan Tkachenko",
+    "url": "https://github.com/BohdanTkachenko"
+  },
+  "homepage": "https://github.com/BohdanTkachenko/opys",
+  "repository": "https://github.com/BohdanTkachenko/opys",
+  "license": "Apache-2.0",
+  "keywords": ["feature-inventory", "requirements", "traceability", "test-coverage", "agents"]
+}

@@ -10,6 +10,17 @@ use crate::error::{OpysError, Result};
 /// The four statuses every project has, in lifecycle order.
 pub const CORE_STATUSES: [&str; 4] = ["planned", "partial", "implemented", "wontfix"];
 
+/// Fixed ID prefix for features. Not configurable — a feature ID is always
+/// `FEAT-NNNN` so cross-project references are unambiguous.
+pub const FEAT_PREFIX: &str = "FEAT";
+
+/// Fixed ID prefix for work items: `WI-NNNN`.
+pub const WI_PREFIX: &str = "WI";
+
+/// Work-item statuses, in lifecycle order. `done` is terminal and only reached
+/// via `work-item close` (which deletes or archives the file).
+pub const WI_CORE_STATUSES: [&str; 4] = ["todo", "in-progress", "blocked", "done"];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TestRefCheck {
@@ -58,8 +69,6 @@ pub struct FieldSpec {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
-    #[serde(default = "default_prefix")]
-    pub prefix: String,
     #[serde(default = "default_pad")]
     pub pad: usize,
     #[serde(default = "default_search_paths")]
@@ -79,14 +88,55 @@ pub struct Config {
     pub fields: BTreeMap<String, FieldSpec>,
 }
 
-fn default_prefix() -> String {
-    "FEAT".to_string()
-}
 fn default_pad() -> usize {
     4
 }
 fn default_search_paths() -> Vec<String> {
     vec!["src".to_string(), "tests".to_string()]
+}
+fn default_required_sections() -> Vec<String> {
+    vec!["Tasks".to_string(), "Progress".to_string()]
+}
+
+/// Configuration for the optional work-item subsystem, loaded from
+/// `<base>/work-items/_config.toml`. The subsystem is enabled only when that
+/// file exists; otherwise the project is features-only.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorkItemConfig {
+    #[serde(default = "default_pad")]
+    pub pad: usize,
+    /// Statuses beyond the core todo | in-progress | blocked | done.
+    #[serde(default)]
+    pub extra_statuses: Vec<String>,
+    /// Body sections that must be present (verified, and scaffolded by `new`).
+    #[serde(default = "default_required_sections")]
+    pub required_sections: Vec<String>,
+    #[serde(default)]
+    pub fields: BTreeMap<String, FieldSpec>,
+}
+
+impl WorkItemConfig {
+    /// Load the work-item config if present; `None` means the subsystem is not
+    /// configured for this project.
+    pub fn load_optional(path: &Path) -> Result<Option<WorkItemConfig>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let text = std::fs::read_to_string(path)?;
+        toml::from_str(&text)
+            .map(Some)
+            .map_err(|source| OpysError::Toml {
+                path: path.to_path_buf(),
+                source,
+            })
+    }
+
+    /// Core work-item statuses plus any project-configured extras.
+    pub fn statuses(&self) -> Vec<String> {
+        let mut out: Vec<String> = WI_CORE_STATUSES.iter().map(|s| s.to_string()).collect();
+        out.extend(self.extra_statuses.iter().cloned());
+        out
+    }
 }
 
 impl Config {

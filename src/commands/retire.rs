@@ -1,7 +1,6 @@
-use std::io::Write;
-
 use crate::commands::{maybe_sync, today};
 use crate::error::Result;
+use crate::project;
 use crate::Ctx;
 
 pub fn run(ctx: &Ctx, id: &str, reason: &str) -> Result<()> {
@@ -11,11 +10,8 @@ pub fn run(ctx: &Ctx, id: &str, reason: &str) -> Result<()> {
     let path = f.path.clone();
 
     let rp = prj.fdir.join("_retired.txt");
-    let mut fh = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&rp)?;
-    writeln!(fh, "{id}  # retired {}: {reason}", today())?;
+    let line = format!("{id}  # retired {}: {reason}", today());
+    project::write_id_ledger_entry(&rp, id, &line)?;
 
     std::fs::remove_file(&path)?;
     println!("retired {id} (ID will never be reused)");

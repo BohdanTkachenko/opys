@@ -1,0 +1,28 @@
+{
+  "name": "opys",
+  "version": "0.1.1",
+  "description": "Operate the opys file-based feature inventory and work items. Requires the `opys` CLI (cargo install opys).",
+  "author": {
+    "name": "Bohdan Tkachenko",
+    "url": "https://github.com/BohdanTkachenko"
+  },
+  "homepage": "https://github.com/BohdanTkachenko/opys",
+  "repository": "https://github.com/BohdanTkachenko/opys",
+  "license": "Apache-2.0",
+  "keywords": ["feature-inventory", "requirements", "traceability", "test-coverage", "agents"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "opys",
+    "shortDescription": "File-based feature inventory + work items",
+    "longDescription": "Track what a project does (features) and its in-flight changes (work items) as version-controlled markdown, operated through the opys CLI and verified in CI.",
+    "developerName": "Bohdan Tkachenko",
+    "category": "Productivity",
+    "capabilities": ["Instructions"],
+    "websiteURL": "https://github.com/BohdanTkachenko/opys",
+    "defaultPrompt": [
+      "List the planned features.",
+      "Start a work item for FEAT-0001.",
+      "Run opys verify and fix any problems."
+    ]
+  }
+}

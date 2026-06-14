@@ -2,30 +2,32 @@
 
 ## Layout
 
-The inventory lives under a base directory, default `docs/` (configurable with
-`--dir` / `OPYS_DIR`), so it stays out of the repo root:
+The inventory lives under a base directory, default `docs/opys/` (configurable
+with `--dir` / `OPYS_DIR`), so it stays out of the repo root:
 
 ```
-docs/
+docs/opys/
   features/
     _config.toml        # project configuration (see below)
-    _retired.txt        # append-only log of deleted IDs (never reused)
-    PREFIX-0001.md
+    _retired.txt        # append-only log of deleted IDs (never reused), sorted
+    FEAT-0001.md
     ...
     INDEX.md            # generated — never hand-edit
+  work-items/           # optional ephemeral companions (references/work-items.md)
   views/                # generated — never hand-edit
   runbooks/             # dated manual-runbook instances, committed after execution
 ```
 
-If `ls docs/features/` becomes unwieldy (~2000+ files), shard mechanically by
-ID prefix (`docs/features/04/PREFIX-0421.md`). Sharding is cosmetic only;
-tooling treats the tree as flat. Directory structure must never encode taxonomy.
+Feature IDs are always `FEAT-NNNN` — the prefix is fixed, not configurable, so
+cross-project references read unambiguously. If `ls docs/opys/features/` becomes
+unwieldy (~2000+ files), shard mechanically by ID prefix
+(`docs/opys/features/04/FEAT-0421.md`). Sharding is cosmetic only; tooling
+treats the tree as flat. Directory structure must never encode taxonomy.
 
-## Configuration: `docs/features/_config.toml`
+## Configuration: `docs/opys/features/_config.toml`
 
 ```toml
-prefix = "VIK"                      # -> VIK-0001
-pad = 4                             # zero-padding width
+pad = 4                             # zero-padding width (prefix is fixed: FEAT)
 test_search_paths = ["src", "tests"]
 test_reference_check = "grep"       # "grep" | "extract" | "none"
 # test_name_pattern = "fn\\s+(\\w+)\\s*\\("  # required for "extract" mode
@@ -48,7 +50,7 @@ for editor (Even Better TOML) or CI validation.
 
 ````markdown
 ---
-id: VIK-0421
+id: FEAT-0421
 status: implemented
 tags: [osc, tabs, vte-parsing]
 ptyxis_ref: src/ptyxis-tab.c, set_title handler
@@ -98,15 +100,22 @@ may reflow the formatting (not the meaning) of complex values.
 
 | Field | Required | Rules |
 |---|---|---|
-| `id` | yes | `PREFIX-NNNN`; must match filename; unique forever |
+| `id` | yes | `FEAT-NNNN`; must match filename; unique forever |
 | `status` | yes | `planned` \| `partial` \| `implemented` \| `wontfix` (+ configured extras) |
 | `tags` | yes | non-empty list, lowercase kebab-case, open vocabulary |
+| `references` | no | ID→title map of linked work items (and features); auto-maintained |
 | `wontfix_reason` | iff wontfix | one-line ADR for the parity/scope exception |
 | `spec` | no | path to long-form shared material; must resolve |
 | custom | per config | validated against `[fields.*]` declarations |
 
 There is deliberately no `tests:` field — covering tests are derived from
 the test plan, eliminating a sync surface.
+
+The `references` map is **auto-maintained** by opys — it links a feature to its
+work items (see `references/work-items.md`) and is kept bidirectional and
+title-fresh on every write. You do not hand-edit it; a closed work item leaves a
+struck-through (`~~title~~`) tombstone here. Bare `FEAT-`/`WI-` mentions in body
+prose are rewritten into markdown links on sync.
 
 ### Custom-field type mapping
 
@@ -119,9 +128,10 @@ the test plan, eliminating a sync surface.
 | `bool` | `true` / `false` | the strings `"true"`/`"false"` |
 | `int` | an integer | floats, booleans |
 
-Reserved fields (`id`, `status`, `tags`, `spec`, `wontfix_reason`) are always
-allowed; every other key must be declared under `[fields.*]` or verify rejects
-it. Richer YAML does not relax the declare-or-fail rule.
+Reserved fields (`id`, `status`, `tags`, `spec`, `wontfix_reason`,
+`references`) are always allowed; every other key must be declared under
+`[fields.*]` or verify rejects it. Richer YAML does not relax the
+declare-or-fail rule.
 
 ## Status semantics
 
@@ -223,7 +233,7 @@ thousands of features. Two supported bulk paths avoid that:
   ```
 
 - **Write the files directly** — `opys` reads plain markdown, so you can emit
-  canonical `PREFIX-NNNN.md` files yourself (matching the frontmatter rules
+  canonical `FEAT-NNNN.md` files yourself (matching the frontmatter rules
   above), then run `opys sync-views` once and `opys verify`. This is a fully
   supported escape hatch when your source data does not map cleanly onto the
   JSONL schema; allocate IDs monotonically and never reuse a retired one.
@@ -237,3 +247,7 @@ hand-built inventory.
 Test results, execution dates, completion claims, assignees, priorities, or
 sprint metadata. CI owns automated results; committed runbook instances own
 manual results; this system owns intent only.
+
+Implementation logs, task checklists, and branch/PR links also do not belong
+here — they go in a **work item** (`references/work-items.md`), which is deleted
+when the change lands. The feature is permanent; the work item is throwaway.

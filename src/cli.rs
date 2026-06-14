@@ -9,9 +9,9 @@ pub struct Cli {
     #[arg(long, default_value = ".", global = true)]
     pub root: String,
 
-    /// Inventory base directory under the root (holds features/, views/,
-    /// runbooks/). Absolute paths are used as-is. Env: OPYS_DIR.
-    #[arg(long, default_value = "docs", env = "OPYS_DIR", global = true)]
+    /// Inventory base directory under the root (holds features/, work-items/,
+    /// views/, runbooks/). Absolute paths are used as-is. Env: OPYS_DIR.
+    #[arg(long, default_value = "docs/opys", env = "OPYS_DIR", global = true)]
     pub dir: String,
 
     /// Skip the automatic INDEX.md/views regeneration after mutating commands.
@@ -35,6 +35,18 @@ pub enum SchemaKind {
     Config,
     /// JSON Schema for feature frontmatter, derived from the project's config.
     Frontmatter,
+}
+
+/// A rules-based editor that reads an always-on instruction file.
+#[derive(Clone, Copy, ValueEnum)]
+pub enum AgentTool {
+    Cursor,
+    Windsurf,
+    Cline,
+    Copilot,
+    Kiro,
+    /// Generate the rule file for every supported editor.
+    All,
 }
 
 #[derive(Subcommand)]
@@ -133,4 +145,88 @@ pub enum Command {
         #[arg(long)]
         out: Option<String>,
     },
+
+    /// Manage ephemeral work items (implementation tracking) linked to features.
+    #[command(alias = "wi", subcommand)]
+    WorkItem(WorkItemCommand),
+
+    /// Generate the always-on agent rule file for a rules-based editor
+    /// (Cursor/Windsurf/Cline/Copilot/Kiro) from the canonical rule.
+    AgentRules {
+        #[arg(long, value_enum)]
+        tool: AgentTool,
+        /// Print to stdout instead of writing the file(s).
+        #[arg(long)]
+        stdout: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum WorkItemCommand {
+    /// Scaffold the work-items/ directory and config.
+    Init,
+
+    /// Create a work item with the next ID, linked to one or more features.
+    New {
+        #[arg(long)]
+        title: String,
+        /// Comma-separated existing feature IDs (at least one required).
+        #[arg(long)]
+        features: String,
+        #[arg(long, default_value = "todo")]
+        status: String,
+        /// Comma-separated, kebab-case (optional for work items).
+        #[arg(long, default_value = "")]
+        tags: String,
+        /// Required when creating directly as blocked.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Custom field key=value (repeatable).
+        #[arg(long = "field")]
+        field: Vec<String>,
+    },
+
+    /// Print a work-item file.
+    Show { id: String },
+
+    /// Filtered listing.
+    List {
+        /// Only items linked to this feature ID.
+        #[arg(long)]
+        feature: Option<String>,
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long, value_enum, default_value_t = ListFormat::Table)]
+        format: ListFormat,
+    },
+
+    /// Guarded status transition (todo | in-progress | blocked + extras).
+    SetStatus {
+        id: String,
+        status: String,
+        /// Required when moving to blocked.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+
+    /// Add/remove tags.
+    Tag {
+        id: String,
+        #[arg(long)]
+        add: Option<String>,
+        #[arg(long)]
+        remove: Option<String>,
+    },
+
+    /// Complete a work item: delete the file and strike its title in every
+    /// referencing doc (the struck reference reserves the ID forever).
+    Close {
+        id: String,
+        /// Close even if some `## Tasks` items are unchecked.
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Strip struck-through (completed) work-item references from all docs.
+    Cleanup,
 }

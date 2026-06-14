@@ -12,15 +12,19 @@ pub mod config;
 pub mod error;
 pub mod feature;
 pub mod frontmatter;
+pub mod links;
 pub mod project;
+pub mod refs;
 pub mod schema;
 pub mod templates;
+pub mod work_item;
 
 pub use config::Config;
 pub use error::{OpysError, Result};
 pub use feature::Feature;
 pub use frontmatter::Frontmatter;
 pub use project::Project;
+pub use work_item::WorkItem;
 
 use cli::{Cli, Command};
 
@@ -106,6 +110,14 @@ pub fn run(cli: Cli) -> Result<i32> {
         }
         Command::Schema { kind, out } => {
             commands::schema::run(&ctx, kind, out.as_deref())?;
+            Ok(0)
+        }
+        Command::WorkItem(cmd) => {
+            commands::work_item::run(&ctx, cmd)?;
+            Ok(0)
+        }
+        Command::AgentRules { tool, stdout } => {
+            commands::agent_rules::run(&ctx, tool, stdout)?;
             Ok(0)
         }
     }

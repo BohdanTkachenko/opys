@@ -33,28 +33,41 @@ pub fn section(body: &str, header: &str) -> String {
 }
 
 #[derive(Debug, Clone)]
-pub struct TestPlanItem {
+pub struct ChecklistItem {
     pub checked: bool,
     pub line: String,
 }
 
-/// Top-level checkbox items under `## Test plan`.
-pub fn test_plan_items(body: &str) -> Vec<TestPlanItem> {
+/// Top-level checkbox items under the named `## <header>` section. Used for a
+/// feature's `## Test plan` and a work item's `## Tasks`.
+pub fn checklist_items(body: &str, header: &str) -> Vec<ChecklistItem> {
     let mut out = Vec::new();
-    for line in section(body, "Test plan").lines() {
+    for line in section(body, header).lines() {
         if CHECKED_RE.is_match(line) {
-            out.push(TestPlanItem {
+            out.push(ChecklistItem {
                 checked: true,
                 line: line.to_string(),
             });
         } else if UNCHECKED_RE.is_match(line) {
-            out.push(TestPlanItem {
+            out.push(ChecklistItem {
                 checked: false,
                 line: line.to_string(),
             });
         }
     }
     out
+}
+
+/// Top-level checkbox items under `## Test plan`.
+pub fn test_plan_items(body: &str) -> Vec<ChecklistItem> {
+    checklist_items(body, "Test plan")
+}
+
+/// Whether the body contains a `## <header>` section heading.
+pub fn has_section(body: &str, header: &str) -> bool {
+    Regex::new(&format!(r"(?m)^## {}\s*$", regex::escape(header)))
+        .unwrap()
+        .is_match(body)
 }
 
 /// Backticked test references on a test-plan or manual-verification line.

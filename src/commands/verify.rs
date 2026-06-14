@@ -1,25 +1,49 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use regex::Regex;
 use serde_norway::Value;
 use walkdir::WalkDir;
 
 use crate::body;
-use crate::config::FieldType;
+use crate::config::{FieldSpec, FieldType, FEAT_PREFIX, WI_PREFIX};
 use crate::error::Result;
 use crate::feature::Feature;
-use crate::frontmatter::{Frontmatter, RESERVED_FIELDS};
+use crate::frontmatter::{Frontmatter, RESERVED_FIELDS, WI_RESERVED_FIELDS};
 use crate::project::{id_format_re, Project, KEBAB_RE};
+use crate::refs;
+use crate::work_item::WorkItem;
 use crate::Ctx;
 
 pub fn run(ctx: &Ctx) -> Result<i32> {
     let prj = ctx.open()?;
     let (feats, mut errors) = prj.load();
 
+    // Work items participate in the same CI gate when configured.
+    let (mut wis, wi_enabled) = if prj.wi_cfg.is_some() {
+        let (w, werr) = prj.load_work_items();
+        errors.extend(werr);
+        (w, true)
+    } else {
+        (Vec::<WorkItem>::new(), false)
+    };
+
     let statuses = prj.cfg.statuses();
     let retired = prj.retired_ids();
-    let id_rx = id_format_re(&prj.cfg.prefix, prj.cfg.pad);
+    let id_rx = id_format_re(FEAT_PREFIX, prj.cfg.pad);
     let index = TestIndex::build(&prj, &mut errors);
+
+    // The set of ids that a `references` entry may resolve to.
+    let mut doc_ids: HashSet<String> = feats
+        .iter()
+        .filter_map(|f| f.id())
+        .map(str::to_string)
+        .collect();
+    let feature_ids = doc_ids.clone();
+    for w in &wis {
+        if let Some(id) = w.id() {
+            doc_ids.insert(id.to_string());
+        }
+    }
 
     let mut seen: HashMap<String, String> = HashMap::new();
 
@@ -70,13 +94,33 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
             }
         }
 
-        check_custom_fields(&prj, m, fid, &mut errors);
+        check_references(m, fid, &doc_ids, &mut errors);
+        check_custom_fields(
+            &prj.cfg.fields,
+            &RESERVED_FIELDS,
+            "features/_config.toml",
+            m,
+            fid,
+            &mut errors,
+        );
         check_test_plan(f, fid, status, &index, &prj, &mut errors);
         check_manual(f, fid, &mut errors);
     }
 
+    if wi_enabled {
+        check_work_items(&prj, &mut wis, &feature_ids, &doc_ids, &mut errors);
+    }
+
     if errors.is_empty() {
-        println!("verify: OK ({} features)", feats.len());
+        if wi_enabled {
+            println!(
+                "verify: OK ({} features, {} work items)",
+                feats.len(),
+                wis.len()
+            );
+        } else {
+            println!("verify: OK ({} features)", feats.len());
+        }
         Ok(0)
     } else {
         eprintln!("verify: {} problem(s)", errors.len());
@@ -84,6 +128,100 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
             eprintln!("  {e}");
         }
         Ok(1)
+    }
+}
+
+/// Every `references` entry must resolve to an existing doc, unless it is a
+/// struck-through tombstone (a closed work item).
+fn check_references(
+    m: &Frontmatter,
+    id: &str,
+    doc_ids: &HashSet<String>,
+    errors: &mut Vec<String>,
+) {
+    for (tid, val) in refs::parse(m) {
+        if !doc_ids.contains(&tid) && !refs::is_struck(&val) {
+            errors.push(format!(
+                "{id}: reference '{tid}' does not resolve to a feature or work item"
+            ));
+        }
+    }
+}
+
+/// Work-item integrity checks, mirroring the feature pass.
+fn check_work_items(
+    prj: &Project,
+    wis: &mut [WorkItem],
+    feature_ids: &HashSet<String>,
+    doc_ids: &HashSet<String>,
+    errors: &mut Vec<String>,
+) {
+    let wc = match prj.wi_cfg.as_ref() {
+        Some(c) => c,
+        None => return,
+    };
+    let statuses = wc.statuses();
+    let id_rx = id_format_re(WI_PREFIX, wc.pad);
+    let mut seen: HashMap<String, String> = HashMap::new();
+
+    for w in wis.iter() {
+        let m = &w.frontmatter;
+        let where_ = w.path.display().to_string();
+
+        let wid = match w.id() {
+            Some(id) if id_rx.is_match(id) => id,
+            other => {
+                errors.push(format!("{where_}: bad or missing id {}", pyrepr(other)));
+                continue;
+            }
+        };
+        if w.path.file_stem().and_then(|s| s.to_str()) != Some(wid) {
+            errors.push(format!("{where_}: filename does not match id {wid}"));
+        }
+        if let Some(prev) = seen.get(wid) {
+            errors.push(format!("{where_}: duplicate id {wid} (also in {prev})"));
+        }
+        seen.insert(wid.to_string(), where_.clone());
+
+        let status = w.status();
+        if !status
+            .map(|s| statuses.iter().any(|x| x == s))
+            .unwrap_or(false)
+        {
+            errors.push(format!("{wid}: invalid status {}", pyrepr(status)));
+        }
+        if status == Some("blocked") && m.get_str("blocked_reason").is_none() {
+            errors.push(format!("{wid}: blocked requires blocked_reason"));
+        }
+        if w.title.is_empty() {
+            errors.push(format!("{wid}: missing '# Title' heading"));
+        }
+        for section in &wc.required_sections {
+            if !body::has_section(&w.body, section) {
+                errors.push(format!("{wid}: missing required '## {section}' section"));
+            }
+        }
+        if m.contains_key("tags") {
+            check_tags(m, wid, errors);
+        }
+
+        // The required-feature-link invariant.
+        let links_feature = w.feature_refs().iter().any(|f| feature_ids.contains(f));
+        if !links_feature {
+            errors.push(format!(
+                "{wid}: must reference at least one existing feature"
+            ));
+        }
+
+        check_references(m, wid, doc_ids, errors);
+        check_custom_fields(
+            &wc.fields,
+            &WI_RESERVED_FIELDS,
+            "work-items/_config.toml",
+            m,
+            wid,
+            errors,
+        );
     }
 }
 
@@ -104,24 +242,31 @@ fn check_tags(m: &Frontmatter, fid: &str, errors: &mut Vec<String>) {
     }
 }
 
-fn check_custom_fields(prj: &Project, m: &Frontmatter, fid: &str, errors: &mut Vec<String>) {
-    for (k, spec) in &prj.cfg.fields {
+fn check_custom_fields(
+    fields: &BTreeMap<String, FieldSpec>,
+    reserved: &[&str],
+    config_hint: &str,
+    m: &Frontmatter,
+    id: &str,
+    errors: &mut Vec<String>,
+) {
+    for (k, spec) in fields {
         if spec.required && !m.contains_key(k) {
-            errors.push(format!("{fid}: required field '{k}' missing"));
+            errors.push(format!("{id}: required field '{k}' missing"));
         }
         if let Some(v) = m.get(k) {
             if !type_ok(v, spec.field_type) {
                 errors.push(format!(
-                    "{fid}: field '{k}' should be {}",
+                    "{id}: field '{k}' should be {}",
                     spec.field_type.as_str()
                 ));
             }
         }
     }
     for k in m.keys() {
-        if !RESERVED_FIELDS.contains(&k) && !prj.cfg.fields.contains_key(k) {
+        if !reserved.contains(&k) && !fields.contains_key(k) {
             errors.push(format!(
-                "{fid}: unknown frontmatter field '{k}' (declare it in features/_config.toml [fields.{k}])"
+                "{id}: unknown frontmatter field '{k}' (declare it in {config_hint} [fields.{k}])"
             ));
         }
     }

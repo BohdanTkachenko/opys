@@ -10,9 +10,21 @@
 
 use serde_norway::{Mapping, Value};
 
-/// Field keys with first-class meaning; everything else is a declared custom
-/// field (or rejected by `verify`).
-pub const RESERVED_FIELDS: [&str; 5] = ["id", "status", "tags", "spec", "wontfix_reason"];
+/// Feature field keys with first-class meaning; everything else is a declared
+/// custom field (or rejected by `verify`). `references` is the uniform
+/// ID->title map linking to other features and work items.
+pub const RESERVED_FIELDS: [&str; 6] = [
+    "id",
+    "status",
+    "tags",
+    "spec",
+    "wontfix_reason",
+    "references",
+];
+
+/// Work-item reserved field keys. Work items share `id`/`status`/`tags`/
+/// `references` with features and add `blocked_reason`.
+pub const WI_RESERVED_FIELDS: [&str; 5] = ["id", "status", "tags", "references", "blocked_reason"];
 
 const ORDER: [&str; 3] = ["id", "status", "tags"];
 
@@ -87,6 +99,10 @@ impl Frontmatter {
 
     pub fn insert(&mut self, key: &str, value: Value) {
         self.map.insert(Value::String(key.to_string()), value);
+    }
+
+    pub fn remove(&mut self, key: &str) -> Option<Value> {
+        self.map.remove(Value::String(key.to_string()))
     }
 }
 

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "opys",
+  "description": "File-based feature inventory and work items for human + AI codebases.",
+  "owner": {
+    "name": "Bohdan Tkachenko",
+    "url": "https://github.com/BohdanTkachenko"
+  },
+  "plugins": [
+    {
+      "name": "opys",
+      "description": "Operate the opys feature inventory + work items: track what a project does and its in-flight changes.",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}

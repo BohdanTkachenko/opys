@@ -7,7 +7,7 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::config::{Config, FieldType, CORE_STATUSES};
+use crate::config::{Config, FieldType, CORE_STATUSES, FEAT_PREFIX};
 
 /// JSON Schema for `_config.toml`.
 pub fn config_schema() -> Value {
@@ -16,7 +16,6 @@ pub fn config_schema() -> Value {
         "title": "opys project config",
         "type": "object",
         "properties": {
-            "prefix": { "type": "string", "description": "Feature ID prefix, e.g. VIK -> VIK-0001" },
             "pad": { "type": "integer", "minimum": 1, "description": "Zero-padding width" },
             "test_search_paths": { "type": "array", "items": { "type": "string" } },
             "test_reference_check": { "enum": ["grep", "extract", "none"] },
@@ -44,7 +43,7 @@ pub fn config_schema() -> Value {
 pub fn frontmatter_schema(cfg: &Config) -> Value {
     let mut props = Map::new();
 
-    let id_pattern = format!("^{}-[0-9]{{{},}}$", regex_escape(&cfg.prefix), cfg.pad);
+    let id_pattern = format!("^{}-[0-9]{{{},}}$", regex_escape(FEAT_PREFIX), cfg.pad);
     props.insert(
         "id".into(),
         json!({ "type": "string", "pattern": id_pattern }),
