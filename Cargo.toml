@@ -9,7 +9,17 @@ repository = "https://github.com/BohdanTkachenko/opys"
 readme = "README.md"
 keywords = ["feature-inventory", "traceability", "cli", "markdown", "ci"]
 categories = ["command-line-utilities", "development-tools"]
-exclude = [".github/", "skills/"]
+# skills/ is shipped: src/templates.rs embeds skills/opys/agent-rule.md.
+# The multi-agent packaging manifests are not part of the crate.
+exclude = [
+    ".github/",
+    ".claude-plugin/",
+    ".codex-plugin/",
+    "pi-extension/",
+    "package.json",
+    "gemini-extension.json",
+    "opencode.json",
+]
 
 [lib]
 name = "opys"
