@@ -9,9 +9,8 @@ use std::sync::LazyLock;
 
 use regex::{Captures, Regex};
 
-use crate::feature::Feature;
+use crate::doc::Doc;
 use crate::refs;
-use crate::work_item::WorkItem;
 
 /// Either an existing opys markdown link or a bare ID mention. The prefix
 /// alternation is built from the live ID prefixes (feature + every work-item
@@ -32,17 +31,13 @@ static REF_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// present docs and refresh each value to the referenced doc's current title.
 /// A reference whose target is absent (a closed work item's struck tombstone,
 /// or a dangling id) keeps its existing value untouched.
-pub fn reconcile(feats: &mut [Feature], live: &mut [WorkItem]) {
+pub fn reconcile(docs: &mut [Doc]) {
     let mut title: HashMap<String, String> = HashMap::new();
     let mut existing: HashMap<String, HashMap<String, String>> = HashMap::new();
     let mut out: HashMap<String, BTreeSet<String>> = HashMap::new();
     let mut present: HashSet<String> = HashSet::new();
 
-    let docs = feats
-        .iter()
-        .map(|f| (f.id(), &f.title, &f.frontmatter))
-        .chain(live.iter().map(|w| (w.id(), &w.title, &w.frontmatter)));
-    for (id, t, fm) in docs {
+    for (id, t, fm) in docs.iter().map(|d| (d.id(), &d.title, &d.frontmatter)) {
         let Some(id) = id else { continue };
         present.insert(id.to_string());
         title.insert(id.to_string(), t.clone());
@@ -84,14 +79,9 @@ pub fn reconcile(feats: &mut [Feature], live: &mut [WorkItem]) {
             .collect()
     };
 
-    for f in feats.iter_mut() {
-        if let Some(id) = f.id().map(str::to_string) {
-            refs::set(&mut f.frontmatter, &compute(&id));
-        }
-    }
-    for w in live.iter_mut() {
-        if let Some(id) = w.id().map(str::to_string) {
-            refs::set(&mut w.frontmatter, &compute(&id));
+    for d in docs.iter_mut() {
+        if let Some(id) = d.id().map(str::to_string) {
+            refs::set(&mut d.frontmatter, &compute(&id));
         }
     }
 }
@@ -102,7 +92,7 @@ pub fn reconcile(feats: &mut [Feature], live: &mut [WorkItem]) {
 /// semantics, like [`reconcile`]); removal is therefore done on both sides by
 /// the `unblock` command. Edges whose other endpoint is absent (a struck
 /// tombstone or a dangling id) keep their existing value untouched.
-pub fn reconcile_blockers(feats: &mut [Feature], live: &mut [WorkItem]) {
+pub fn reconcile_blockers(docs: &mut [Doc]) {
     let mut title: HashMap<String, String> = HashMap::new();
     let mut present: HashSet<String> = HashSet::new();
     // existing[id][field] = (target -> stored value), for the absent-target fallback.
@@ -111,11 +101,7 @@ pub fn reconcile_blockers(feats: &mut [Feature], live: &mut [WorkItem]) {
     // Canonical directed edges (blocker, blocked), unioned from both fields.
     let mut edges: HashSet<(String, String)> = HashSet::new();
 
-    let docs = feats
-        .iter()
-        .map(|f| (f.id(), &f.title, &f.frontmatter))
-        .chain(live.iter().map(|w| (w.id(), &w.title, &w.frontmatter)));
-    for (id, t, fm) in docs {
+    for (id, t, fm) in docs.iter().map(|d| (d.id(), &d.title, &d.frontmatter)) {
         let Some(id) = id else { continue };
         present.insert(id.to_string());
         title.insert(id.to_string(), t.clone());
@@ -172,29 +158,15 @@ pub fn reconcile_blockers(feats: &mut [Feature], live: &mut [WorkItem]) {
             .collect::<Vec<_>>()
     };
 
-    for f in feats.iter_mut() {
-        if let Some(id) = f.id().map(str::to_string) {
+    for d in docs.iter_mut() {
+        if let Some(id) = d.id().map(str::to_string) {
             refs::set_in(
-                &mut f.frontmatter,
+                &mut d.frontmatter,
                 refs::BLOCKED_BY,
                 &compute(&id, refs::BLOCKED_BY, &desired_bb),
             );
             refs::set_in(
-                &mut f.frontmatter,
-                refs::BLOCKS,
-                &compute(&id, refs::BLOCKS, &desired_bk),
-            );
-        }
-    }
-    for w in live.iter_mut() {
-        if let Some(id) = w.id().map(str::to_string) {
-            refs::set_in(
-                &mut w.frontmatter,
-                refs::BLOCKED_BY,
-                &compute(&id, refs::BLOCKED_BY, &desired_bb),
-            );
-            refs::set_in(
-                &mut w.frontmatter,
+                &mut d.frontmatter,
                 refs::BLOCKS,
                 &compute(&id, refs::BLOCKS, &desired_bk),
             );
@@ -203,16 +175,11 @@ pub fn reconcile_blockers(feats: &mut [Feature], live: &mut [WorkItem]) {
 }
 
 /// Map of every present doc's ID to (title, file path), for linkifying bodies.
-pub fn build_index(feats: &[Feature], live: &[WorkItem]) -> HashMap<String, (String, PathBuf)> {
+pub fn build_index(docs: &[Doc]) -> HashMap<String, (String, PathBuf)> {
     let mut idx = HashMap::new();
-    for f in feats {
-        if let Some(id) = f.id() {
-            idx.insert(id.to_string(), (f.title.clone(), f.path.clone()));
-        }
-    }
-    for w in live {
-        if let Some(id) = w.id() {
-            idx.insert(id.to_string(), (w.title.clone(), w.path.clone()));
+    for d in docs {
+        if let Some(id) = d.id() {
+            idx.insert(id.to_string(), (d.title.clone(), d.path.clone()));
         }
     }
     idx

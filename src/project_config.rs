@@ -32,6 +32,10 @@ fn default_min() -> usize {
     1
 }
 
+/// Directory (under the inventory base) for a type that declares no explicit
+/// `dir` — by default every type's docs live together here.
+pub const DEFAULT_DOC_DIR: &str = "items";
+
 /// A built-in section behavior a type's section opts into. The validator and
 /// scaffold for each kind are compiled code (closed set, not extensible from
 /// config) — this is the guardrail that keeps the engine opinionated.
@@ -91,6 +95,14 @@ pub struct DocType {
     pub fields: BTreeMap<String, FieldSpec>,
     #[serde(default)]
     pub sections: Vec<SectionSpec>,
+}
+
+impl DocType {
+    /// The directory under the base holding this type's files (its `dir`, or the
+    /// shared default).
+    pub fn resolved_dir(&self) -> &str {
+        self.dir.as_deref().unwrap_or(DEFAULT_DOC_DIR)
+    }
 }
 
 /// A rule's match guard. Both fields optional: omitting both means "always".
@@ -291,6 +303,25 @@ impl ProjectConfig {
             types,
             rules,
         }
+    }
+
+    /// The distinct directories (under the base) that hold documents — the set
+    /// generic discovery scans. Multiple types may share a dir (assigned by id
+    /// prefix at load).
+    pub fn doc_dirs(&self) -> Vec<&str> {
+        let mut dirs: Vec<&str> = self.types.values().map(DocType::resolved_dir).collect();
+        dirs.sort_unstable();
+        dirs.dedup();
+        dirs
+    }
+
+    /// The directory holding the type whose prefix matches `id` (the default dir
+    /// when the prefix matches no type).
+    pub fn dir_for_id(&self, id: &str) -> &str {
+        self.type_name_for_id(id)
+            .and_then(|n| self.types.get(n))
+            .map(DocType::resolved_dir)
+            .unwrap_or(DEFAULT_DOC_DIR)
     }
 
     /// The name of the type whose prefix matches `id`'s prefix, if any. (A doc's

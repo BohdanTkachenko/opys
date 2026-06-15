@@ -12,6 +12,7 @@ use regex::Regex;
 use walkdir::WalkDir;
 
 use crate::config::{Config, WorkItemConfig, FEAT_PREFIX};
+use crate::doc::Doc;
 use crate::error::{usage, OpysError, Result};
 use crate::feature::Feature;
 use crate::project_config::ProjectConfig;
@@ -102,6 +103,28 @@ impl Project {
             }
         }
         (feats, errors)
+    }
+
+    /// Generic discovery: load every document across all configured type
+    /// directories (`ProjectConfig::doc_dirs`, resolved under the base) as one
+    /// global inventory, returning parsed docs (sorted by path) and parse-error
+    /// messages. A doc's type is derived from its id prefix where needed.
+    pub fn load_docs(&self) -> (Vec<Doc>, Vec<String>) {
+        let mut docs = Vec::new();
+        let mut errors = Vec::new();
+        for dir in self.pcfg.doc_dirs() {
+            for p in md_files(&self.base.join(dir)) {
+                match std::fs::read_to_string(&p) {
+                    Ok(text) => match Doc::parse(p, &text) {
+                        Ok(d) => docs.push(d),
+                        Err(msg) => errors.push(msg),
+                    },
+                    Err(e) => errors.push(format!("{}: {e}", p.display())),
+                }
+            }
+        }
+        docs.sort_by(|a, b| a.path.cmp(&b.path));
+        (docs, errors)
     }
 
     /// IDs that have been retired and may never be reused.
@@ -227,6 +250,11 @@ impl Project {
             .find(|w| w.id() == Some(id))
             .ok_or_else(|| OpysError::NotFound { id: id.to_string() })
     }
+}
+
+/// Persist a document to disk in canonical form.
+pub fn write_doc(d: &Doc) -> Result<()> {
+    std::fs::write(&d.path, d.to_text()).map_err(OpysError::from)
 }
 
 /// Persist a feature to disk in canonical form.
