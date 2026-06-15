@@ -16,6 +16,7 @@ pub mod links;
 pub mod project;
 pub mod project_config;
 pub mod refs;
+pub mod rules;
 pub mod schema;
 pub mod templates;
 pub mod work_item;
