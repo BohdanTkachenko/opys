@@ -167,10 +167,12 @@ type = "string"
 [[types.task.sections]]
 heading = "Tasks"
 kind = "checklist"
+required = true
 
 [[types.task.sections]]
 heading = "Progress"
 kind = "log"
+required = true
 
 # ------------------------------------ bug ------------------------------------
 # Like task, plus a required Reproduction section.
@@ -188,14 +190,17 @@ type = "string"
 [[types.bug.sections]]
 heading = "Reproduction"
 kind = "prose"
+required = true
 
 [[types.bug.sections]]
 heading = "Tasks"
 kind = "checklist"
+required = true
 
 [[types.bug.sections]]
 heading = "Progress"
 kind = "log"
+required = true
 
 # ----------------------------------- chore -----------------------------------
 # Maintenance/tooling work with no user-facing behavior change.
@@ -213,10 +218,12 @@ type = "string"
 [[types.chore.sections]]
 heading = "Tasks"
 kind = "checklist"
+required = true
 
 [[types.chore.sections]]
 heading = "Progress"
 kind = "log"
+required = true
 
 # ------------------------------ validation rules -----------------------------
 # Each rule: an optional `when { type?, status? }` + one assertion. Closed set:

@@ -14,6 +14,7 @@ use walkdir::WalkDir;
 use crate::config::{Config, WorkItemConfig, FEAT_PREFIX};
 use crate::error::{usage, OpysError, Result};
 use crate::feature::Feature;
+use crate::project_config::ProjectConfig;
 use crate::refs;
 use crate::work_item::WorkItem;
 
@@ -38,6 +39,9 @@ pub struct Project {
     pub cfg: Config,
     /// Work-item config; `None` when the subsystem is not configured.
     pub wi_cfg: Option<WorkItemConfig>,
+    /// The universal engine config: the real `opys.toml` when present, else
+    /// synthesized from the legacy config. Drives `verify`'s rule enforcement.
+    pub pcfg: ProjectConfig,
 }
 
 impl Project {
@@ -50,6 +54,12 @@ impl Project {
         let wdir = base.join("work-items");
         let cfg = Config::load(&fdir.join("_config.toml"))?;
         let wi_cfg = WorkItemConfig::load_optional(&wdir.join("_config.toml"))?;
+        let opys_toml = base.join("opys.toml");
+        let pcfg = if opys_toml.exists() {
+            ProjectConfig::load(&opys_toml)?
+        } else {
+            ProjectConfig::from_legacy(&cfg, wi_cfg.as_ref())
+        };
         Ok(Project {
             root: PathBuf::from(root),
             views_dir: base.join("views"),
@@ -59,6 +69,7 @@ impl Project {
             wdir,
             cfg,
             wi_cfg,
+            pcfg,
         })
     }
 

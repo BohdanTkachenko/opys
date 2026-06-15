@@ -215,7 +215,7 @@ fn verify_passes_clean_and_flags_violations() {
             "unknown frontmatter field 'bogus'",
         ))
         .stderr(predicate::str::contains(
-            "implemented but no checked test-plan item",
+            "'## Test plan' needs at least one checked item",
         ));
 }
 

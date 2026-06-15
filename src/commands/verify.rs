@@ -10,7 +10,6 @@ use crate::error::Result;
 use crate::feature::Feature;
 use crate::frontmatter::{Frontmatter, RESERVED_FIELDS, WI_RESERVED_FIELDS};
 use crate::project::{id_format_re, Project, KEBAB_RE};
-use crate::project_config::ProjectConfig;
 use crate::refs;
 use crate::rules;
 use crate::work_item::WorkItem;
@@ -41,7 +40,6 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
         .filter_map(|f| f.id())
         .map(str::to_string)
         .collect();
-    let feature_ids = doc_ids.clone();
     for w in &wis {
         if let Some(id) = w.id() {
             doc_ids.insert(id.to_string());
@@ -88,9 +86,6 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
         if f.title.is_empty() {
             errors.push(format!("{fid}: missing '# Title' heading"));
         }
-        if status == Some("wontfix") && m.wontfix_reason().is_none() {
-            errors.push(format!("{fid}: wontfix requires wontfix_reason"));
-        }
         if let Some(spec) = m.spec() {
             if !prj.root.join(spec).exists() {
                 errors.push(format!("{fid}: spec path '{spec}' does not resolve"));
@@ -106,22 +101,23 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
             fid,
             &mut errors,
         );
-        check_test_plan(f, fid, status, &index, &prj, &mut errors);
+        check_test_plan(f, fid, &index, &prj, &mut errors);
         check_manual(f, fid, &mut errors);
     }
 
     if wi_enabled {
-        check_work_items(&prj, &mut wis, &feature_ids, &doc_ids, &mut errors);
+        check_work_items(&prj, &mut wis, &doc_ids, &mut errors);
     }
 
     // The ID sequence is global: no two live docs may share a numeric part
     // (this also catches two parallel agents grabbing the same next number).
     check_unique_numbers(&feats, &wis, &mut errors);
 
-    // Opt-in: when the universal config is present, validate it and enforce its
-    // rules over every doc (type derived from the id prefix), alongside the
-    // checks above. Absent opys.toml → no change.
-    check_opys_rules(&prj, &feats, &wis, &doc_ids, &mut errors);
+    // The status-conditional guards (wontfix⇒reason, implemented⇒checked test
+    // plan, blocked⇒reason/link, the feature link, required sections) are
+    // enforced here, by the engine, against `prj.pcfg` — the real opys.toml or
+    // the config synthesized from the legacy files.
+    check_rules(&prj, &feats, &wis, &doc_ids, &mut errors);
 
     if errors.is_empty() {
         if wi_enabled {
@@ -177,7 +173,6 @@ fn check_references(
 fn check_work_items(
     prj: &Project,
     wis: &mut [WorkItem],
-    feature_ids: &HashSet<String>,
     doc_ids: &HashSet<String>,
     errors: &mut Vec<String>,
 ) {
@@ -225,32 +220,11 @@ fn check_work_items(
         {
             errors.push(format!("{wid}: invalid status {}", pyrepr(status)));
         }
-        if status == Some("blocked")
-            && m.get_str("blocked_reason").is_none()
-            && refs::parse_in(m, refs::BLOCKED_BY).is_empty()
-        {
-            errors.push(format!(
-                "{wid}: blocked requires blocked_reason or a blocker link"
-            ));
-        }
         if w.title.is_empty() {
             errors.push(format!("{wid}: missing '# Title' heading"));
         }
-        for section in wtype.required_sections(&wc.required_sections) {
-            if !body::has_section(&w.body, &section) {
-                errors.push(format!("{wid}: missing required '## {section}' section"));
-            }
-        }
         if m.contains_key("tags") {
             check_tags(m, wid, errors);
-        }
-
-        // The required-feature-link invariant.
-        let links_feature = w.feature_refs().iter().any(|f| feature_ids.contains(f));
-        if !links_feature {
-            errors.push(format!(
-                "{wid}: must reference at least one existing feature"
-            ));
         }
 
         check_references(m, wid, doc_ids, errors);
@@ -265,47 +239,48 @@ fn check_work_items(
     }
 }
 
-/// When `<base>/opys.toml` exists, validate it and run the configured
-/// validation rules against every doc, mapping each doc to a type by its ID
-/// prefix. Findings join the regular verify output, prefixed by the doc id. This
-/// is the opt-in bridge to the universal engine; absent opys.toml it is a no-op.
-fn check_opys_rules(
+/// Run the universal engine against every doc using `prj.pcfg` (the real
+/// opys.toml or the config synthesized from the legacy files): the conditional
+/// `[[rules]]`, field-level regex patterns, and required-section presence —
+/// mapping each doc to a type by its ID prefix. Findings are prefixed by the doc
+/// id. A real, user-authored opys.toml is also validated for well-formedness.
+fn check_rules(
     prj: &Project,
     feats: &[Feature],
     wis: &[WorkItem],
     doc_ids: &HashSet<String>,
     errors: &mut Vec<String>,
 ) {
-    let path = prj.base.join("opys.toml");
-    if !path.exists() {
-        return;
-    }
-    let pcfg = match ProjectConfig::load(&path) {
-        Ok(c) => c,
-        Err(e) => {
-            errors.push(format!("opys.toml: {e}"));
-            return;
+    let pcfg = &prj.pcfg;
+    if prj.base.join("opys.toml").exists() {
+        for problem in pcfg.validate() {
+            errors.push(format!("opys.toml: {problem}"));
         }
-    };
-    for problem in pcfg.validate() {
-        errors.push(format!("opys.toml: {problem}"));
     }
     let mut run = |id: Option<&str>, status: Option<&str>, m: &Frontmatter, body: &str| {
         let Some(id) = id else { return };
         let Some(type_name) = pcfg.type_name_for_id(id) else {
             return;
         };
-        for p in rules::evaluate(&pcfg, type_name, status.unwrap_or(""), m, body, doc_ids) {
+        for p in rules::evaluate(pcfg, type_name, status.unwrap_or(""), m, body, doc_ids) {
             errors.push(format!("{id}: {p}"));
         }
-        // Field-level regex patterns (always-on per the type's field specs):
-        // validate the value when present.
         if let Some(dt) = pcfg.types.get(type_name) {
+            // Field-level regex patterns (validate the value when present).
             for (fname, spec) in &dt.fields {
                 if let (Some(pat), Some(val)) = (&spec.pattern, m.get_str(fname)) {
                     if Regex::new(pat).map(|re| !re.is_match(val)).unwrap_or(false) {
                         errors.push(format!("{id}: field '{fname}' must match /{pat}/"));
                     }
+                }
+            }
+            // Required-section presence.
+            for sec in &dt.sections {
+                if sec.required && !body::has_section(body, &sec.heading) {
+                    errors.push(format!(
+                        "{id}: missing required '## {}' section",
+                        sec.heading
+                    ));
                 }
             }
         }
@@ -401,21 +376,20 @@ fn check_custom_fields(
     }
 }
 
+/// Structural test-plan check: every *checked* item carries ≥1 resolvable test
+/// reference. (The "implemented ⇒ a checked item" guard is now an engine rule.)
 fn check_test_plan(
     f: &Feature,
     fid: &str,
-    status: Option<&str>,
     index: &TestIndex,
     prj: &Project,
     errors: &mut Vec<String>,
 ) {
-    let mut checked_any = false;
     for item in body::test_plan_items(&f.body) {
-        let refs = body::test_refs(&item.line);
         if !item.checked {
             continue;
         }
-        checked_any = true;
+        let refs = body::test_refs(&item.line);
         if refs.is_empty() {
             errors.push(format!(
                 "{fid}: checked test-plan item has no `test reference`: {}",
@@ -428,9 +402,6 @@ fn check_test_plan(
                 errors.push(format!("{fid}: {problem}"));
             }
         }
-    }
-    if status == Some("implemented") && !checked_any {
-        errors.push(format!("{fid}: implemented but no checked test-plan item"));
     }
 }
 

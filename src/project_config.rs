@@ -56,6 +56,9 @@ impl SectionKind {
 pub struct SectionSpec {
     pub heading: String,
     pub kind: SectionKind,
+    /// Whether the section must be present (verify enforces it; `new` scaffolds it).
+    #[serde(default)]
+    pub required: bool,
 }
 
 /// `requires_link = { to = "feature", min = 1 }` — a type must reference ≥`min`
@@ -229,8 +232,8 @@ impl ProjectConfig {
                 requires_link: None,
                 fields: feature_fields,
                 sections: vec![
-                    section("Test plan", SectionKind::TestPlan),
-                    section("Manual verification", SectionKind::Manual),
+                    section("Test plan", SectionKind::TestPlan, false),
+                    section("Manual verification", SectionKind::Manual, false),
                 ],
             },
         );
@@ -254,7 +257,7 @@ impl ProjectConfig {
                 }
                 let sections = headings
                     .iter()
-                    .map(|h| section(h, kind_for_heading(h)))
+                    .map(|h| section(h, kind_for_heading(h), true))
                     .collect();
                 types.insert(
                     wt.name.into(),
@@ -515,10 +518,11 @@ fn string_field() -> FieldSpec {
     }
 }
 
-fn section(heading: &str, kind: SectionKind) -> SectionSpec {
+fn section(heading: &str, kind: SectionKind, required: bool) -> SectionSpec {
     SectionSpec {
         heading: heading.to_string(),
         kind,
+        required,
     }
 }
 
