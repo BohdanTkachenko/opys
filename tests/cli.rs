@@ -92,7 +92,7 @@ fn new_auto_syncs_index_and_views() {
         .args(["new", "--title", "First", "--tags", "osc"])
         .assert()
         .success();
-    dir.child("docs/opys/features/INDEX.md")
+    dir.child("docs/opys/INDEX.md")
         .assert(predicate::str::contains("FEAT-0001"));
     dir.child("docs/opys/views/by-tag/osc.md")
         .assert(predicate::path::exists());
@@ -261,7 +261,7 @@ fn no_sync_skips_regeneration() {
         .args(["--no-sync", "new", "--title", "First", "--tags", "osc"])
         .assert()
         .success();
-    dir.child("docs/opys/features/INDEX.md")
+    dir.child("docs/opys/INDEX.md")
         .assert(predicate::path::missing());
 }
 
@@ -453,7 +453,7 @@ fn sync_views_generates_and_prunes() {
         .write_str("old\n")
         .unwrap();
     opys(&dir).arg("sync-views").assert().success();
-    dir.child("docs/opys/features/INDEX.md")
+    dir.child("docs/opys/INDEX.md")
         .assert(predicate::str::contains("FEAT-0001 [planned] (osc) One"));
     dir.child("docs/opys/views/by-tag/osc.md")
         .assert(predicate::path::exists());
@@ -471,7 +471,7 @@ fn report_parity_is_opt_in() {
         .arg("report")
         .assert()
         .success()
-        .stdout(predicate::str::contains("features: 1"))
+        .stdout(predicate::str::contains("documents: 1"))
         .stdout(predicate::str::contains("parity").not());
 
     let dir2 = project_with("parity = true\n");
