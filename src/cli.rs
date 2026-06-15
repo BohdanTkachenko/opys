@@ -29,25 +29,6 @@ pub enum ListFormat {
     Paths,
 }
 
-/// A hardcoded work-item type (selects the ID prefix and per-type rules).
-#[derive(Clone, Copy, ValueEnum)]
-pub enum WiType {
-    Task,
-    Bug,
-    Chore,
-}
-
-impl WiType {
-    /// The type name, matching `config::WorkItemType::name`.
-    pub fn name(self) -> &'static str {
-        match self {
-            WiType::Task => "task",
-            WiType::Bug => "bug",
-            WiType::Chore => "chore",
-        }
-    }
-}
-
 #[derive(Clone, Copy, ValueEnum)]
 pub enum SchemaKind {
     /// JSON Schema for `_config.toml`.
@@ -196,9 +177,18 @@ pub enum Command {
         out: Option<String>,
     },
 
-    /// Manage ephemeral work items (implementation tracking) linked to features.
-    #[command(alias = "wi", subcommand)]
-    WorkItem(WorkItemCommand),
+    /// Finish a document of a type with a terminal status: delete the file and
+    /// strike its title in every referencing doc (the struck reference reserves
+    /// the ID forever).
+    Close {
+        id: String,
+        /// Close even if a required checklist section has unchecked items.
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Strip struck-through (closed) references from every document.
+    Cleanup,
 
     /// Project configuration (generate/inspect the universal opys.toml).
     #[command(subcommand)]
@@ -221,85 +211,4 @@ pub enum ConfigCommand {
     Init,
     /// Parse docs/opys/opys.toml and check it is well-formed (exit 1 on problems).
     Validate,
-}
-
-#[derive(Subcommand)]
-pub enum WorkItemCommand {
-    /// Scaffold the work-items/ directory and config.
-    Init,
-
-    /// Create a work item with the next ID, linked to one or more features.
-    New {
-        #[arg(long)]
-        title: String,
-        /// Work-item type, selecting the ID prefix (task→TASK, bug→BUG,
-        /// chore→CHORE) and any per-type required sections.
-        #[arg(long = "type", value_enum, default_value_t = WiType::Task)]
-        wi_type: WiType,
-        /// Comma-separated existing feature IDs (at least one required).
-        #[arg(long)]
-        features: String,
-        #[arg(long, default_value = "todo")]
-        status: String,
-        /// Comma-separated, kebab-case (optional for work items).
-        #[arg(long, default_value = "")]
-        tags: String,
-        /// Required when creating directly as blocked.
-        #[arg(long)]
-        reason: Option<String>,
-        /// Custom field key=value (repeatable).
-        #[arg(long = "field")]
-        field: Vec<String>,
-    },
-
-    /// Print a work-item file.
-    Show { id: String },
-
-    /// Filtered listing.
-    List {
-        /// Only items linked to this feature ID.
-        #[arg(long)]
-        feature: Option<String>,
-        /// Only items of this type (task/bug/chore).
-        #[arg(long = "type", value_enum)]
-        wi_type: Option<WiType>,
-        #[arg(long)]
-        status: Option<String>,
-        /// Filter by custom field: key=value (repeatable). Matches when the
-        /// field equals the value (or, for list fields, contains it).
-        #[arg(long = "field")]
-        field: Vec<String>,
-        #[arg(long, value_enum, default_value_t = ListFormat::Table)]
-        format: ListFormat,
-    },
-
-    /// Guarded status transition (todo | in-progress | blocked + extras).
-    SetStatus {
-        id: String,
-        status: String,
-        /// Required when moving to blocked.
-        #[arg(long)]
-        reason: Option<String>,
-    },
-
-    /// Add/remove tags.
-    Tag {
-        id: String,
-        #[arg(long)]
-        add: Option<String>,
-        #[arg(long)]
-        remove: Option<String>,
-    },
-
-    /// Complete a work item: delete the file and strike its title in every
-    /// referencing doc (the struck reference reserves the ID forever).
-    Close {
-        id: String,
-        /// Close even if some `## Tasks` items are unchecked.
-        #[arg(long)]
-        force: bool,
-    },
-
-    /// Strip struck-through (completed) work-item references from all docs.
-    Cleanup,
 }

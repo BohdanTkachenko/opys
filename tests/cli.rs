@@ -510,32 +510,13 @@ fn manual_runbook_groups_and_flags_uncovered() {
 // --- Work items -----------------------------------------------------------
 
 #[test]
-fn work_item_init_bootstraps_and_prints_snippet() {
+fn new_rejects_unconfigured_type() {
     let dir = project();
     opys(&dir)
-        .args(["work-item", "init"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("## Work items"));
-    dir.child("docs/opys/work-items/_config.toml")
-        .assert(predicate::path::exists());
-}
-
-#[test]
-fn work_item_requires_configured_subsystem() {
-    let dir = project();
-    opys(&dir)
-        .args([
-            "work-item",
-            "new",
-            "--title",
-            "X",
-            "--features",
-            "FEAT-0001",
-        ])
+        .args(["new", "--type", "task", "--title", "X"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("work items not configured"));
+        .stderr(predicate::str::contains("unknown type"));
 }
 
 #[test]
@@ -545,8 +526,9 @@ fn work_item_new_requires_existing_feature_link() {
     // No feature exists yet.
     opys(&dir)
         .args([
-            "work-item",
             "new",
+            "--type",
+            "task",
             "--title",
             "X",
             "--features",
@@ -555,12 +537,12 @@ fn work_item_new_requires_existing_feature_link() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("FEAT-0001 does not exist"));
-    // Empty link rejected.
+    // Empty link rejected (the type's requires_link rule).
     opys(&dir)
-        .args(["work-item", "new", "--title", "X", "--features", " , "])
+        .args(["new", "--type", "task", "--title", "X", "--features", " , "])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("at least one feature"));
+        .stderr(predicate::str::contains("doc(s) of type 'feature'"));
 }
 
 #[test]
@@ -573,8 +555,9 @@ fn work_item_new_auto_links_feature_bidirectionally() {
         .success();
     opys(&dir)
         .args([
-            "work-item",
             "new",
+            "--type",
+            "task",
             "--title",
             "Wire login",
             "--features",
@@ -607,8 +590,9 @@ fn ref_title_auto_syncs_on_rename() {
         .success();
     opys(&dir)
         .args([
-            "work-item",
             "new",
+            "--type",
+            "task",
             "--title",
             "Work",
             "--features",
@@ -638,8 +622,9 @@ fn body_refs_are_linkified_idempotently() {
         .success();
     opys(&dir)
         .args([
-            "work-item",
             "new",
+            "--type",
+            "task",
             "--title",
             "Work",
             "--features",
@@ -675,8 +660,9 @@ fn work_item_close_requires_all_tasks_checked() {
         .success();
     opys(&dir)
         .args([
-            "work-item",
             "new",
+            "--type",
+            "task",
             "--title",
             "W",
             "--features",
@@ -686,12 +672,12 @@ fn work_item_close_requires_all_tasks_checked() {
         .success();
 
     opys(&dir)
-        .args(["work-item", "close", "TASK-0002"])
+        .args(["close", "TASK-0002"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("unchecked tasks remain"));
+        .stderr(predicate::str::contains("unchecked items remain"));
     opys(&dir)
-        .args(["work-item", "close", "TASK-0002", "--force"])
+        .args(["close", "TASK-0002", "--force"])
         .assert()
         .success();
     dir.child("docs/opys/work-items/TASK-0002.md")
@@ -708,8 +694,9 @@ fn work_item_close_strikes_ref_reserves_id_and_cleanup_strips() {
         .success();
     opys(&dir)
         .args([
-            "work-item",
             "new",
+            "--type",
+            "task",
             "--title",
             "First",
             "--features",
@@ -718,7 +705,7 @@ fn work_item_close_strikes_ref_reserves_id_and_cleanup_strips() {
         .assert()
         .success();
     opys(&dir)
-        .args(["work-item", "close", "TASK-0002", "--force"])
+        .args(["close", "TASK-0002", "--force"])
         .assert()
         .success();
 
@@ -734,8 +721,9 @@ fn work_item_close_strikes_ref_reserves_id_and_cleanup_strips() {
     // The ID is reserved — next continues the global sequence at TASK-0003.
     opys(&dir)
         .args([
-            "work-item",
             "new",
+            "--type",
+            "task",
             "--title",
             "Second",
             "--features",
@@ -746,7 +734,7 @@ fn work_item_close_strikes_ref_reserves_id_and_cleanup_strips() {
         .stdout(predicate::str::contains("TASK-0003.md"));
 
     // cleanup removes the struck tombstone.
-    opys(&dir).args(["work-item", "cleanup"]).assert().success();
+    opys(&dir).args(["cleanup"]).assert().success();
     dir.child("docs/opys/features/FEAT-0001.md")
         .assert(predicate::str::contains("~~First~~").not());
 }
@@ -788,8 +776,9 @@ fn work_item_set_status_rejects_done_and_requires_blocked_reason() {
         .success();
     opys(&dir)
         .args([
-            "work-item",
             "new",
+            "--type",
+            "task",
             "--title",
             "W",
             "--features",
@@ -799,18 +788,17 @@ fn work_item_set_status_rejects_done_and_requires_blocked_reason() {
         .success();
 
     opys(&dir)
-        .args(["work-item", "set-status", "TASK-0002", "done"])
+        .args(["set-status", "TASK-0002", "done"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("work-item close"));
+        .stderr(predicate::str::contains("opys close"));
     opys(&dir)
-        .args(["work-item", "set-status", "TASK-0002", "blocked"])
+        .args(["set-status", "TASK-0002", "blocked"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("blocked requires --reason"));
+        .stderr(predicate::str::contains("requires one of"));
     opys(&dir)
         .args([
-            "work-item",
             "set-status",
             "TASK-0002",
             "blocked",
@@ -1074,8 +1062,9 @@ fn work_item_list_filters_by_custom_field() {
     for (title, area) in [("W1", "ui"), ("W2", "cli")] {
         opys(&dir)
             .args([
-                "work-item",
                 "new",
+                "--type",
+                "task",
                 "--title",
                 title,
                 "--features",
@@ -1087,7 +1076,7 @@ fn work_item_list_filters_by_custom_field() {
             .success();
     }
     opys(&dir)
-        .args(["work-item", "list", "--field", "area=ui", "--format", "ids"])
+        .args(["list", "--field", "area=ui", "--format", "ids"])
         .assert()
         .success()
         .stdout(predicate::str::contains("TASK-0002"))
@@ -1108,8 +1097,9 @@ fn block_links_both_directions_and_sets_blocked_status() {
         .success();
     opys(&dir)
         .args([
-            "work-item",
             "new",
+            "--type",
+            "task",
             "--title",
             "Wire",
             "--features",
@@ -1157,8 +1147,9 @@ fn unblock_removes_link_and_reverts_status() {
         .success();
     opys(&dir)
         .args([
-            "work-item",
             "new",
+            "--type",
+            "task",
             "--title",
             "Wire",
             "--features",
@@ -1201,8 +1192,9 @@ fn close_strikes_blocker_and_reserves_id() {
         .success();
     opys(&dir)
         .args([
-            "work-item",
             "new",
+            "--type",
+            "task",
             "--title",
             "Wire",
             "--features",
@@ -1218,7 +1210,7 @@ fn close_strikes_blocker_and_reserves_id() {
 
     // Closing the blocker strikes its blocked_by entry into a tombstone.
     opys(&dir)
-        .args(["work-item", "close", "TASK-0002", "--force"])
+        .args(["close", "TASK-0002", "--force"])
         .assert()
         .success();
     dir.child("docs/opys/features/FEAT-0001.md")
@@ -1228,8 +1220,9 @@ fn close_strikes_blocker_and_reserves_id() {
     // The struck blocker reserves the id: the next work item is TASK-0003.
     opys(&dir)
         .args([
-            "work-item",
             "new",
+            "--type",
+            "task",
             "--title",
             "Next",
             "--features",
@@ -1263,8 +1256,9 @@ fn wi_new_type_selects_prefix_and_sections() {
     // Default type is task (and the work item continues the global sequence).
     opys(&dir)
         .args([
-            "work-item",
             "new",
+            "--type",
+            "task",
             "--title",
             "General",
             "--features",
@@ -1277,7 +1271,6 @@ fn wi_new_type_selects_prefix_and_sections() {
     // --type bug → BUG- prefix and a scaffolded ## Reproduction section.
     opys(&dir)
         .args([
-            "work-item",
             "new",
             "--type",
             "bug",
@@ -1297,7 +1290,6 @@ fn wi_new_type_selects_prefix_and_sections() {
     // --type chore → CHORE-.
     opys(&dir)
         .args([
-            "work-item",
             "new",
             "--type",
             "chore",
@@ -1356,7 +1348,6 @@ fn ids_share_one_global_increasing_sequence() {
     ] {
         opys(&dir)
             .args([
-                "work-item",
                 "new",
                 "--type",
                 ty,
@@ -1377,12 +1368,11 @@ fn ids_share_one_global_increasing_sequence() {
         .stdout(predicate::str::contains("FEAT-0005.md"));
     // Closing reserves the number globally; the next id skips past it.
     opys(&dir)
-        .args(["work-item", "close", "BUG-0002", "--force"])
+        .args(["close", "BUG-0002", "--force"])
         .assert()
         .success();
     opys(&dir)
         .args([
-            "work-item",
             "new",
             "--type",
             "bug",
@@ -1407,7 +1397,6 @@ fn wi_list_filters_by_type() {
         .success();
     opys(&dir)
         .args([
-            "work-item",
             "new",
             "--type",
             "bug",
@@ -1420,7 +1409,6 @@ fn wi_list_filters_by_type() {
         .success();
     opys(&dir)
         .args([
-            "work-item",
             "new",
             "--type",
             "task",
@@ -1432,7 +1420,7 @@ fn wi_list_filters_by_type() {
         .assert()
         .success();
     opys(&dir)
-        .args(["work-item", "list", "--type", "bug", "--format", "ids"])
+        .args(["list", "--type", "bug", "--format", "ids"])
         .assert()
         .success()
         .stdout(predicate::str::contains("BUG-0002"))
@@ -1449,7 +1437,6 @@ fn body_links_work_item_type_prefixes() {
         .success();
     opys(&dir)
         .args([
-            "work-item",
             "new",
             "--type",
             "bug",

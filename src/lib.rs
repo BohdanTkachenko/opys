@@ -143,8 +143,12 @@ pub fn run(cli: Cli) -> Result<i32> {
             commands::schema::run(&ctx, kind, out.as_deref())?;
             Ok(0)
         }
-        Command::WorkItem(cmd) => {
-            commands::work_item::run(&ctx, cmd)?;
+        Command::Close { id, force } => {
+            commands::close::run(&ctx, &id, force)?;
+            Ok(0)
+        }
+        Command::Cleanup => {
+            commands::cleanup::run(&ctx)?;
             Ok(0)
         }
         Command::Config(cmd) => match cmd {

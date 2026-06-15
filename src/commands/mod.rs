@@ -3,6 +3,8 @@
 
 pub mod agent_rules;
 pub mod block;
+pub mod cleanup;
+pub mod close;
 pub mod config;
 pub mod import;
 pub mod init;
@@ -18,7 +20,6 @@ pub mod sync;
 pub mod sync_views;
 pub mod tag;
 pub mod verify;
-pub mod work_item;
 
 use serde_norway::Value;
 use time::{format_description::FormatItem, macros::format_description, OffsetDateTime};
