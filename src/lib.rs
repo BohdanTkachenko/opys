@@ -9,6 +9,7 @@ pub mod body;
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod doc;
 pub mod error;
 pub mod feature;
 pub mod frontmatter;
