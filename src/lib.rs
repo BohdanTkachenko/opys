@@ -14,6 +14,7 @@ pub mod feature;
 pub mod frontmatter;
 pub mod links;
 pub mod project;
+pub mod project_config;
 pub mod refs;
 pub mod schema;
 pub mod templates;
@@ -125,12 +126,13 @@ pub fn run(cli: Cli) -> Result<i32> {
             commands::work_item::run(&ctx, cmd)?;
             Ok(0)
         }
-        Command::Config(cmd) => {
-            match cmd {
-                cli::ConfigCommand::Init => commands::config::init(&ctx)?,
+        Command::Config(cmd) => match cmd {
+            cli::ConfigCommand::Init => {
+                commands::config::init(&ctx)?;
+                Ok(0)
             }
-            Ok(0)
-        }
+            cli::ConfigCommand::Validate => commands::config::validate(&ctx),
+        },
         Command::AgentRules { tool, stdout } => {
             commands::agent_rules::run(&ctx, tool, stdout)?;
             Ok(0)

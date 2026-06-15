@@ -1493,3 +1493,46 @@ fn config_init_generates_opys_toml() {
         .success()
         .stdout(predicate::str::contains("already exists"));
 }
+
+#[test]
+fn config_validate_accepts_the_generated_default() {
+    let dir = TempDir::new().unwrap();
+    opys(&dir).args(["config", "init"]).assert().success();
+    opys(&dir)
+        .args(["config", "validate"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("config: OK (4 types"));
+}
+
+#[test]
+fn config_validate_flags_a_broken_config() {
+    let dir = TempDir::new().unwrap();
+    dir.child("docs/opys/opys.toml")
+        .write_str(
+            "[types.feature]\nprefix = \"FEAT\"\nstatuses = [\"planned\"]\ndefault_status = \"nope\"\n\n[types.bug]\nprefix = \"FEAT\"\nstatuses = [\"todo\"]\ndefault_status = \"todo\"\n\n[[rules]]\nwhen = { type = \"ghost\" }\nrequire_field = \"x\"\n",
+        )
+        .unwrap();
+    opys(&dir)
+        .args(["config", "validate"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "default_status 'nope' not in statuses",
+        ))
+        .stderr(predicate::str::contains("already used by type"))
+        .stderr(predicate::str::contains(
+            "when.type 'ghost' is not a defined type",
+        ));
+}
+
+#[test]
+fn config_validate_requires_the_file() {
+    let dir = TempDir::new().unwrap();
+    opys(&dir)
+        .args(["config", "validate"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("run `opys config init`"));
+}

@@ -8,6 +8,7 @@
 
 use crate::error::Result;
 use crate::project::resolve_base;
+use crate::project_config::ProjectConfig;
 use crate::templates::DEFAULT_OPYS_CONFIG;
 use crate::Ctx;
 
@@ -26,4 +27,27 @@ pub fn init(ctx: &Ctx) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Parse `opys.toml` and report any well-formedness problems. Returns `1` when
+/// the config has problems (mirroring `verify`), `0` when clean; a missing file
+/// or TOML syntax error surfaces as a hard error (exit `2`).
+pub fn validate(ctx: &Ctx) -> Result<i32> {
+    let path = resolve_base(&ctx.root, &ctx.dir).join("opys.toml");
+    let cfg = ProjectConfig::load(&path)?;
+    let problems = cfg.validate();
+    if problems.is_empty() {
+        println!(
+            "config: OK ({} types, {} rules)",
+            cfg.types.len(),
+            cfg.rules.len()
+        );
+        Ok(0)
+    } else {
+        eprintln!("config: {} problem(s)", problems.len());
+        for p in &problems {
+            eprintln!("  {p}");
+        }
+        Ok(1)
+    }
 }

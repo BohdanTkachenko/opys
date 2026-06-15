@@ -136,6 +136,9 @@ pub struct FieldSpec {
     /// Allowed values for an `enum` field; ignored for other types.
     #[serde(default)]
     pub values: Vec<String>,
+    /// Optional regex a `string` value must fully match (universal-config only).
+    #[serde(default)]
+    pub pattern: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
