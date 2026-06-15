@@ -153,7 +153,7 @@ fn retire_deletes_and_reserves_id() {
         .success();
     dir.child("docs/opys/features/FEAT-0001.md")
         .assert(predicate::path::missing());
-    dir.child("docs/opys/features/_retired.txt")
+    dir.child("docs/opys/_retired.txt")
         .assert(predicate::str::contains("FEAT-0001"));
 
     opys(&dir)
@@ -181,8 +181,7 @@ fn retired_ledger_is_sorted_by_number() {
         .args(["retire", "FEAT-0001", "--reason", "x"])
         .assert()
         .success();
-    let text =
-        std::fs::read_to_string(dir.child("docs/opys/features/_retired.txt").path()).unwrap();
+    let text = std::fs::read_to_string(dir.child("docs/opys/_retired.txt").path()).unwrap();
     let p1 = text.find("FEAT-0001").unwrap();
     let p3 = text.find("FEAT-0003").unwrap();
     assert!(p1 < p3, "retired ledger not sorted: {text:?}");

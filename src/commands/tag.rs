@@ -5,10 +5,16 @@ use crate::Ctx;
 
 pub fn run(ctx: &Ctx, id: &str, add: Option<&str>, remove: Option<&str>) -> Result<()> {
     let prj = ctx.open()?;
-    let (mut feats, _) = prj.load();
-    let f = prj.find_mut(&mut feats, id)?;
+    let tags_required = prj
+        .pcfg
+        .type_name_for_id(id)
+        .map(|n| prj.pcfg.types[n].tags_required)
+        .unwrap_or(false);
 
-    let mut tags = f.frontmatter.tags().unwrap_or_default();
+    let (mut docs, _) = prj.load_docs();
+    let d = prj.find_mut(&mut docs, id)?;
+
+    let mut tags = d.frontmatter.tags().unwrap_or_default();
     for t in split_csv(add.unwrap_or("")) {
         if !tags.contains(&t) {
             tags.push(t);
@@ -18,11 +24,15 @@ pub fn run(ctx: &Ctx, id: &str, add: Option<&str>, remove: Option<&str>) -> Resu
         tags.retain(|x| x != &t);
     }
     if tags.is_empty() {
-        return Err(usage("a feature must keep at least one tag"));
+        if tags_required {
+            return Err(usage("this type requires at least one tag"));
+        }
+        d.frontmatter.remove("tags");
+    } else {
+        d.frontmatter.set_tags(&tags);
     }
 
-    f.frontmatter.set_tags(&tags);
-    project::write_feature(f)?;
+    project::write_doc(d)?;
     println!("{id} tags: {}", tags.join(", "));
     maybe_sync(ctx, &prj);
     Ok(())

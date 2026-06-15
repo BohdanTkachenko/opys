@@ -4,22 +4,33 @@ use std::path::Path;
 use crate::body::{self, ManualItem};
 use crate::commands::today;
 use crate::error::Result;
+use crate::project_config::SectionKind;
 use crate::Ctx;
 
 pub fn run(ctx: &Ctx, out: Option<&str>, name: Option<&str>) -> Result<()> {
     let prj = ctx.open()?;
-    let (feats, _) = prj.load();
+    let (docs, _) = prj.load_docs();
+    let pcfg = &prj.pcfg;
 
-    // Group manual items by Setup line; skip wontfix features.
+    // Group manual items (from every type's manual-kind sections) by Setup line;
+    // skip docs that are wontfix/archived.
     let mut groups: BTreeMap<String, Vec<(String, ManualItem)>> = BTreeMap::new();
-    for f in &feats {
-        if f.status() == Some("wontfix") {
+    for d in &docs {
+        if matches!(d.status(), Some("wontfix") | Some("archived")) {
             continue;
         }
-        let id = f.id().unwrap_or("").to_string();
-        for it in body::manual_items(&f.body) {
-            let key = it.setup.clone().unwrap_or_else(|| "(no setup)".to_string());
-            groups.entry(key).or_default().push((id.clone(), it));
+        let Some(tname) = d.id().and_then(|id| pcfg.type_name_for_id(id)) else {
+            continue;
+        };
+        let id = d.id().unwrap_or("").to_string();
+        for sec in &pcfg.types[tname].sections {
+            if sec.kind != SectionKind::Manual {
+                continue;
+            }
+            for it in body::manual_items_in(&d.body, &sec.heading) {
+                let key = it.setup.clone().unwrap_or_else(|| "(no setup)".to_string());
+                groups.entry(key).or_default().push((id.clone(), it));
+            }
         }
     }
     // Within each group, list items lacking automated coverage first.

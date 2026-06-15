@@ -5,11 +5,11 @@ use crate::Ctx;
 
 pub fn run(ctx: &Ctx, id: &str, reason: &str) -> Result<()> {
     let prj = ctx.open()?;
-    let (feats, _) = prj.load();
-    let f = prj.find(&feats, id)?;
-    let path = f.path.clone();
+    let (docs, _) = prj.load_docs();
+    let d = prj.find(&docs, id)?;
+    let path = d.path.clone();
 
-    let rp = prj.fdir.join("_retired.txt");
+    let rp = prj.base.join("_retired.txt");
     let line = format!("{id}  # retired {}: {reason}", today());
     project::write_id_ledger_entry(&rp, id, &line)?;
 

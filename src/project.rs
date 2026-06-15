@@ -163,7 +163,7 @@ impl Project {
 
     /// IDs that have been retired and may never be reused.
     pub fn retired_ids(&self) -> HashSet<String> {
-        read_id_ledger(&self.fdir.join("_retired.txt"))
+        read_id_ledger(&self.base.join("_retired.txt"))
     }
 
     /// Highest numeric ID part used *anywhere* (`0` if none): across every live
