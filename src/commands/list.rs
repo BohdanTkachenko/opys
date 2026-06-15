@@ -1,9 +1,15 @@
 use crate::cli::ListFormat;
+use crate::commands::{field_matches, parse_field_filters};
 use crate::error::Result;
 use crate::feature::Feature;
 use crate::Ctx;
 
-fn matches(f: &Feature, tag: Option<&str>, status: Option<&str>) -> bool {
+fn matches(
+    f: &Feature,
+    tag: Option<&str>,
+    status: Option<&str>,
+    fields: &[(String, String)],
+) -> bool {
     if let Some(tag) = tag {
         let has = f
             .frontmatter
@@ -19,13 +25,20 @@ fn matches(f: &Feature, tag: Option<&str>, status: Option<&str>) -> bool {
             return false;
         }
     }
-    true
+    field_matches(&f.frontmatter, fields)
 }
 
-pub fn run(ctx: &Ctx, tag: Option<&str>, status: Option<&str>, format: ListFormat) -> Result<()> {
+pub fn run(
+    ctx: &Ctx,
+    tag: Option<&str>,
+    status: Option<&str>,
+    field: &[String],
+    format: ListFormat,
+) -> Result<()> {
     let prj = ctx.open()?;
+    let filters = parse_field_filters(field)?;
     let (feats, _) = prj.load();
-    for f in feats.iter().filter(|f| matches(f, tag, status)) {
+    for f in feats.iter().filter(|f| matches(f, tag, status, &filters)) {
         match format {
             ListFormat::Ids => println!("{}", f.id().unwrap_or("")),
             ListFormat::Paths => println!("{}", f.path.display()),

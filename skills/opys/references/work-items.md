@@ -39,14 +39,15 @@ extra_statuses = []                 # beyond the four core statuses
 required_sections = ["Tasks", "Progress"]   # body sections verify enforces
 
 [fields.pr]                         # per-project custom frontmatter fields
-type = "string"                     # string | list | bool | int
+type = "string"                     # string | list | bool | int | enum
 required = false
 description = "Primary pull-request URL for this effort"
 ```
 
 Custom fields work exactly as for features: a field used in any work-item file
-must be declared here or verify fails. There is no `prefix` key — the work-item
-prefix is fixed at `WI`.
+must be declared here or verify fails, an `enum` field constrains its value to a
+declared `values` set, and `opys work-item list --field <key>=<value>` filters
+by them. There is no `prefix` key — the work-item prefix is fixed at `WI`.
 
 ## A complete work item file
 
@@ -87,8 +88,9 @@ footgun). Reserved keys:
 | `id` | yes | `WI-NNNN`; must match filename; never reused (see below) |
 | `status` | yes | `todo` \| `in-progress` \| `blocked` \| `done` (+ configured extras) |
 | `references` | yes | ID→title map; **must include ≥1 `FEAT-` id resolving to a live feature** |
+| `blocked_by` / `blocks` | no | ID→title maps of the blocker relation; auto-maintained (see below) |
 | `tags` | no | if present, non-empty list, lowercase kebab-case |
-| `blocked_reason` | iff blocked | one line on what the item is waiting on |
+| `blocked_reason` | iff blocked | one line on what the item is waiting on, **unless** a `blocked_by` link supplies the reason |
 | custom | per config | validated against `[fields.*]` declarations |
 
 There is deliberately no `assignee`, `priority`, `sprint`, `started`, or `due`
@@ -113,6 +115,18 @@ links (`[FEAT-0421 — …](../features/FEAT-0421.md)`), skipping code spans.
 A work item must reference at least one `FEAT-` id that resolves to a live
 feature — that link is the whole point of the subsystem. verify enforces it.
 
+### Blockers
+
+`blocked_by` / `blocks` are a second pair of auto-maintained ID→title maps,
+distinct from `references`, recording a **directional** dependency. `opys block
+<id> --by <blocker-id>` writes `blocked_by` on the blocked item and the inverse
+`blocks` on the blocker (either may be a `FEAT-` or `WI-` id); `opys unblock`
+removes both sides. Blocking a work item auto-sets it to `blocked` and the link
+satisfies the `blocked_reason` requirement; unblocking the last one reverts it to
+`in-progress`. A blocker does **not** count as the required feature link. Like
+`references`, blocker entries resolve or must be a struck tombstone, are struck
+on `close`, reserve the closed id, and are stripped by `cleanup`.
+
 ## Required body sections
 
 `required_sections` (default `["Tasks", "Progress"]`) are enforced at write time
@@ -130,7 +144,10 @@ feature — that link is the whole point of the subsystem. verify enforces it.
 
 - `todo` — created, not started (the default for `new`).
 - `in-progress` — actively being worked.
-- `blocked` — stalled on something external; `blocked_reason` required.
+- `blocked` — stalled on something external; requires `blocked_reason` *or* a
+  blocker link. `opys block <id> --by <blocker>` records the blocker and
+  auto-sets this status (the link is the reason); `opys unblock` reverts it to
+  `in-progress` when no blocker or reason remains. See **Blockers** below.
 - `done` — terminal, and **only reached via `close`** (which deletes the file).
   `set-status … done` is rejected; there is no "done" file resting on disk.
 
@@ -162,10 +179,11 @@ history, and their IDs may be reused.
 ## verify
 
 A reference must resolve to an existing feature or work item **unless it is a
-struck-through tombstone**, which is always accepted. Title drift and a missing
-reverse link are *not* errors — they are auto-fixed by sync, not enforced. The
-only reference failures are a non-struck id that resolves to nothing, and a work
-item that references no live feature.
+struck-through tombstone**, which is always accepted. The same rule applies to
+`blocked_by` / `blocks` entries (which additionally may not list the item
+itself). Title drift and a missing reverse link are *not* errors — they are
+auto-fixed by sync, not enforced. The only reference failures are a non-struck id
+that resolves to nothing, and a work item that references no live feature.
 
 ## What never goes in a work item
 

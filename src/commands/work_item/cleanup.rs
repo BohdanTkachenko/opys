@@ -34,15 +34,18 @@ pub fn run(ctx: &Ctx) -> Result<()> {
 }
 
 fn strip_struck(fm: &mut Frontmatter) -> bool {
-    let entries = refs::parse(fm);
-    let kept: Vec<_> = entries
-        .iter()
-        .filter(|(_, v)| !refs::is_struck(v))
-        .cloned()
-        .collect();
-    if kept.len() == entries.len() {
-        return false;
+    let mut changed = false;
+    for field in refs::RELATION_FIELDS {
+        let entries = refs::parse_in(fm, field);
+        let kept: Vec<_> = entries
+            .iter()
+            .filter(|(_, v)| !refs::is_struck(v))
+            .cloned()
+            .collect();
+        if kept.len() != entries.len() {
+            refs::set_in(fm, field, &kept);
+            changed = true;
+        }
     }
-    refs::set(fm, &kept);
-    true
+    changed
 }

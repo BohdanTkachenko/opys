@@ -912,3 +912,339 @@ fn schema_emits_config_and_frontmatter() {
         .stdout(predicate::str::contains("ptyxis_ref"))
         .stdout(predicate::str::contains("\"additionalProperties\": false"));
 }
+
+/// Feature config with an `enum` field and a `list` field, for the enum /
+/// filtering tests.
+const ENUM_CONFIG: &str = r#"pad = 4
+test_reference_check = "none"
+
+[fields.priority]
+type = "enum"
+values = ["low", "high"]
+
+[fields.area]
+type = "list"
+"#;
+
+#[test]
+fn enum_field_validates_against_declared_values() {
+    let dir = project_with(ENUM_CONFIG);
+    // A value in the set passes verify.
+    opys(&dir)
+        .args([
+            "new",
+            "--title",
+            "Ok",
+            "--tags",
+            "a",
+            "--field",
+            "priority=high",
+        ])
+        .assert()
+        .success();
+    opys(&dir).arg("verify").assert().success();
+
+    // An out-of-set value is written (custom fields are verify-checked, like
+    // every other field type) and rejected by verify with a precise message.
+    opys(&dir)
+        .args([
+            "new",
+            "--title",
+            "Bad",
+            "--tags",
+            "b",
+            "--field",
+            "priority=urgent",
+        ])
+        .assert()
+        .success();
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "field 'priority' value 'urgent' is not one of: low, high",
+        ));
+}
+
+#[test]
+fn enum_field_requires_declared_values() {
+    let dir =
+        project_with("pad = 4\ntest_reference_check = \"none\"\n\n[fields.bad]\ntype = \"enum\"\n");
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "field 'bad' is enum but declares no values",
+        ));
+}
+
+#[test]
+fn list_filters_by_custom_field() {
+    let dir = project_with(ENUM_CONFIG);
+    opys(&dir)
+        .args([
+            "new",
+            "--title",
+            "Alpha",
+            "--tags",
+            "a",
+            "--field",
+            "priority=high",
+            "--field",
+            "area=[ui, cli]",
+        ])
+        .assert()
+        .success();
+    opys(&dir)
+        .args([
+            "new",
+            "--title",
+            "Beta",
+            "--tags",
+            "b",
+            "--field",
+            "priority=low",
+            "--field",
+            "area=[cli]",
+        ])
+        .assert()
+        .success();
+
+    // Scalar equality.
+    opys(&dir)
+        .args(["list", "--field", "priority=high", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0001"))
+        .stdout(predicate::str::contains("FEAT-0002").not());
+    // List membership.
+    opys(&dir)
+        .args(["list", "--field", "area=ui", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0001"))
+        .stdout(predicate::str::contains("FEAT-0002").not());
+    // Multiple filters are ANDed.
+    opys(&dir)
+        .args([
+            "list",
+            "--field",
+            "area=cli",
+            "--field",
+            "priority=low",
+            "--format",
+            "ids",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0002"))
+        .stdout(predicate::str::contains("FEAT-0001").not());
+    // A non-matching value yields nothing.
+    opys(&dir)
+        .args(["list", "--field", "priority=none", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-").not());
+    // A malformed filter is a usage error.
+    opys(&dir)
+        .args(["list", "--field", "priority"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("expects key=value"));
+}
+
+#[test]
+fn work_item_list_filters_by_custom_field() {
+    let dir = project();
+    dir.child("docs/opys/work-items/_config.toml")
+        .write_str(
+            "pad = 4\nrequired_sections = [\"Tasks\", \"Progress\"]\n\n[fields.area]\ntype = \"string\"\n",
+        )
+        .unwrap();
+    opys(&dir)
+        .args(["new", "--title", "F", "--tags", "a"])
+        .assert()
+        .success();
+    for (title, area) in [("W1", "ui"), ("W2", "cli")] {
+        opys(&dir)
+            .args([
+                "work-item",
+                "new",
+                "--title",
+                title,
+                "--features",
+                "FEAT-0001",
+                "--field",
+                &format!("area={area}"),
+            ])
+            .assert()
+            .success();
+    }
+    opys(&dir)
+        .args(["work-item", "list", "--field", "area=ui", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("WI-0001"))
+        .stdout(predicate::str::contains("WI-0002").not());
+}
+
+#[test]
+fn block_links_both_directions_and_sets_blocked_status() {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "Alpha", "--tags", "a"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["new", "--title", "Beta", "--tags", "b"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args([
+            "work-item",
+            "new",
+            "--title",
+            "Wire",
+            "--features",
+            "FEAT-0001",
+        ])
+        .assert()
+        .success();
+
+    opys(&dir)
+        .args(["block", "WI-0001", "--by", "FEAT-0002"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("WI-0001 blocked by FEAT-0002"));
+
+    // The blocked work item gained blocked_by and was auto-set to blocked.
+    dir.child("docs/opys/work-items/WI-0001.md")
+        .assert(predicate::str::contains("status: blocked"))
+        .assert(predicate::str::contains("FEAT-0002: Beta"));
+    // The blocker gained the reverse `blocks` edge.
+    dir.child("docs/opys/features/FEAT-0002.md")
+        .assert(predicate::str::contains("blocks:"))
+        .assert(predicate::str::contains("WI-0001: Wire"));
+    // No blocked_reason is needed — the blocker link satisfies the guard.
+    opys(&dir).arg("verify").assert().success();
+
+    // An item cannot block itself.
+    opys(&dir)
+        .args(["block", "FEAT-0001", "--by", "FEAT-0001"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot block itself"));
+}
+
+#[test]
+fn unblock_removes_link_and_reverts_status() {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "Alpha", "--tags", "a"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["new", "--title", "Beta", "--tags", "b"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args([
+            "work-item",
+            "new",
+            "--title",
+            "Wire",
+            "--features",
+            "FEAT-0001",
+        ])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["block", "WI-0001", "--by", "FEAT-0002"])
+        .assert()
+        .success();
+
+    opys(&dir)
+        .args(["unblock", "WI-0001", "--by", "FEAT-0002"])
+        .assert()
+        .success();
+    // Both sides cleared, and the auto-blocked status reverted to in-progress.
+    dir.child("docs/opys/work-items/WI-0001.md")
+        .assert(predicate::str::contains("status: in-progress"))
+        .assert(predicate::str::contains("blocked_by").not());
+    dir.child("docs/opys/features/FEAT-0002.md")
+        .assert(predicate::str::contains("blocks").not());
+    opys(&dir).arg("verify").assert().success();
+
+    // Unblocking an edge that does not exist is an error.
+    opys(&dir)
+        .args(["unblock", "WI-0001", "--by", "FEAT-0002"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no blocker"));
+}
+
+#[test]
+fn close_strikes_blocker_and_reserves_id() {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "Alpha", "--tags", "a"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args([
+            "work-item",
+            "new",
+            "--title",
+            "Wire",
+            "--features",
+            "FEAT-0001",
+        ])
+        .assert()
+        .success();
+    // The feature is blocked by the work item.
+    opys(&dir)
+        .args(["block", "FEAT-0001", "--by", "WI-0001"])
+        .assert()
+        .success();
+
+    // Closing the blocker strikes its blocked_by entry into a tombstone.
+    opys(&dir)
+        .args(["work-item", "close", "WI-0001", "--force"])
+        .assert()
+        .success();
+    dir.child("docs/opys/features/FEAT-0001.md")
+        .assert(predicate::str::contains("WI-0001: ~~Wire~~"));
+    opys(&dir).arg("verify").assert().success();
+
+    // The struck blocker reserves the id: the next work item is WI-0002.
+    opys(&dir)
+        .args([
+            "work-item",
+            "new",
+            "--title",
+            "Next",
+            "--features",
+            "FEAT-0001",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("WI-0002.md"));
+
+    // Unblocking a struck (closed) blocker is tolerated and clears the blocker
+    // tombstone (the separate `references` tombstone is untouched — that is
+    // `cleanup`'s job).
+    opys(&dir)
+        .args(["unblock", "FEAT-0001", "--by", "WI-0001"])
+        .assert()
+        .success();
+    dir.child("docs/opys/features/FEAT-0001.md")
+        .assert(predicate::str::contains("blocked_by").not());
+    opys(&dir).arg("verify").assert().success();
+}

@@ -58,9 +58,10 @@ automatically (pass `--no-sync` to skip).
 | `init` | bootstrap `docs/opys/features/_config.toml`, print CLAUDE.md snippet |
 | `new --title T --tags a,b [--status S] [--reason R] [--field k=v]` | create file with next ID (auto-syncs) |
 | `import FILE.jsonl` | bulk-create features from JSONL (sequential IDs, one sync, transactional) — for migrations |
-| `show ID` / `list [--tag T] [--status S] [--format table\|ids\|paths]` | retrieval |
+| `show ID` / `list [--tag T] [--status S] [--field k=v]… [--format table\|ids\|paths]` | retrieval; `--field` filters by any custom field (repeatable, ANDed) |
 | `set-status ID S [--reason R]` | guarded transitions (wontfix needs reason; implemented needs a checked test item) |
 | `tag ID --add a,b --remove c` | tag maintenance |
+| `block ID --by BLOCKER` / `unblock ID --by BLOCKER` | record/remove a blocker link (`blocked_by`/`blocks`, bidirectional); blocking a work item auto-sets `blocked` |
 | `retire ID --reason R` | delete file, log ID to `_retired.txt` so it is never reallocated |
 | `verify` | full integrity check (features + work items); nonzero exit on problems — wire into CI |
 | `sync-views` | reconcile references, linkify prose, regenerate `INDEX.md` + `views/` (for hand edits) |
@@ -78,7 +79,7 @@ prefix and live in `docs/opys/work-items/`. (Alias: `opys wi …`.)
 |---|---|
 | `work-item init` | scaffold `docs/opys/work-items/_config.toml` |
 | `work-item new --title T --features F1,F2 [--tags a,b] [--status S] [--field k=v]` | create file with next `WI` ID; linked features must exist (auto-syncs) |
-| `work-item show ID` / `list [--feature F] [--status S] [--format …]` | retrieval |
+| `work-item show ID` / `list [--feature F] [--status S] [--field k=v]… [--format …]` | retrieval; `--field` filters by any custom field |
 | `work-item set-status ID S [--reason R]` | guarded transition (`todo`/`in-progress`/`blocked`; `done` is reached only via `close`) |
 | `work-item tag ID --add a,b --remove c` | tag maintenance (work-item tags are optional) |
 | `work-item close ID [--force]` | finish: delete the file and strike its title through in every referencing doc (the struck reference reserves the ID) |

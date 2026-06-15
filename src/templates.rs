@@ -33,9 +33,15 @@ parity = false
 
 # Per-project custom frontmatter fields. Example:
 # [fields.upstream_ref]
-# type = "string"          # string | list | bool | int
+# type = "string"          # string | list | bool | int | enum
 # required = false
 # description = "Pointer into the upstream source establishing reference behavior"
+#
+# An enum field constrains the value to a declared set (filter with
+# `opys list --field priority=high`):
+# [fields.priority]
+# type = "enum"
+# values = ["low", "medium", "high"]
 "#;
 
 pub const CLAUDE_MD_SNIPPET: &str = r#"## Feature inventory
@@ -71,9 +77,10 @@ required_sections = ["Tasks", "Progress"]
 
 # Per-project custom frontmatter fields. Example:
 # [fields.pr]
-# type = "string"          # string | list | bool | int
+# type = "string"          # string | list | bool | int | enum
 # required = false
 # description = "Primary pull-request URL for this effort"
+# (an enum field adds `values = [...]` and is filterable via `list --field`)
 "#;
 
 pub const WI_CLAUDE_MD_SNIPPET: &str = r#"## Work items

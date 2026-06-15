@@ -193,12 +193,12 @@ impl Project {
             if let Some(id) = w.id() {
                 consider(id);
             }
-            for id in refs::ids_with_prefix(&w.frontmatter, WI_PREFIX) {
+            for id in refs::all_ids_with_prefix(&w.frontmatter, WI_PREFIX) {
                 consider(&id);
             }
         }
         for f in feats {
-            for id in refs::ids_with_prefix(&f.frontmatter, WI_PREFIX) {
+            for id in refs::all_ids_with_prefix(&f.frontmatter, WI_PREFIX) {
                 consider(&id);
             }
         }

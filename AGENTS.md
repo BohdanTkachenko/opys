@@ -107,8 +107,9 @@ Layering, roughly outermost-in:
 
 - **IDs**: fixed prefixes (`FEAT-NNNN`, `WI-NNNN`), monotonic, never reused.
   `next_id` takes the max over live *and* retired features; `next_wi_id` over
-  live work items *and* every `WI-` id appearing in any `references` map
-  (struck or not), so a closed work item's tombstone reserves its id. `retire`
+  live work items *and* every `WI-` id appearing in any relation map
+  (`references`/`blocked_by`/`blocks`, struck or not — `refs::all_ids_with_prefix`),
+  so a closed work item's tombstone reserves its id. `retire`
   appends to `features/_retired.txt` (kept sorted); `verify` rejects reuse.
 - **References** (`references` map, both families): the uniform ID→title link
   field is auto-reconciled on every write (`links::reconcile`) — bidirectional
@@ -118,6 +119,15 @@ Layering, roughly outermost-in:
   references no live feature; title drift / missing reverse links are auto-fixed,
   not gated. Bare `FEAT-`/`WI-` mentions in body prose are linkified
   (`links::linkify`), skipping code spans/fences.
+- **Blockers** (`blocked_by` / `blocks` maps, both families): a directional
+  relation built on the same ID→title machinery as `references`. `opys block
+  <id> --by <id>` / `unblock` write `blocked_by` on the blocked side and the
+  inverse `blocks` on the blocker (`links::reconcile_blockers` keeps them
+  inverse and title-fresh). Blocking a *work item* auto-sets it to `blocked`
+  (the link satisfies the `blocked_reason` guard); `unblock` reverts it to
+  `in-progress` when no blocker/reason remains. Entries resolve, tombstone on
+  close, and reserve ids exactly like references; a map may not list itself
+  (`refs::RELATION_FIELDS` drives close/cleanup/verify/id-reservation uniformly).
 - **Status lifecycle** (`config::CORE_STATUSES`): `planned`, `partial`,
   `implemented`, `wontfix`, plus configured `extra_statuses`. The guards
   (`wontfix` requires a reason; `implemented` requires at least one checked
@@ -133,15 +143,19 @@ Layering, roughly outermost-in:
   names via `test_name_pattern`), or `none`.
 - **Work-item lifecycle**: `WI_CORE_STATUSES` = `todo`/`in-progress`/`blocked`/
   `done`. `done` is terminal and reached only via `close` (`new`/`set-status`
-  reject it; `blocked` requires `blocked_reason`). Required body sections
+  reject it; `blocked` requires `blocked_reason` *or* a `blocked_by` link).
+  Required body sections
   (`required_sections`, default `## Tasks`/`## Progress`) and the ≥1-feature link
   are enforced at write time and re-checked by `verify`. `close` refuses
   unchecked tasks (unless `--force`), deletes the file, and strikes the
   reference through everywhere; `cleanup` strips struck references.
 - **Frontmatter is closed**: only `RESERVED_FIELDS` / `WI_RESERVED_FIELDS`
-  (`frontmatter.rs`) plus fields declared in `[fields.*]` are allowed; unknown
-  keys fail `verify`. Declared custom fields are type-checked
-  (`check_custom_fields` is shared between both families).
+  (`frontmatter.rs`, which include `references`/`blocked_by`/`blocks`) plus
+  fields declared in `[fields.*]` are allowed; unknown keys fail `verify`.
+  Declared custom fields are type-checked (`check_custom_fields`, shared between
+  both families); a `type = "enum"` field additionally constrains the value to
+  its declared `values` set, and `list`/`work-item list` can filter by any
+  custom field with repeatable `--field key=value`.
 
 ### Generated artifacts — never hand-edit
 

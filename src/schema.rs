@@ -27,9 +27,10 @@ pub fn config_schema() -> Value {
                 "additionalProperties": {
                     "type": "object",
                     "properties": {
-                        "type": { "enum": ["string", "list", "bool", "int"] },
+                        "type": { "enum": ["string", "list", "bool", "int", "enum"] },
                         "required": { "type": "boolean" },
-                        "description": { "type": "string" }
+                        "description": { "type": "string" },
+                        "values": { "type": "array", "items": { "type": "string" }, "description": "Allowed values for an enum field" }
                     },
                     "additionalProperties": false
                 }
@@ -63,6 +64,10 @@ pub fn frontmatter_schema(cfg: &Config) -> Value {
     );
     props.insert("wontfix_reason".into(), json!({ "type": "string" }));
     props.insert("spec".into(), json!({ "type": "string" }));
+    // Auto-managed ID->title maps (see refs.rs / links.rs).
+    for rel in ["references", "blocked_by", "blocks"] {
+        props.insert(rel.into(), json!({ "type": "object" }));
+    }
 
     let mut required = vec!["id".to_string(), "status".to_string(), "tags".to_string()];
     for (name, spec) in &cfg.fields {
@@ -71,6 +76,12 @@ pub fn frontmatter_schema(cfg: &Config) -> Value {
             "type".into(),
             Value::String(json_type(spec.field_type).into()),
         );
+        if spec.field_type == FieldType::Enum {
+            node.insert(
+                "enum".into(),
+                Value::Array(spec.values.iter().cloned().map(Value::String).collect()),
+            );
+        }
         if let Some(desc) = &spec.description {
             node.insert("description".into(), Value::String(desc.clone()));
         }
@@ -96,6 +107,7 @@ fn json_type(t: FieldType) -> &'static str {
         FieldType::List => "array",
         FieldType::Bool => "boolean",
         FieldType::Int => "integer",
+        FieldType::Enum => "string",
     }
 }
 

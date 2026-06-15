@@ -87,6 +87,112 @@ pub fn reconcile(feats: &mut [Feature], live: &mut [WorkItem]) {
     }
 }
 
+/// Reconcile the directional blocker relation: `blocked_by` on one doc and
+/// `blocks` on the other are kept as inverses, with titles refreshed from the
+/// referenced doc. An edge is asserted if *either* endpoint records it (union
+/// semantics, like [`reconcile`]); removal is therefore done on both sides by
+/// the `unblock` command. Edges whose other endpoint is absent (a struck
+/// tombstone or a dangling id) keep their existing value untouched.
+pub fn reconcile_blockers(feats: &mut [Feature], live: &mut [WorkItem]) {
+    let mut title: HashMap<String, String> = HashMap::new();
+    let mut present: HashSet<String> = HashSet::new();
+    // existing[id][field] = (target -> stored value), for the absent-target fallback.
+    let mut existing: HashMap<String, HashMap<&'static str, HashMap<String, String>>> =
+        HashMap::new();
+    // Canonical directed edges (blocker, blocked), unioned from both fields.
+    let mut edges: HashSet<(String, String)> = HashSet::new();
+
+    let docs = feats
+        .iter()
+        .map(|f| (f.id(), &f.title, &f.frontmatter))
+        .chain(live.iter().map(|w| (w.id(), &w.title, &w.frontmatter)));
+    for (id, t, fm) in docs {
+        let Some(id) = id else { continue };
+        present.insert(id.to_string());
+        title.insert(id.to_string(), t.clone());
+        let mut by_field = HashMap::new();
+        let mut bb = HashMap::new();
+        for (b, val) in refs::parse_in(fm, refs::BLOCKED_BY) {
+            edges.insert((b.clone(), id.to_string()));
+            bb.insert(b, val);
+        }
+        by_field.insert(refs::BLOCKED_BY, bb);
+        let mut bk = HashMap::new();
+        for (a, val) in refs::parse_in(fm, refs::BLOCKS) {
+            edges.insert((id.to_string(), a.clone()));
+            bk.insert(a, val);
+        }
+        by_field.insert(refs::BLOCKS, bk);
+        existing.insert(id.to_string(), by_field);
+    }
+
+    // Materialize each edge on whichever present doc owns that side.
+    let mut desired_bb: HashMap<String, BTreeSet<String>> = HashMap::new();
+    let mut desired_bk: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for (blocker, blocked) in &edges {
+        if present.contains(blocked) {
+            desired_bb
+                .entry(blocked.clone())
+                .or_default()
+                .insert(blocker.clone());
+        }
+        if present.contains(blocker) {
+            desired_bk
+                .entry(blocker.clone())
+                .or_default()
+                .insert(blocked.clone());
+        }
+    }
+
+    let compute = |id: &str, field: &'static str, want: &HashMap<String, BTreeSet<String>>| {
+        want.get(id)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|tid| {
+                let value = title.get(&tid).cloned().unwrap_or_else(|| {
+                    existing
+                        .get(id)
+                        .and_then(|m| m.get(field))
+                        .and_then(|m| m.get(&tid))
+                        .cloned()
+                        .unwrap_or_default()
+                });
+                (tid, value)
+            })
+            .collect::<Vec<_>>()
+    };
+
+    for f in feats.iter_mut() {
+        if let Some(id) = f.id().map(str::to_string) {
+            refs::set_in(
+                &mut f.frontmatter,
+                refs::BLOCKED_BY,
+                &compute(&id, refs::BLOCKED_BY, &desired_bb),
+            );
+            refs::set_in(
+                &mut f.frontmatter,
+                refs::BLOCKS,
+                &compute(&id, refs::BLOCKS, &desired_bk),
+            );
+        }
+    }
+    for w in live.iter_mut() {
+        if let Some(id) = w.id().map(str::to_string) {
+            refs::set_in(
+                &mut w.frontmatter,
+                refs::BLOCKED_BY,
+                &compute(&id, refs::BLOCKED_BY, &desired_bb),
+            );
+            refs::set_in(
+                &mut w.frontmatter,
+                refs::BLOCKS,
+                &compute(&id, refs::BLOCKS, &desired_bk),
+            );
+        }
+    }
+}
+
 /// Map of every present doc's ID to (title, file path), for linkifying bodies.
 pub fn build_index(feats: &[Feature], live: &[WorkItem]) -> HashMap<String, (String, PathBuf)> {
     let mut idx = HashMap::new();

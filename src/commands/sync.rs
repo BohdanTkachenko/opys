@@ -25,6 +25,7 @@ pub fn run(prj: &Project) -> Result<()> {
     let orig_w: Vec<String> = live.iter().map(|w| w.to_text()).collect();
 
     links::reconcile(&mut feats, &mut live);
+    links::reconcile_blockers(&mut feats, &mut live);
     let index = links::build_index(&feats, &live);
     for f in feats.iter_mut() {
         let dir = f.path.parent().unwrap_or(&prj.fdir).to_path_buf();

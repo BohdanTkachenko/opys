@@ -78,9 +78,10 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::List {
             tag,
             status,
+            field,
             format,
         } => {
-            commands::list::run(&ctx, tag.as_deref(), status.as_deref(), format)?;
+            commands::list::run(&ctx, tag.as_deref(), status.as_deref(), &field, format)?;
             Ok(0)
         }
         Command::SetStatus { id, status, reason } => {
@@ -93,6 +94,14 @@ pub fn run(cli: Cli) -> Result<i32> {
         }
         Command::Retire { id, reason } => {
             commands::retire::run(&ctx, &id, &reason)?;
+            Ok(0)
+        }
+        Command::Block { id, by } => {
+            commands::block::block(&ctx, &id, &by)?;
+            Ok(0)
+        }
+        Command::Unblock { id, by } => {
+            commands::block::unblock(&ctx, &id, &by)?;
             Ok(0)
         }
         Command::Verify => commands::verify::run(&ctx),

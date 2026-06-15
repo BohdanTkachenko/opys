@@ -15,6 +15,18 @@ use crate::frontmatter::Frontmatter;
 /// The reserved frontmatter key holding the ID->title reference map.
 pub const FIELD: &str = "references";
 
+/// The directional blocker-relation map fields: `blocked_by` lists the items
+/// blocking this one, `blocks` lists the items this one blocks. Maintained as
+/// inverses of each other by [`crate::links::reconcile_blockers`].
+pub const BLOCKED_BY: &str = "blocked_by";
+pub const BLOCKS: &str = "blocks";
+
+/// Every ID->title relation map field, in serialization order. Each behaves
+/// identically for resolution, tombstones, and ID reservation; only
+/// reconciliation differs (`references` is symmetric, `blocked_by`/`blocks`
+/// are inverses).
+pub const RELATION_FIELDS: [&str; 3] = [FIELD, BLOCKED_BY, BLOCKS];
+
 /// Numeric part of a `PREFIX-NNNN` id, for deterministic ordering. Ids that do
 /// not parse sort last.
 pub fn id_number(id: &str) -> u64 {
@@ -48,7 +60,19 @@ pub fn unstrike(value: &str) -> &str {
 /// `raw_value` retains any strikethrough so callers can distinguish a closed
 /// tombstone from a live link.
 pub fn parse(fm: &Frontmatter) -> Vec<(String, String)> {
-    let Some(Value::Mapping(m)) = fm.get(FIELD) else {
+    parse_in(fm, FIELD)
+}
+
+/// Replace the `references` map, sorted by item number. An empty list removes
+/// the field entirely (keeping frontmatter minimal).
+pub fn set(fm: &mut Frontmatter, refs: &[(String, String)]) {
+    set_in(fm, FIELD, refs)
+}
+
+/// Read an arbitrary ID->title relation map (`references`, `blocked_by`,
+/// `blocks`) as `(id, raw_value)` pairs sorted by item number.
+pub fn parse_in(fm: &Frontmatter, field: &str) -> Vec<(String, String)> {
+    let Some(Value::Mapping(m)) = fm.get(field) else {
         return Vec::new();
     };
     let mut out: Vec<(String, String)> = m
@@ -64,11 +88,11 @@ pub fn parse(fm: &Frontmatter) -> Vec<(String, String)> {
     out
 }
 
-/// Replace the `references` map, sorted by item number. An empty list removes
-/// the field entirely (keeping frontmatter minimal).
-pub fn set(fm: &mut Frontmatter, refs: &[(String, String)]) {
+/// Replace an arbitrary relation map, sorted by item number. An empty list
+/// removes the field entirely (keeping frontmatter minimal).
+pub fn set_in(fm: &mut Frontmatter, field: &str, refs: &[(String, String)]) {
     if refs.is_empty() {
-        fm.remove(FIELD);
+        fm.remove(field);
         return;
     }
     let mut sorted = refs.to_vec();
@@ -77,14 +101,54 @@ pub fn set(fm: &mut Frontmatter, refs: &[(String, String)]) {
     for (id, title) in sorted {
         m.insert(Value::String(id), Value::String(title));
     }
-    fm.insert(FIELD, Value::Mapping(m));
+    fm.insert(field, Value::Mapping(m));
 }
 
-/// Ids in the reference map carrying the given prefix (e.g. `FEAT` or `WI`).
+/// Insert or update `id`'s entry in a relation map. Returns whether the map
+/// changed.
+pub fn add_to_map(fm: &mut Frontmatter, field: &str, id: &str, title: &str) -> bool {
+    let mut entries = parse_in(fm, field);
+    if let Some(e) = entries.iter_mut().find(|(i, _)| i == id) {
+        if e.1 == title {
+            return false;
+        }
+        e.1 = title.to_string();
+    } else {
+        entries.push((id.to_string(), title.to_string()));
+    }
+    set_in(fm, field, &entries);
+    true
+}
+
+/// Remove `id`'s entry from a relation map. Returns whether anything was removed.
+pub fn remove_from_map(fm: &mut Frontmatter, field: &str, id: &str) -> bool {
+    let entries = parse_in(fm, field);
+    let kept: Vec<_> = entries.iter().filter(|(i, _)| i != id).cloned().collect();
+    if kept.len() == entries.len() {
+        return false;
+    }
+    set_in(fm, field, &kept);
+    true
+}
+
+/// Ids in the `references` map carrying the given prefix (e.g. `FEAT` or `WI`).
 pub fn ids_with_prefix(fm: &Frontmatter, prefix: &str) -> Vec<String> {
     let needle = format!("{prefix}-");
     parse(fm)
         .into_iter()
+        .map(|(id, _)| id)
+        .filter(|id| id.starts_with(&needle))
+        .collect()
+}
+
+/// Ids carrying the given prefix across *every* relation map (`references`,
+/// `blocked_by`, `blocks`) — used for ID reservation so a closed item appearing
+/// in any map keeps its ID reserved against reuse.
+pub fn all_ids_with_prefix(fm: &Frontmatter, prefix: &str) -> Vec<String> {
+    let needle = format!("{prefix}-");
+    RELATION_FIELDS
+        .iter()
+        .flat_map(|field| parse_in(fm, field))
         .map(|(id, _)| id)
         .filter(|id| id.starts_with(&needle))
         .collect()

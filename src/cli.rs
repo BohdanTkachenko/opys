@@ -89,6 +89,10 @@ pub enum Command {
         tag: Option<String>,
         #[arg(long)]
         status: Option<String>,
+        /// Filter by custom field: key=value (repeatable). Matches when the
+        /// field equals the value (or, for list fields, contains it).
+        #[arg(long = "field")]
+        field: Vec<String>,
         #[arg(long, value_enum, default_value_t = ListFormat::Table)]
         format: ListFormat,
     },
@@ -116,6 +120,23 @@ pub enum Command {
         id: String,
         #[arg(long)]
         reason: String,
+    },
+
+    /// Mark an item (FEAT/WI) as blocked by another, linking both directions.
+    /// A blocked work item is auto-set to `blocked` status.
+    Block {
+        /// The blocked item's ID (FEAT-NNNN or WI-NNNN).
+        id: String,
+        /// The blocking item's ID.
+        #[arg(long = "by")]
+        by: String,
+    },
+
+    /// Remove a blocker link added by `block`.
+    Unblock {
+        id: String,
+        #[arg(long = "by")]
+        by: String,
     },
 
     /// Integrity check (CI gate).
@@ -196,6 +217,10 @@ pub enum WorkItemCommand {
         feature: Option<String>,
         #[arg(long)]
         status: Option<String>,
+        /// Filter by custom field: key=value (repeatable). Matches when the
+        /// field equals the value (or, for list fields, contains it).
+        #[arg(long = "field")]
+        field: Vec<String>,
         #[arg(long, value_enum, default_value_t = ListFormat::Table)]
         format: ListFormat,
     },

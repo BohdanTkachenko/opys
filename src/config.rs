@@ -43,6 +43,8 @@ pub enum FieldType {
     List,
     Bool,
     Int,
+    /// A string constrained to the declared `values` set (see [`FieldSpec`]).
+    Enum,
 }
 
 impl FieldType {
@@ -52,6 +54,7 @@ impl FieldType {
             FieldType::List => "list",
             FieldType::Bool => "bool",
             FieldType::Int => "int",
+            FieldType::Enum => "enum",
         }
     }
 }
@@ -65,6 +68,9 @@ pub struct FieldSpec {
     pub required: bool,
     #[serde(default)]
     pub description: Option<String>,
+    /// Allowed values for an `enum` field; ignored for other types.
+    #[serde(default)]
+    pub values: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

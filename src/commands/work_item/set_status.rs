@@ -1,6 +1,7 @@
 use crate::commands::maybe_sync;
 use crate::error::{usage, Result};
 use crate::project;
+use crate::refs;
 use crate::Ctx;
 
 pub fn run(ctx: &Ctx, id: &str, status: &str, reason: Option<&str>) -> Result<()> {
@@ -21,9 +22,13 @@ pub fn run(ctx: &Ctx, id: &str, status: &str, reason: Option<&str>) -> Result<()
         ));
     }
     if status == "blocked" {
-        let has_reason = reason.is_some() || w.frontmatter.get_str("blocked_reason").is_some();
+        let has_blocker = !refs::parse_in(&w.frontmatter, refs::BLOCKED_BY).is_empty();
+        let has_reason =
+            reason.is_some() || w.frontmatter.get_str("blocked_reason").is_some() || has_blocker;
         if !has_reason {
-            return Err(usage("blocked requires --reason"));
+            return Err(usage(
+                "blocked requires --reason (or an existing blocker link)",
+            ));
         }
         if let Some(r) = reason {
             w.frontmatter.set_str("blocked_reason", r);

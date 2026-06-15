@@ -36,8 +36,9 @@ pub fn run(ctx: &Ctx, cmd: WorkItemCommand) -> Result<()> {
         WorkItemCommand::List {
             feature,
             status,
+            field,
             format,
-        } => list::run(ctx, feature.as_deref(), status.as_deref(), format),
+        } => list::run(ctx, feature.as_deref(), status.as_deref(), &field, format),
         WorkItemCommand::SetStatus { id, status, reason } => {
             set_status::run(ctx, &id, &status, reason.as_deref())
         }

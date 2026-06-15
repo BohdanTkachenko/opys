@@ -35,16 +35,23 @@ extra_statuses = []                 # beyond the four core statuses
 parity = false                      # report feature-parity % (parity projects only)
 
 [fields.ptyxis_ref]                 # per-project custom frontmatter fields
-type = "string"                     # string | list | bool | int
+type = "string"                     # string | list | bool | int | enum
 required = false
 description = "Pointer into Ptyxis source establishing reference behavior"
+
+[fields.priority]                   # an enum field: a validated value set
+type = "enum"
+values = ["low", "medium", "high"]  # verify rejects any value not listed here
 ```
 
 Custom fields are the per-project extension point. A field used in any
 feature file must be declared here or verify fails — undeclared fields are
-how schema drift starts. `opys schema --kind config` and `--kind frontmatter`
-emit JSON Schemas (the frontmatter one is derived from your declared fields)
-for editor (Even Better TOML) or CI validation.
+how schema drift starts. An `enum` field additionally constrains its value to
+the declared `values` list (a controlled vocabulary), and `opys list --field
+<key>=<value>` filters the inventory by any custom field (see below).
+`opys schema --kind config` and `--kind frontmatter` emit JSON Schemas (the
+frontmatter one is derived from your declared fields, including each enum's
+allowed values) for editor (Even Better TOML) or CI validation.
 
 ## A complete feature file
 
@@ -104,6 +111,7 @@ may reflow the formatting (not the meaning) of complex values.
 | `status` | yes | `planned` \| `partial` \| `implemented` \| `wontfix` (+ configured extras) |
 | `tags` | yes | non-empty list, lowercase kebab-case, open vocabulary |
 | `references` | no | ID→title map of linked work items (and features); auto-maintained |
+| `blocked_by` / `blocks` | no | ID→title maps of the blocker relation; auto-maintained (see Blockers) |
 | `wontfix_reason` | iff wontfix | one-line ADR for the parity/scope exception |
 | `spec` | no | path to long-form shared material; must resolve |
 | custom | per config | validated against `[fields.*]` declarations |
@@ -127,11 +135,45 @@ prose are rewritten into markdown links on sync.
 | `list` | a YAML sequence (elements may themselves be nested) | scalars, mappings |
 | `bool` | `true` / `false` | the strings `"true"`/`"false"` |
 | `int` | an integer | floats, booleans |
+| `enum` | a string listed in the field's `values` | any string not in `values`, and non-strings |
 
-Reserved fields (`id`, `status`, `tags`, `spec`, `wontfix_reason`,
-`references`) are always allowed; every other key must be declared under
-`[fields.*]` or verify rejects it. Richer YAML does not relax the
-declare-or-fail rule.
+An `enum` field must declare a non-empty `values` array (verify errors on an
+empty one). Reserved fields (`id`, `status`, `tags`, `spec`, `wontfix_reason`,
+`references`, `blocked_by`, `blocks`) are always allowed; every other key must
+be declared under `[fields.*]` or verify rejects it. Richer YAML does not relax
+the declare-or-fail rule.
+
+### Filtering by field
+
+`opys list` filters by `--tag` and `--status`, and additionally by any custom
+field with repeatable `--field <key>=<value>` (ANDed together). A scalar field
+matches on equality; a `list` field matches when it *contains* the value:
+
+```sh
+opys list --field priority=high                 # enum/scalar equality
+opys list --status partial --field area=cli     # combine with status
+opys list --field tag-list=osc --format ids     # list-membership match
+```
+
+The same `--field` filter is available on `opys work-item list`.
+
+## Blockers
+
+Mark a dependency between two items (features and/or work items) with
+`opys block <id> --by <blocker-id>`; `opys unblock <id> --by <blocker-id>`
+removes it. The relation is **directional and bidirectional**: the blocked item
+gains a `blocked_by` entry and the blocker gains the inverse `blocks` entry,
+both kept title-fresh and sorted automatically (you do not hand-edit them).
+Either id may be a `FEAT-` or `WI-` id.
+
+Blocking a **work item** auto-sets its status to `blocked` — the blocker link
+itself serves as the `blocked_reason`, so none is required; `unblock` reverts it
+to `in-progress` once no blocker (and no free-text reason) remains. Features have
+no `blocked` status, so a blocked feature is purely an informational link.
+
+Blocker entries resolve, tombstone on close (`WI-0042: ~~title~~`), and reserve
+ids exactly like `references`; a closed blocker is therefore safe to leave in
+place, and `work-item cleanup` strips the struck entries.
 
 ## Status semantics
 

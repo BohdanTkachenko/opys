@@ -31,6 +31,7 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
     let retired = prj.retired_ids();
     let id_rx = id_format_re(FEAT_PREFIX, prj.cfg.pad);
     let index = TestIndex::build(&prj, &mut errors);
+    check_field_specs(&prj.cfg.fields, "features/_config.toml", &mut errors);
 
     // The set of ids that a `references` entry may resolve to.
     let mut doc_ids: HashSet<String> = feats
@@ -131,19 +132,32 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
     }
 }
 
-/// Every `references` entry must resolve to an existing doc, unless it is a
-/// struck-through tombstone (a closed work item).
+/// Every entry in each relation map (`references`, `blocked_by`, `blocks`) must
+/// resolve to an existing doc, unless it is a struck-through tombstone (a closed
+/// work item). A blocker map may not list the doc itself.
 fn check_references(
     m: &Frontmatter,
     id: &str,
     doc_ids: &HashSet<String>,
     errors: &mut Vec<String>,
 ) {
-    for (tid, val) in refs::parse(m) {
-        if !doc_ids.contains(&tid) && !refs::is_struck(&val) {
-            errors.push(format!(
-                "{id}: reference '{tid}' does not resolve to a feature or work item"
-            ));
+    for field in refs::RELATION_FIELDS {
+        let is_blocker = field == refs::BLOCKED_BY || field == refs::BLOCKS;
+        for (tid, val) in refs::parse_in(m, field) {
+            if is_blocker && tid == id {
+                errors.push(format!("{id}: '{field}' must not list itself"));
+                continue;
+            }
+            if !doc_ids.contains(&tid) && !refs::is_struck(&val) {
+                let what = if field == refs::FIELD {
+                    "reference"
+                } else {
+                    field
+                };
+                errors.push(format!(
+                    "{id}: {what} '{tid}' does not resolve to a feature or work item"
+                ));
+            }
         }
     }
 }
@@ -162,6 +176,7 @@ fn check_work_items(
     };
     let statuses = wc.statuses();
     let id_rx = id_format_re(WI_PREFIX, wc.pad);
+    check_field_specs(&wc.fields, "work-items/_config.toml", errors);
     let mut seen: HashMap<String, String> = HashMap::new();
 
     for w in wis.iter() {
@@ -190,8 +205,13 @@ fn check_work_items(
         {
             errors.push(format!("{wid}: invalid status {}", pyrepr(status)));
         }
-        if status == Some("blocked") && m.get_str("blocked_reason").is_none() {
-            errors.push(format!("{wid}: blocked requires blocked_reason"));
+        if status == Some("blocked")
+            && m.get_str("blocked_reason").is_none()
+            && refs::parse_in(m, refs::BLOCKED_BY).is_empty()
+        {
+            errors.push(format!(
+                "{wid}: blocked requires blocked_reason or a blocker link"
+            ));
         }
         if w.title.is_empty() {
             errors.push(format!("{wid}: missing '# Title' heading"));
@@ -255,7 +275,16 @@ fn check_custom_fields(
             errors.push(format!("{id}: required field '{k}' missing"));
         }
         if let Some(v) = m.get(k) {
-            if !type_ok(v, spec.field_type) {
+            if spec.field_type == FieldType::Enum {
+                let allowed = spec.values.join(", ");
+                match v.as_str() {
+                    Some(s) if spec.values.iter().any(|a| a == s) => {}
+                    Some(s) => errors.push(format!(
+                        "{id}: field '{k}' value '{s}' is not one of: {allowed}"
+                    )),
+                    None => errors.push(format!("{id}: field '{k}' should be one of: {allowed}")),
+                }
+            } else if !type_ok(v, spec.field_type) {
                 errors.push(format!(
                     "{id}: field '{k}' should be {}",
                     spec.field_type.as_str()
@@ -455,6 +484,25 @@ fn type_ok(v: &Value, want: FieldType) -> bool {
         FieldType::List => v.is_sequence(),
         FieldType::Bool => v.is_bool(),
         FieldType::Int => matches!(v, Value::Number(n) if n.is_i64() || n.is_u64()),
+        // Enum values are strings; membership is checked separately, with access
+        // to the declared `values` (see `check_custom_fields`).
+        FieldType::Enum => v.is_string(),
+    }
+}
+
+/// Validate the field declarations themselves (run once per config): an `enum`
+/// field must declare a non-empty `values` set.
+fn check_field_specs(
+    fields: &BTreeMap<String, FieldSpec>,
+    config_hint: &str,
+    errors: &mut Vec<String>,
+) {
+    for (k, spec) in fields {
+        if spec.field_type == FieldType::Enum && spec.values.is_empty() {
+            errors.push(format!(
+                "config: field '{k}' is enum but declares no values ({config_hint} [fields.{k}].values)"
+            ));
+        }
     }
 }
 
