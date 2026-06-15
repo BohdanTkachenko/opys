@@ -291,10 +291,21 @@ fn check_opys_rules(
         errors.push(format!("opys.toml: {problem}"));
     }
     let mut run = |id: Option<&str>, status: Option<&str>, m: &Frontmatter, body: &str| {
-        if let Some(id) = id {
-            if let Some(type_name) = pcfg.type_name_for_id(id) {
-                for p in rules::evaluate(&pcfg, type_name, status.unwrap_or(""), m, body, doc_ids) {
-                    errors.push(format!("{id}: {p}"));
+        let Some(id) = id else { return };
+        let Some(type_name) = pcfg.type_name_for_id(id) else {
+            return;
+        };
+        for p in rules::evaluate(&pcfg, type_name, status.unwrap_or(""), m, body, doc_ids) {
+            errors.push(format!("{id}: {p}"));
+        }
+        // Field-level regex patterns (always-on per the type's field specs):
+        // validate the value when present.
+        if let Some(dt) = pcfg.types.get(type_name) {
+            for (fname, spec) in &dt.fields {
+                if let (Some(pat), Some(val)) = (&spec.pattern, m.get_str(fname)) {
+                    if Regex::new(pat).map(|re| !re.is_match(val)).unwrap_or(false) {
+                        errors.push(format!("{id}: field '{fname}' must match /{pat}/"));
+                    }
                 }
             }
         }

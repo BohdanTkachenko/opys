@@ -1581,3 +1581,32 @@ fn verify_surfaces_a_broken_opys_config() {
         .stderr(predicate::str::contains("opys.toml:"))
         .stderr(predicate::str::contains("must match"));
 }
+
+#[test]
+fn verify_enforces_field_pattern_from_opys_config() {
+    // Legacy config declares `ticket` so the old checks accept it; opys.toml
+    // constrains its format.
+    let cfg = "pad = 4\ntest_reference_check = \"none\"\n\n[fields.ticket]\ntype = \"string\"\n";
+    let dir = project_with(cfg);
+    dir.child("docs/opys/opys.toml")
+        .write_str(
+            "[types.feature]\nprefix = \"FEAT\"\nstatuses = [\"planned\"]\ndefault_status = \"planned\"\ntags_required = true\n\n[types.feature.fields.ticket]\ntype = \"string\"\npattern = '^JIRA-[0-9]+$'\n",
+        )
+        .unwrap();
+    dir.child("docs/opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [a]\nticket: nope\n---\n\n# F\n")
+        .unwrap();
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "FEAT-0001: field 'ticket' must match",
+        ));
+
+    dir.child("docs/opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [a]\nticket: JIRA-42\n---\n\n# F\n")
+        .unwrap();
+    opys(&dir).arg("verify").assert().success();
+}
