@@ -42,9 +42,12 @@ of truth.
 | `bug` | `BUG-NNNN` | a defect in shipped behavior | `## Reproduction` |
 | `chore` | `CHORE-NNNN` | maintenance/tooling, no behavior change | — |
 
-Each type has its own independent ID sequence (`BUG-0001` and `TASK-0001`
-coexist). Work items are deleted on close, so they never accumulate; there is no
-sharding guidance. The types are hardcoded — projects do not define their own.
+All IDs — features and every work-item type — draw from **one global,
+increasing sequence**, so a number never repeats across prefixes (you will see
+e.g. `FEAT-0001`, `BUG-0002`, `TASK-0003`). The number alone is unique; the
+prefix only names the type. Work items are deleted on close, so they never
+accumulate; there is no sharding guidance. The types are hardcoded — projects do
+not define their own.
 
 ## Configuration: `docs/opys/work-items/_config.toml`
 
@@ -180,10 +183,10 @@ Status changes go through `opys work-item set-status`, never hand edits.
    (`TASK-0042: ~~Make tab title survive profile switch~~`).
 
 The struck reference is the tombstone. It keeps the link visible in the
-feature, marks the work as done, and **reserves the ID forever** — ID
-allocation scans every relation map for that type's keys, struck or not, so a
-number is never reused (per-type sequences). There is no archive directory and
-no separate ledger; the struck reference is the entire record.
+feature, marks the work as done, and **reserves the number forever** — ID
+allocation scans every relation map (all prefixes), struck or not, so a number
+is never reused across the whole global sequence. There is no archive directory
+and no separate ledger; the struck reference is the entire record.
 
 > Fold anything durable back into the feature **before** closing — a new
 > test-plan case, a status change to `implemented`, spec prose. The work item is

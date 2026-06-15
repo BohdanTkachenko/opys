@@ -98,18 +98,37 @@ impl Project {
         read_id_ledger(&self.fdir.join("_retired.txt"))
     }
 
-    /// Highest numeric ID part across live and retired IDs (`0` if none),
-    /// the basis for allocating the next ID(s).
-    pub fn max_id_number(&self, feats: &[Feature]) -> u64 {
-        let re = id_number_re(FEAT_PREFIX);
+    /// Highest numeric ID part used *anywhere* (`0` if none): across every live
+    /// feature and work item, the retired-ID ledger, and every relation map (so
+    /// a closed work item's struck tombstone still reserves its number). This is
+    /// the basis for the single global, monotonically increasing ID sequence
+    /// shared by features and all work-item types — so numbers never duplicate
+    /// across prefixes.
+    pub fn max_id_number(&self, feats: &[Feature], wis: &[WorkItem]) -> u64 {
         let mut max = 0u64;
-        let live = feats.iter().filter_map(|f| f.id().map(str::to_string));
-        for id in live.chain(self.retired_ids()) {
-            if let Some(c) = re.captures(&id) {
-                if let Ok(n) = c[1].parse::<u64>() {
-                    max = max.max(n);
-                }
+        let mut consider = |id: &str| {
+            if let Some(n) = id_part(id) {
+                max = max.max(n);
             }
+        };
+        for f in feats {
+            if let Some(id) = f.id() {
+                consider(id);
+            }
+            for id in refs::all_relation_ids(&f.frontmatter) {
+                consider(&id);
+            }
+        }
+        for w in wis {
+            if let Some(id) = w.id() {
+                consider(id);
+            }
+            for id in refs::all_relation_ids(&w.frontmatter) {
+                consider(&id);
+            }
+        }
+        for id in self.retired_ids() {
+            consider(&id);
         }
         max
     }
@@ -119,9 +138,9 @@ impl Project {
         format!("{}-{:0pad$}", FEAT_PREFIX, n, pad = self.cfg.pad)
     }
 
-    /// Next feature ID: max numeric part across live and retired IDs, plus one.
-    pub fn next_id(&self, feats: &[Feature]) -> String {
-        self.format_id(self.max_id_number(feats) + 1)
+    /// Next feature ID: one past the highest number used anywhere (global).
+    pub fn next_id(&self, feats: &[Feature], wis: &[WorkItem]) -> String {
+        self.format_id(self.max_id_number(feats, wis) + 1)
     }
 
     pub fn path_for(&self, id: &str) -> PathBuf {
@@ -176,34 +195,12 @@ impl Project {
         self.wdir.join(format!("{id}.md"))
     }
 
-    /// Next ID for a given work-item `prefix`: one past the highest
-    /// `PREFIX-NNNN` seen anywhere — live work-item files *and* every relation
-    /// map (so a closed work item's struck tombstone still reserves its ID
-    /// against reuse). Each prefix has an independent sequence.
-    pub fn next_id_for_prefix(&self, prefix: &str, feats: &[Feature], live: &[WorkItem]) -> String {
-        let re = id_number_re(prefix);
-        let mut max = 0u64;
-        let mut consider = |id: &str| {
-            if let Some(c) = re.captures(id) {
-                if let Ok(n) = c[1].parse::<u64>() {
-                    max = max.max(n);
-                }
-            }
-        };
-        for w in live {
-            if let Some(id) = w.id() {
-                consider(id);
-            }
-            for id in refs::all_ids_with_prefix(&w.frontmatter, prefix) {
-                consider(&id);
-            }
-        }
-        for f in feats {
-            for id in refs::all_ids_with_prefix(&f.frontmatter, prefix) {
-                consider(&id);
-            }
-        }
-        self.format_wi_id(prefix, max + 1)
+    /// Next ID for a work-item `prefix`: one past the highest number used
+    /// anywhere (the single global sequence), formatted with this type's prefix.
+    /// Features and every work-item type draw from one increasing sequence, so
+    /// numbers never collide across prefixes.
+    pub fn next_id_for_prefix(&self, prefix: &str, feats: &[Feature], wis: &[WorkItem]) -> String {
+        self.format_wi_id(prefix, self.max_id_number(feats, wis) + 1)
     }
 
     pub fn find_wi<'a>(&self, items: &'a [WorkItem], id: &str) -> Result<&'a WorkItem> {
@@ -293,8 +290,10 @@ pub fn write_id_ledger_entry(path: &Path, id: &str, line: &str) -> Result<()> {
     std::fs::write(path, out).map_err(OpysError::from)
 }
 
-fn id_number_re(prefix: &str) -> Regex {
-    Regex::new(&format!(r"^{}-(\d+)$", regex::escape(prefix))).unwrap()
+/// The numeric part of a `PREFIX-NNNN` id, if it parses; `None` for malformed
+/// ids (which the global-sequence max ignores rather than treating as huge).
+fn id_part(id: &str) -> Option<u64> {
+    id.rsplit_once('-').and_then(|(_, n)| n.parse::<u64>().ok())
 }
 
 /// `^PREFIX-\d{pad,}$` — the verify-time id format (pad-or-more digits).

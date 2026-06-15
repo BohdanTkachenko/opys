@@ -112,6 +112,10 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
         check_work_items(&prj, &mut wis, &feature_ids, &doc_ids, &mut errors);
     }
 
+    // The ID sequence is global: no two live docs may share a numeric part
+    // (this also catches two parallel agents grabbing the same next number).
+    check_unique_numbers(&feats, &wis, &mut errors);
+
     if errors.is_empty() {
         if wi_enabled {
             println!(
@@ -251,6 +255,33 @@ fn check_work_items(
             wid,
             errors,
         );
+    }
+}
+
+/// Enforce the global ID invariant: no numeric id part is shared by two
+/// distinct live docs (features and/or work items). Exact duplicate id strings
+/// are already reported by the per-family `seen` checks; this catches a number
+/// reused across prefixes (e.g. `FEAT-0003` and `TASK-0003`).
+fn check_unique_numbers(feats: &[Feature], wis: &[WorkItem], errors: &mut Vec<String>) {
+    let mut by_num: HashMap<u64, String> = HashMap::new();
+    let ids = feats
+        .iter()
+        .filter_map(|f| f.id())
+        .chain(wis.iter().filter_map(|w| w.id()));
+    for id in ids {
+        let Some((_, n)) = id.rsplit_once('-') else {
+            continue;
+        };
+        let Ok(n) = n.parse::<u64>() else { continue };
+        match by_num.get(&n) {
+            Some(prev) if prev != id => errors.push(format!(
+                "{id}: numeric id {n} is also used by {prev} (ids must be globally unique)"
+            )),
+            Some(_) => {}
+            None => {
+                by_num.insert(n, id.to_string());
+            }
+        }
     }
 }
 

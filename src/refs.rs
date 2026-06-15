@@ -141,16 +141,14 @@ pub fn ids_with_prefix(fm: &Frontmatter, prefix: &str) -> Vec<String> {
         .collect()
 }
 
-/// Ids carrying the given prefix across *every* relation map (`references`,
-/// `blocked_by`, `blocks`) — used for ID reservation so a closed item appearing
-/// in any map keeps its ID reserved against reuse.
-pub fn all_ids_with_prefix(fm: &Frontmatter, prefix: &str) -> Vec<String> {
-    let needle = format!("{prefix}-");
+/// Every id appearing in any relation map (`references`, `blocked_by`,
+/// `blocks`), regardless of prefix — used to compute the global ID sequence so
+/// a closed item appearing in any map keeps its number reserved against reuse.
+pub fn all_relation_ids(fm: &Frontmatter) -> Vec<String> {
     RELATION_FIELDS
         .iter()
         .flat_map(|field| parse_in(fm, field))
         .map(|(id, _)| id)
-        .filter(|id| id.starts_with(&needle))
         .collect()
 }
 

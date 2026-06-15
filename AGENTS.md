@@ -109,14 +109,17 @@ Layering, roughly outermost-in:
 
 ### Invariants enforced on disk (the point of the tool)
 
-- **IDs**: fixed prefixes (`FEAT-NNNN`; work items `TASK-`/`BUG-`/`CHORE-NNNN`),
-  monotonic per prefix, never reused. `next_id` takes the max over live *and*
-  retired features; `next_id_for_prefix` takes the max for a given work-item
-  prefix over live work items *and* every id of that prefix appearing in any
+- **IDs**: fixed prefixes (`FEAT-NNNN`; work items `TASK-`/`BUG-`/`CHORE-NNNN`)
+  drawn from a *single global, monotonically increasing sequence* — a number is
+  never reused and never duplicated across prefixes. `max_id_number` takes the
+  max over every live feature and work item, the retired ledger, *and* every
   relation map (`references`/`blocked_by`/`blocks`, struck or not —
-  `refs::all_ids_with_prefix`), so a closed work item's tombstone reserves its id
-  and each type has an independent sequence. `retire` appends to
-  `features/_retired.txt` (kept sorted); `verify` rejects reuse.
+  `refs::all_relation_ids`), so a closed work item's tombstone still reserves its
+  number; `next_id` / `next_id_for_prefix` are one past it, formatted with the
+  relevant prefix. `retire` appends to `features/_retired.txt` (kept sorted);
+  `verify` rejects reuse *and* any two live docs sharing a number
+  (`check_unique_numbers`), which also catches two parallel agents grabbing the
+  same next id.
 - **References** (`references` map, both families): the uniform ID→title link
   field is auto-reconciled on every write (`links::reconcile`) — bidirectional
   between live docs, titles refreshed from the target, sorted by number. A

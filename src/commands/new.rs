@@ -15,7 +15,13 @@ pub fn run(
 ) -> Result<()> {
     let prj = Project::open(&ctx.root, &ctx.dir)?;
     let (feats, _) = prj.load();
-    let id = prj.next_id(&feats);
+    // The ID sequence is global, so work items count toward the next number too.
+    let (wis, _) = if prj.wi_cfg.is_some() {
+        prj.load_work_items()
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let id = prj.next_id(&feats, &wis);
 
     let tags = split_csv(tags);
     if tags.is_empty() {

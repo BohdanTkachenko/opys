@@ -19,14 +19,20 @@ use crate::Ctx;
 pub fn run(ctx: &Ctx, file: &str) -> Result<()> {
     let prj = Project::open(&ctx.root, &ctx.dir)?;
     let (feats, _) = prj.load();
+    // The ID sequence is global, so existing work items count toward the start.
+    let (wis, _) = if prj.wi_cfg.is_some() {
+        prj.load_work_items()
+    } else {
+        (Vec::new(), Vec::new())
+    };
     let statuses = prj.cfg.statuses();
 
     let text = std::fs::read_to_string(file)
         .map_err(|e| usage(format!("cannot read import file {file:?}: {e}")))?;
 
-    // Allocate IDs sequentially from the current max, building every feature in
-    // memory and collecting *all* rejections before touching disk.
-    let mut next = prj.max_id_number(&feats);
+    // Allocate IDs sequentially from the current global max, building every
+    // feature in memory and collecting *all* rejections before touching disk.
+    let mut next = prj.max_id_number(&feats, &wis);
     let mut built: Vec<Feature> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
 
