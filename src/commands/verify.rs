@@ -10,7 +10,9 @@ use crate::error::Result;
 use crate::feature::Feature;
 use crate::frontmatter::{Frontmatter, RESERVED_FIELDS, WI_RESERVED_FIELDS};
 use crate::project::{id_format_re, Project, KEBAB_RE};
+use crate::project_config::ProjectConfig;
 use crate::refs;
+use crate::rules;
 use crate::work_item::WorkItem;
 use crate::Ctx;
 
@@ -115,6 +117,11 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
     // The ID sequence is global: no two live docs may share a numeric part
     // (this also catches two parallel agents grabbing the same next number).
     check_unique_numbers(&feats, &wis, &mut errors);
+
+    // Opt-in: when the universal config is present, validate it and enforce its
+    // rules over every doc (type derived from the id prefix), alongside the
+    // checks above. Absent opys.toml → no change.
+    check_opys_rules(&prj, &feats, &wis, &doc_ids, &mut errors);
 
     if errors.is_empty() {
         if wi_enabled {
@@ -255,6 +262,48 @@ fn check_work_items(
             wid,
             errors,
         );
+    }
+}
+
+/// When `<base>/opys.toml` exists, validate it and run the configured
+/// validation rules against every doc, mapping each doc to a type by its ID
+/// prefix. Findings join the regular verify output, prefixed by the doc id. This
+/// is the opt-in bridge to the universal engine; absent opys.toml it is a no-op.
+fn check_opys_rules(
+    prj: &Project,
+    feats: &[Feature],
+    wis: &[WorkItem],
+    doc_ids: &HashSet<String>,
+    errors: &mut Vec<String>,
+) {
+    let path = prj.base.join("opys.toml");
+    if !path.exists() {
+        return;
+    }
+    let pcfg = match ProjectConfig::load(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            errors.push(format!("opys.toml: {e}"));
+            return;
+        }
+    };
+    for problem in pcfg.validate() {
+        errors.push(format!("opys.toml: {problem}"));
+    }
+    let mut run = |id: Option<&str>, status: Option<&str>, m: &Frontmatter, body: &str| {
+        if let Some(id) = id {
+            if let Some(type_name) = pcfg.type_name_for_id(id) {
+                for p in rules::evaluate(&pcfg, type_name, status.unwrap_or(""), m, body, doc_ids) {
+                    errors.push(format!("{id}: {p}"));
+                }
+            }
+        }
+    };
+    for f in feats {
+        run(f.id(), f.status(), &f.frontmatter, &f.body);
+    }
+    for w in wis {
+        run(w.id(), w.status(), &w.frontmatter, &w.body);
     }
 }
 

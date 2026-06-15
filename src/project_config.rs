@@ -192,6 +192,16 @@ impl ProjectConfig {
         })
     }
 
+    /// The name of the type whose prefix matches `id`'s prefix, if any. (A doc's
+    /// type is derived from its ID prefix — the ID is the single source of truth.)
+    pub fn type_name_for_id(&self, id: &str) -> Option<&str> {
+        let prefix = id.split_once('-')?.0;
+        self.types
+            .iter()
+            .find(|(_, t)| t.prefix == prefix)
+            .map(|(name, _)| name.as_str())
+    }
+
     /// Check the config is well-formed, returning all problems (empty == OK).
     /// These are content problems (verify-style), not hard errors.
     pub fn validate(&self) -> Vec<String> {

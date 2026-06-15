@@ -1536,3 +1536,48 @@ fn config_validate_requires_the_file() {
         .failure()
         .stderr(predicate::str::contains("run `opys config init`"));
 }
+
+#[test]
+fn verify_enforces_opys_rules_when_present() {
+    // Old config that allows the `archived` status and declares the field, so the
+    // legacy checks pass and only the new opys.toml rule has anything to say.
+    let cfg = "pad = 4\ntest_reference_check = \"none\"\nextra_statuses = [\"archived\"]\n\n[fields.archived_reason]\ntype = \"string\"\n";
+    let dir = project_with(cfg);
+    opys(&dir).args(["config", "init"]).assert().success();
+
+    // An archived feature with no archived_reason — the opys.toml rule fires.
+    dir.child("docs/opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: archived\ntags: [a]\n---\n\n# F\n")
+        .unwrap();
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "FEAT-0001: field 'archived_reason' is required",
+        ));
+
+    // Supplying the reason satisfies both the legacy checks and the rule.
+    dir.child("docs/opys/features/FEAT-0001.md")
+        .write_str(
+            "---\nid: FEAT-0001\nstatus: archived\ntags: [a]\narchived_reason: removed in v3\n---\n\n# F\n",
+        )
+        .unwrap();
+    opys(&dir).arg("verify").assert().success();
+}
+
+#[test]
+fn verify_surfaces_a_broken_opys_config() {
+    let dir = project();
+    dir.child("docs/opys/opys.toml")
+        .write_str("[types.x]\nprefix = \"lower\"\nstatuses = [\"a\"]\ndefault_status = \"a\"\n")
+        .unwrap();
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("opys.toml:"))
+        .stderr(predicate::str::contains("must match"));
+}
