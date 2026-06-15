@@ -30,8 +30,8 @@ normative file-format specs and design rationale. This file covers operation.
 2. Taxonomy never lives in filesystem layout — classification is multi-valued
    `tags`; all groupings are generated views.
 3. Stable IDs are the contract. Tests, commits, and specs reference
-   `FEAT-NNNN` (and `WI-NNNN` for work items). IDs are never reused or
-   renumbered, even after deletion.
+   `FEAT-NNNN` (and `TASK-`/`BUG-`/`CHORE-NNNN` for work items). IDs are never
+   reused or renumbered, even after deletion.
 4. Intent is stored; derived state is generated. Test pass/fail, dates, and
    completion claims never go into feature files.
 5. Writes go through the CLI (prevents parallel-agent collisions, enforces
@@ -72,14 +72,15 @@ automatically (pass `--no-sync` to skip).
 ### Work-item commands
 
 Work items (`references/work-items.md`) are the ephemeral companions to
-features. Enable them with `opys work-item init`; they use the fixed `WI-NNNN`
-prefix and live in `docs/opys/work-items/`. (Alias: `opys wi …`.)
+features. Enable them with `opys work-item init`; they come in hardcoded types —
+`task`/`bug`/`chore` → `TASK-`/`BUG-`/`CHORE-NNNN` — and live in
+`docs/opys/work-items/`. (Alias: `opys wi …`.)
 
 | Command | Purpose |
 |---|---|
 | `work-item init` | scaffold `docs/opys/work-items/_config.toml` |
-| `work-item new --title T --features F1,F2 [--tags a,b] [--status S] [--field k=v]` | create file with next `WI` ID; linked features must exist (auto-syncs) |
-| `work-item show ID` / `list [--feature F] [--status S] [--field k=v]… [--format …]` | retrieval; `--field` filters by any custom field |
+| `work-item new --title T [--type task\|bug\|chore] --features F1,F2 [--tags a,b] [--status S] [--field k=v]` | create file with the next ID for that type (default task); linked features must exist (auto-syncs) |
+| `work-item show ID` / `list [--feature F] [--type T] [--status S] [--field k=v]… [--format …]` | retrieval; `--type`/`--field` filter the listing |
 | `work-item set-status ID S [--reason R]` | guarded transition (`todo`/`in-progress`/`blocked`; `done` is reached only via `close`) |
 | `work-item tag ID --add a,b --remove c` | tag maintenance (work-item tags are optional) |
 | `work-item close ID [--force]` | finish: delete the file and strike its title through in every referencing doc (the struck reference reserves the ID) |
@@ -159,7 +160,7 @@ whole-inventory file, deliberately small) → `rg` by tag/status or `list` →
 read the 2–5 relevant files. Generated `views/` files are read-only
 conveniences; regenerate with `sync-views`, never edit. Work items follow the
 same discipline: `docs/opys/work-items/INDEX.md` → `rg`/`work-item list
---feature FEAT-0001` → the relevant `WI-NNNN.md` files.
+--feature FEAT-0001` → the relevant `TASK-`/`BUG-`/`CHORE-NNNN.md` files.
 
 ## Release testing
 

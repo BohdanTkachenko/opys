@@ -36,8 +36,8 @@ cargo build --release   # target/release/opys
 The inventory lives under a base directory (default `docs/opys/`, configurable
 with `--dir`/`OPYS_DIR`), so it stays out of the repo root: `docs/opys/features/`
 (config + feature files + `INDEX.md`), `docs/opys/work-items/` (optional),
-`docs/opys/views/`, `docs/opys/runbooks/`. Feature IDs are always `FEAT-NNNN`
-and work-item IDs `WI-NNNN` — the prefixes are fixed.
+`docs/opys/views/`, `docs/opys/runbooks/`. Feature IDs are always `FEAT-NNNN`;
+work items come in fixed types — `TASK-`/`BUG-`/`CHORE-NNNN`.
 
 ## Quick start
 
@@ -54,9 +54,10 @@ opys manual-runbook --out docs/opys/runbooks/release-0.3.md
 opys schema --kind frontmatter              # JSON Schema for editor/CI validation
 
 # Work items (optional): ephemeral, per-change tracking linked to a feature.
+# Types: task (default), bug, chore → TASK-/BUG-/CHORE- ids.
 opys work-item init                         # enable the subsystem
-opys work-item new --title "Survive profile switch" --features FEAT-0001
-opys work-item close WI-0001                # deletes the file; reference struck through
+opys work-item new --type bug --title "Survive profile switch" --features FEAT-0001
+opys work-item close BUG-0001               # deletes the file; reference struck through
 ```
 
 Mutating commands (`new`, `set-status`, `tag`, `retire`, and the `work-item …`
@@ -92,7 +93,7 @@ id: FEAT-0421
 status: implemented
 tags: [osc, tabs]
 references:
-  WI-0042: Make tab title survive profile switch
+  TASK-0042: Make tab title survive profile switch
 ---
 
 # Tab title follows OSC 0/2 sequence

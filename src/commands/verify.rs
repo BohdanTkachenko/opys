@@ -5,7 +5,7 @@ use serde_norway::Value;
 use walkdir::WalkDir;
 
 use crate::body;
-use crate::config::{FieldSpec, FieldType, FEAT_PREFIX, WI_PREFIX};
+use crate::config::{self, FieldSpec, FieldType, FEAT_PREFIX};
 use crate::error::Result;
 use crate::feature::Feature;
 use crate::frontmatter::{Frontmatter, RESERVED_FIELDS, WI_RESERVED_FIELDS};
@@ -175,7 +175,6 @@ fn check_work_items(
         None => return,
     };
     let statuses = wc.statuses();
-    let id_rx = id_format_re(WI_PREFIX, wc.pad);
     check_field_specs(&wc.fields, "work-items/_config.toml", errors);
     let mut seen: HashMap<String, String> = HashMap::new();
 
@@ -183,13 +182,23 @@ fn check_work_items(
         let m = &w.frontmatter;
         let where_ = w.path.display().to_string();
 
-        let wid = match w.id() {
-            Some(id) if id_rx.is_match(id) => id,
-            other => {
-                errors.push(format!("{where_}: bad or missing id {}", pyrepr(other)));
-                continue;
-            }
+        let Some(wid) = w.id() else {
+            errors.push(format!("{where_}: bad or missing id {}", pyrepr(None)));
+            continue;
         };
+        // The work-item type is the ID prefix; an unknown prefix is an error.
+        let Some(wtype) = config::type_for_id(wid) else {
+            let known: Vec<&str> = config::work_item_prefixes().collect();
+            errors.push(format!(
+                "{where_}: unrecognized work-item id prefix in {wid} (expected one of: {})",
+                known.join(", ")
+            ));
+            continue;
+        };
+        if !id_format_re(wtype.prefix, wc.pad).is_match(wid) {
+            errors.push(format!("{where_}: bad work-item id {wid}"));
+            continue;
+        }
         if w.path.file_stem().and_then(|s| s.to_str()) != Some(wid) {
             errors.push(format!("{where_}: filename does not match id {wid}"));
         }
@@ -216,8 +225,8 @@ fn check_work_items(
         if w.title.is_empty() {
             errors.push(format!("{wid}: missing '# Title' heading"));
         }
-        for section in &wc.required_sections {
-            if !body::has_section(&w.body, section) {
+        for section in wtype.required_sections(&wc.required_sections) {
+            if !body::has_section(&w.body, &section) {
                 errors.push(format!("{wid}: missing required '## {section}' section"));
             }
         }

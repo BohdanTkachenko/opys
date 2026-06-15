@@ -14,12 +14,77 @@ pub const CORE_STATUSES: [&str; 4] = ["planned", "partial", "implemented", "wont
 /// `FEAT-NNNN` so cross-project references are unambiguous.
 pub const FEAT_PREFIX: &str = "FEAT";
 
-/// Fixed ID prefix for work items: `WI-NNNN`.
-pub const WI_PREFIX: &str = "WI";
-
 /// Work-item statuses, in lifecycle order. `done` is terminal and only reached
 /// via `work-item close` (which deletes or archives the file).
 pub const WI_CORE_STATUSES: [&str; 4] = ["todo", "in-progress", "blocked", "done"];
+
+/// A hardcoded kind of work item. All work-item types share the one ephemeral
+/// lifecycle (link a feature, `## Tasks`/`## Progress`, close-deletes); they
+/// differ only by ID prefix and a few per-type required sections. The type of a
+/// work item is *derived from its ID prefix* — there is no `type:` frontmatter
+/// field, keeping the ID the single source of truth.
+#[derive(Debug, Clone, Copy)]
+pub struct WorkItemType {
+    pub name: &'static str,
+    pub prefix: &'static str,
+    /// Required body sections beyond the shared `required_sections` baseline.
+    pub extra_required_sections: &'static [&'static str],
+}
+
+impl WorkItemType {
+    /// Effective required sections for this type: the configured `baseline`
+    /// first, then any per-type extras not already present (order-preserving).
+    pub fn required_sections(&self, baseline: &[String]) -> Vec<String> {
+        let mut out = baseline.to_vec();
+        for s in self.extra_required_sections {
+            if !out.iter().any(|b| b == s) {
+                out.push(s.to_string());
+            }
+        }
+        out
+    }
+}
+
+/// The fixed set of work-item types. The first entry is the default for
+/// `work-item new` when `--type` is omitted.
+pub const WORK_ITEM_TYPES: [WorkItemType; 3] = [
+    WorkItemType {
+        name: "task",
+        prefix: "TASK",
+        extra_required_sections: &[],
+    },
+    WorkItemType {
+        name: "bug",
+        prefix: "BUG",
+        extra_required_sections: &["Reproduction"],
+    },
+    WorkItemType {
+        name: "chore",
+        prefix: "CHORE",
+        extra_required_sections: &[],
+    },
+];
+
+/// The work-item type whose ID prefix matches `id`, if any.
+pub fn type_for_id(id: &str) -> Option<&'static WorkItemType> {
+    let prefix = id.split_once('-').map(|(p, _)| p)?;
+    WORK_ITEM_TYPES.iter().find(|t| t.prefix == prefix)
+}
+
+/// The work-item type with the given `name` (e.g. `"bug"`), if any.
+pub fn type_by_name(name: &str) -> Option<&'static WorkItemType> {
+    WORK_ITEM_TYPES.iter().find(|t| t.name == name)
+}
+
+/// Whether `id` carries a known work-item prefix (`BUG-`/`TASK-`/`CHORE-`).
+pub fn is_work_item_id(id: &str) -> bool {
+    type_for_id(id).is_some()
+}
+
+/// Every configured work-item ID prefix.
+pub fn work_item_prefixes() -> impl Iterator<Item = &'static str> {
+    WORK_ITEM_TYPES.iter().map(|t| t.prefix)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]

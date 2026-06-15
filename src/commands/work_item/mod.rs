@@ -18,6 +18,7 @@ pub fn run(ctx: &Ctx, cmd: WorkItemCommand) -> Result<()> {
         WorkItemCommand::Init => init::run(ctx),
         WorkItemCommand::New {
             title,
+            wi_type,
             features,
             status,
             tags,
@@ -26,6 +27,7 @@ pub fn run(ctx: &Ctx, cmd: WorkItemCommand) -> Result<()> {
         } => new::run(
             ctx,
             &title,
+            wi_type.name(),
             &features,
             &status,
             &tags,
@@ -35,10 +37,18 @@ pub fn run(ctx: &Ctx, cmd: WorkItemCommand) -> Result<()> {
         WorkItemCommand::Show { id } => show::run(ctx, &id),
         WorkItemCommand::List {
             feature,
+            wi_type,
             status,
             field,
             format,
-        } => list::run(ctx, feature.as_deref(), status.as_deref(), &field, format),
+        } => list::run(
+            ctx,
+            feature.as_deref(),
+            wi_type.map(|t| t.name()),
+            status.as_deref(),
+            &field,
+            format,
+        ),
         WorkItemCommand::SetStatus { id, status, reason } => {
             set_status::run(ctx, &id, &status, reason.as_deref())
         }

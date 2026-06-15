@@ -14,10 +14,11 @@ targeted file reads. `verify` is the CI gate. The inventory base dir defaults to
 priorities.
 
 It also manages an optional **work-item** subsystem (`opys work-item …`, alias
-`wi`): ephemeral, per-change companion files in `docs/opys/work-items/` with
-fixed `WI-NNNN` ids, a `## Tasks` checklist and `## Progress` log, that must
-reference ≥1 feature and are deleted on `close` (which strikes the reference
-through as a tombstone). Features and work items share one uniform `references:`
+`wi`): ephemeral, per-change companion files in `docs/opys/work-items/` that come
+in hardcoded *types* (`task`/`bug`/`chore` → `TASK-`/`BUG-`/`CHORE-NNNN`, the
+type derived from the id prefix), with a `## Tasks` checklist and `## Progress`
+log, that must reference ≥1 feature and are deleted on `close` (which strikes the
+reference through as a tombstone). Features and work items share one uniform `references:`
 ID→title map that `opys` keeps bidirectional, title-fresh, and linkified
 automatically on every write.
 
@@ -83,7 +84,7 @@ Layering, roughly outermost-in:
   `Project::open` requires `<base>/features/_config.toml` and optionally loads
   `<base>/work-items/_config.toml` (`wi_cfg: Option<…>`). Owns feature and
   work-item discovery (`feature_paths`/`load`, `work_item_paths`/
-  `load_work_items`), ID allocation (`next_id`, `next_wi_id`), retired-ID
+  `load_work_items`), ID allocation (`next_id`, `next_id_for_prefix`), retired-ID
   tracking (`read_id_ledger`/`write_id_ledger_entry`), and the shared regexes
   (`id_format_re`, `KEBAB_RE`, `parse_field`).
 - `src/feature.rs` / `src/work_item.rs` / `src/frontmatter.rs` / `src/body.rs` —
@@ -93,31 +94,36 @@ Layering, roughly outermost-in:
   used for `## Test plan` and `## Tasks`), and `## Manual verification` items.
 - `src/refs.rs` — the uniform `references` ID→title map: parse/serialize (sorted
   by item number), strikethrough tombstone helpers, `id_number`.
-- `src/links.rs` — the auto-sync engine: `reconcile` (bidirectional, title-fresh
-  references between live docs) and `linkify` (bare `FEAT-`/`WI-` mentions in
-  prose → markdown links, skipping code). Driven by `commands/sync.rs`, which
-  `maybe_sync` calls.
+- `src/links.rs` — the auto-sync engine: `reconcile`/`reconcile_blockers`
+  (bidirectional, title-fresh relation maps between live docs) and `linkify`
+  (bare feature/work-item ID mentions in prose → markdown links, skipping code;
+  the prefix alternation is built from the live prefixes). Driven by
+  `commands/sync.rs`, which `maybe_sync` calls.
 - `src/commands/work_item/` — the `opys work-item …` subcommands.
 - `src/config.rs` — `Config` (features: `pad`, `test_search_paths`,
   `test_reference_check`, custom `[fields.*]`) and `WorkItemConfig` (work items:
-  `pad`, `extra_statuses`, `required_sections`, `[fields.*]`); the status lists
-  and the fixed prefix constants `FEAT_PREFIX` / `WI_PREFIX`.
+  `pad`, `extra_statuses`, `required_sections`, `[fields.*]`); the status lists;
+  the fixed `FEAT_PREFIX`; and the hardcoded `WORK_ITEM_TYPES` table
+  (`task`/`bug`/`chore`, each a name + prefix + per-type extra sections) with
+  `type_for_id`/`type_by_name`/`is_work_item_id`/`work_item_prefixes`.
 
 ### Invariants enforced on disk (the point of the tool)
 
-- **IDs**: fixed prefixes (`FEAT-NNNN`, `WI-NNNN`), monotonic, never reused.
-  `next_id` takes the max over live *and* retired features; `next_wi_id` over
-  live work items *and* every `WI-` id appearing in any relation map
-  (`references`/`blocked_by`/`blocks`, struck or not — `refs::all_ids_with_prefix`),
-  so a closed work item's tombstone reserves its id. `retire`
-  appends to `features/_retired.txt` (kept sorted); `verify` rejects reuse.
+- **IDs**: fixed prefixes (`FEAT-NNNN`; work items `TASK-`/`BUG-`/`CHORE-NNNN`),
+  monotonic per prefix, never reused. `next_id` takes the max over live *and*
+  retired features; `next_id_for_prefix` takes the max for a given work-item
+  prefix over live work items *and* every id of that prefix appearing in any
+  relation map (`references`/`blocked_by`/`blocks`, struck or not —
+  `refs::all_ids_with_prefix`), so a closed work item's tombstone reserves its id
+  and each type has an independent sequence. `retire` appends to
+  `features/_retired.txt` (kept sorted); `verify` rejects reuse.
 - **References** (`references` map, both families): the uniform ID→title link
   field is auto-reconciled on every write (`links::reconcile`) — bidirectional
   between live docs, titles refreshed from the target, sorted by number. A
   closed work item leaves a struck-through (`~~title~~`) tombstone. `verify`
   fails only on a non-struck id that resolves to nothing, or a work item that
   references no live feature; title drift / missing reverse links are auto-fixed,
-  not gated. Bare `FEAT-`/`WI-` mentions in body prose are linkified
+  not gated. Bare feature/work-item ID mentions in body prose are linkified
   (`links::linkify`), skipping code spans/fences.
 - **Blockers** (`blocked_by` / `blocks` maps, both families): a directional
   relation built on the same ID→title machinery as `references`. `opys block
@@ -141,14 +147,17 @@ Layering, roughly outermost-in:
   `TestIndex` does this in one of three modes from `test_reference_check`:
   `grep` (substring across `test_search_paths`), `extract` (regex-extract real
   names via `test_name_pattern`), or `none`.
-- **Work-item lifecycle**: `WI_CORE_STATUSES` = `todo`/`in-progress`/`blocked`/
-  `done`. `done` is terminal and reached only via `close` (`new`/`set-status`
-  reject it; `blocked` requires `blocked_reason` *or* a `blocked_by` link).
-  Required body sections
-  (`required_sections`, default `## Tasks`/`## Progress`) and the ≥1-feature link
-  are enforced at write time and re-checked by `verify`. `close` refuses
-  unchecked tasks (unless `--force`), deletes the file, and strikes the
-  reference through everywhere; `cleanup` strips struck references.
+- **Work-item lifecycle**: every work-item *type* (`WORK_ITEM_TYPES`) shares one
+  lifecycle. `WI_CORE_STATUSES` = `todo`/`in-progress`/`blocked`/`done`. `done`
+  is terminal and reached only via `close` (`new`/`set-status` reject it;
+  `blocked` requires `blocked_reason` *or* a `blocked_by` link). Required body
+  sections — the configured `required_sections` baseline ∪ the type's
+  `extra_required_sections` (e.g. `bug` → `## Reproduction`), via
+  `WorkItemType::required_sections` — and the ≥1-feature link are enforced at
+  write time and re-checked by `verify`. `verify` also rejects an unrecognized
+  id prefix (an unknown type). `close` refuses unchecked tasks (unless
+  `--force`), deletes the file, and strikes the reference through everywhere;
+  `cleanup` strips struck references.
 - **Frontmatter is closed**: only `RESERVED_FIELDS` / `WI_RESERVED_FIELDS`
   (`frontmatter.rs`, which include `references`/`blocked_by`/`blocks`) plus
   fields declared in `[fields.*]` are allowed; unknown keys fail `verify`.

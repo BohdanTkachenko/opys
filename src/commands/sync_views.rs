@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 
+use crate::config;
 use crate::error::{usage, Result};
 use crate::feature::Feature;
 use crate::project::Project;
+use crate::refs;
 use crate::work_item::WorkItem;
 use crate::Ctx;
 
@@ -39,7 +41,7 @@ pub fn regenerate(prj: &Project) -> Result<usize> {
     let views = &prj.views_dir;
     let mut view_subs = vec!["by-tag", "status"];
     if prj.wi_cfg.is_some() {
-        view_subs.extend(["wi-by-feature", "wi-status"]);
+        view_subs.extend(["wi-by-feature", "wi-status", "wi-by-type"]);
     }
     for sub in &view_subs {
         let d = views.join(sub);
@@ -109,9 +111,17 @@ fn regenerate_work_items(prj: &Project) -> Result<()> {
     if !errors.is_empty() {
         return Err(usage("fix work-item parse errors first (run verify)"));
     }
+    // Group by type prefix, then by number within each type.
+    let prefix_of = |id: &str| {
+        id.split_once('-')
+            .map(|(p, _)| p.to_string())
+            .unwrap_or_default()
+    };
     items.sort_by(|a, b| {
-        crate::refs::id_number(a.id().unwrap_or(""))
-            .cmp(&crate::refs::id_number(b.id().unwrap_or("")))
+        let (ia, ib) = (a.id().unwrap_or(""), b.id().unwrap_or(""));
+        prefix_of(ia)
+            .cmp(&prefix_of(ib))
+            .then(refs::id_number(ia).cmp(&refs::id_number(ib)))
     });
 
     let mut lines = vec![
@@ -140,6 +150,12 @@ fn regenerate_work_items(prj: &Project) -> Result<()> {
         }
         let status = w.status().unwrap_or("").to_string();
         buckets.entry(("wi-status", status)).or_default().push(w);
+        if let Some(t) = w.id().and_then(config::type_for_id) {
+            buckets
+                .entry(("wi-by-type", t.name.to_string()))
+                .or_default()
+                .push(w);
+        }
     }
     for ((sub, key), wl) in &buckets {
         let mut out = vec![

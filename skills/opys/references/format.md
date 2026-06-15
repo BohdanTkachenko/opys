@@ -122,8 +122,8 @@ the test plan, eliminating a sync surface.
 The `references` map is **auto-maintained** by opys — it links a feature to its
 work items (see `references/work-items.md`) and is kept bidirectional and
 title-fresh on every write. You do not hand-edit it; a closed work item leaves a
-struck-through (`~~title~~`) tombstone here. Bare `FEAT-`/`WI-` mentions in body
-prose are rewritten into markdown links on sync.
+struck-through (`~~title~~`) tombstone here. Bare feature/work-item ID mentions
+in body prose are rewritten into markdown links on sync.
 
 ### Custom-field type mapping
 
@@ -164,14 +164,14 @@ Mark a dependency between two items (features and/or work items) with
 removes it. The relation is **directional and bidirectional**: the blocked item
 gains a `blocked_by` entry and the blocker gains the inverse `blocks` entry,
 both kept title-fresh and sorted automatically (you do not hand-edit them).
-Either id may be a `FEAT-` or `WI-` id.
+Either id may be a feature or work-item id.
 
 Blocking a **work item** auto-sets its status to `blocked` — the blocker link
 itself serves as the `blocked_reason`, so none is required; `unblock` reverts it
 to `in-progress` once no blocker (and no free-text reason) remains. Features have
 no `blocked` status, so a blocked feature is purely an informational link.
 
-Blocker entries resolve, tombstone on close (`WI-0042: ~~title~~`), and reserve
+Blocker entries resolve, tombstone on close (`TASK-0042: ~~title~~`), and reserve
 ids exactly like `references`; a closed blocker is therefore safe to leave in
 place, and `work-item cleanup` strips the struck entries.
 

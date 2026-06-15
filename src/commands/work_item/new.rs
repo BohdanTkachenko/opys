@@ -1,4 +1,5 @@
 use crate::commands::{maybe_sync, split_csv};
+use crate::config;
 use crate::error::{usage, Result};
 use crate::frontmatter::Frontmatter;
 use crate::project::{self, Project};
@@ -6,9 +7,11 @@ use crate::refs;
 use crate::work_item::WorkItem;
 use crate::Ctx;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     ctx: &Ctx,
     title: &str,
+    type_name: &str,
     features: &str,
     status: &str,
     tags: &str,
@@ -19,9 +22,13 @@ pub fn run(
     let wc = prj.require_wi_cfg()?;
     let statuses = wc.statuses();
 
+    let wtype = config::type_by_name(type_name)
+        .ok_or_else(|| usage(format!("unknown work-item type {type_name:?}")))?;
+    let sections = wtype.required_sections(&wc.required_sections);
+
     let (feats, _) = prj.load();
     let (live, _) = prj.load_work_items();
-    let id = prj.next_wi_id(&feats, &live);
+    let id = prj.next_id_for_prefix(wtype.prefix, &feats, &live);
 
     // Every work item must link at least one existing feature.
     let feature_ids = split_csv(features);
@@ -72,7 +79,15 @@ pub fn run(
         }
     }
 
-    let body = format!("# {title}\n\n## Tasks\n- [ ] First task\n\n## Progress\n");
+    // Scaffold the effective required sections for this type (the configured
+    // baseline plus any per-type extras, e.g. a bug's `## Reproduction`).
+    let mut body = format!("# {title}\n");
+    for section in &sections {
+        body.push_str(&format!("\n## {section}\n"));
+        if section == "Tasks" {
+            body.push_str("- [ ] First task\n");
+        }
+    }
     let path = prj.wi_path_for(&id);
     let wi = WorkItem {
         path: path.clone(),

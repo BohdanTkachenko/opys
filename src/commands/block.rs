@@ -5,11 +5,11 @@
 //! map and `<id>` into `<by>`'s `blocks` map (the bidirectional link). When the
 //! blocked item is a work item, its status is auto-set to `blocked` — the
 //! blocker link itself serves as the `blocked_reason`. The relation spans both
-//! families, so a single top-level command pair accepts any `FEAT-`/`WI-` id;
-//! the id prefix disambiguates which file to write.
+//! families, so a single top-level command pair accepts any feature or
+//! work-item id; the id prefix disambiguates which file to write.
 
 use crate::commands::maybe_sync;
-use crate::config::WI_PREFIX;
+use crate::config::is_work_item_id;
 use crate::error::{usage, OpysError, Result};
 use crate::feature::Feature;
 use crate::frontmatter::Frontmatter;
@@ -31,7 +31,7 @@ pub fn block(ctx: &Ctx, id: &str, by: &str) -> Result<()> {
     let by_title =
         title_of(&feats, &wis, by).ok_or_else(|| OpysError::NotFound { id: by.to_string() })?;
 
-    let id_is_wi = is_wi(id);
+    let id_is_wi = is_work_item_id(id);
     edit_doc(&mut feats, &mut wis, id, |fm| {
         let mut changed = refs::add_to_map(fm, refs::BLOCKED_BY, by, &by_title);
         if id_is_wi && fm.status() != Some("blocked") {
@@ -65,7 +65,7 @@ pub fn unblock(ctx: &Ctx, id: &str, by: &str) -> Result<()> {
         return Err(usage(format!("no blocker '{by}' recorded on '{id}'")));
     }
 
-    let id_is_wi = is_wi(id);
+    let id_is_wi = is_work_item_id(id);
     edit_doc(&mut feats, &mut wis, id, |fm| {
         let mut changed = refs::remove_from_map(fm, refs::BLOCKED_BY, by);
         if id_is_wi
@@ -102,10 +102,6 @@ fn load_docs(prj: &Project) -> (Vec<Feature>, Vec<WorkItem>) {
         (Vec::new(), Vec::new())
     };
     (feats, wis)
-}
-
-fn is_wi(id: &str) -> bool {
-    id.starts_with(&format!("{WI_PREFIX}-"))
 }
 
 fn title_of(feats: &[Feature], wis: &[WorkItem], id: &str) -> Option<String> {

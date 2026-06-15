@@ -66,13 +66,16 @@ pub const CLAUDE_MD_SNIPPET: &str = r#"## Feature inventory
 "#;
 
 pub const DEFAULT_WI_CONFIG: &str = r#"# work-item subsystem configuration
-# Work-item IDs are always WI-NNNN (the prefix is fixed, not configurable).
+# Work items come in hardcoded types, each with its own fixed ID prefix:
+#   task → TASK-NNNN   bug → BUG-NNNN   chore → CHORE-NNNN
+# Pick one with `opys work-item new --type bug` (default: task).
 pad = 4                # zero-padding width for the numeric part
 
 # Additional statuses beyond todo | in-progress | blocked | done.
 extra_statuses = []
 
 # Body sections every work item must contain (verified; scaffolded by `new`).
+# This is the shared baseline; some types add their own (e.g. bug → Reproduction).
 required_sections = ["Tasks", "Progress"]
 
 # Per-project custom frontmatter fields. Example:
@@ -88,14 +91,15 @@ pub const WI_CLAUDE_MD_SNIPPET: &str = r#"## Work items
 - Work items are the ephemeral companions to features: one markdown file per
   in-flight change in `docs/opys/work-items/`, holding `## Tasks` and a
   `## Progress` log (branch/commit/PR links). They are deleted on completion.
-- Start work: `opys work-item new --title "…" --features FEAT-0001`. Every work
-  item must link at least one existing feature. Editing Tasks/Progress is a
-  normal file edit.
+- Start work: `opys work-item new --type bug --title "…" --features FEAT-0001`
+  (types: task/bug/chore → TASK-/BUG-/CHORE- ids; default task). Every work item
+  must link at least one existing feature. Editing Tasks/Progress is a normal
+  file edit.
 - opys keeps cross-references in sync automatically: a feature's `references`
   map and a work item's `references` map are kept bidirectional and titled, and
-  bare FEAT-/WI- mentions in prose are rewritten into markdown links.
+  bare feature/work-item ID mentions in prose are rewritten into markdown links.
 - Finish: fold anything durable back into the feature (test plan, status, spec),
-  then `opys work-item close WI-0001`. Close deletes the file and strikes the
+  then `opys work-item close BUG-0001`. Close deletes the file and strikes the
   reference through in the feature as a tombstone — nothing else survives.
 - Never put permanent docs in a work item, or implementation logs in a feature.
 "#;

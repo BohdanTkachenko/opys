@@ -13,10 +13,19 @@ use crate::feature::Feature;
 use crate::refs;
 use crate::work_item::WorkItem;
 
-/// Either an existing opys markdown link or a bare ID mention.
+/// Either an existing opys markdown link or a bare ID mention. The prefix
+/// alternation is built from the live ID prefixes (feature + every work-item
+/// type) so new types are linkified without touching this regex.
 static REF_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\[(?P<lid>(?:FEAT|WI)-[0-9]+)[^\]]*\]\([^)]*\)|\b(?P<bid>(?:FEAT|WI)-[0-9]+)\b")
-        .unwrap()
+    let alt = std::iter::once(crate::config::FEAT_PREFIX)
+        .chain(crate::config::work_item_prefixes())
+        .map(regex::escape)
+        .collect::<Vec<_>>()
+        .join("|");
+    Regex::new(&format!(
+        r"\[(?P<lid>(?:{alt})-[0-9]+)[^\]]*\]\([^)]*\)|\b(?P<bid>(?:{alt})-[0-9]+)\b"
+    ))
+    .unwrap()
 });
 
 /// Reconcile every doc's `references` map: make links bidirectional between

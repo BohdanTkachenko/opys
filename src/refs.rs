@@ -2,7 +2,7 @@
 //! item to other features and work items.
 //!
 //! Both document families share one `references` mapping (keys are
-//! `FEAT-NNNN` / `WI-NNNN`, values are the referenced doc's title). Prefixes
+//! `FEAT-NNNN` / `<TYPE>-NNNN`, values are the referenced doc's title). Prefixes
 //! are self-describing, so a single field captures links in either direction.
 //! Entries are always serialized sorted by item number. A *closed* work item
 //! leaves a tombstone: its title value is struck through (`~~title~~`), which
@@ -131,7 +131,7 @@ pub fn remove_from_map(fm: &mut Frontmatter, field: &str, id: &str) -> bool {
     true
 }
 
-/// Ids in the `references` map carrying the given prefix (e.g. `FEAT` or `WI`).
+/// Ids in the `references` map carrying the given prefix (e.g. `FEAT` or `BUG`).
 pub fn ids_with_prefix(fm: &Frontmatter, prefix: &str) -> Vec<String> {
     let needle = format!("{prefix}-");
     parse(fm)

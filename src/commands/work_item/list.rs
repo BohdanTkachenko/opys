@@ -1,5 +1,6 @@
 use crate::cli::ListFormat;
 use crate::commands::{field_matches, parse_field_filters};
+use crate::config;
 use crate::error::Result;
 use crate::work_item::WorkItem;
 use crate::Ctx;
@@ -7,11 +8,18 @@ use crate::Ctx;
 fn matches(
     w: &WorkItem,
     feature: Option<&str>,
+    wi_type: Option<&str>,
     status: Option<&str>,
     fields: &[(String, String)],
 ) -> bool {
     if let Some(feat) = feature {
         if !w.feature_refs().iter().any(|f| f == feat) {
+            return false;
+        }
+    }
+    if let Some(tname) = wi_type {
+        let matches_type = w.id().and_then(config::type_for_id).map(|t| t.name) == Some(tname);
+        if !matches_type {
             return false;
         }
     }
@@ -26,6 +34,7 @@ fn matches(
 pub fn run(
     ctx: &Ctx,
     feature: Option<&str>,
+    wi_type: Option<&str>,
     status: Option<&str>,
     field: &[String],
     format: ListFormat,
@@ -36,7 +45,7 @@ pub fn run(
     let (items, _) = prj.load_work_items();
     for w in items
         .iter()
-        .filter(|w| matches(w, feature, status, &filters))
+        .filter(|w| matches(w, feature, wi_type, status, &filters))
     {
         match format {
             ListFormat::Ids => println!("{}", w.id().unwrap_or("")),

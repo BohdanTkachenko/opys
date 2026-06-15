@@ -11,7 +11,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use walkdir::WalkDir;
 
-use crate::config::{Config, WorkItemConfig, FEAT_PREFIX, WI_PREFIX};
+use crate::config::{Config, WorkItemConfig, FEAT_PREFIX};
 use crate::error::{usage, OpysError, Result};
 use crate::feature::Feature;
 use crate::refs;
@@ -167,20 +167,21 @@ impl Project {
         (items, errors)
     }
 
-    pub fn wi_format_id(&self, n: u64) -> String {
+    pub fn format_wi_id(&self, prefix: &str, n: u64) -> String {
         let pad = self.wi_cfg.as_ref().map(|c| c.pad).unwrap_or(4);
-        format!("{}-{:0pad$}", WI_PREFIX, n, pad = pad)
+        format!("{}-{:0pad$}", prefix, n, pad = pad)
     }
 
     pub fn wi_path_for(&self, id: &str) -> PathBuf {
         self.wdir.join(format!("{id}.md"))
     }
 
-    /// Next work-item ID: one past the highest `WI-NNNN` seen anywhere — live
-    /// work-item files *and* every `references` map (so a closed work item's
-    /// struck tombstone still reserves its ID against reuse).
-    pub fn next_wi_id(&self, feats: &[Feature], live: &[WorkItem]) -> String {
-        let re = id_number_re(WI_PREFIX);
+    /// Next ID for a given work-item `prefix`: one past the highest
+    /// `PREFIX-NNNN` seen anywhere — live work-item files *and* every relation
+    /// map (so a closed work item's struck tombstone still reserves its ID
+    /// against reuse). Each prefix has an independent sequence.
+    pub fn next_id_for_prefix(&self, prefix: &str, feats: &[Feature], live: &[WorkItem]) -> String {
+        let re = id_number_re(prefix);
         let mut max = 0u64;
         let mut consider = |id: &str| {
             if let Some(c) = re.captures(id) {
@@ -193,16 +194,16 @@ impl Project {
             if let Some(id) = w.id() {
                 consider(id);
             }
-            for id in refs::all_ids_with_prefix(&w.frontmatter, WI_PREFIX) {
+            for id in refs::all_ids_with_prefix(&w.frontmatter, prefix) {
                 consider(&id);
             }
         }
         for f in feats {
-            for id in refs::all_ids_with_prefix(&f.frontmatter, WI_PREFIX) {
+            for id in refs::all_ids_with_prefix(&f.frontmatter, prefix) {
                 consider(&id);
             }
         }
-        self.wi_format_id(max + 1)
+        self.format_wi_id(prefix, max + 1)
     }
 
     pub fn find_wi<'a>(&self, items: &'a [WorkItem], id: &str) -> Result<&'a WorkItem> {

@@ -29,6 +29,25 @@ pub enum ListFormat {
     Paths,
 }
 
+/// A hardcoded work-item type (selects the ID prefix and per-type rules).
+#[derive(Clone, Copy, ValueEnum)]
+pub enum WiType {
+    Task,
+    Bug,
+    Chore,
+}
+
+impl WiType {
+    /// The type name, matching `config::WorkItemType::name`.
+    pub fn name(self) -> &'static str {
+        match self {
+            WiType::Task => "task",
+            WiType::Bug => "bug",
+            WiType::Chore => "chore",
+        }
+    }
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 pub enum SchemaKind {
     /// JSON Schema for `_config.toml`.
@@ -125,7 +144,7 @@ pub enum Command {
     /// Mark an item (FEAT/WI) as blocked by another, linking both directions.
     /// A blocked work item is auto-set to `blocked` status.
     Block {
-        /// The blocked item's ID (FEAT-NNNN or WI-NNNN).
+        /// The blocked item's ID (a feature or work-item id).
         id: String,
         /// The blocking item's ID.
         #[arg(long = "by")]
@@ -191,6 +210,10 @@ pub enum WorkItemCommand {
     New {
         #[arg(long)]
         title: String,
+        /// Work-item type, selecting the ID prefix (task→TASK, bug→BUG,
+        /// chore→CHORE) and any per-type required sections.
+        #[arg(long = "type", value_enum, default_value_t = WiType::Task)]
+        wi_type: WiType,
         /// Comma-separated existing feature IDs (at least one required).
         #[arg(long)]
         features: String,
@@ -215,6 +238,9 @@ pub enum WorkItemCommand {
         /// Only items linked to this feature ID.
         #[arg(long)]
         feature: Option<String>,
+        /// Only items of this type (task/bug/chore).
+        #[arg(long = "type", value_enum)]
+        wi_type: Option<WiType>,
         #[arg(long)]
         status: Option<String>,
         /// Filter by custom field: key=value (repeatable). Matches when the

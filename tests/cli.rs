@@ -577,14 +577,14 @@ fn work_item_new_auto_links_feature_bidirectionally() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("WI-0001.md"));
+        .stdout(predicate::str::contains("TASK-0001.md"));
 
     // Work item references the feature...
-    dir.child("docs/opys/work-items/WI-0001.md")
+    dir.child("docs/opys/work-items/TASK-0001.md")
         .assert(predicate::str::contains("FEAT-0001: Auth login"));
     // ...and the feature gained the reverse reference automatically.
     dir.child("docs/opys/features/FEAT-0001.md")
-        .assert(predicate::str::contains("WI-0001: Wire login"));
+        .assert(predicate::str::contains("TASK-0001: Wire login"));
     opys(&dir)
         .arg("verify")
         .assert()
@@ -621,7 +621,7 @@ fn ref_title_auto_syncs_on_rename() {
     std::fs::write(fpath.path(), text).unwrap();
     opys(&dir).arg("sync-views").assert().success();
 
-    dir.child("docs/opys/work-items/WI-0001.md")
+    dir.child("docs/opys/work-items/TASK-0001.md")
         .assert(predicate::str::contains("FEAT-0001: New name"));
 }
 
@@ -645,7 +645,7 @@ fn body_refs_are_linkified_idempotently() {
         .assert()
         .success();
 
-    let wpath = dir.child("docs/opys/work-items/WI-0001.md");
+    let wpath = dir.child("docs/opys/work-items/TASK-0001.md");
     let mut text = std::fs::read_to_string(wpath.path()).unwrap();
     text.push_str("\nSee FEAT-0001 and `FEAT-0001` literal.\n");
     std::fs::write(wpath.path(), text).unwrap();
@@ -683,15 +683,15 @@ fn work_item_close_requires_all_tasks_checked() {
         .success();
 
     opys(&dir)
-        .args(["work-item", "close", "WI-0001"])
+        .args(["work-item", "close", "TASK-0001"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("unchecked tasks remain"));
     opys(&dir)
-        .args(["work-item", "close", "WI-0001", "--force"])
+        .args(["work-item", "close", "TASK-0001", "--force"])
         .assert()
         .success();
-    dir.child("docs/opys/work-items/WI-0001.md")
+    dir.child("docs/opys/work-items/TASK-0001.md")
         .assert(predicate::path::missing());
 }
 
@@ -715,13 +715,13 @@ fn work_item_close_strikes_ref_reserves_id_and_cleanup_strips() {
         .assert()
         .success();
     opys(&dir)
-        .args(["work-item", "close", "WI-0001", "--force"])
+        .args(["work-item", "close", "TASK-0001", "--force"])
         .assert()
         .success();
 
     // The reference becomes a struck-through tombstone.
     dir.child("docs/opys/features/FEAT-0001.md")
-        .assert(predicate::str::contains("WI-0001: ~~First~~"));
+        .assert(predicate::str::contains("TASK-0001: ~~First~~"));
     // verify accepts the struck (closed) reference.
     opys(&dir)
         .arg("verify")
@@ -730,7 +730,7 @@ fn work_item_close_strikes_ref_reserves_id_and_cleanup_strips() {
         .stdout(predicate::str::contains(
             "verify: OK (1 features, 0 work items)",
         ));
-    // The ID is reserved — next is WI-0002.
+    // The ID is reserved — next is TASK-0002.
     opys(&dir)
         .args([
             "work-item",
@@ -742,7 +742,7 @@ fn work_item_close_strikes_ref_reserves_id_and_cleanup_strips() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("WI-0002.md"));
+        .stdout(predicate::str::contains("TASK-0002.md"));
 
     // cleanup removes the struck tombstone.
     opys(&dir).args(["work-item", "cleanup"]).assert().success();
@@ -757,7 +757,7 @@ fn verify_fails_on_dangling_unstruck_reference() {
     // A reference to a non-existent, non-struck id is an error.
     dir.child("docs/opys/features/FEAT-0001.md")
         .write_str(
-            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\nreferences:\n  WI-0099: Ghost\n---\n\n# F\n",
+            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\nreferences:\n  TASK-0099: Ghost\n---\n\n# F\n",
         )
         .unwrap();
     opys(&dir)
@@ -765,13 +765,13 @@ fn verify_fails_on_dangling_unstruck_reference() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "reference 'WI-0099' does not resolve",
+            "reference 'TASK-0099' does not resolve",
         ));
 
     // The same reference, struck through, is an accepted tombstone.
     dir.child("docs/opys/features/FEAT-0001.md")
         .write_str(
-            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\nreferences:\n  WI-0099: ~~Ghost~~\n---\n\n# F\n",
+            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\nreferences:\n  TASK-0099: ~~Ghost~~\n---\n\n# F\n",
         )
         .unwrap();
     opys(&dir).arg("verify").assert().success();
@@ -798,12 +798,12 @@ fn work_item_set_status_rejects_done_and_requires_blocked_reason() {
         .success();
 
     opys(&dir)
-        .args(["work-item", "set-status", "WI-0001", "done"])
+        .args(["work-item", "set-status", "TASK-0001", "done"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("work-item close"));
     opys(&dir)
-        .args(["work-item", "set-status", "WI-0001", "blocked"])
+        .args(["work-item", "set-status", "TASK-0001", "blocked"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("blocked requires --reason"));
@@ -811,7 +811,7 @@ fn work_item_set_status_rejects_done_and_requires_blocked_reason() {
         .args([
             "work-item",
             "set-status",
-            "WI-0001",
+            "TASK-0001",
             "blocked",
             "--reason",
             "waiting on upstream",
@@ -829,9 +829,9 @@ fn work_item_verify_flags_missing_required_section() {
         .assert()
         .success();
     // Hand-written work item missing the ## Progress section.
-    dir.child("docs/opys/work-items/WI-0001.md")
+    dir.child("docs/opys/work-items/TASK-0001.md")
         .write_str(
-            "---\nid: WI-0001\nstatus: todo\nreferences:\n  FEAT-0001: F\n---\n\n# W\n\n## Tasks\n- [ ] do it\n",
+            "---\nid: TASK-0001\nstatus: todo\nreferences:\n  FEAT-0001: F\n---\n\n# W\n\n## Tasks\n- [ ] do it\n",
         )
         .unwrap();
     opys(&dir)
@@ -1088,8 +1088,8 @@ fn work_item_list_filters_by_custom_field() {
         .args(["work-item", "list", "--field", "area=ui", "--format", "ids"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("WI-0001"))
-        .stdout(predicate::str::contains("WI-0002").not());
+        .stdout(predicate::str::contains("TASK-0001"))
+        .stdout(predicate::str::contains("TASK-0002").not());
 }
 
 #[test]
@@ -1117,19 +1117,19 @@ fn block_links_both_directions_and_sets_blocked_status() {
         .success();
 
     opys(&dir)
-        .args(["block", "WI-0001", "--by", "FEAT-0002"])
+        .args(["block", "TASK-0001", "--by", "FEAT-0002"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("WI-0001 blocked by FEAT-0002"));
+        .stdout(predicate::str::contains("TASK-0001 blocked by FEAT-0002"));
 
     // The blocked work item gained blocked_by and was auto-set to blocked.
-    dir.child("docs/opys/work-items/WI-0001.md")
+    dir.child("docs/opys/work-items/TASK-0001.md")
         .assert(predicate::str::contains("status: blocked"))
         .assert(predicate::str::contains("FEAT-0002: Beta"));
     // The blocker gained the reverse `blocks` edge.
     dir.child("docs/opys/features/FEAT-0002.md")
         .assert(predicate::str::contains("blocks:"))
-        .assert(predicate::str::contains("WI-0001: Wire"));
+        .assert(predicate::str::contains("TASK-0001: Wire"));
     // No blocked_reason is needed — the blocker link satisfies the guard.
     opys(&dir).arg("verify").assert().success();
 
@@ -1165,16 +1165,16 @@ fn unblock_removes_link_and_reverts_status() {
         .assert()
         .success();
     opys(&dir)
-        .args(["block", "WI-0001", "--by", "FEAT-0002"])
+        .args(["block", "TASK-0001", "--by", "FEAT-0002"])
         .assert()
         .success();
 
     opys(&dir)
-        .args(["unblock", "WI-0001", "--by", "FEAT-0002"])
+        .args(["unblock", "TASK-0001", "--by", "FEAT-0002"])
         .assert()
         .success();
     // Both sides cleared, and the auto-blocked status reverted to in-progress.
-    dir.child("docs/opys/work-items/WI-0001.md")
+    dir.child("docs/opys/work-items/TASK-0001.md")
         .assert(predicate::str::contains("status: in-progress"))
         .assert(predicate::str::contains("blocked_by").not());
     dir.child("docs/opys/features/FEAT-0002.md")
@@ -1183,7 +1183,7 @@ fn unblock_removes_link_and_reverts_status() {
 
     // Unblocking an edge that does not exist is an error.
     opys(&dir)
-        .args(["unblock", "WI-0001", "--by", "FEAT-0002"])
+        .args(["unblock", "TASK-0001", "--by", "FEAT-0002"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("no blocker"));
@@ -1210,20 +1210,20 @@ fn close_strikes_blocker_and_reserves_id() {
         .success();
     // The feature is blocked by the work item.
     opys(&dir)
-        .args(["block", "FEAT-0001", "--by", "WI-0001"])
+        .args(["block", "FEAT-0001", "--by", "TASK-0001"])
         .assert()
         .success();
 
     // Closing the blocker strikes its blocked_by entry into a tombstone.
     opys(&dir)
-        .args(["work-item", "close", "WI-0001", "--force"])
+        .args(["work-item", "close", "TASK-0001", "--force"])
         .assert()
         .success();
     dir.child("docs/opys/features/FEAT-0001.md")
-        .assert(predicate::str::contains("WI-0001: ~~Wire~~"));
+        .assert(predicate::str::contains("TASK-0001: ~~Wire~~"));
     opys(&dir).arg("verify").assert().success();
 
-    // The struck blocker reserves the id: the next work item is WI-0002.
+    // The struck blocker reserves the id: the next work item is TASK-0002.
     opys(&dir)
         .args([
             "work-item",
@@ -1235,16 +1235,238 @@ fn close_strikes_blocker_and_reserves_id() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("WI-0002.md"));
+        .stdout(predicate::str::contains("TASK-0002.md"));
 
     // Unblocking a struck (closed) blocker is tolerated and clears the blocker
     // tombstone (the separate `references` tombstone is untouched — that is
     // `cleanup`'s job).
     opys(&dir)
-        .args(["unblock", "FEAT-0001", "--by", "WI-0001"])
+        .args(["unblock", "FEAT-0001", "--by", "TASK-0001"])
         .assert()
         .success();
     dir.child("docs/opys/features/FEAT-0001.md")
         .assert(predicate::str::contains("blocked_by").not());
     opys(&dir).arg("verify").assert().success();
+}
+
+#[test]
+fn wi_new_type_selects_prefix_and_sections() {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "F", "--tags", "a"])
+        .assert()
+        .success();
+
+    // Default type is task.
+    opys(&dir)
+        .args([
+            "work-item",
+            "new",
+            "--title",
+            "General",
+            "--features",
+            "FEAT-0001",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("TASK-0001.md"));
+
+    // --type bug → BUG- prefix and a scaffolded ## Reproduction section.
+    opys(&dir)
+        .args([
+            "work-item",
+            "new",
+            "--type",
+            "bug",
+            "--title",
+            "Crash",
+            "--features",
+            "FEAT-0001",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("BUG-0001.md"));
+    dir.child("docs/opys/work-items/BUG-0001.md")
+        .assert(predicate::str::contains("## Reproduction"))
+        .assert(predicate::str::contains("## Tasks"))
+        .assert(predicate::str::contains("## Progress"));
+
+    // --type chore → CHORE-.
+    opys(&dir)
+        .args([
+            "work-item",
+            "new",
+            "--type",
+            "chore",
+            "--title",
+            "Tidy",
+            "--features",
+            "FEAT-0001",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("CHORE-0001.md"));
+
+    opys(&dir).arg("verify").assert().success();
+}
+
+#[test]
+fn wi_bug_requires_reproduction_section() {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "F", "--tags", "a"])
+        .assert()
+        .success();
+    // Hand-written bug missing the per-type ## Reproduction section.
+    dir.child("docs/opys/work-items/BUG-0001.md")
+        .write_str(
+            "---\nid: BUG-0001\nstatus: todo\nreferences:\n  FEAT-0001: F\n---\n\n# B\n\n## Tasks\n- [ ] x\n\n## Progress\n",
+        )
+        .unwrap();
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "missing required '## Reproduction' section",
+        ));
+}
+
+#[test]
+fn wi_id_sequences_are_independent_per_type() {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "F", "--tags", "a"])
+        .assert()
+        .success();
+    for _ in 0..2 {
+        opys(&dir)
+            .args([
+                "work-item",
+                "new",
+                "--type",
+                "bug",
+                "--title",
+                "b",
+                "--features",
+                "FEAT-0001",
+            ])
+            .assert()
+            .success();
+    }
+    // The task sequence is independent of the bug sequence.
+    opys(&dir)
+        .args([
+            "work-item",
+            "new",
+            "--type",
+            "task",
+            "--title",
+            "t",
+            "--features",
+            "FEAT-0001",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("TASK-0001.md"));
+    // Closing BUG-0001 reserves its id (struck tombstone): next bug is BUG-0003,
+    // and the task sequence is unaffected.
+    opys(&dir)
+        .args(["work-item", "close", "BUG-0001", "--force"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args([
+            "work-item",
+            "new",
+            "--type",
+            "bug",
+            "--title",
+            "b3",
+            "--features",
+            "FEAT-0001",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("BUG-0003.md"));
+}
+
+#[test]
+fn wi_list_filters_by_type() {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "F", "--tags", "a"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args([
+            "work-item",
+            "new",
+            "--type",
+            "bug",
+            "--title",
+            "B",
+            "--features",
+            "FEAT-0001",
+        ])
+        .assert()
+        .success();
+    opys(&dir)
+        .args([
+            "work-item",
+            "new",
+            "--type",
+            "task",
+            "--title",
+            "T",
+            "--features",
+            "FEAT-0001",
+        ])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["work-item", "list", "--type", "bug", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("BUG-0001"))
+        .stdout(predicate::str::contains("TASK-0001").not());
+}
+
+#[test]
+fn body_links_work_item_type_prefixes() {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "Auth", "--tags", "a"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args([
+            "work-item",
+            "new",
+            "--type",
+            "bug",
+            "--title",
+            "Crash",
+            "--features",
+            "FEAT-0001",
+        ])
+        .assert()
+        .success();
+    // A bare BUG-0001 mention in the feature body is linkified on sync.
+    let fpath = dir.child("docs/opys/features/FEAT-0001.md");
+    let mut text = std::fs::read_to_string(fpath.path()).unwrap();
+    text.push_str("\nSee BUG-0001 for the regression.\n");
+    std::fs::write(fpath.path(), text).unwrap();
+    opys(&dir).arg("sync-views").assert().success();
+    let out = std::fs::read_to_string(fpath.path()).unwrap();
+    assert!(
+        out.contains("[BUG-0001 — Crash](../work-items/BUG-0001.md)"),
+        "bug mention not linkified: {out}"
+    );
 }

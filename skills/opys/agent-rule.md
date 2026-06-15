@@ -5,8 +5,8 @@ work items, under `docs/opys/`. Follow this when
 `docs/opys/features/_config.toml` exists; otherwise ignore it.
 
 - **Model.** One markdown file per feature (`FEAT-NNNN`) is the *permanent*
-  record of what the project does. *Work items* (`WI-NNNN`, optional) are
-  *ephemeral* per-change companions — tasks, a progress log, branch/PR links —
+  record of what the project does. *Work items* (typed `TASK-`/`BUG-`/`CHORE-NNNN`,
+  optional) are *ephemeral* per-change companions — tasks, a progress log, branch/PR links —
   deleted on completion. Durable knowledge → features; "what I'm doing now" →
   work items.
 - **Reads.** Never bulk-read `docs/opys/`. Start at
