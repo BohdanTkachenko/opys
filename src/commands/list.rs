@@ -1,17 +1,12 @@
 use crate::cli::ListFormat;
 use crate::commands::{field_matches, parse_field_filters};
+use crate::doc::Doc;
 use crate::error::Result;
-use crate::feature::Feature;
 use crate::Ctx;
 
-fn matches(
-    f: &Feature,
-    tag: Option<&str>,
-    status: Option<&str>,
-    fields: &[(String, String)],
-) -> bool {
+fn matches(d: &Doc, tag: Option<&str>, status: Option<&str>, fields: &[(String, String)]) -> bool {
     if let Some(tag) = tag {
-        let has = f
+        let has = d
             .frontmatter
             .tags()
             .map(|ts| ts.iter().any(|t| t == tag))
@@ -21,15 +16,16 @@ fn matches(
         }
     }
     if let Some(status) = status {
-        if f.status() != Some(status) {
+        if d.status() != Some(status) {
             return false;
         }
     }
-    field_matches(&f.frontmatter, fields)
+    field_matches(&d.frontmatter, fields)
 }
 
 pub fn run(
     ctx: &Ctx,
+    type_name: Option<&str>,
     tag: Option<&str>,
     status: Option<&str>,
     field: &[String],
@@ -37,19 +33,26 @@ pub fn run(
 ) -> Result<()> {
     let prj = ctx.open()?;
     let filters = parse_field_filters(field)?;
-    let (feats, _) = prj.load();
-    for f in feats.iter().filter(|f| matches(f, tag, status, &filters)) {
+    let (docs, _) = prj.load_docs();
+    let of_type = |d: &Doc| match type_name {
+        None => true,
+        Some(tn) => d.id().and_then(|id| prj.pcfg.type_name_for_id(id)) == Some(tn),
+    };
+    for d in docs
+        .iter()
+        .filter(|d| of_type(d) && matches(d, tag, status, &filters))
+    {
         match format {
-            ListFormat::Ids => println!("{}", f.id().unwrap_or("")),
-            ListFormat::Paths => println!("{}", f.path.display()),
+            ListFormat::Ids => println!("{}", d.id().unwrap_or("")),
+            ListFormat::Paths => println!("{}", d.path.display()),
             ListFormat::Table => {
-                let tags = f.frontmatter.tags().unwrap_or_default().join(", ");
+                let tags = d.frontmatter.tags().unwrap_or_default().join(", ");
                 println!(
                     "{}  [{}]  ({})  {}",
-                    f.id().unwrap_or(""),
-                    f.status().unwrap_or(""),
+                    d.id().unwrap_or(""),
+                    d.status().unwrap_or(""),
                     tags,
-                    f.title
+                    d.title
                 );
             }
         }

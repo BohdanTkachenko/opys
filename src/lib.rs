@@ -90,12 +90,20 @@ pub fn run(cli: Cli) -> Result<i32> {
             Ok(0)
         }
         Command::List {
+            type_name,
             tag,
             status,
             field,
             format,
         } => {
-            commands::list::run(&ctx, tag.as_deref(), status.as_deref(), &field, format)?;
+            commands::list::run(
+                &ctx,
+                type_name.as_deref(),
+                tag.as_deref(),
+                status.as_deref(),
+                &field,
+                format,
+            )?;
             Ok(0)
         }
         Command::SetStatus { id, status, reason } => {

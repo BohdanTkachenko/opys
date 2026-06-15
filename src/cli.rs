@@ -111,6 +111,9 @@ pub enum Command {
 
     /// Filtered listing.
     List {
+        /// Restrict to one document type.
+        #[arg(long = "type")]
+        type_name: Option<String>,
         #[arg(long)]
         tag: Option<String>,
         #[arg(long)]
