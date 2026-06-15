@@ -124,7 +124,9 @@ fn set_status_implemented_requires_checked_item() {
         .args(["set-status", "FEAT-0001", "implemented"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("no checked test-plan item"));
+        .stderr(predicate::str::contains(
+            "'## Test plan' needs at least one checked item",
+        ));
 
     let path = dir.child("docs/opys/features/FEAT-0001.md");
     let mut text = std::fs::read_to_string(path.path()).unwrap();
@@ -297,7 +299,9 @@ fn set_status_wontfix_requires_reason() {
         .args(["set-status", "FEAT-0001", "wontfix"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("wontfix requires --reason"));
+        .stderr(predicate::str::contains(
+            "field 'wontfix_reason' is required",
+        ));
     opys(&dir)
         .args([
             "set-status",

@@ -1,41 +1,55 @@
-use crate::body;
+use std::collections::HashSet;
+
 use crate::commands::maybe_sync;
 use crate::error::{usage, Result};
-use crate::project;
 use crate::Ctx;
+use crate::{project, rules};
 
 pub fn run(ctx: &Ctx, id: &str, status: &str, reason: Option<&str>) -> Result<()> {
     let prj = ctx.open()?;
-    let (mut feats, _) = prj.load();
-    let statuses = prj.cfg.statuses();
-    let f = prj.find_mut(&mut feats, id)?;
+    let pcfg = &prj.pcfg;
+    let tname = pcfg
+        .type_name_for_id(id)
+        .ok_or_else(|| usage(format!("unrecognized id prefix in {id}")))?
+        .to_string();
+    let t = &pcfg.types[&tname];
 
-    if !statuses.iter().any(|s| s == status) {
+    if !t.statuses.iter().any(|s| s == status) {
         return Err(usage(format!(
-            "unknown status {status:?} (allowed: {})",
-            statuses.join(", ")
+            "unknown status {status:?} for type '{tname}' (allowed: {})",
+            t.statuses.join(", ")
+        )));
+    }
+    if t.terminal_statuses.iter().any(|s| s == status) {
+        return Err(usage(format!(
+            "{status} is terminal — use `opys close {id}` to reach it"
         )));
     }
 
-    if status == "wontfix" {
-        let has_reason = reason.is_some() || f.frontmatter.wontfix_reason().is_some();
-        if !has_reason {
-            return Err(usage("wontfix requires --reason"));
-        }
-        if let Some(r) = reason {
-            f.frontmatter.set_str("wontfix_reason", r);
-        }
+    let (mut docs, _) = prj.load_docs();
+    let doc_ids: HashSet<String> = docs
+        .iter()
+        .filter_map(|d| d.id())
+        .map(str::to_string)
+        .collect();
+    let d = prj.find_mut(&mut docs, id)?;
+
+    // `--reason` sets the conventional `<status>_reason` field.
+    if let Some(r) = reason {
+        d.frontmatter.set_str(&format!("{status}_reason"), r);
+    }
+    d.frontmatter.set_str("status", status);
+
+    // Enforce the engine at write time, exactly as verify does.
+    let problems = rules::evaluate(pcfg, &tname, status, &d.frontmatter, &d.body, &doc_ids);
+    if !problems.is_empty() {
+        return Err(usage(format!(
+            "cannot set {id} to {status}: {}",
+            problems.join("; ")
+        )));
     }
 
-    if status == "implemented" && !body::test_plan_items(&f.body).iter().any(|i| i.checked) {
-        return Err(usage(
-            "cannot mark implemented — no checked test-plan item \
-             (add the test, check the item, then retry)",
-        ));
-    }
-
-    f.frontmatter.set_str("status", status);
-    project::write_feature(f)?;
+    project::write_doc(d)?;
     println!("{id} -> {status}");
     maybe_sync(ctx, &prj);
     Ok(())
