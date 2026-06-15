@@ -127,6 +127,40 @@ impl Project {
         (docs, errors)
     }
 
+    /// Highest numeric id part across a document set, their relation maps, and
+    /// the retired ledger — the basis for the single global, monotonically
+    /// increasing id sequence shared by every type.
+    pub fn max_doc_id(&self, docs: &[Doc]) -> u64 {
+        let mut max = 0u64;
+        let mut consider = |id: &str| {
+            if let Some(n) = id_part(id) {
+                max = max.max(n);
+            }
+        };
+        for d in docs {
+            if let Some(id) = d.id() {
+                consider(id);
+            }
+            for id in refs::all_relation_ids(&d.frontmatter) {
+                consider(&id);
+            }
+        }
+        for id in self.retired_ids() {
+            consider(&id);
+        }
+        max
+    }
+
+    /// Next id for a type `prefix`: one past the global max, padded to `pcfg.pad`.
+    pub fn next_id_for(&self, prefix: &str, docs: &[Doc]) -> String {
+        format!(
+            "{}-{:0pad$}",
+            prefix,
+            self.max_doc_id(docs) + 1,
+            pad = self.pcfg.pad
+        )
+    }
+
     /// IDs that have been retired and may never be reused.
     pub fn retired_ids(&self) -> HashSet<String> {
         read_id_ledger(&self.fdir.join("_retired.txt"))

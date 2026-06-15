@@ -73,16 +73,23 @@ pub enum Command {
     /// Bootstrap the inventory directory and config; print the CLAUDE.md snippet.
     Init,
 
-    /// Create a feature file with the next ID.
+    /// Create a document of a configured type with the next ID.
     New {
+        /// Document type (configured in opys.toml; default `feature`).
+        #[arg(long = "type", default_value = "feature")]
+        type_name: String,
         #[arg(long)]
         title: String,
-        /// Comma-separated, kebab-case.
-        #[arg(long)]
+        /// Comma-separated, kebab-case (required when the type requires tags).
+        #[arg(long, default_value = "")]
         tags: String,
-        #[arg(long, default_value = "planned")]
+        /// Defaults to the type's `default_status`.
+        #[arg(long, default_value = "")]
         status: String,
-        /// Required when creating directly as wontfix.
+        /// Comma-separated IDs this document references (e.g. linked features).
+        #[arg(long, default_value = "")]
+        features: String,
+        /// Sets `<status>_reason` (e.g. wontfix/blocked/archived).
         #[arg(long)]
         reason: Option<String>,
         /// Custom field key=value (repeatable).

@@ -61,13 +61,24 @@ pub fn run(cli: Cli) -> Result<i32> {
             Ok(0)
         }
         Command::New {
+            type_name,
             title,
             tags,
             status,
+            features,
             reason,
             field,
         } => {
-            commands::new::run(&ctx, &title, &tags, &status, reason.as_deref(), &field)?;
+            commands::new::run(
+                &ctx,
+                &type_name,
+                &title,
+                &tags,
+                &status,
+                &features,
+                reason.as_deref(),
+                &field,
+            )?;
             Ok(0)
         }
         Command::Import { file } => {

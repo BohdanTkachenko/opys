@@ -235,13 +235,15 @@ fn new_enforces_status_guards() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "cannot create a feature as implemented",
+            "'## Test plan' needs at least one checked item",
         ));
     opys(&dir)
         .args(["new", "--title", "X", "--tags", "a", "--status", "wontfix"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("wontfix requires --reason"));
+        .stderr(predicate::str::contains(
+            "field 'wontfix_reason' is required",
+        ));
 }
 
 #[test]
