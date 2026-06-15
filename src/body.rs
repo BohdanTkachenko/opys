@@ -113,8 +113,14 @@ impl ManualItem {
 /// Structured items under `## Manual verification`. A column-0 `- ` line
 /// starts a new item; indented bullets supply its Setup/Steps/Expect.
 pub fn manual_items(body: &str) -> Vec<ManualItem> {
+    manual_items_in(body, "Manual verification")
+}
+
+/// Like [`manual_items`] but for an arbitrary section heading (a type may name
+/// its manual-kind section however it likes).
+pub fn manual_items_in(body: &str, heading: &str) -> Vec<ManualItem> {
     let mut items: Vec<ManualItem> = Vec::new();
-    for line in section(body, "Manual verification").lines() {
+    for line in section(body, heading).lines() {
         if let Some(rest) = line.strip_prefix("- ") {
             items.push(ManualItem {
                 desc: rest.trim().to_string(),

@@ -5,130 +5,133 @@ use serde_norway::Value;
 use walkdir::WalkDir;
 
 use crate::body;
-use crate::config::{self, FieldSpec, FieldType, FEAT_PREFIX};
+use crate::config::{FieldSpec, FieldType, TestRefCheck};
+use crate::doc::Doc;
 use crate::error::Result;
-use crate::feature::Feature;
-use crate::frontmatter::{Frontmatter, RESERVED_FIELDS, WI_RESERVED_FIELDS};
+use crate::frontmatter::Frontmatter;
 use crate::project::{id_format_re, Project, KEBAB_RE};
+use crate::project_config::SectionKind;
 use crate::refs;
 use crate::rules;
-use crate::work_item::WorkItem;
 use crate::Ctx;
 
 pub fn run(ctx: &Ctx) -> Result<i32> {
     let prj = ctx.open()?;
-    let (feats, mut errors) = prj.load();
+    let (docs, mut errors) = prj.load_docs();
+    let pcfg = &prj.pcfg;
 
-    // Work items participate in the same CI gate when configured.
-    let (mut wis, wi_enabled) = if prj.wi_cfg.is_some() {
-        let (w, werr) = prj.load_work_items();
-        errors.extend(werr);
-        (w, true)
-    } else {
-        (Vec::<WorkItem>::new(), false)
-    };
-
-    let statuses = prj.cfg.statuses();
-    let retired = prj.retired_ids();
-    let id_rx = id_format_re(FEAT_PREFIX, prj.cfg.pad);
-    let index = TestIndex::build(&prj, &mut errors);
-    check_field_specs(&prj.cfg.fields, "features/_config.toml", &mut errors);
-
-    // The set of ids that a `references` entry may resolve to.
-    let mut doc_ids: HashSet<String> = feats
-        .iter()
-        .filter_map(|f| f.id())
-        .map(str::to_string)
-        .collect();
-    for w in &wis {
-        if let Some(id) = w.id() {
-            doc_ids.insert(id.to_string());
+    // Validate a real, user-authored opys.toml, and the field specs of each type.
+    if prj.base.join("opys.toml").exists() {
+        for p in pcfg.validate() {
+            errors.push(format!("opys.toml: {p}"));
         }
     }
+    for (tname, t) in &pcfg.types {
+        check_field_specs(&t.fields, &format!("type '{tname}'"), &mut errors);
+    }
+
+    let retired = prj.retired_ids();
+    let index = TestIndex::build(&prj, &mut errors);
+    let reserved = reserved_fields();
+
+    // The set of ids that a `references` entry may resolve to.
+    let doc_ids: HashSet<String> = docs
+        .iter()
+        .filter_map(|d| d.id())
+        .map(str::to_string)
+        .collect();
 
     let mut seen: HashMap<String, String> = HashMap::new();
 
-    for f in &feats {
-        let m = &f.frontmatter;
-        let where_ = f.path.display().to_string();
+    for d in &docs {
+        let m = &d.frontmatter;
+        let where_ = d.path.display().to_string();
 
-        let fid = match f.id() {
-            Some(id) if id_rx.is_match(id) => id,
-            other => {
-                errors.push(format!("{where_}: bad or missing id {}", pyrepr(other)));
-                continue;
-            }
+        let Some(id) = d.id() else {
+            errors.push(format!("{where_}: bad or missing id {}", pyrepr(None)));
+            continue;
         };
-
-        if f.path.file_stem().and_then(|s| s.to_str()) != Some(fid) {
-            errors.push(format!("{where_}: filename does not match id {fid}"));
-        }
-        if let Some(prev) = seen.get(fid) {
-            errors.push(format!("{where_}: duplicate id {fid} (also in {prev})"));
-        }
-        seen.insert(fid.to_string(), where_.clone());
-        if retired.contains(fid) {
+        // The document's type is its ID prefix; an unknown prefix is an error.
+        let Some(tname) = pcfg.type_name_for_id(id) else {
+            let mut known: Vec<&str> = pcfg.types.values().map(|t| t.prefix.as_str()).collect();
+            known.sort_unstable();
             errors.push(format!(
-                "{where_}: id {fid} is retired and may not be reused"
+                "{where_}: unrecognized id prefix in {id} (expected one of: {})",
+                known.join(", ")
+            ));
+            continue;
+        };
+        let t = &pcfg.types[tname];
+
+        if !id_format_re(&t.prefix, pcfg.pad).is_match(id) {
+            errors.push(format!("{where_}: bad id {id}"));
+            continue;
+        }
+        if d.path.file_stem().and_then(|s| s.to_str()) != Some(id) {
+            errors.push(format!("{where_}: filename does not match id {id}"));
+        }
+        if let Some(prev) = seen.get(id) {
+            errors.push(format!("{where_}: duplicate id {id} (also in {prev})"));
+        }
+        seen.insert(id.to_string(), where_.clone());
+        if retired.contains(id) {
+            errors.push(format!(
+                "{where_}: id {id} is retired and may not be reused"
             ));
         }
 
-        let status = f.status();
+        let status = d.status();
         if !status
-            .map(|s| statuses.iter().any(|x| x == s))
+            .map(|s| t.statuses.iter().any(|x| x == s))
             .unwrap_or(false)
         {
-            errors.push(format!("{fid}: invalid status {}", pyrepr(status)));
+            errors.push(format!("{id}: invalid status {}", pyrepr(status)));
         }
 
-        check_tags(m, fid, &mut errors);
-
-        if f.title.is_empty() {
-            errors.push(format!("{fid}: missing '# Title' heading"));
+        if t.tags_required || m.contains_key("tags") {
+            check_tags(m, id, &mut errors);
+        }
+        if d.title.is_empty() {
+            errors.push(format!("{id}: missing '# Title' heading"));
         }
         if let Some(spec) = m.spec() {
             if !prj.root.join(spec).exists() {
-                errors.push(format!("{fid}: spec path '{spec}' does not resolve"));
+                errors.push(format!("{id}: spec path '{spec}' does not resolve"));
             }
         }
 
-        check_references(m, fid, &doc_ids, &mut errors);
+        check_references(m, id, &doc_ids, &mut errors);
         check_custom_fields(
-            &prj.cfg.fields,
-            &RESERVED_FIELDS,
-            "features/_config.toml",
+            &t.fields,
+            &reserved,
+            &format!("type '{tname}'"),
             m,
-            fid,
+            id,
             &mut errors,
         );
-        check_test_plan(f, fid, &index, &prj, &mut errors);
-        check_manual(f, fid, &mut errors);
+
+        // Section-kind validators, by the type's section headings.
+        for sec in &t.sections {
+            match sec.kind {
+                SectionKind::TestPlan => {
+                    check_test_plan(d, id, &sec.heading, &index, &prj, &mut errors)
+                }
+                SectionKind::Manual => check_manual(d, id, &sec.heading, &mut errors),
+                _ => {}
+            }
+        }
     }
 
-    if wi_enabled {
-        check_work_items(&prj, &mut wis, &doc_ids, &mut errors);
-    }
-
-    // The ID sequence is global: no two live docs may share a numeric part
-    // (this also catches two parallel agents grabbing the same next number).
-    check_unique_numbers(&feats, &wis, &mut errors);
+    // The ID sequence is global: no two live docs may share a numeric part.
+    check_unique_numbers(&docs, &mut errors);
 
     // The status-conditional guards (wontfix⇒reason, implemented⇒checked test
-    // plan, blocked⇒reason/link, the feature link, required sections) are
-    // enforced here, by the engine, against `prj.pcfg` — the real opys.toml or
-    // the config synthesized from the legacy files.
-    check_rules(&prj, &feats, &wis, &doc_ids, &mut errors);
+    // plan, blocked⇒reason/link, required links, required sections) are enforced
+    // by the engine against `prj.pcfg`.
+    check_rules(&prj, &docs, &doc_ids, &mut errors);
 
     if errors.is_empty() {
-        if wi_enabled {
-            println!(
-                "verify: OK ({} features, {} work items)",
-                feats.len(),
-                wis.len()
-            );
-        } else {
-            println!("verify: OK ({} features)", feats.len());
-        }
+        println!("verify: OK ({} documents)", docs.len());
         Ok(0)
     } else {
         eprintln!("verify: {} problem(s)", errors.len());
@@ -137,6 +140,14 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
         }
         Ok(1)
     }
+}
+
+/// Frontmatter keys allowed on any document regardless of type (everything else
+/// must be a declared field of the doc's type).
+fn reserved_fields() -> Vec<&'static str> {
+    let mut v = vec!["id", "status", "tags"];
+    v.extend(refs::RELATION_FIELDS);
+    v
 }
 
 /// Every entry in each relation map (`references`, `blocked_by`, `blocks`) must
@@ -169,94 +180,12 @@ fn check_references(
     }
 }
 
-/// Work-item integrity checks, mirroring the feature pass.
-fn check_work_items(
-    prj: &Project,
-    wis: &mut [WorkItem],
-    doc_ids: &HashSet<String>,
-    errors: &mut Vec<String>,
-) {
-    let wc = match prj.wi_cfg.as_ref() {
-        Some(c) => c,
-        None => return,
-    };
-    let statuses = wc.statuses();
-    check_field_specs(&wc.fields, "work-items/_config.toml", errors);
-    let mut seen: HashMap<String, String> = HashMap::new();
-
-    for w in wis.iter() {
-        let m = &w.frontmatter;
-        let where_ = w.path.display().to_string();
-
-        let Some(wid) = w.id() else {
-            errors.push(format!("{where_}: bad or missing id {}", pyrepr(None)));
-            continue;
-        };
-        // The work-item type is the ID prefix; an unknown prefix is an error.
-        let Some(wtype) = config::type_for_id(wid) else {
-            let known: Vec<&str> = config::work_item_prefixes().collect();
-            errors.push(format!(
-                "{where_}: unrecognized work-item id prefix in {wid} (expected one of: {})",
-                known.join(", ")
-            ));
-            continue;
-        };
-        if !id_format_re(wtype.prefix, wc.pad).is_match(wid) {
-            errors.push(format!("{where_}: bad work-item id {wid}"));
-            continue;
-        }
-        if w.path.file_stem().and_then(|s| s.to_str()) != Some(wid) {
-            errors.push(format!("{where_}: filename does not match id {wid}"));
-        }
-        if let Some(prev) = seen.get(wid) {
-            errors.push(format!("{where_}: duplicate id {wid} (also in {prev})"));
-        }
-        seen.insert(wid.to_string(), where_.clone());
-
-        let status = w.status();
-        if !status
-            .map(|s| statuses.iter().any(|x| x == s))
-            .unwrap_or(false)
-        {
-            errors.push(format!("{wid}: invalid status {}", pyrepr(status)));
-        }
-        if w.title.is_empty() {
-            errors.push(format!("{wid}: missing '# Title' heading"));
-        }
-        if m.contains_key("tags") {
-            check_tags(m, wid, errors);
-        }
-
-        check_references(m, wid, doc_ids, errors);
-        check_custom_fields(
-            &wc.fields,
-            &WI_RESERVED_FIELDS,
-            "work-items/_config.toml",
-            m,
-            wid,
-            errors,
-        );
-    }
-}
-
-/// Run the universal engine against every doc using `prj.pcfg` (the real
-/// opys.toml or the config synthesized from the legacy files): the conditional
+/// Run the universal engine against every doc using `prj.pcfg`: the conditional
 /// `[[rules]]`, field-level regex patterns, and required-section presence —
 /// mapping each doc to a type by its ID prefix. Findings are prefixed by the doc
-/// id. A real, user-authored opys.toml is also validated for well-formedness.
-fn check_rules(
-    prj: &Project,
-    feats: &[Feature],
-    wis: &[WorkItem],
-    doc_ids: &HashSet<String>,
-    errors: &mut Vec<String>,
-) {
+/// id.
+fn check_rules(prj: &Project, docs: &[Doc], doc_ids: &HashSet<String>, errors: &mut Vec<String>) {
     let pcfg = &prj.pcfg;
-    if prj.base.join("opys.toml").exists() {
-        for problem in pcfg.validate() {
-            errors.push(format!("opys.toml: {problem}"));
-        }
-    }
     let mut run = |id: Option<&str>, status: Option<&str>, m: &Frontmatter, body: &str| {
         let Some(id) = id else { return };
         let Some(type_name) = pcfg.type_name_for_id(id) else {
@@ -285,25 +214,18 @@ fn check_rules(
             }
         }
     };
-    for f in feats {
-        run(f.id(), f.status(), &f.frontmatter, &f.body);
-    }
-    for w in wis {
-        run(w.id(), w.status(), &w.frontmatter, &w.body);
+    for d in docs {
+        run(d.id(), d.status(), &d.frontmatter, &d.body);
     }
 }
 
-/// Enforce the global ID invariant: no numeric id part is shared by two
-/// distinct live docs (features and/or work items). Exact duplicate id strings
-/// are already reported by the per-family `seen` checks; this catches a number
-/// reused across prefixes (e.g. `FEAT-0003` and `TASK-0003`).
-fn check_unique_numbers(feats: &[Feature], wis: &[WorkItem], errors: &mut Vec<String>) {
+/// Enforce the global ID invariant: no numeric id part is shared by two distinct
+/// live docs. Exact duplicate id strings are already reported by the `seen`
+/// check; this catches a number reused across prefixes (e.g. `FEAT-0003` and
+/// `TASK-0003`).
+fn check_unique_numbers(docs: &[Doc], errors: &mut Vec<String>) {
     let mut by_num: HashMap<u64, String> = HashMap::new();
-    let ids = feats
-        .iter()
-        .filter_map(|f| f.id())
-        .chain(wis.iter().filter_map(|w| w.id()));
-    for id in ids {
+    for id in docs.iter().filter_map(|d| d.id()) {
         let Some((_, n)) = id.rsplit_once('-') else {
             continue;
         };
@@ -379,50 +301,51 @@ fn check_custom_fields(
 /// Structural test-plan check: every *checked* item carries ≥1 resolvable test
 /// reference. (The "implemented ⇒ a checked item" guard is now an engine rule.)
 fn check_test_plan(
-    f: &Feature,
-    fid: &str,
+    d: &Doc,
+    id: &str,
+    heading: &str,
     index: &TestIndex,
     prj: &Project,
     errors: &mut Vec<String>,
 ) {
-    for item in body::test_plan_items(&f.body) {
+    for item in body::checklist_items(&d.body, heading) {
         if !item.checked {
             continue;
         }
         let refs = body::test_refs(&item.line);
         if refs.is_empty() {
             errors.push(format!(
-                "{fid}: checked test-plan item has no `test reference`: {}",
+                "{id}: checked test-plan item has no `test reference`: {}",
                 item.line.trim()
             ));
             continue;
         }
         for r in &refs {
             if let Some(problem) = index.resolve(r, prj) {
-                errors.push(format!("{fid}: {problem}"));
+                errors.push(format!("{id}: {problem}"));
             }
         }
     }
 }
 
-fn check_manual(f: &Feature, fid: &str, errors: &mut Vec<String>) {
-    for it in body::manual_items(&f.body) {
-        let d: String = it.desc.chars().take(50).collect();
+fn check_manual(d: &Doc, id: &str, heading: &str, errors: &mut Vec<String>) {
+    for it in body::manual_items_in(&d.body, heading) {
+        let desc: String = it.desc.chars().take(50).collect();
         if it.setup.is_none() {
-            errors.push(format!("{fid}: manual item missing Setup: {d}"));
+            errors.push(format!("{id}: manual item missing Setup: {desc}"));
         }
         if it.steps.is_empty() {
-            errors.push(format!("{fid}: manual item missing numbered Steps: {d}"));
+            errors.push(format!("{id}: manual item missing numbered Steps: {desc}"));
         }
         if it.expect.is_none() {
-            errors.push(format!("{fid}: manual item missing Expect: {d}"));
+            errors.push(format!("{id}: manual item missing Expect: {desc}"));
         }
         let as_item = format!("- {}", it.desc);
         if as_item.to_lowercase().starts_with("- [x] ")
             || it.desc.starts_with("[ ]")
             || it.desc.starts_with("[x]")
         {
-            errors.push(format!("{fid}: manual items must not be checkboxes: {d}"));
+            errors.push(format!("{id}: manual items must not be checkboxes: {desc}"));
         }
     }
 }
@@ -439,38 +362,41 @@ enum TestIndex {
 
 impl TestIndex {
     fn build(prj: &Project, errors: &mut Vec<String>) -> TestIndex {
-        if prj.cfg.grep_mode() {
-            let mut corpus = String::new();
-            for (_, text) in scan_files(prj) {
-                corpus.push_str(&text);
-            }
-            return TestIndex::Grep(corpus);
-        }
-        if prj.cfg.extract_mode() {
-            let Some(pat) = &prj.cfg.test_name_pattern else {
-                errors.push(
-                    "config: test_reference_check = \"extract\" requires test_name_pattern".into(),
-                );
-                return TestIndex::Off;
-            };
-            let re = match Regex::new(pat) {
-                Ok(re) => re,
-                Err(e) => {
-                    errors.push(format!("config: invalid test_name_pattern: {e}"));
-                    return TestIndex::Off;
+        match prj.pcfg.tests.reference_check {
+            TestRefCheck::None => TestIndex::Off,
+            TestRefCheck::Grep => {
+                let mut corpus = String::new();
+                for (_, text) in scan_files(prj) {
+                    corpus.push_str(&text);
                 }
-            };
-            let mut names = HashSet::new();
-            for (_, text) in scan_files(prj) {
-                for c in re.captures_iter(&text) {
-                    if let Some(g) = c.get(1) {
-                        names.insert(g.as_str().to_string());
+                TestIndex::Grep(corpus)
+            }
+            TestRefCheck::Extract => {
+                let Some(pat) = &prj.pcfg.tests.name_pattern else {
+                    errors.push(
+                        "config: tests.reference_check = \"extract\" requires tests.name_pattern"
+                            .into(),
+                    );
+                    return TestIndex::Off;
+                };
+                let re = match Regex::new(pat) {
+                    Ok(re) => re,
+                    Err(e) => {
+                        errors.push(format!("config: invalid tests.name_pattern: {e}"));
+                        return TestIndex::Off;
+                    }
+                };
+                let mut names = HashSet::new();
+                for (_, text) in scan_files(prj) {
+                    for c in re.captures_iter(&text) {
+                        if let Some(g) = c.get(1) {
+                            names.insert(g.as_str().to_string());
+                        }
                     }
                 }
+                TestIndex::Extract { names, re }
             }
-            return TestIndex::Extract { names, re };
         }
-        TestIndex::Off
     }
 
     /// Returns a problem message if the reference does not resolve.
@@ -484,7 +410,7 @@ impl TestIndex {
             TestIndex::Grep(corpus) => (!corpus.contains(name)).then(|| {
                 format!(
                     "test reference `{reference}` not found under {:?}",
-                    prj.cfg.test_search_paths
+                    prj.pcfg.tests.search_paths
                 )
             }),
             TestIndex::Extract { names, re } => {
@@ -503,7 +429,7 @@ impl TestIndex {
                     (!names.contains(name)).then(|| {
                         format!(
                             "test reference `{reference}` not found under {:?}",
-                            prj.cfg.test_search_paths
+                            prj.pcfg.tests.search_paths
                         )
                     })
                 }
@@ -515,7 +441,7 @@ impl TestIndex {
 /// All readable files under `test_search_paths`, as (path, contents).
 fn scan_files(prj: &Project) -> Vec<(std::path::PathBuf, String)> {
     let mut out = Vec::new();
-    for d in &prj.cfg.test_search_paths {
+    for d in &prj.pcfg.tests.search_paths {
         for entry in WalkDir::new(prj.root.join(d))
             .into_iter()
             .filter_map(|e| e.ok())
@@ -540,7 +466,7 @@ fn is_path_ref(prefix: &str) -> bool {
 /// Resolve a `path::name` file prefix against the root and the search paths.
 fn resolve_file(prj: &Project, prefix: &str) -> Option<String> {
     let mut candidates = vec![prj.root.join(prefix)];
-    for d in &prj.cfg.test_search_paths {
+    for d in &prj.pcfg.tests.search_paths {
         candidates.push(prj.root.join(d).join(prefix));
     }
     candidates

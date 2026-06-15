@@ -198,7 +198,7 @@ fn verify_passes_clean_and_flags_violations() {
         .arg("verify")
         .assert()
         .success()
-        .stdout(predicate::str::contains("verify: OK (1 features)"));
+        .stdout(predicate::str::contains("verify: OK (1 documents)"));
 
     dir.child("docs/opys/features/FEAT-0002.md")
         .write_str(
@@ -589,9 +589,7 @@ fn work_item_new_auto_links_feature_bidirectionally() {
         .arg("verify")
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "verify: OK (1 features, 1 work items)",
-        ));
+        .stdout(predicate::str::contains("verify: OK (2 documents)"));
 }
 
 #[test]
@@ -727,9 +725,7 @@ fn work_item_close_strikes_ref_reserves_id_and_cleanup_strips() {
         .arg("verify")
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "verify: OK (1 features, 0 work items)",
-        ));
+        .stdout(predicate::str::contains("verify: OK (1 documents)"));
     // The ID is reserved — next continues the global sequence at TASK-0003.
     opys(&dir)
         .args([
@@ -856,7 +852,7 @@ fn verify_ignores_work_items_when_not_configured() {
         .arg("verify")
         .assert()
         .success()
-        .stdout(predicate::str::contains("verify: OK (1 features)"))
+        .stdout(predicate::str::contains("verify: OK (1 documents)"))
         .stdout(predicate::str::contains("work items").not());
 }
 
@@ -1546,7 +1542,8 @@ fn verify_enforces_opys_rules_when_present() {
     opys(&dir).args(["config", "init"]).assert().success();
 
     // An archived feature with no archived_reason — the opys.toml rule fires.
-    dir.child("docs/opys/features/FEAT-0001.md")
+    // (The default opys.toml puts every type's docs in the shared `items/` dir.)
+    dir.child("docs/opys/items/FEAT-0001.md")
         .write_str("---\nid: FEAT-0001\nstatus: archived\ntags: [a]\n---\n\n# F\n")
         .unwrap();
     opys(&dir)
@@ -1559,7 +1556,7 @@ fn verify_enforces_opys_rules_when_present() {
         ));
 
     // Supplying the reason satisfies both the legacy checks and the rule.
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("docs/opys/items/FEAT-0001.md")
         .write_str(
             "---\nid: FEAT-0001\nstatus: archived\ntags: [a]\narchived_reason: removed in v3\n---\n\n# F\n",
         )
@@ -1590,7 +1587,7 @@ fn verify_enforces_field_pattern_from_opys_config() {
     let dir = project_with(cfg);
     dir.child("docs/opys/opys.toml")
         .write_str(
-            "[types.feature]\nprefix = \"FEAT\"\nstatuses = [\"planned\"]\ndefault_status = \"planned\"\ntags_required = true\n\n[types.feature.fields.ticket]\ntype = \"string\"\npattern = '^JIRA-[0-9]+$'\n",
+            "[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\nstatuses = [\"planned\"]\ndefault_status = \"planned\"\ntags_required = true\n\n[types.feature.fields.ticket]\ntype = \"string\"\npattern = '^JIRA-[0-9]+$'\n",
         )
         .unwrap();
     dir.child("docs/opys/features/FEAT-0001.md")
