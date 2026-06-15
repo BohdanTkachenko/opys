@@ -3,6 +3,7 @@
 
 pub mod agent_rules;
 pub mod block;
+pub mod config;
 pub mod import;
 pub mod init;
 pub mod list;

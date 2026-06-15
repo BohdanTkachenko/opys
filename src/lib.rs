@@ -125,6 +125,12 @@ pub fn run(cli: Cli) -> Result<i32> {
             commands::work_item::run(&ctx, cmd)?;
             Ok(0)
         }
+        Command::Config(cmd) => {
+            match cmd {
+                cli::ConfigCommand::Init => commands::config::init(&ctx)?,
+            }
+            Ok(0)
+        }
         Command::AgentRules { tool, stdout } => {
             commands::agent_rules::run(&ctx, tool, stdout)?;
             Ok(0)

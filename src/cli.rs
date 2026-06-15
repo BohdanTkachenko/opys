@@ -190,6 +190,10 @@ pub enum Command {
     #[command(alias = "wi", subcommand)]
     WorkItem(WorkItemCommand),
 
+    /// Project configuration (generate/inspect the universal opys.toml).
+    #[command(subcommand)]
+    Config(ConfigCommand),
+
     /// Generate the always-on agent rule file for a rules-based editor
     /// (Cursor/Windsurf/Cline/Copilot/Kiro) from the canonical rule.
     AgentRules {
@@ -199,6 +203,12 @@ pub enum Command {
         #[arg(long)]
         stdout: bool,
     },
+}
+
+#[derive(Subcommand)]
+pub enum ConfigCommand {
+    /// Generate the opinionated default opys.toml (never overwrites an existing one).
+    Init,
 }
 
 #[derive(Subcommand)]

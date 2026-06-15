@@ -1471,3 +1471,25 @@ fn body_links_work_item_type_prefixes() {
         "bug mention not linkified: {out}"
     );
 }
+
+#[test]
+fn config_init_generates_opys_toml() {
+    let dir = TempDir::new().unwrap();
+    opys(&dir)
+        .args(["config", "init"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("opys.toml"));
+    dir.child("docs/opys/opys.toml")
+        .assert(predicate::str::contains("[types.feature]"))
+        .assert(predicate::str::contains("prefix = \"FEAT\""))
+        .assert(predicate::str::contains("kind = \"test-plan\""))
+        .assert(predicate::str::contains("[[rules]]"));
+
+    // Re-running refuses to overwrite.
+    opys(&dir)
+        .args(["config", "init"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already exists"));
+}
