@@ -1,11 +1,11 @@
-//! `opys import` — bulk-create documents of the `feature` type from a JSONL file
-//! in a single pass.
+//! `opys import` — bulk-create documents of one type from a JSONL file in a
+//! single pass.
 //!
-//! Each line of the file is a JSON object describing one feature. Writes still
+//! Each line of the file is a JSON object describing one document. Writes still
 //! go through the CLI (so invariants hold at write time), but unlike `new` the
-//! whole batch shares one ID allocation and one view regeneration, which is
-//! what makes migrating thousands of features tractable. The batch is
-//! transactional: if any record is rejected, nothing is written.
+//! whole batch shares one ID allocation and one sync, which is what makes
+//! migrating thousands of documents tractable. The batch is transactional: if
+//! any record is rejected, nothing is written.
 
 use std::collections::HashSet;
 
@@ -19,14 +19,18 @@ use crate::project::Project;
 use crate::project_config::{DocType, ProjectConfig};
 use crate::{rules, Ctx};
 
-pub fn run(ctx: &Ctx, file: &str) -> Result<()> {
+pub fn run(ctx: &Ctx, type_name: &str, file: &str) -> Result<()> {
     let prj = Project::open(&ctx.root)?;
     let (docs, _) = prj.load_docs();
     let pcfg = &prj.pcfg;
-    let ft = pcfg
-        .types
-        .get("feature")
-        .ok_or_else(|| usage("import requires a 'feature' type in opys.toml"))?;
+    let ft = pcfg.types.get(type_name).ok_or_else(|| {
+        let mut names: Vec<&str> = pcfg.types.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        usage(format!(
+            "unknown type {type_name:?} (configured: {})",
+            names.join(", ")
+        ))
+    })?;
     let doc_ids: HashSet<String> = docs
         .iter()
         .filter_map(|d| d.id())
@@ -48,7 +52,7 @@ pub fn run(ctx: &Ctx, file: &str) -> Result<()> {
         }
         next += 1;
         let id = format!("{}-{:0pad$}", ft.prefix, next, pad = pcfg.pad);
-        match build_record(&prj, ft, pcfg, &doc_ids, &id, line) {
+        match build_record(&prj, ft, pcfg, type_name, &doc_ids, &id, line) {
             Ok(d) => built.push(d),
             Err(e) => errors.push(format!("line {}: {e}", i + 1)),
         }
@@ -73,21 +77,25 @@ pub fn run(ctx: &Ctx, file: &str) -> Result<()> {
     }
     let first = built.first().and_then(Doc::id).unwrap_or("");
     let last = built.last().and_then(Doc::id).unwrap_or("");
-    println!("imported {} feature(s): {first}..{last}", built.len());
+    println!(
+        "imported {} {type_name} document(s): {first}..{last}",
+        built.len()
+    );
     maybe_sync(ctx, &prj);
     Ok(())
 }
 
-/// Turn one JSONL line into a validated, ID-assigned feature [`Doc`].
+/// Turn one JSONL line into a validated, ID-assigned [`Doc`] of `type_name`.
 ///
 /// `title` and `body` are special: `title` becomes the `# Title` heading and
 /// `body` is the markdown placed beneath it. Every other key goes verbatim into
-/// the frontmatter, so the schema mirrors a feature file. The engine
+/// the frontmatter, so the schema mirrors a document file. The engine
 /// (`rules::evaluate`) is applied per record; deeper checks remain `verify`'s job.
 fn build_record(
     prj: &Project,
     ft: &DocType,
     pcfg: &ProjectConfig,
+    type_name: &str,
     doc_ids: &HashSet<String>,
     id: &str,
     line: &str,
@@ -146,7 +154,7 @@ fn build_record(
         _ => format!("# {title}\n"),
     };
 
-    let problems = rules::evaluate(pcfg, "feature", &status, &fm, &body, doc_ids);
+    let problems = rules::evaluate(pcfg, type_name, &status, &fm, &body, doc_ids);
     if !problems.is_empty() {
         return Err(usage(problems.join("; ")));
     }

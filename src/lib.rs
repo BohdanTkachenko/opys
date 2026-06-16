@@ -73,8 +73,8 @@ pub fn run(cli: Cli) -> Result<i32> {
             )?;
             Ok(0)
         }
-        Command::Import { file } => {
-            commands::import::run(&ctx, &file)?;
+        Command::Import { type_name, file } => {
+            commands::import::run(&ctx, &type_name, &file)?;
             Ok(0)
         }
         Command::Show { id } => {

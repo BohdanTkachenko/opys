@@ -76,12 +76,6 @@ impl Frontmatter {
     pub fn status(&self) -> Option<&str> {
         self.get_str("status")
     }
-    pub fn wontfix_reason(&self) -> Option<&str> {
-        self.get_str("wontfix_reason")
-    }
-    pub fn spec(&self) -> Option<&str> {
-        self.get_str("spec")
-    }
 
     /// `tags` as a list of strings, when it is a sequence whose elements are
     /// all strings. Returns `None` if absent or wrong-shaped (verify reports).

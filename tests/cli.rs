@@ -507,11 +507,33 @@ fn import_bulk_creates_sequential_ids_and_syncs_once() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "imported 2 feature(s): FEAT-0002..FEAT-0003",
+            "imported 2 feature document(s): FEAT-0002..FEAT-0003",
         ));
     dir.child("opys/features/FEAT-0002.md")
         .assert(predicate::str::contains("ptyxis_ref: src/a.c"));
     opys(&dir).arg("verify").assert().success();
+}
+
+#[test]
+fn import_creates_documents_of_any_type() {
+    let cfg = format!(
+        "{}\n[types.note]\nprefix = \"NOTE\"\ndir = \"notes\"\nstatuses = [\"open\"]\ndefault_status = \"open\"\n",
+        default_cfg()
+    );
+    let dir = project_with(&cfg);
+    let jsonl = dir.child("notes.jsonl");
+    jsonl
+        .write_str("{\"title\": \"A note\", \"tags\": [\"x\"]}\n")
+        .unwrap();
+    opys(&dir)
+        .args(["import", "--type", "note", jsonl.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "imported 1 note document(s): NOTE-0001",
+        ));
+    dir.child("opys/notes/NOTE-0001.md")
+        .assert(predicate::path::exists());
 }
 
 #[test]

@@ -70,16 +70,19 @@ pub enum Command {
         field: Vec<String>,
     },
 
-    /// Bulk-create features from a JSONL file (one JSON object per line),
-    /// allocating sequential IDs and syncing once. Run `verify` afterwards.
+    /// Bulk-create documents of one type from a JSONL file (one JSON object per
+    /// line), allocating sequential IDs and syncing once. Run `verify` after.
     Import {
+        /// Document type to create (configured in opys.toml; default `feature`).
+        #[arg(long = "type", default_value = "feature")]
+        type_name: String,
         /// Path to a `.jsonl` file. Each line is an object with `title` and
-        /// `tags` (required), optional `status`/`spec`/custom fields, and an
-        /// optional `body` (markdown placed under the title heading).
+        /// `tags` (required), optional `status`/custom fields, and an optional
+        /// `body` (markdown placed under the title heading).
         file: String,
     },
 
-    /// Print a feature file.
+    /// Print a document.
     Show { id: String },
 
     /// Filtered listing.
@@ -117,19 +120,19 @@ pub enum Command {
         remove: Option<String>,
     },
 
-    /// Delete a feature; its ID is never reused.
+    /// Delete a document; its ID is logged and never reused.
     Retire {
         id: String,
         #[arg(long)]
         reason: String,
     },
 
-    /// Mark an item (FEAT/WI) as blocked by another, linking both directions.
-    /// A blocked work item is auto-set to `blocked` status.
+    /// Mark a document as blocked by another, linking both directions. The
+    /// blocked document is auto-set to `blocked` if its type has that status.
     Block {
-        /// The blocked item's ID (a feature or work-item id).
+        /// The blocked document's ID.
         id: String,
-        /// The blocking item's ID.
+        /// The blocking document's ID.
         #[arg(long = "by")]
         by: String,
     },

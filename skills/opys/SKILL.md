@@ -66,7 +66,7 @@ its ID prefix.
 | `init` | bootstrap `opys.toml` + `items/`, print CLAUDE.md snippet |
 | `config init` / `config validate` | generate / check the universal `opys.toml` |
 | `new --type T --title … [--tags a,b] [--status S] [--features F1,F2] [--reason R] [--field k=v]` | create a doc of type `T` with the next ID (`--type` defaults to `feature`; auto-syncs) |
-| `import FILE.jsonl` | bulk-create `feature` docs from JSONL (sequential IDs, one sync, transactional) |
+| `import --type T FILE.jsonl` | bulk-create docs of type `T` from JSONL (sequential IDs, one sync, transactional) |
 | `show ID` / `list [--type T] [--tag T] [--status S] [--field k=v]… [--format table\|ids\|paths]` | retrieval; `--field` filters by any custom field (repeatable, ANDed) |
 | `set-status ID S [--reason R]` | guarded transition against the type's statuses + rules; a terminal status is reached only via `close` |
 | `tag ID --add a,b --remove c` | tag maintenance |

@@ -92,11 +92,6 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
         if d.title.is_empty() {
             errors.push(format!("{id}: missing '# Title' heading"));
         }
-        if let Some(spec) = m.spec() {
-            if !prj.root.join(spec).exists() {
-                errors.push(format!("{id}: spec path '{spec}' does not resolve"));
-            }
-        }
 
         check_references(m, id, &doc_ids, &mut errors);
         check_custom_fields(
@@ -150,7 +145,7 @@ fn reserved_fields() -> Vec<&'static str> {
 
 /// Every entry in each relation map (`references`, `blocked_by`, `blocks`) must
 /// resolve to an existing doc, unless it is a struck-through tombstone (a closed
-/// work item). A blocker map may not list the doc itself.
+/// document). A blocker map may not list the doc itself.
 fn check_references(
     m: &Frontmatter,
     id: &str,
@@ -171,7 +166,7 @@ fn check_references(
                     field
                 };
                 errors.push(format!(
-                    "{id}: {what} '{tid}' does not resolve to a feature or work item"
+                    "{id}: {what} '{tid}' does not resolve to a known document"
                 ));
             }
         }

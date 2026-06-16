@@ -131,7 +131,7 @@ may reflow the formatting (not the meaning) of complex values.
 | `references` | no | ID→title map of linked work items (and features); auto-maintained |
 | `blocked_by` / `blocks` | no | ID→title maps of the blocker relation; auto-maintained (see Blockers) |
 | `wontfix_reason` | iff wontfix | one-line ADR for the parity/scope exception |
-| `spec` | no | path to long-form shared material; must resolve |
+| `spec` | no | pointer to long-form shared material (a plain string field) |
 | custom | per config | validated against `[fields.*]` declarations |
 
 There is deliberately no `tests:` field — covering tests are derived from
@@ -182,16 +182,17 @@ Mark a dependency between two items (features and/or work items) with
 removes it. The relation is **directional and bidirectional**: the blocked item
 gains a `blocked_by` entry and the blocker gains the inverse `blocks` entry,
 both kept title-fresh and sorted automatically (you do not hand-edit them).
-Either id may be a feature or work-item id.
+Either id may be a document of any type.
 
-Blocking a **work item** auto-sets its status to `blocked` — the blocker link
-itself serves as the `blocked_reason`, so none is required; `unblock` reverts it
-to `in-progress` once no blocker (and no free-text reason) remains. Features have
-no `blocked` status, so a blocked feature is purely an informational link.
+Blocking a document whose type has a `blocked` status auto-sets it — the blocker
+link itself serves as the `blocked_reason`, so none is required; `unblock`
+reverts it to `in-progress` once no blocker (and no free-text reason) remains. A
+type without a `blocked` status (e.g. `feature`) treats the link as purely
+informational.
 
 Blocker entries resolve, tombstone on close (`TASK-0042: ~~title~~`), and reserve
 ids exactly like `references`; a closed blocker is therefore safe to leave in
-place, and `work-item cleanup` strips the struck entries.
+place, and `opys cleanup` strips the struck entries.
 
 ## Status semantics
 

@@ -71,7 +71,7 @@ by hand.
 | `init` | bootstrap `opys.toml` + `items/`, print a CLAUDE.md snippet |
 | `config <init\|validate>` | generate / validate the universal `opys.toml` |
 | `new --type <T>` | allocate the next ID and write a skeleton document of type `T` (auto-syncs) |
-| `import` | bulk-create `feature` documents from a JSONL file (sequential IDs, one sync) |
+| `import --type <T>` | bulk-create documents of type `T` from a JSONL file (sequential IDs, one sync) |
 | `show` / `list` | retrieval (`--type`, `--tag`, `--status`, `--format table\|ids\|paths`) |
 | `set-status` | guarded transitions, enforced by the type's configured rules |
 | `tag` | add/remove tags (`--add a,b --remove c`) |
