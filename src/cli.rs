@@ -150,8 +150,8 @@ pub enum Command {
     /// Reconcile references, linkify prose, and regenerate INDEX.md (after hand edits).
     Sync,
 
-    /// Progress, coverage, and (optionally) parity stats.
-    Report,
+    /// Per-type status breakdown (counts + percentages) and coverage stats.
+    Stats,
 
     /// Finish a document of a type with a terminal status: delete the file and
     /// strike its title in every referencing doc (the struck reference reserves

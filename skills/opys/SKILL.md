@@ -1,6 +1,6 @@
 ---
 name: opys
-description: Set up and operate a file-based inventory of typed markdown documents ("file-based JIRA") — one markdown file per document with YAML frontmatter, stable IDs, tags, and configurable types/statuses/fields/sections/rules in one opys.toml, with test plans and a verify gate for CI. The default config ships a permanent feature type plus ephemeral task/bug/chore types (deleted on close); projects can add their own (epic, adr, risk, …). Use this skill whenever the user wants to track implemented features, requirements coverage, feature parity with another product, a traceability matrix between features and tests, in-flight implementation work, or asks how to share a large list between themselves and LLM agents. Also use it when working inside a project that already has a opys.toml — for creating documents (opys new --type), changing status, updating test plans, closing work, running verify, or generating the index and reports.
+description: Set up and operate a file-based inventory of typed markdown documents ("file-based JIRA") — one markdown file per document with YAML frontmatter, stable IDs, tags, and configurable types/statuses/fields/sections/rules in one opys.toml, with test plans and a verify gate for CI. The default config ships a permanent feature type plus ephemeral task/bug/chore types (deleted on close); projects can add their own (epic, adr, risk, …). Use this skill whenever the user wants to track implemented features, requirements coverage, feature parity with another product, a traceability matrix between features and tests, in-flight implementation work, or asks how to share a large list between themselves and LLM agents. Also use it when working inside a project that already has a opys.toml — for creating documents (opys new --type), changing status, updating test plans, closing work, running verify, or viewing the index and stats.
 ---
 
 # opys — typed-document inventory
@@ -75,7 +75,7 @@ its ID prefix.
 | `close ID [--force]` / `cleanup` | finish a doc whose type has a terminal status (strike its refs everywhere); strip struck refs |
 | `verify` | full integrity check; nonzero exit on problems — wire into CI |
 | `sync` | reconcile references, linkify prose, regenerate `INDEX.md` |
-| `report` | per-type status counts, coverage gaps, and (opt-in) parity % |
+| `stats` | per-type status counts + percentages, and coverage gaps |
 | `agent-rules --tool <editor>` | generate a rules-based editor's instruction file from the canonical rule |
 
 ## Workflow: bootstrapping a project
@@ -84,8 +84,8 @@ its ID prefix.
    `[types.<name>]` (prefix, statuses, `[fields.*]`, `[[sections]]`, and
    `[[rules]]`), and set `[tests]` (`search_paths`, `reference_check`). Unknown
    frontmatter fields fail verify until declared on the type — this keeps the
-   schema honest. For parity projects set `[report] parity = true`. To validate
-   that test references point at real tests, set `reference_check = "extract"`
+   schema honest. To validate that test references point at real tests, set
+   `reference_check = "extract"`
    plus a `name_pattern` regex; otherwise the default `"grep"` substring check
    applies. `opys config validate` checks the config is well-formed.
 2. Add the printed snippet to the project's CLAUDE.md.
@@ -141,7 +141,7 @@ Expect while the details are fresh. Manual verification is *not* reserved for
 the unautomatable: a manual item may re-check behavior that automated tests
 also cover (a friendlier, end-to-end sanity pass). To mark it as also
 automated, add backticked test refs on the item's line; items with no refs
-have no automated coverage and are counted in `report`.
+have no automated coverage and are counted in `opys stats`.
 
 ## Retrieval discipline
 

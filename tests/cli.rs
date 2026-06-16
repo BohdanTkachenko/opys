@@ -593,31 +593,29 @@ fn sync_regenerates_index() {
 }
 
 #[test]
-fn report_parity_is_opt_in() {
+fn stats_reports_per_status_percentages() {
     let dir = project();
-    dir.child("opys/features/FEAT-0001.md")
-        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# A\n")
-        .unwrap();
+    for (n, status) in [
+        ("0001", "planned"),
+        ("0002", "planned"),
+        ("0003", "implemented"),
+    ] {
+        dir.child(format!("opys/features/FEAT-{n}.md"))
+            .write_str(&format!(
+                "---\nid: FEAT-{n}\nstatus: {status}\ntags: [a]\n---\n\n# F\n"
+            ))
+            .unwrap();
+    }
     opys(&dir)
-        .arg("report")
+        .arg("stats")
         .assert()
         .success()
-        .stdout(predicate::str::contains("documents: 1"))
+        .stdout(predicate::str::contains("documents: 3"))
+        .stdout(predicate::str::contains("feature: 3"))
+        // planned 2/3 ≈ 67%, implemented 1/3 ≈ 33%
+        .stdout(predicate::str::contains("planned"))
+        .stdout(predicate::str::contains("67%"))
         .stdout(predicate::str::contains("parity").not());
-
-    let dir2 = project_with(&opys_cfg(
-        "[tests]\nreference_check = \"none\"\n",
-        "[report]\nparity = true\n",
-        "",
-    ));
-    dir2.child("opys/features/FEAT-0001.md")
-        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# A\n")
-        .unwrap();
-    opys(&dir2)
-        .arg("report")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("parity (impl / all)"));
 }
 
 // --- Work items -----------------------------------------------------------

@@ -37,9 +37,6 @@ search_paths = ["src", "tests"]
 reference_check = "grep"             # "grep" | "extract" | "none"
 # name_pattern = "fn\\s+(\\w+)\\s*\\("   # required for "extract"
 
-[report]
-parity = false                       # report feature-parity % (parity projects)
-
 [types.feature]                      # one [types.<name>] block per document type
 prefix = "FEAT"                      # ^[A-Z][A-Z0-9]*$, unique across types
 # dir = "features"                   # default: the shared items/
@@ -130,7 +127,7 @@ may reflow the formatting (not the meaning) of complex values.
 | `tags` | yes | non-empty list, lowercase kebab-case, open vocabulary |
 | `references` | no | ID→title map of linked work items (and features); auto-maintained |
 | `blocked_by` / `blocks` | no | ID→title maps of the blocker relation; auto-maintained (see Blockers) |
-| `wontfix_reason` | iff wontfix | one-line ADR for the parity/scope exception |
+| `wontfix_reason` | iff wontfix | one-line ADR for the scope exception |
 | `spec` | no | pointer to long-form shared material (a plain string field) |
 | custom | per config | validated against `[fields.*]` declarations |
 
@@ -200,7 +197,7 @@ place, and `opys cleanup` strips the struck entries.
 - `partial` — some behavior present; unchecked test-plan items document the gap.
 - `implemented` — complete; requires ≥1 checked test-plan item.
 - `wontfix` — deliberate exception, reason required; stays in the inventory so
-  parity accounting is honest and the decision is not re-litigated.
+  the decision is recorded and not re-litigated.
 
 Status changes go through `set-status`, never hand edits — the guards live
 there.
@@ -262,7 +259,7 @@ the only coverage a case has.
   be written, the case is under-specified.
 - **Automated-coverage signal:** add ≥1 backticked test ref on the item's
   description line to mark it as also automated. Items with **no** ref have no
-  automated coverage — `report` counts them, since they are the most important
+  automated coverage — `opys stats` counts them, since they are the most important
   to run by hand. When an item exists *because* it cannot be automated, say so
   in the description
   (e.g. *manual: cannot assert rendering quality*) so the reason is recorded.

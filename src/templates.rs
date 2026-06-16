@@ -40,9 +40,6 @@ search_paths = ["src", "tests"]
 reference_check = "grep"             # "grep" | "extract" | "none"
 # name_pattern = "fn\\s+(\\w+)\\s*\\("   # required when reference_check = "extract"
 
-[report]
-parity = false                       # report feature-parity percentages
-
 # ---------------------------------- feature ----------------------------------
 # Permanent description of product behavior. A feature removed from the product
 # becomes status "archived" (kept in the inventory), never deleted.

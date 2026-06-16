@@ -123,8 +123,8 @@ pub fn run(cli: Cli) -> Result<i32> {
             commands::sync_views::run(&ctx)?;
             Ok(0)
         }
-        Command::Report => {
-            commands::report::run(&ctx)?;
+        Command::Stats => {
+            commands::stats::run(&ctx)?;
             Ok(0)
         }
         Command::Close { id, force } => {

@@ -52,7 +52,7 @@ opys new --title "Tab title follows OSC 0/2" --tags osc,tabs
 opys list --status planned
 opys set-status FEAT-0001 implemented       # rejected unless a test item is checked
 opys verify                                 # integrity check; nonzero exit on problems
-opys report                                 # status, coverage gaps (parity if enabled)
+opys stats                                  # per-type status counts + percentages
 
 # Ephemeral work, linked to a feature (default types: task/bug/chore):
 opys new --type bug --title "Survive profile switch" --features FEAT-0001
@@ -80,7 +80,7 @@ by hand.
 | `close` / `cleanup` | finish a document of a type with a terminal status; strip struck refs |
 | `verify` | full integrity check — wire into CI |
 | `sync` | reconcile references, linkify prose, regenerate `INDEX.md` (for hand edits) |
-| `report` | status counts, coverage gaps, opt-in parity % |
+| `stats` | per-type status counts + percentages, coverage gaps |
 | `agent-rules --tool <editor>` | generate a rules-based editor's instruction file from the canonical rule |
 
 A feature file looks like (the `references` map is auto-maintained — a work

@@ -181,12 +181,6 @@ pub struct TestsConfig {
     pub name_pattern: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct ReportConfig {
-    #[serde(default)]
-    pub parity: bool,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProjectConfig {
     /// Inventory base directory, relative to the project root (the dir holding
@@ -197,8 +191,6 @@ pub struct ProjectConfig {
     pub pad: usize,
     #[serde(default)]
     pub tests: TestsConfig,
-    #[serde(default)]
-    pub report: ReportConfig,
     #[serde(default)]
     pub types: BTreeMap<String, DocType>,
     #[serde(default)]
