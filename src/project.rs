@@ -11,13 +11,10 @@ use std::sync::LazyLock;
 use regex::Regex;
 use walkdir::WalkDir;
 
-use crate::config::{Config, WorkItemConfig, FEAT_PREFIX};
 use crate::doc::Doc;
 use crate::error::{usage, OpysError, Result};
-use crate::feature::Feature;
 use crate::project_config::ProjectConfig;
 use crate::refs;
-use crate::work_item::WorkItem;
 
 /// Resolve the inventory base directory from the project root and `dir`
 /// (default `docs/opys`). An absolute `dir` is used as-is.
@@ -33,76 +30,26 @@ pub fn resolve_base(root: &str, dir: &str) -> PathBuf {
 pub struct Project {
     pub root: PathBuf,
     pub base: PathBuf,
-    pub fdir: PathBuf,
-    pub wdir: PathBuf,
     pub views_dir: PathBuf,
     pub runbooks_dir: PathBuf,
-    pub cfg: Config,
-    /// Work-item config; `None` when the subsystem is not configured.
-    pub wi_cfg: Option<WorkItemConfig>,
-    /// The universal engine config: the real `opys.toml` when present, else
-    /// synthesized from the legacy config. Drives `verify`'s rule enforcement.
+    /// The universal engine config (`<base>/opys.toml`), the sole source of
+    /// truth for document types, statuses, fields, sections, and rules.
     pub pcfg: ProjectConfig,
 }
 
 impl Project {
     /// Open the project whose inventory base is `<root>/<dir>` (or an absolute
-    /// `dir`). Requires `<base>/features/_config.toml`. The work-item subsystem
-    /// is enabled when `<base>/work-items/_config.toml` also exists.
+    /// `dir`). Requires `<base>/opys.toml`.
     pub fn open(root: &str, dir: &str) -> Result<Project> {
         let base = resolve_base(root, dir);
-        let fdir = base.join("features");
-        let wdir = base.join("work-items");
-        let cfg = Config::load(&fdir.join("_config.toml"))?;
-        let wi_cfg = WorkItemConfig::load_optional(&wdir.join("_config.toml"))?;
-        let opys_toml = base.join("opys.toml");
-        let pcfg = if opys_toml.exists() {
-            ProjectConfig::load(&opys_toml)?
-        } else {
-            ProjectConfig::from_legacy(&cfg, wi_cfg.as_ref())
-        };
+        let pcfg = ProjectConfig::load(&base.join("opys.toml"))?;
         Ok(Project {
             root: PathBuf::from(root),
             views_dir: base.join("views"),
             runbooks_dir: base.join("runbooks"),
             base,
-            fdir,
-            wdir,
-            cfg,
-            wi_cfg,
             pcfg,
         })
-    }
-
-    /// The work-item config, or a usage error directing the user to configure
-    /// the subsystem first.
-    pub fn require_wi_cfg(&self) -> Result<&WorkItemConfig> {
-        self.wi_cfg
-            .as_ref()
-            .ok_or_else(|| usage("work items not configured — run 'opys work-item init'"))
-    }
-
-    /// All feature files, sorted by path: `features/**/*.md`, excluding `_*`
-    /// files and the generated `INDEX.md`.
-    pub fn feature_paths(&self) -> Vec<PathBuf> {
-        md_files(&self.fdir)
-    }
-
-    /// Load every feature, returning successfully parsed features and a list of
-    /// parse-error messages (for `verify` / `sync-views`).
-    pub fn load(&self) -> (Vec<Feature>, Vec<String>) {
-        let mut feats = Vec::new();
-        let mut errors = Vec::new();
-        for p in self.feature_paths() {
-            match std::fs::read_to_string(&p) {
-                Ok(text) => match Feature::parse(p, &text) {
-                    Ok(f) => feats.push(f),
-                    Err(msg) => errors.push(msg),
-                },
-                Err(e) => errors.push(format!("{}: {e}", p.display())),
-            }
-        }
-        (feats, errors)
     }
 
     /// Generic discovery: load every document across all configured type
@@ -166,122 +113,16 @@ impl Project {
         read_id_ledger(&self.base.join("_retired.txt"))
     }
 
-    /// Highest numeric ID part used *anywhere* (`0` if none): across every live
-    /// feature and work item, the retired-ID ledger, and every relation map (so
-    /// a closed work item's struck tombstone still reserves its number). This is
-    /// the basis for the single global, monotonically increasing ID sequence
-    /// shared by features and all work-item types — so numbers never duplicate
-    /// across prefixes.
-    pub fn max_id_number(&self, feats: &[Feature], wis: &[WorkItem]) -> u64 {
-        let mut max = 0u64;
-        let mut consider = |id: &str| {
-            if let Some(n) = id_part(id) {
-                max = max.max(n);
-            }
-        };
-        for f in feats {
-            if let Some(id) = f.id() {
-                consider(id);
-            }
-            for id in refs::all_relation_ids(&f.frontmatter) {
-                consider(&id);
-            }
-        }
-        for w in wis {
-            if let Some(id) = w.id() {
-                consider(id);
-            }
-            for id in refs::all_relation_ids(&w.frontmatter) {
-                consider(&id);
-            }
-        }
-        for id in self.retired_ids() {
-            consider(&id);
-        }
-        max
-    }
-
-    /// Render a numeric ID part as a padded `FEAT-NNNN` id.
-    pub fn format_id(&self, n: u64) -> String {
-        format!("{}-{:0pad$}", FEAT_PREFIX, n, pad = self.cfg.pad)
-    }
-
-    /// Next feature ID: one past the highest number used anywhere (global).
-    pub fn next_id(&self, feats: &[Feature], wis: &[WorkItem]) -> String {
-        self.format_id(self.max_id_number(feats, wis) + 1)
-    }
-
-    pub fn path_for(&self, id: &str) -> PathBuf {
-        self.fdir.join(format!("{id}.md"))
-    }
-
-    /// Find a feature by ID, or a usage error.
-    pub fn find<'a>(&self, feats: &'a [Feature], id: &str) -> Result<&'a Feature> {
-        feats
-            .iter()
-            .find(|f| f.id() == Some(id))
+    /// Find a document by ID, or a not-found error.
+    pub fn find<'a>(&self, docs: &'a [Doc], id: &str) -> Result<&'a Doc> {
+        docs.iter()
+            .find(|d| d.id() == Some(id))
             .ok_or_else(|| OpysError::NotFound { id: id.to_string() })
     }
 
-    pub fn find_mut<'a>(&self, feats: &'a mut [Feature], id: &str) -> Result<&'a mut Feature> {
-        feats
-            .iter_mut()
-            .find(|f| f.id() == Some(id))
-            .ok_or_else(|| OpysError::NotFound { id: id.to_string() })
-    }
-
-    // --- Work items -------------------------------------------------------
-
-    /// All live work-item files, sorted by path (`work-items/**/*.md`,
-    /// excluding `_*` and the generated `INDEX.md`).
-    pub fn work_item_paths(&self) -> Vec<PathBuf> {
-        md_files(&self.wdir)
-    }
-
-    /// Load every live work item, returning parsed items and parse errors.
-    pub fn load_work_items(&self) -> (Vec<WorkItem>, Vec<String>) {
-        let mut items = Vec::new();
-        let mut errors = Vec::new();
-        for p in self.work_item_paths() {
-            match std::fs::read_to_string(&p) {
-                Ok(text) => match WorkItem::parse(p, &text) {
-                    Ok(w) => items.push(w),
-                    Err(msg) => errors.push(msg),
-                },
-                Err(e) => errors.push(format!("{}: {e}", p.display())),
-            }
-        }
-        (items, errors)
-    }
-
-    pub fn format_wi_id(&self, prefix: &str, n: u64) -> String {
-        let pad = self.wi_cfg.as_ref().map(|c| c.pad).unwrap_or(4);
-        format!("{}-{:0pad$}", prefix, n, pad = pad)
-    }
-
-    pub fn wi_path_for(&self, id: &str) -> PathBuf {
-        self.wdir.join(format!("{id}.md"))
-    }
-
-    /// Next ID for a work-item `prefix`: one past the highest number used
-    /// anywhere (the single global sequence), formatted with this type's prefix.
-    /// Features and every work-item type draw from one increasing sequence, so
-    /// numbers never collide across prefixes.
-    pub fn next_id_for_prefix(&self, prefix: &str, feats: &[Feature], wis: &[WorkItem]) -> String {
-        self.format_wi_id(prefix, self.max_id_number(feats, wis) + 1)
-    }
-
-    pub fn find_wi<'a>(&self, items: &'a [WorkItem], id: &str) -> Result<&'a WorkItem> {
-        items
-            .iter()
-            .find(|w| w.id() == Some(id))
-            .ok_or_else(|| OpysError::NotFound { id: id.to_string() })
-    }
-
-    pub fn find_wi_mut<'a>(&self, items: &'a mut [WorkItem], id: &str) -> Result<&'a mut WorkItem> {
-        items
-            .iter_mut()
-            .find(|w| w.id() == Some(id))
+    pub fn find_mut<'a>(&self, docs: &'a mut [Doc], id: &str) -> Result<&'a mut Doc> {
+        docs.iter_mut()
+            .find(|d| d.id() == Some(id))
             .ok_or_else(|| OpysError::NotFound { id: id.to_string() })
     }
 }
@@ -289,16 +130,6 @@ impl Project {
 /// Persist a document to disk in canonical form.
 pub fn write_doc(d: &Doc) -> Result<()> {
     std::fs::write(&d.path, d.to_text()).map_err(OpysError::from)
-}
-
-/// Persist a feature to disk in canonical form.
-pub fn write_feature(f: &Feature) -> Result<()> {
-    std::fs::write(&f.path, f.to_text()).map_err(OpysError::from)
-}
-
-/// Persist a work item to disk in canonical form.
-pub fn write_work_item(w: &WorkItem) -> Result<()> {
-    std::fs::write(&w.path, w.to_text()).map_err(OpysError::from)
 }
 
 /// Markdown files directly relevant to an inventory dir: `**/*.md` excluding

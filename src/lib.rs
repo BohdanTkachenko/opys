@@ -11,23 +11,17 @@ pub mod commands;
 pub mod config;
 pub mod doc;
 pub mod error;
-pub mod feature;
 pub mod frontmatter;
 pub mod links;
 pub mod project;
 pub mod project_config;
 pub mod refs;
 pub mod rules;
-pub mod schema;
 pub mod templates;
-pub mod work_item;
 
-pub use config::Config;
 pub use error::{OpysError, Result};
-pub use feature::Feature;
 pub use frontmatter::Frontmatter;
 pub use project::Project;
-pub use work_item::WorkItem;
 
 use cli::{Cli, Command};
 
@@ -137,10 +131,6 @@ pub fn run(cli: Cli) -> Result<i32> {
         }
         Command::ManualRunbook { out, name } => {
             commands::runbook::run(&ctx, out.as_deref(), name.as_deref())?;
-            Ok(0)
-        }
-        Command::Schema { kind, out } => {
-            commands::schema::run(&ctx, kind, out.as_deref())?;
             Ok(0)
         }
         Command::Close { id, force } => {

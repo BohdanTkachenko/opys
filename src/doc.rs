@@ -6,9 +6,7 @@
 use std::path::PathBuf;
 
 use crate::body;
-use crate::config::FEAT_PREFIX;
 use crate::frontmatter::{self, Frontmatter};
-use crate::refs;
 
 #[derive(Debug, Clone)]
 pub struct Doc {
@@ -38,17 +36,6 @@ impl Doc {
 
     pub fn status(&self) -> Option<&str> {
         self.frontmatter.status()
-    }
-
-    /// IDs in the `references` map carrying the given prefix.
-    pub fn refs_with_prefix(&self, prefix: &str) -> Vec<String> {
-        refs::ids_with_prefix(&self.frontmatter, prefix)
-    }
-
-    /// Referenced feature IDs. Temporary FEAT-specific helper; callers migrate to
-    /// [`Doc::refs_with_prefix`] as the type model generalizes.
-    pub fn feature_refs(&self) -> Vec<String> {
-        self.refs_with_prefix(FEAT_PREFIX)
     }
 
     /// Serialized file text (canonical frontmatter + body).

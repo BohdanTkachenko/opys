@@ -1,24 +1,25 @@
 use crate::error::Result;
 use crate::project::resolve_base;
-use crate::templates::{CLAUDE_MD_SNIPPET, DEFAULT_CONFIG};
+use crate::project_config::DEFAULT_DOC_DIR;
+use crate::templates::{CLAUDE_MD_SNIPPET, DEFAULT_OPYS_CONFIG};
 use crate::Ctx;
 
 pub fn run(ctx: &Ctx) -> Result<()> {
     let base = resolve_base(&ctx.root, &ctx.dir);
-    let fdir = base.join("features");
-    std::fs::create_dir_all(&fdir)?;
+    std::fs::create_dir_all(&base)?;
 
-    let cfg = fdir.join("_config.toml");
+    let cfg = base.join("opys.toml");
     if cfg.exists() {
         println!("{} already exists; leaving it untouched", cfg.display());
     } else {
-        std::fs::write(&cfg, DEFAULT_CONFIG)?;
+        std::fs::write(&cfg, DEFAULT_OPYS_CONFIG)?;
         println!(
-            "created {} — edit pad and custom fields to taste",
+            "created {} — edit it to model your document types",
             cfg.display()
         );
     }
 
+    std::fs::create_dir_all(base.join(DEFAULT_DOC_DIR))?;
     std::fs::create_dir_all(base.join("runbooks"))?;
 
     println!("\nAdd this to your CLAUDE.md / agent instructions:\n");

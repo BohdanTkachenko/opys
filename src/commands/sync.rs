@@ -18,9 +18,11 @@ pub fn run(prj: &Project) -> Result<()> {
     links::reconcile(&mut docs);
     links::reconcile_blockers(&mut docs);
     let index = links::build_index(&docs);
+    let prefixes: Vec<String> = prj.pcfg.types.values().map(|t| t.prefix.clone()).collect();
+    let re = links::ref_re(&prefixes);
     for d in docs.iter_mut() {
         let dir = d.path.parent().unwrap_or(&prj.base).to_path_buf();
-        d.body = links::linkify(&d.body, &dir, &index);
+        d.body = links::linkify(&d.body, &dir, &index, &re);
     }
 
     for (d, orig) in docs.iter().zip(&orig) {

@@ -15,10 +15,7 @@ use std::path::Path;
 use regex::Regex;
 use serde::Deserialize;
 
-use crate::config::{
-    Config, FieldSpec, FieldType, TestRefCheck, WorkItemConfig, CORE_STATUSES, FEAT_PREFIX,
-    WI_CORE_STATUSES, WORK_ITEM_TYPES,
-};
+use crate::config::{FieldSpec, FieldType, TestRefCheck};
 use crate::error::{usage, OpysError, Result};
 use crate::refs;
 
@@ -212,97 +209,6 @@ impl ProjectConfig {
             path: path.to_path_buf(),
             source,
         })
-    }
-
-    /// Synthesize a universal config from the legacy two-file config, so the
-    /// engine can run against a project that has not migrated to `opys.toml`.
-    /// The `feature` type keeps the `features/` directory; the work-item types
-    /// map to `work-items/`. Reproduces today's hardcoded guards as rules.
-    pub fn from_legacy(cfg: &Config, wi: Option<&WorkItemConfig>) -> ProjectConfig {
-        let mut types = BTreeMap::new();
-        let mut rules = Vec::new();
-
-        let mut feature_fields = cfg.fields.clone();
-        feature_fields
-            .entry("spec".into())
-            .or_insert_with(string_field);
-        feature_fields
-            .entry("wontfix_reason".into())
-            .or_insert_with(string_field);
-        let mut feature_statuses: Vec<String> =
-            CORE_STATUSES.iter().map(|s| s.to_string()).collect();
-        feature_statuses.extend(cfg.extra_statuses.iter().cloned());
-        types.insert(
-            "feature".into(),
-            DocType {
-                prefix: FEAT_PREFIX.into(),
-                dir: Some("features".into()),
-                statuses: feature_statuses,
-                default_status: "planned".into(),
-                terminal_statuses: vec![],
-                tags_required: true,
-                requires_link: None,
-                fields: feature_fields,
-                sections: vec![
-                    section("Test plan", SectionKind::TestPlan, false),
-                    section("Manual verification", SectionKind::Manual, false),
-                ],
-            },
-        );
-        rules.push(rule_require_field("feature", "wontfix", "wontfix_reason"));
-        rules.push(rule_require_checked("feature", "implemented", "Test plan"));
-
-        if let Some(wc) = wi {
-            let mut wi_statuses: Vec<String> =
-                WI_CORE_STATUSES.iter().map(|s| s.to_string()).collect();
-            wi_statuses.extend(wc.extra_statuses.iter().cloned());
-            for wt in WORK_ITEM_TYPES {
-                let mut fields = wc.fields.clone();
-                fields
-                    .entry("blocked_reason".into())
-                    .or_insert_with(string_field);
-                let mut headings = wc.required_sections.clone();
-                for extra in wt.extra_required_sections {
-                    if !headings.iter().any(|h| h == extra) {
-                        headings.push(extra.to_string());
-                    }
-                }
-                let sections = headings
-                    .iter()
-                    .map(|h| section(h, kind_for_heading(h), true))
-                    .collect();
-                types.insert(
-                    wt.name.into(),
-                    DocType {
-                        prefix: wt.prefix.into(),
-                        dir: Some("work-items".into()),
-                        statuses: wi_statuses.clone(),
-                        default_status: "todo".into(),
-                        terminal_statuses: vec!["done".into()],
-                        tags_required: false,
-                        requires_link: Some(LinkReq {
-                            to: "feature".into(),
-                            min: 1,
-                        }),
-                        fields,
-                        sections,
-                    },
-                );
-            }
-            rules.push(blocked_rule());
-        }
-
-        ProjectConfig {
-            pad: cfg.pad,
-            tests: TestsConfig {
-                search_paths: cfg.test_search_paths.clone(),
-                reference_check: cfg.test_reference_check,
-                name_pattern: cfg.test_name_pattern.clone(),
-            },
-            report: ReportConfig { parity: cfg.parity },
-            types,
-            rules,
-        }
     }
 
     /// The distinct directories (under the base) that hold documents — the set
@@ -537,81 +443,6 @@ impl ProjectConfig {
     }
 }
 
-// --- Legacy-adapter helpers -------------------------------------------------
-
-fn string_field() -> FieldSpec {
-    FieldSpec {
-        field_type: FieldType::String,
-        required: false,
-        description: None,
-        values: vec![],
-        pattern: None,
-    }
-}
-
-fn section(heading: &str, kind: SectionKind, required: bool) -> SectionSpec {
-    SectionSpec {
-        heading: heading.to_string(),
-        kind,
-        required,
-    }
-}
-
-/// Best-effort heading → kind mapping for legacy required-section names.
-fn kind_for_heading(h: &str) -> SectionKind {
-    match h {
-        "Tasks" => SectionKind::Checklist,
-        "Progress" => SectionKind::Log,
-        "Test plan" => SectionKind::TestPlan,
-        "Manual verification" => SectionKind::Manual,
-        _ => SectionKind::Prose,
-    }
-}
-
-fn rule_require_field(doc_type: &str, status: &str, field: &str) -> Rule {
-    Rule {
-        when: When {
-            doc_type: Some(doc_type.into()),
-            status: Some(status.into()),
-        },
-        require_field: Some(field.into()),
-        ..Default::default()
-    }
-}
-
-fn rule_require_checked(doc_type: &str, status: &str, section: &str) -> Rule {
-    Rule {
-        when: When {
-            doc_type: Some(doc_type.into()),
-            status: Some(status.into()),
-        },
-        require_checked_section: Some(section.into()),
-        ..Default::default()
-    }
-}
-
-fn blocked_rule() -> Rule {
-    Rule {
-        when: When {
-            doc_type: None,
-            status: Some("blocked".into()),
-        },
-        require_any: Some(vec![
-            AnyTerm {
-                field: Some("blocked_reason".into()),
-                link: None,
-                section: None,
-            },
-            AnyTerm {
-                field: None,
-                link: Some("blocked_by".into()),
-                section: None,
-            },
-        ]),
-        ..Default::default()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -626,24 +457,6 @@ mod tests {
             "default config has problems: {problems:?}"
         );
         assert_eq!(cfg.types.len(), 4);
-    }
-
-    #[test]
-    fn legacy_adapter_synthesizes_a_valid_config() {
-        let cfg: Config = toml::from_str("pad = 4\ntest_reference_check = \"none\"\n").unwrap();
-        let wc: WorkItemConfig =
-            toml::from_str("pad = 4\nrequired_sections = [\"Tasks\", \"Progress\"]\n").unwrap();
-        let pc = ProjectConfig::from_legacy(&cfg, Some(&wc));
-        assert!(pc.validate().is_empty(), "{:?}", pc.validate());
-        assert_eq!(pc.types.len(), 4);
-        assert_eq!(pc.types["feature"].prefix, "FEAT");
-        assert_eq!(pc.types["feature"].dir.as_deref(), Some("features"));
-        assert_eq!(pc.types["bug"].dir.as_deref(), Some("work-items"));
-        // bug's extra Reproduction section is carried over.
-        assert!(pc.types["bug"]
-            .sections
-            .iter()
-            .any(|s| s.heading == "Reproduction"));
     }
 
     #[test]

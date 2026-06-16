@@ -5,27 +5,25 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 
 use regex::{Captures, Regex};
 
 use crate::doc::Doc;
 use crate::refs;
 
-/// Either an existing opys markdown link or a bare ID mention. The prefix
-/// alternation is built from the live ID prefixes (feature + every work-item
-/// type) so new types are linkified without touching this regex.
-static REF_RE: LazyLock<Regex> = LazyLock::new(|| {
-    let alt = std::iter::once(crate::config::FEAT_PREFIX)
-        .chain(crate::config::work_item_prefixes())
-        .map(regex::escape)
+/// Build the bare-ID/markdown-link matcher whose prefix alternation comes from
+/// the live configured type prefixes, so new types are linkified automatically.
+pub fn ref_re(prefixes: &[String]) -> Regex {
+    let alt = prefixes
+        .iter()
+        .map(|p| regex::escape(p))
         .collect::<Vec<_>>()
         .join("|");
     Regex::new(&format!(
         r"\[(?P<lid>(?:{alt})-[0-9]+)[^\]]*\]\([^)]*\)|\b(?P<bid>(?:{alt})-[0-9]+)\b"
     ))
     .unwrap()
-});
+}
 
 /// Reconcile every doc's `references` map: make links bidirectional between
 /// present docs and refresh each value to the referenced doc's current title.
@@ -193,6 +191,7 @@ pub fn linkify(
     body: &str,
     current_dir: &Path,
     index: &HashMap<String, (String, PathBuf)>,
+    re: &Regex,
 ) -> String {
     let mut out = String::new();
     let mut in_fence = false;
@@ -219,7 +218,7 @@ pub fn linkify(
             if code {
                 out.push_str(seg);
             } else {
-                out.push_str(&linkify_prose(seg, current_dir, index));
+                out.push_str(&linkify_prose(seg, current_dir, index, re));
             }
             code = !code;
         }
@@ -231,22 +230,22 @@ fn linkify_prose(
     seg: &str,
     current_dir: &Path,
     index: &HashMap<String, (String, PathBuf)>,
+    re: &Regex,
 ) -> String {
-    REF_RE
-        .replace_all(seg, |c: &Captures| {
-            let id = c
-                .name("lid")
-                .or_else(|| c.name("bid"))
-                .map(|m| m.as_str())
-                .unwrap_or_default();
-            match index.get(id) {
-                Some((title, path)) => {
-                    format!("[{id} — {title}]({})", relpath(current_dir, path))
-                }
-                None => c.get(0).map(|m| m.as_str()).unwrap_or_default().to_string(),
+    re.replace_all(seg, |c: &Captures| {
+        let id = c
+            .name("lid")
+            .or_else(|| c.name("bid"))
+            .map(|m| m.as_str())
+            .unwrap_or_default();
+        match index.get(id) {
+            Some((title, path)) => {
+                format!("[{id} — {title}]({})", relpath(current_dir, path))
             }
-        })
-        .into_owned()
+            None => c.get(0).map(|m| m.as_str()).unwrap_or_default().to_string(),
+        }
+    })
+    .into_owned()
 }
 
 /// Relative path from a directory to a target file, using `/` separators.
@@ -290,12 +289,13 @@ mod tests {
     #[test]
     fn linkifies_bare_id_and_is_idempotent() {
         let dir = Path::new("/p/work-items");
-        let once = linkify("See FEAT-0001 for context.", dir, &idx());
+        let re = ref_re(&["FEAT".to_string()]);
+        let once = linkify("See FEAT-0001 for context.", dir, &idx(), &re);
         assert_eq!(
             once,
             "See [FEAT-0001 — Auth login](../features/FEAT-0001.md) for context."
         );
-        let twice = linkify(&once, dir, &idx());
+        let twice = linkify(&once, dir, &idx(), &re);
         assert_eq!(twice, once);
     }
 
@@ -303,13 +303,19 @@ mod tests {
     fn skips_code_spans_and_unknown_ids() {
         let dir = Path::new("/p/work-items");
         let body = "Inline `FEAT-0001` stays, FEAT-9999 unknown stays.";
-        assert_eq!(linkify(body, dir, &idx()), body);
+        assert_eq!(
+            linkify(body, dir, &idx(), &ref_re(&["FEAT".to_string()])),
+            body
+        );
     }
 
     #[test]
     fn skips_fenced_blocks() {
         let dir = Path::new("/p/work-items");
         let body = "```\nFEAT-0001\n```";
-        assert_eq!(linkify(body, dir, &idx()), body);
+        assert_eq!(
+            linkify(body, dir, &idx(), &ref_re(&["FEAT".to_string()])),
+            body
+        );
     }
 }

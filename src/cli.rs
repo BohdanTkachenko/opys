@@ -29,14 +29,6 @@ pub enum ListFormat {
     Paths,
 }
 
-#[derive(Clone, Copy, ValueEnum)]
-pub enum SchemaKind {
-    /// JSON Schema for `_config.toml`.
-    Config,
-    /// JSON Schema for feature frontmatter, derived from the project's config.
-    Frontmatter,
-}
-
 /// A rules-based editor that reads an always-on instruction file.
 #[derive(Clone, Copy, ValueEnum)]
 pub enum AgentTool {
@@ -166,15 +158,6 @@ pub enum Command {
         /// Runbook title suffix.
         #[arg(long)]
         name: Option<String>,
-    },
-
-    /// Emit a JSON Schema for editor/CI validation.
-    Schema {
-        #[arg(long, value_enum, default_value_t = SchemaKind::Config)]
-        kind: SchemaKind,
-        /// Write to file instead of stdout.
-        #[arg(long)]
-        out: Option<String>,
     },
 
     /// Finish a document of a type with a terminal status: delete the file and

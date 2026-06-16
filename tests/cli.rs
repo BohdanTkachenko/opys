@@ -5,40 +5,132 @@ use assert_fs::prelude::*;
 use assert_fs::TempDir;
 use predicates::prelude::*;
 
-const CONFIG: &str = r#"pad = 4
-test_search_paths = ["src"]
-test_reference_check = "none"
-extra_statuses = []
-
-[fields.ptyxis_ref]
-type = "string"
-required = false
-"#;
-
-const WI_CONFIG: &str = r#"pad = 4
-extra_statuses = []
-required_sections = ["Tasks", "Progress"]
-"#;
-
-/// A temp project with the default `docs/opys/` layout.
-fn project() -> TempDir {
-    project_with(CONFIG)
+/// Build an `opys.toml` with the standard `feature` type (dir `features/`),
+/// splicing in `[tests]`/`[report]` blocks and extra `[fields.*]` tables.
+fn opys_cfg(tests: &str, report: &str, fields: &str) -> String {
+    format!(
+        "pad = 4\n{tests}{report}\n\
+[types.feature]\n\
+prefix = \"FEAT\"\n\
+dir = \"features\"\n\
+statuses = [\"planned\", \"partial\", \"implemented\", \"wontfix\"]\n\
+default_status = \"planned\"\n\
+tags_required = true\n\
+[types.feature.fields.spec]\ntype = \"string\"\n\
+[types.feature.fields.wontfix_reason]\ntype = \"string\"\n\
+{fields}\
+[[types.feature.sections]]\nheading = \"Test plan\"\nkind = \"test-plan\"\n\
+[[types.feature.sections]]\nheading = \"Manual verification\"\nkind = \"manual\"\n\
+[[rules]]\nwhen = {{ type = \"feature\", status = \"wontfix\" }}\nrequire_field = \"wontfix_reason\"\n\
+[[rules]]\nwhen = {{ type = \"feature\", status = \"implemented\" }}\nrequire_checked_section = \"Test plan\"\n"
+    )
 }
 
-fn project_with(config: &str) -> TempDir {
+/// The default feature-only config (no test-ref checking, plus the `ptyxis_ref`
+/// custom field used across tests).
+fn default_cfg() -> String {
+    opys_cfg(
+        "[tests]\nreference_check = \"none\"\n",
+        "",
+        "[types.feature.fields.ptyxis_ref]\ntype = \"string\"\n",
+    )
+}
+
+/// Feature config with `enum`/`list` custom fields, for the enum/filter tests.
+fn enum_cfg() -> String {
+    opys_cfg(
+        "[tests]\nreference_check = \"none\"\n",
+        "",
+        "[types.feature.fields.priority]\ntype = \"enum\"\nvalues = [\"low\", \"high\"]\n\
+[types.feature.fields.area]\ntype = \"list\"\n",
+    )
+}
+
+/// A temp project whose `opys.toml` is the default feature-only config.
+fn project() -> TempDir {
+    project_with(&default_cfg())
+}
+
+/// A temp project whose `opys.toml` is exactly `opys_toml`.
+fn project_with(opys_toml: &str) -> TempDir {
     let dir = TempDir::new().unwrap();
-    dir.child("docs/opys/features/_config.toml")
-        .write_str(config)
+    dir.child("docs/opys/opys.toml")
+        .write_str(opys_toml)
         .unwrap();
     dir
 }
 
-/// Enable the work-item subsystem in an existing project.
+/// Append the task/bug/chore types (dir `work-items/`) to the project's config.
 fn enable_work_items(dir: &TempDir) {
-    dir.child("docs/opys/work-items/_config.toml")
-        .write_str(WI_CONFIG)
-        .unwrap();
+    let path = dir.path().join("docs/opys/opys.toml");
+    let mut s = std::fs::read_to_string(&path).unwrap();
+    s.push_str(WORK_ITEM_TYPES);
+    std::fs::write(&path, s).unwrap();
 }
+
+const WORK_ITEM_TYPES: &str = r#"
+[types.task]
+prefix = "TASK"
+dir = "work-items"
+statuses = ["todo", "in-progress", "blocked", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]
+requires_link = { to = "feature", min = 1 }
+[types.task.fields.blocked_reason]
+type = "string"
+[[types.task.sections]]
+heading = "Tasks"
+kind = "checklist"
+required = true
+[[types.task.sections]]
+heading = "Progress"
+kind = "log"
+required = true
+
+[types.bug]
+prefix = "BUG"
+dir = "work-items"
+statuses = ["todo", "in-progress", "blocked", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]
+requires_link = { to = "feature", min = 1 }
+[types.bug.fields.blocked_reason]
+type = "string"
+[[types.bug.sections]]
+heading = "Reproduction"
+kind = "prose"
+required = true
+[[types.bug.sections]]
+heading = "Tasks"
+kind = "checklist"
+required = true
+[[types.bug.sections]]
+heading = "Progress"
+kind = "log"
+required = true
+
+[types.chore]
+prefix = "CHORE"
+dir = "work-items"
+statuses = ["todo", "in-progress", "blocked", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]
+requires_link = { to = "feature", min = 1 }
+[types.chore.fields.blocked_reason]
+type = "string"
+[[types.chore.sections]]
+heading = "Tasks"
+kind = "checklist"
+required = true
+[[types.chore.sections]]
+heading = "Progress"
+kind = "log"
+required = true
+
+[[rules]]
+when = { status = "blocked" }
+require_any = [{ field = "blocked_reason" }, { link = "blocked_by" }]
+"#;
 
 fn opys(dir: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("opys").unwrap();
@@ -55,7 +147,7 @@ fn init_bootstraps_and_prints_snippet() {
         .success()
         .stdout(predicate::str::contains("## Feature inventory"))
         .stdout(predicate::str::contains("opys verify"));
-    dir.child("docs/opys/features/_config.toml")
+    dir.child("docs/opys/opys.toml")
         .assert(predicate::path::exists());
     dir.child("docs/opys/runbooks")
         .assert(predicate::path::is_dir());
@@ -101,8 +193,8 @@ fn new_auto_syncs_index_and_views() {
 #[test]
 fn custom_dir_relocates_inventory() {
     let dir = TempDir::new().unwrap();
-    dir.child("inventory/features/_config.toml")
-        .write_str(CONFIG)
+    dir.child("inventory/opys.toml")
+        .write_str(&default_cfg())
         .unwrap();
     opys(&dir)
         .args(["--dir", "inventory", "new", "--title", "X", "--tags", "a"])
@@ -353,7 +445,11 @@ fn verify_checks_manual_item_shape() {
 
 #[test]
 fn verify_ignores_prose_code_span_on_checked_item() {
-    let dir = project_with("test_search_paths = [\"src\"]\ntest_reference_check = \"grep\"\n");
+    let dir = project_with(&opys_cfg(
+        "[tests]\nsearch_paths = [\"src\"]\nreference_check = \"grep\"\n",
+        "",
+        "",
+    ));
     dir.child("src/lib.rs")
         .write_str("fn sftp_uri_rewrites_to_ssh() {}\n")
         .unwrap();
@@ -426,8 +522,12 @@ fn import_is_transactional_on_bad_record() {
 
 #[test]
 fn verify_extract_mode_resolves_real_tests() {
-    let config = "test_search_paths = [\"src\"]\ntest_reference_check = \"extract\"\ntest_name_pattern = \"fn\\\\s+(\\\\w+)\\\\s*\\\\(\"\n";
-    let dir = project_with(config);
+    let config = opys_cfg(
+        "[tests]\nsearch_paths = [\"src\"]\nreference_check = \"extract\"\nname_pattern = \"fn\\\\s+(\\\\w+)\\\\s*\\\\(\"\n",
+        "",
+        "",
+    );
+    let dir = project_with(&config);
     dir.child("src/lib.rs")
         .write_str("fn real_test() {}\nfn another() {}\n")
         .unwrap();
@@ -479,7 +579,11 @@ fn report_parity_is_opt_in() {
         .stdout(predicate::str::contains("documents: 1"))
         .stdout(predicate::str::contains("parity").not());
 
-    let dir2 = project_with("parity = true\n");
+    let dir2 = project_with(&opys_cfg(
+        "[tests]\nreference_check = \"none\"\n",
+        "[report]\nparity = true\n",
+        "",
+    ));
     dir2.child("docs/opys/features/FEAT-0001.md")
         .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# A\n")
         .unwrap();
@@ -886,39 +990,8 @@ fn agent_rules_generates_editor_files() {
 }
 
 #[test]
-fn schema_emits_config_and_frontmatter() {
-    let dir = project();
-    opys(&dir)
-        .args(["schema", "--kind", "config"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("opys project config"))
-        .stdout(predicate::str::contains("test_reference_check"));
-
-    opys(&dir)
-        .args(["schema", "--kind", "frontmatter"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("ptyxis_ref"))
-        .stdout(predicate::str::contains("\"additionalProperties\": false"));
-}
-
-/// Feature config with an `enum` field and a `list` field, for the enum /
-/// filtering tests.
-const ENUM_CONFIG: &str = r#"pad = 4
-test_reference_check = "none"
-
-[fields.priority]
-type = "enum"
-values = ["low", "high"]
-
-[fields.area]
-type = "list"
-"#;
-
-#[test]
 fn enum_field_validates_against_declared_values() {
-    let dir = project_with(ENUM_CONFIG);
+    let dir = project_with(&enum_cfg());
     // A value in the set passes verify.
     opys(&dir)
         .args([
@@ -960,8 +1033,11 @@ fn enum_field_validates_against_declared_values() {
 
 #[test]
 fn enum_field_requires_declared_values() {
-    let dir =
-        project_with("pad = 4\ntest_reference_check = \"none\"\n\n[fields.bad]\ntype = \"enum\"\n");
+    let dir = project_with(&opys_cfg(
+        "[tests]\nreference_check = \"none\"\n",
+        "",
+        "[types.feature.fields.bad]\ntype = \"enum\"\n",
+    ));
     opys(&dir)
         .arg("verify")
         .assert()
@@ -974,7 +1050,7 @@ fn enum_field_requires_declared_values() {
 
 #[test]
 fn list_filters_by_custom_field() {
-    let dir = project_with(ENUM_CONFIG);
+    let dir = project_with(&enum_cfg());
     opys(&dir)
         .args([
             "new",
@@ -1050,11 +1126,7 @@ fn list_filters_by_custom_field() {
 #[test]
 fn work_item_list_filters_by_custom_field() {
     let dir = project();
-    dir.child("docs/opys/work-items/_config.toml")
-        .write_str(
-            "pad = 4\nrequired_sections = [\"Tasks\", \"Progress\"]\n\n[fields.area]\ntype = \"string\"\n",
-        )
-        .unwrap();
+    enable_work_items(&dir);
     opys(&dir)
         .args(["new", "--title", "F", "--tags", "a"])
         .assert()
@@ -1527,10 +1599,8 @@ fn config_validate_requires_the_file() {
 
 #[test]
 fn verify_enforces_opys_rules_when_present() {
-    // Old config that allows the `archived` status and declares the field, so the
-    // legacy checks pass and only the new opys.toml rule has anything to say.
-    let cfg = "pad = 4\ntest_reference_check = \"none\"\nextra_statuses = [\"archived\"]\n\n[fields.archived_reason]\ntype = \"string\"\n";
-    let dir = project_with(cfg);
+    // The generated default config has an `archived ⇒ archived_reason` rule.
+    let dir = TempDir::new().unwrap();
     opys(&dir).args(["config", "init"]).assert().success();
 
     // An archived feature with no archived_reason — the opys.toml rule fires.
@@ -1573,10 +1643,7 @@ fn verify_surfaces_a_broken_opys_config() {
 
 #[test]
 fn verify_enforces_field_pattern_from_opys_config() {
-    // Legacy config declares `ticket` so the old checks accept it; opys.toml
-    // constrains its format.
-    let cfg = "pad = 4\ntest_reference_check = \"none\"\n\n[fields.ticket]\ntype = \"string\"\n";
-    let dir = project_with(cfg);
+    let dir = TempDir::new().unwrap();
     dir.child("docs/opys/opys.toml")
         .write_str(
             "[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\nstatuses = [\"planned\"]\ndefault_status = \"planned\"\ntags_required = true\n\n[types.feature.fields.ticket]\ntype = \"string\"\npattern = '^JIRA-[0-9]+$'\n",

@@ -13,7 +13,6 @@ pub mod new;
 pub mod report;
 pub mod retire;
 pub mod runbook;
-pub mod schema;
 pub mod set_status;
 pub mod show;
 pub mod sync;
