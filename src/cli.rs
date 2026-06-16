@@ -3,16 +3,16 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
-#[command(name = "opys", version, about = "File-based feature inventory manager")]
+#[command(
+    name = "opys",
+    version,
+    about = "File-based inventory of typed markdown documents"
+)]
 pub struct Cli {
-    /// Project root.
+    /// Where to start searching upward for `opys.toml` (the project root).
+    /// Defaults to the current directory.
     #[arg(long, default_value = ".", global = true)]
     pub root: String,
-
-    /// Inventory base directory under the root (holds features/, work-items/,
-    /// views/, runbooks/). Absolute paths are used as-is. Env: OPYS_DIR.
-    #[arg(long, default_value = "docs/opys", env = "OPYS_DIR", global = true)]
-    pub dir: String,
 
     /// Skip the automatic INDEX.md/views regeneration after mutating commands.
     #[arg(long, global = true)]

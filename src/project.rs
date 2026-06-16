@@ -1,8 +1,6 @@
-//! The project: the inventory directory, its config, and feature discovery.
-//!
-//! The inventory lives under a base directory (default `docs/opys/`, relative
-//! to the project root), holding `features/` (config + feature files +
-//! INDEX.md), the optional `work-items/`, `views/`, and `runbooks/` as siblings.
+//! The project: `opys.toml` at the project root (found by searching upward),
+//! plus the inventory base it points at (default `docs/opys/`, holding the
+//! document files, `INDEX.md`, `views/`, `runbooks/`, and `_retired.txt`).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -16,14 +14,28 @@ use crate::error::{usage, OpysError, Result};
 use crate::project_config::ProjectConfig;
 use crate::refs;
 
-/// Resolve the inventory base directory from the project root and `dir`
-/// (default `docs/opys`). An absolute `dir` is used as-is.
-pub fn resolve_base(root: &str, dir: &str) -> PathBuf {
-    let d = Path::new(dir);
-    if d.is_absolute() {
-        d.to_path_buf()
+/// The directory to start the `opys.toml` search from: `root` made absolute
+/// (default `.` → the current working directory).
+pub fn start_dir(root: &str) -> Result<PathBuf> {
+    let p = Path::new(root);
+    if p.is_absolute() {
+        Ok(p.to_path_buf())
     } else {
-        Path::new(root).join(d)
+        Ok(std::env::current_dir().map_err(OpysError::from)?.join(p))
+    }
+}
+
+/// Walk up from `start` (inclusive) to the filesystem root, returning the first
+/// directory that contains an `opys.toml` — the project root.
+pub fn find_root(start: &Path) -> Option<PathBuf> {
+    let mut cur = start.to_path_buf();
+    loop {
+        if cur.join("opys.toml").is_file() {
+            return Some(cur);
+        }
+        if !cur.pop() {
+            return None;
+        }
     }
 }
 
@@ -32,22 +44,30 @@ pub struct Project {
     pub base: PathBuf,
     pub views_dir: PathBuf,
     pub runbooks_dir: PathBuf,
-    /// The universal engine config (`<base>/opys.toml`), the sole source of
+    /// The universal engine config (`<root>/opys.toml`), the sole source of
     /// truth for document types, statuses, fields, sections, and rules.
     pub pcfg: ProjectConfig,
 }
 
 impl Project {
-    /// Open the project whose inventory base is `<root>/<dir>` (or an absolute
-    /// `dir`). Requires `<base>/opys.toml`.
-    pub fn open(root: &str, dir: &str) -> Result<Project> {
-        let base = resolve_base(root, dir);
-        let pcfg = ProjectConfig::load(&base.join("opys.toml"))?;
+    /// Open the project by searching upward from `root` (default the cwd) for
+    /// `opys.toml`. The directory holding it is the project root; the inventory
+    /// base is `<root>/<config.base>` (default `docs/opys`).
+    pub fn open(root: &str) -> Result<Project> {
+        let start = start_dir(root)?;
+        let root = find_root(&start).ok_or_else(|| {
+            usage(format!(
+                "no opys.toml found in {} or any parent directory — run `opys init`",
+                start.display()
+            ))
+        })?;
+        let pcfg = ProjectConfig::load(&root.join("opys.toml"))?;
+        let base = root.join(&pcfg.base);
         Ok(Project {
-            root: PathBuf::from(root),
             views_dir: base.join("views"),
             runbooks_dir: base.join("runbooks"),
             base,
+            root,
             pcfg,
         })
     }

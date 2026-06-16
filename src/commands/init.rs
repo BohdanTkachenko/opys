@@ -1,14 +1,14 @@
 use crate::error::Result;
-use crate::project::resolve_base;
-use crate::project_config::DEFAULT_DOC_DIR;
+use crate::project::start_dir;
+use crate::project_config::{DEFAULT_BASE, DEFAULT_DOC_DIR};
 use crate::templates::{CLAUDE_MD_SNIPPET, DEFAULT_OPYS_CONFIG};
 use crate::Ctx;
 
 pub fn run(ctx: &Ctx) -> Result<()> {
-    let base = resolve_base(&ctx.root, &ctx.dir);
-    std::fs::create_dir_all(&base)?;
+    let root = start_dir(&ctx.root)?;
+    std::fs::create_dir_all(&root)?;
 
-    let cfg = base.join("opys.toml");
+    let cfg = root.join("opys.toml");
     if cfg.exists() {
         println!("{} already exists; leaving it untouched", cfg.display());
     } else {
@@ -19,6 +19,8 @@ pub fn run(ctx: &Ctx) -> Result<()> {
         );
     }
 
+    // Scaffold the default inventory base (docs/opys/), matching the default config.
+    let base = root.join(DEFAULT_BASE);
     std::fs::create_dir_all(base.join(DEFAULT_DOC_DIR))?;
     std::fs::create_dir_all(base.join("runbooks"))?;
 

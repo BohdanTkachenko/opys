@@ -1,6 +1,6 @@
 ---
 name: opys
-description: Set up and operate a file-based inventory of typed markdown documents ("file-based JIRA") — one markdown file per document with YAML frontmatter, stable IDs, tags, and configurable types/statuses/fields/sections/rules in one docs/opys/opys.toml, with test plans, manual-verification runbooks, and a verify gate for CI. The default config ships a permanent feature type plus ephemeral task/bug/chore types (deleted on close); projects can add their own (epic, adr, risk, …). Use this skill whenever the user wants to track implemented features, requirements coverage, feature parity with another product, a traceability matrix between features and tests, in-flight implementation work, or asks how to share a large list between themselves and LLM agents. Also use it when working inside a project that already has a docs/opys/opys.toml — for creating documents (opys new --type), changing status, updating test plans, closing work, running verify, or generating views, reports, and manual-test runbooks.
+description: Set up and operate a file-based inventory of typed markdown documents ("file-based JIRA") — one markdown file per document with YAML frontmatter, stable IDs, tags, and configurable types/statuses/fields/sections/rules in one opys.toml, with test plans, manual-verification runbooks, and a verify gate for CI. The default config ships a permanent feature type plus ephemeral task/bug/chore types (deleted on close); projects can add their own (epic, adr, risk, …). Use this skill whenever the user wants to track implemented features, requirements coverage, feature parity with another product, a traceability matrix between features and tests, in-flight implementation work, or asks how to share a large list between themselves and LLM agents. Also use it when working inside a project that already has a opys.toml — for creating documents (opys new --type), changing status, updating test plans, closing work, running verify, or generating views, reports, and manual-test runbooks.
 ---
 
 # opys — typed-document inventory
@@ -9,7 +9,7 @@ A version-controlled inventory of typed markdown documents — what a product do
 (permanent `feature` documents and their test coverage) and the in-flight work
 changing it (ephemeral `task`/`bug`/`chore` documents) — one markdown file per
 item, managed by the `opys` CLI, verified in CI. Document types are configured in
-`docs/opys/opys.toml`; projects add their own. Deliberately not a task board (no
+`opys.toml`; projects add their own. Deliberately not a task board (no
 sprints, assignees, priorities).
 
 Read `references/format.md` before authoring or editing documents or the
@@ -48,11 +48,12 @@ Install it with `cargo install opys`, or build from source with `cargo build
 `--root <dir>`. Because it is a published crate, project CI can install it in
 one step.
 
-The inventory lives under a base directory (default `docs/opys/`, set with
-`--dir` or `OPYS_DIR`): `docs/opys/opys.toml` (the config), the document files
-(each type's `dir`, by default the shared `docs/opys/items/`), and the generated
-`docs/opys/INDEX.md`, `docs/opys/views/`, `docs/opys/runbooks/`. Mutating commands
-regenerate `INDEX.md` and `views/` automatically (pass `--no-sync` to skip).
+`opys.toml` lives at the **project root** (opys finds it by searching upward from
+the cwd, like git/Cargo). It declares a `base` directory (default `docs/opys/`,
+relative to the root) holding the document files (each type's `dir`, by default
+the shared `docs/opys/items/`) and the generated `docs/opys/INDEX.md`,
+`docs/opys/views/`, `docs/opys/runbooks/`. Mutating commands regenerate
+`INDEX.md` and `views/` automatically (pass `--no-sync` to skip).
 
 The document **types** are configured in `opys.toml` (`opys config init` writes
 the opinionated default; `opys config validate` checks it). The default ships a
@@ -63,7 +64,7 @@ its ID prefix.
 
 | Command | Purpose |
 |---|---|
-| `init` | bootstrap `docs/opys/opys.toml` + `items/`, print CLAUDE.md snippet |
+| `init` | bootstrap `opys.toml` + `items/`, print CLAUDE.md snippet |
 | `config init` / `config validate` | generate / check the universal `opys.toml` |
 | `new --type T --title … [--tags a,b] [--status S] [--features F1,F2] [--reason R] [--field k=v]` | create a doc of type `T` with the next ID (`--type` defaults to `feature`; auto-syncs) |
 | `import FILE.jsonl` | bulk-create `feature` docs from JSONL (sequential IDs, one sync, transactional) |
@@ -81,7 +82,7 @@ its ID prefix.
 
 ## Workflow: bootstrapping a project
 
-1. Run `opys init`, then edit `docs/opys/opys.toml`: declare your document
+1. Run `opys init`, then edit `opys.toml`: declare your document
    `[types.<name>]` (prefix, statuses, `[fields.*]`, `[[sections]]`, and
    `[[rules]]`), and set `[tests]` (`search_paths`, `reference_check`). Unknown
    frontmatter fields fail verify until declared on the type — this keeps the

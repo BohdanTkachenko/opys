@@ -20,12 +20,20 @@ use crate::refs;
 fn default_pad() -> usize {
     4
 }
+fn default_base() -> String {
+    DEFAULT_BASE.to_string()
+}
 fn default_search_paths() -> Vec<String> {
     vec!["src".to_string(), "tests".to_string()]
 }
 fn default_min() -> usize {
     1
 }
+
+/// Inventory base directory (holding the documents, `INDEX.md`, `views/`,
+/// `runbooks/`, `_retired.txt`), relative to the project root that holds
+/// `opys.toml` — when the config declares no `base`.
+pub const DEFAULT_BASE: &str = "docs/opys";
 
 /// Directory (under the inventory base) for a type that declares no explicit
 /// `dir` — by default every type's docs live together here.
@@ -181,6 +189,10 @@ pub struct ReportConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProjectConfig {
+    /// Inventory base directory, relative to the project root (the dir holding
+    /// `opys.toml`). Defaults to `docs/opys`.
+    #[serde(default = "default_base")]
+    pub base: String,
     #[serde(default = "default_pad")]
     pub pad: usize,
     #[serde(default)]

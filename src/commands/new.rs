@@ -20,7 +20,7 @@ pub fn run(
     reason: Option<&str>,
     fields: &[String],
 ) -> Result<()> {
-    let prj = Project::open(&ctx.root, &ctx.dir)?;
+    let prj = Project::open(&ctx.root)?;
     let pcfg = &prj.pcfg;
     let t = pcfg.types.get(type_name).ok_or_else(|| {
         let mut names: Vec<&str> = pcfg.types.keys().map(String::as_str).collect();

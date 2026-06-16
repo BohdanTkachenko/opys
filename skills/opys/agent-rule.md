@@ -1,8 +1,9 @@
 # opys document inventory
 
 This project may use **opys** — a file-based inventory of typed markdown
-documents under `docs/opys/`, configured by `docs/opys/opys.toml`. Follow this
-when that file exists; otherwise ignore it.
+documents, configured by an `opys.toml` at the project root (which declares
+where the documents live, default `docs/opys/`). Follow this when `opys.toml`
+exists; otherwise ignore it.
 
 - **Model.** One markdown file per document, with `---`-fenced YAML frontmatter
   (a stable `PREFIX-NNNN` id, status, tags, relation maps) and a markdown body.

@@ -54,15 +54,13 @@ fn project() -> TempDir {
 /// A temp project whose `opys.toml` is exactly `opys_toml`.
 fn project_with(opys_toml: &str) -> TempDir {
     let dir = TempDir::new().unwrap();
-    dir.child("docs/opys/opys.toml")
-        .write_str(opys_toml)
-        .unwrap();
+    dir.child("opys.toml").write_str(opys_toml).unwrap();
     dir
 }
 
 /// Append the task/bug/chore types (dir `work-items/`) to the project's config.
 fn enable_work_items(dir: &TempDir) {
-    let path = dir.path().join("docs/opys/opys.toml");
+    let path = dir.path().join("opys.toml");
     let mut s = std::fs::read_to_string(&path).unwrap();
     s.push_str(WORK_ITEM_TYPES);
     std::fs::write(&path, s).unwrap();
@@ -147,8 +145,7 @@ fn init_bootstraps_and_prints_snippet() {
         .success()
         .stdout(predicate::str::contains("## Feature inventory"))
         .stdout(predicate::str::contains("opys verify"));
-    dir.child("docs/opys/opys.toml")
-        .assert(predicate::path::exists());
+    dir.child("opys.toml").assert(predicate::path::exists());
     dir.child("docs/opys/runbooks")
         .assert(predicate::path::is_dir());
 }
@@ -191,17 +188,35 @@ fn new_auto_syncs_index_and_views() {
 }
 
 #[test]
-fn custom_dir_relocates_inventory() {
+fn base_relocates_inventory() {
+    // The `base` key moves the inventory; opys.toml stays at the root.
     let dir = TempDir::new().unwrap();
-    dir.child("inventory/opys.toml")
-        .write_str(&default_cfg())
+    dir.child("opys.toml")
+        .write_str(&format!("base = \"inventory\"\n{}", default_cfg()))
         .unwrap();
     opys(&dir)
-        .args(["--dir", "inventory", "new", "--title", "X", "--tags", "a"])
+        .args(["new", "--title", "X", "--tags", "a"])
         .assert()
         .success();
     dir.child("inventory/features/FEAT-0001.md")
         .assert(predicate::path::exists());
+}
+
+#[test]
+fn finds_config_by_searching_upward() {
+    // opys.toml at the root is found from a nested working directory.
+    let dir = project();
+    opys(&dir)
+        .args(["new", "--title", "X", "--tags", "a"])
+        .assert()
+        .success();
+    let mut cmd = Command::cargo_bin("opys").unwrap();
+    cmd.arg("--root")
+        .arg(dir.child("docs/opys/features").path())
+        .args(["list", "--format", "ids"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0001"));
 }
 
 #[test]
@@ -1540,7 +1555,7 @@ fn config_init_generates_opys_toml() {
         .assert()
         .success()
         .stdout(predicate::str::contains("opys.toml"));
-    dir.child("docs/opys/opys.toml")
+    dir.child("opys.toml")
         .assert(predicate::str::contains("[types.feature]"))
         .assert(predicate::str::contains("prefix = \"FEAT\""))
         .assert(predicate::str::contains("kind = \"test-plan\""))
@@ -1568,7 +1583,7 @@ fn config_validate_accepts_the_generated_default() {
 #[test]
 fn config_validate_flags_a_broken_config() {
     let dir = TempDir::new().unwrap();
-    dir.child("docs/opys/opys.toml")
+    dir.child("opys.toml")
         .write_str(
             "[types.feature]\nprefix = \"FEAT\"\nstatuses = [\"planned\"]\ndefault_status = \"nope\"\n\n[types.bug]\nprefix = \"FEAT\"\nstatuses = [\"todo\"]\ndefault_status = \"todo\"\n\n[[rules]]\nwhen = { type = \"ghost\" }\nrequire_field = \"x\"\n",
         )
@@ -1629,7 +1644,7 @@ fn verify_enforces_opys_rules_when_present() {
 #[test]
 fn verify_surfaces_a_broken_opys_config() {
     let dir = project();
-    dir.child("docs/opys/opys.toml")
+    dir.child("opys.toml")
         .write_str("[types.x]\nprefix = \"lower\"\nstatuses = [\"a\"]\ndefault_status = \"a\"\n")
         .unwrap();
     opys(&dir)
@@ -1644,7 +1659,7 @@ fn verify_surfaces_a_broken_opys_config() {
 #[test]
 fn verify_enforces_field_pattern_from_opys_config() {
     let dir = TempDir::new().unwrap();
-    dir.child("docs/opys/opys.toml")
+    dir.child("opys.toml")
         .write_str(
             "[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\nstatuses = [\"planned\"]\ndefault_status = \"planned\"\ntags_required = true\n\n[types.feature.fields.ticket]\ntype = \"string\"\npattern = '^JIRA-[0-9]+$'\n",
         )

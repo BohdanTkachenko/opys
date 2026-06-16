@@ -28,13 +28,12 @@ use cli::{Cli, Command};
 /// Shared invocation context: where the inventory lives and global flags.
 pub struct Ctx {
     pub root: String,
-    pub dir: String,
     pub no_sync: bool,
 }
 
 impl Ctx {
     pub fn open(&self) -> Result<Project> {
-        Project::open(&self.root, &self.dir)
+        Project::open(&self.root)
     }
 }
 
@@ -46,7 +45,6 @@ impl Ctx {
 pub fn run(cli: Cli) -> Result<i32> {
     let ctx = Ctx {
         root: cli.root,
-        dir: cli.dir,
         no_sync: cli.no_sync,
     };
     match cli.command {

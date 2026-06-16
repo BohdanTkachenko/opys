@@ -12,9 +12,12 @@ parallel agents don't collide; reads are plain `grep` + targeted file reads.
 `verify` is the CI gate. The inventory base dir defaults to `docs/opys/`. It is
 deliberately *not* a task board — no sprints, assignees, or priorities.
 
-Everything is driven by **one config, `docs/opys/opys.toml`** (parsed into
-`ProjectConfig`, `src/project_config.rs`): it declares document **types**, each
-with an id `prefix`, a `dir` (default the shared `items/`), its own `statuses`
+Everything is driven by **one config, `opys.toml`** (parsed into `ProjectConfig`,
+`src/project_config.rs`), which lives at the **project root** — `Project::open`
+finds it by searching upward from the cwd (`find_root`), and it declares the
+inventory `base` (default `docs/opys/`, relative to the root). The config
+declares document **types**, each with an id `prefix`, a `dir` (default the
+shared `items/`, under `base`), its own `statuses`
 (plus `default_status` / `terminal_statuses`), `[fields.*]` (custom frontmatter
 fields, with optional regex `pattern`), and required `sections` (each a
 code-backed *kind*: prose/log/checklist/test-plan/manual), plus a list of

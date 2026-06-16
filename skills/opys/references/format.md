@@ -2,17 +2,20 @@
 
 ## Layout
 
-The inventory lives under a base directory, default `docs/opys/` (configurable
-with `--dir` / `OPYS_DIR`), so it stays out of the repo root:
+`opys.toml` lives at the **project root** — opys finds it by searching upward
+from the current directory (like git or Cargo). It declares the inventory
+`base` directory (default `docs/opys/`, relative to the root), which holds the
+documents and generated artifacts:
 
 ```
-docs/opys/
-  opys.toml             # the configuration (see below) — declares the types
-  _retired.txt          # append-only log of deleted IDs (never reused), sorted
-  items/                # default directory for documents (FEAT-0001.md, TASK-0002.md, …)
-  views/                # generated — never hand-edit
-  runbooks/             # dated manual-runbook instances, committed after execution
-  INDEX.md              # generated — never hand-edit
+<project root>/
+  opys.toml             # the config (found by searching upward) — declares `base`
+  docs/opys/            # the inventory base (config `base`, default docs/opys)
+    items/              # default directory for documents (FEAT-0001.md, …)
+    views/              # generated — never hand-edit
+    runbooks/           # dated manual-runbook instances, committed after execution
+    INDEX.md            # generated — never hand-edit
+    _retired.txt        # append-only log of deleted IDs (never reused), sorted
 ```
 
 Each document is one markdown file named after its ID (`FEAT-0001.md`,
@@ -22,7 +25,7 @@ files live together in `items/`; a type may set its own `dir` (`epic` →
 generated views are for. If a directory becomes unwieldy (~2000+ files), shard
 mechanically by ID prefix; sharding is cosmetic, tooling treats the tree as flat.
 
-## Configuration: `docs/opys/opys.toml`
+## Configuration: `opys.toml`
 
 One config declares every document **type** and the rules over them. `opys config
 init` writes the opinionated default (a permanent `feature` type plus ephemeral

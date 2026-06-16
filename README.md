@@ -8,7 +8,7 @@ markdown file per document, each with YAML frontmatter (stable ID, status,
 tags) and an optional body (spec prose, a test plan, manual-verification
 procedures). The document **types** — their ID prefixes, statuses, fields,
 required sections, and validation rules — are configured in one
-`docs/opys/opys.toml`. The default config ships a permanent **feature** type
+`opys.toml`. The default config ships a permanent **feature** type
 (`FEAT-NNNN`) plus ephemeral **task/bug/chore** types (`TASK-`/`BUG-`/`CHORE-NNNN`)
 for in-flight work, deleted on `close`. Writes go through the CLI so invariants
 hold at write time and parallel agents don't collide; reads are plain `grep` +
@@ -35,17 +35,18 @@ Or build from source:
 cargo build --release   # target/release/opys
 ```
 
-The inventory lives under a base directory (default `docs/opys/`, configurable
-with `--dir`/`OPYS_DIR`), so it stays out of the repo root: `docs/opys/opys.toml`
-(the config), the document files (in each type's `dir`, by default the shared
+`opys.toml` lives at the **project root** — opys finds it by searching upward
+from the current directory (like git or Cargo). It declares a `base` directory
+(default `docs/opys/`, relative to the root) so the inventory stays out of the
+repo root: the document files (in each type's `dir`, by default the shared
 `docs/opys/items/`), and the generated `docs/opys/INDEX.md`, `docs/opys/views/`,
 `docs/opys/runbooks/`. A document's type is its ID prefix.
 
 ## Quick start
 
 ```sh
-opys init                                   # bootstrap docs/opys/opys.toml + items/
-# edit docs/opys/opys.toml: types, statuses, fields, sections, rules
+opys init                                   # bootstrap opys.toml + items/
+# edit opys.toml: types, statuses, fields, sections, rules
 
 opys new --title "Tab title follows OSC 0/2" --tags osc,tabs
 opys list --status planned
@@ -68,7 +69,7 @@ after editing files by hand.
 
 | Command | Purpose |
 |---|---|
-| `init` | bootstrap `docs/opys/opys.toml` + `items/`, print a CLAUDE.md snippet |
+| `init` | bootstrap `opys.toml` + `items/`, print a CLAUDE.md snippet |
 | `config <init\|validate>` | generate / validate the universal `opys.toml` |
 | `new --type <T>` | allocate the next ID and write a skeleton document of type `T` (auto-syncs) |
 | `import` | bulk-create `feature` documents from a JSONL file (sequential IDs, one sync) |

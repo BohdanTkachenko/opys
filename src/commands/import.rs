@@ -20,7 +20,7 @@ use crate::project_config::{DocType, ProjectConfig};
 use crate::{rules, Ctx};
 
 pub fn run(ctx: &Ctx, file: &str) -> Result<()> {
-    let prj = Project::open(&ctx.root, &ctx.dir)?;
+    let prj = Project::open(&ctx.root)?;
     let (docs, _) = prj.load_docs();
     let pcfg = &prj.pcfg;
     let ft = pcfg

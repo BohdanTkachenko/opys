@@ -20,11 +20,9 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
     let (docs, mut errors) = prj.load_docs();
     let pcfg = &prj.pcfg;
 
-    // Validate a real, user-authored opys.toml, and the field specs of each type.
-    if prj.base.join("opys.toml").exists() {
-        for p in pcfg.validate() {
-            errors.push(format!("opys.toml: {p}"));
-        }
+    // Validate opys.toml itself, and the field specs of each type.
+    for p in pcfg.validate() {
+        errors.push(format!("opys.toml: {p}"));
     }
     for (tname, t) in &pcfg.types {
         check_field_specs(&t.fields, &format!("type '{tname}'"), &mut errors);
