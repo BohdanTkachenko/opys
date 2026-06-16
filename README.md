@@ -1,21 +1,23 @@
 # opys
 
-File-based feature inventory for human + AI codebases — one markdown file per
-feature, verified in CI.
+File-based inventory of typed markdown documents for human + AI codebases — one
+markdown file per document, verified in CI.
 
 `opys` manages a version-controlled inventory of *what a product does*: one
-markdown file per feature, each with YAML frontmatter (stable ID, status,
+markdown file per document, each with YAML frontmatter (stable ID, status,
 tags) and an optional body (spec prose, a test plan, manual-verification
-procedures). Writes go through the CLI so invariants hold at write time and
-parallel agents don't collide; reads are plain `grep` + targeted file reads.
-A `verify` subcommand is the CI gate. It is deliberately *not* a task board —
-no sprints, assignees, or priorities.
+procedures). The document **types** — their ID prefixes, statuses, fields,
+required sections, and validation rules — are configured in one
+`docs/opys/opys.toml`. The default config ships a permanent **feature** type
+(`FEAT-NNNN`) plus ephemeral **task/bug/chore** types (`TASK-`/`BUG-`/`CHORE-NNNN`)
+for in-flight work, deleted on `close`. Writes go through the CLI so invariants
+hold at write time and parallel agents don't collide; reads are plain `grep` +
+targeted file reads. A `verify` subcommand is the CI gate. It is deliberately
+*not* a task board — no sprints, assignees, or priorities.
 
-It also tracks **work items** — ephemeral, per-change companion files (a task
-checklist, a progress log, branch/PR links) that link to the feature(s) they
-change and are deleted on completion. Work items are content, not scheduling, so
-the not-a-task-board stance still holds; they keep in-flight implementation
-state out of the permanent feature files.
+Need a different lifecycle — an `epic`, an `adr`, a `risk`? Add a `[types.<name>]`
+block to `opys.toml` and the whole tool (create, verify, index, views) works for
+it. Durable knowledge → features; "what I'm doing right now" → a task/bug/chore.
 
 It pairs with the `opys` skill (under `skills/`), which
 documents the format and the authoring/implementation workflows for coding
@@ -34,16 +36,16 @@ cargo build --release   # target/release/opys
 ```
 
 The inventory lives under a base directory (default `docs/opys/`, configurable
-with `--dir`/`OPYS_DIR`), so it stays out of the repo root: `docs/opys/features/`
-(config + feature files + `INDEX.md`), `docs/opys/work-items/` (optional),
-`docs/opys/views/`, `docs/opys/runbooks/`. Feature IDs are always `FEAT-NNNN`;
-work items come in fixed types — `TASK-`/`BUG-`/`CHORE-NNNN`.
+with `--dir`/`OPYS_DIR`), so it stays out of the repo root: `docs/opys/opys.toml`
+(the config), the document files (in each type's `dir`, by default the shared
+`docs/opys/items/`), and the generated `docs/opys/INDEX.md`, `docs/opys/views/`,
+`docs/opys/runbooks/`. A document's type is its ID prefix.
 
 ## Quick start
 
 ```sh
-opys init                                   # bootstrap docs/opys/features/ + _config.toml
-# edit docs/opys/features/_config.toml: test_search_paths, custom [fields.*]
+opys init                                   # bootstrap docs/opys/opys.toml + items/
+# edit docs/opys/opys.toml: types, statuses, fields, sections, rules
 
 opys new --title "Tab title follows OSC 0/2" --tags osc,tabs
 opys list --status planned
@@ -51,17 +53,14 @@ opys set-status FEAT-0001 implemented       # rejected unless a test item is che
 opys verify                                 # integrity check; nonzero exit on problems
 opys report                                 # status, coverage gaps (parity if enabled)
 opys manual-runbook --out docs/opys/runbooks/release-0.3.md
-opys schema --kind frontmatter              # JSON Schema for editor/CI validation
 
-# Work items (optional): ephemeral, per-change tracking linked to a feature.
-# Types: task (default), bug, chore → TASK-/BUG-/CHORE- ids.
-opys work-item init                         # enable the subsystem
-opys work-item new --type bug --title "Survive profile switch" --features FEAT-0001
-opys work-item close BUG-0001               # deletes the file; reference struck through
+# Ephemeral work, linked to a feature (default types: task/bug/chore):
+opys new --type bug --title "Survive profile switch" --features FEAT-0001
+opys close BUG-0002                         # deletes the file; reference struck through
 ```
 
-Mutating commands (`new`, `set-status`, `tag`, `retire`, and the `work-item …`
-mutators) reconcile cross-references, linkify prose, and regenerate
+Mutating commands (`new`, `set-status`, `tag`, `retire`, `block`, `close`,
+`cleanup`) reconcile cross-references, linkify prose, and regenerate
 `INDEX.md`/`views/` automatically; pass `--no-sync` to skip, or run `sync-views`
 after editing files by hand.
 
@@ -69,19 +68,20 @@ after editing files by hand.
 
 | Command | Purpose |
 |---|---|
-| `init` | bootstrap `docs/features/_config.toml`, print a CLAUDE.md snippet |
-| `new` | allocate the next ID and write a skeleton feature file (auto-syncs) |
-| `import` | bulk-create features from a JSONL file (sequential IDs, one sync) — for migrations |
-| `show` / `list` | retrieval (`--tag`, `--status`, `--format table\|ids\|paths`) |
-| `set-status` | guarded transitions (wontfix needs a reason; implemented needs a checked test item) |
+| `init` | bootstrap `docs/opys/opys.toml` + `items/`, print a CLAUDE.md snippet |
+| `config <init\|validate>` | generate / validate the universal `opys.toml` |
+| `new --type <T>` | allocate the next ID and write a skeleton document of type `T` (auto-syncs) |
+| `import` | bulk-create `feature` documents from a JSONL file (sequential IDs, one sync) |
+| `show` / `list` | retrieval (`--type`, `--tag`, `--status`, `--format table\|ids\|paths`) |
+| `set-status` | guarded transitions, enforced by the type's configured rules |
 | `tag` | add/remove tags (`--add a,b --remove c`) |
-| `retire` | delete a feature; its ID is logged and never reused |
+| `retire` | delete a document; its ID is logged and never reused |
+| `block` / `unblock` | record a directional blocker between two documents |
+| `close` / `cleanup` | finish a document of a type with a terminal status; strip struck refs |
 | `verify` | full integrity check — wire into CI |
 | `sync-views` | regenerate `INDEX.md` and `views/` (for hand edits) |
 | `report` | status counts, coverage gaps, opt-in parity % |
 | `manual-runbook` | aggregate manual items into an executable checklist |
-| `schema` | emit a JSON Schema for `_config.toml` or feature frontmatter |
-| `work-item <init\|new\|show\|list\|set-status\|tag\|close\|cleanup>` | manage ephemeral work items linked to features (alias `wi`) |
 | `agent-rules --tool <editor>` | generate a rules-based editor's instruction file from the canonical rule |
 
 A feature file looks like (the `references` map is auto-maintained — a work
@@ -103,8 +103,8 @@ references:
 - [ ] Invalid UTF-8 in title payload — uncovered
 ```
 
-See `skills/opys/references/format.md` for the normative feature
-format and `references/work-items.md` for work items.
+See `skills/opys/references/format.md` for the normative document format and the
+`opys.toml` config reference.
 
 ## The `opys` skill
 
@@ -152,14 +152,14 @@ It writes the right file in the right place (`.cursor/rules/opys.mdc`,
 `.windsurf/rules/…`, `.clinerules/…`, `.github/instructions/…`,
 `.kiro/steering/…`) with any host-specific frontmatter.
 
-The skill folder carries both normative specs (`references/format.md` and
-`references/work-items.md`), so one folder brings everything.
+The skill folder carries the normative spec (`references/format.md`), so one
+folder brings everything.
 
 The CLI itself is universal — any agent that can run a shell command can use
 `opys`. For tools that read project instructions instead of skills, the
 cross-tool standard is **AGENTS.md** (this repo ships one). The substance is the
-same everywhere: `opys new/set-status/verify/work-item ...` for writes,
-`opys`/`rg` + `docs/opys/features/INDEX.md` for reads.
+same everywhere: `opys new --type/set-status/close/verify ...` for writes,
+`opys`/`rg` + `docs/opys/INDEX.md` for reads.
 
 ## License
 

@@ -964,14 +964,14 @@ fn agent_rules_generates_editor_files() {
         .stdout(predicate::str::contains(".cursor/rules/opys.mdc"));
     dir.child(".cursor/rules/opys.mdc")
         .assert(predicate::str::contains("globs: docs/opys/**"))
-        .assert(predicate::str::contains("# opys feature inventory"));
+        .assert(predicate::str::contains("# opys document inventory"));
 
     // --stdout prints instead of writing; --tool all is rejected with --stdout.
     opys(&dir)
         .args(["agent-rules", "--tool", "kiro", "--stdout"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("# opys feature inventory"));
+        .stdout(predicate::str::contains("# opys document inventory"));
     opys(&dir)
         .args(["agent-rules", "--tool", "all", "--stdout"])
         .assert()

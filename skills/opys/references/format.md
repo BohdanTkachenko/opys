@@ -1,4 +1,4 @@
-# Feature file format (normative)
+# Document file format (normative)
 
 ## Layout
 
@@ -7,51 +7,68 @@ with `--dir` / `OPYS_DIR`), so it stays out of the repo root:
 
 ```
 docs/opys/
-  features/
-    _config.toml        # project configuration (see below)
-    _retired.txt        # append-only log of deleted IDs (never reused), sorted
-    FEAT-0001.md
-    ...
-    INDEX.md            # generated — never hand-edit
-  work-items/           # optional ephemeral companions (references/work-items.md)
+  opys.toml             # the configuration (see below) — declares the types
+  _retired.txt          # append-only log of deleted IDs (never reused), sorted
+  items/                # default directory for documents (FEAT-0001.md, TASK-0002.md, …)
   views/                # generated — never hand-edit
   runbooks/             # dated manual-runbook instances, committed after execution
+  INDEX.md              # generated — never hand-edit
 ```
 
-Feature IDs are always `FEAT-NNNN` — the prefix is fixed, not configurable, so
-cross-project references read unambiguously. If `ls docs/opys/features/` becomes
-unwieldy (~2000+ files), shard mechanically by ID prefix
-(`docs/opys/features/04/FEAT-0421.md`). Sharding is cosmetic only; tooling
-treats the tree as flat. Directory structure must never encode taxonomy.
+Each document is one markdown file named after its ID (`FEAT-0001.md`,
+`EPIC-0003.md`). **A document's type is its ID prefix.** By default every type's
+files live together in `items/`; a type may set its own `dir` (`epic` →
+`epics/`). Directory structure must never encode taxonomy — that is what tags and
+generated views are for. If a directory becomes unwieldy (~2000+ files), shard
+mechanically by ID prefix; sharding is cosmetic, tooling treats the tree as flat.
 
-## Configuration: `docs/opys/features/_config.toml`
+## Configuration: `docs/opys/opys.toml`
+
+One config declares every document **type** and the rules over them. `opys config
+init` writes the opinionated default (a permanent `feature` type plus ephemeral
+`task`/`bug`/`chore`); `opys config validate` checks it.
 
 ```toml
-pad = 4                             # zero-padding width (prefix is fixed: FEAT)
-test_search_paths = ["src", "tests"]
-test_reference_check = "grep"       # "grep" | "extract" | "none"
-# test_name_pattern = "fn\\s+(\\w+)\\s*\\("  # required for "extract" mode
-extra_statuses = []                 # beyond the four core statuses
-parity = false                      # report feature-parity % (parity projects only)
+pad = 4                              # zero-padding width for the numeric id part
 
-[fields.ptyxis_ref]                 # per-project custom frontmatter fields
-type = "string"                     # string | list | bool | int | enum
-required = false
-description = "Pointer into Ptyxis source establishing reference behavior"
+[tests]                              # test-reference resolution (test-plan sections)
+search_paths = ["src", "tests"]
+reference_check = "grep"             # "grep" | "extract" | "none"
+# name_pattern = "fn\\s+(\\w+)\\s*\\("   # required for "extract"
 
-[fields.priority]                   # an enum field: a validated value set
-type = "enum"
-values = ["low", "medium", "high"]  # verify rejects any value not listed here
+[report]
+parity = false                       # report feature-parity % (parity projects)
+
+[types.feature]                      # one [types.<name>] block per document type
+prefix = "FEAT"                      # ^[A-Z][A-Z0-9]*$, unique across types
+# dir = "features"                   # default: the shared items/
+statuses = ["planned", "partial", "implemented", "wontfix", "archived"]
+default_status = "planned"
+terminal_statuses = []               # statuses reached only via `close` (which deletes)
+tags_required = true
+# requires_link = { to = "feature", min = 1 }   # must reference ≥min docs of a type
+
+[types.feature.fields.priority]      # custom frontmatter fields (the closed schema)
+type = "enum"                        # string | list | bool | int | enum
+values = ["low", "high"]             # an enum constrains the value
+# pattern = '^JIRA-[0-9]+$'          # a string field may require a regex
+
+[[types.feature.sections]]           # required/known body sections, by kind
+heading = "Test plan"
+kind = "test-plan"                   # prose | log | checklist | test-plan | manual
+# required = true
+
+[[rules]]                            # conditional guards: a `when` + one assertion
+when = { type = "feature", status = "implemented" }
+require_checked_section = "Test plan"
 ```
 
-Custom fields are the per-project extension point. A field used in any
-feature file must be declared here or verify fails — undeclared fields are
-how schema drift starts. An `enum` field additionally constrains its value to
-the declared `values` list (a controlled vocabulary), and `opys list --field
-<key>=<value>` filters the inventory by any custom field (see below).
-`opys schema --kind config` and `--kind frontmatter` emit JSON Schemas (the
-frontmatter one is derived from your declared fields, including each enum's
-allowed values) for editor (Even Better TOML) or CI validation.
+A frontmatter field used on any document must be declared on its type or verify
+fails — undeclared fields are how schema drift starts. An `enum` constrains its
+value to the declared `values`; a string field may carry a `pattern`. The closed
+assertion set for `[[rules]]` is `require_field`, `field_matches`,
+`require_section`, `require_checked_section`, `require_link`, `require_any`.
+`opys list --field <key>=<value>` filters by any custom field (see below).
 
 ## A complete feature file
 
@@ -119,10 +136,10 @@ may reflow the formatting (not the meaning) of complex values.
 There is deliberately no `tests:` field — covering tests are derived from
 the test plan, eliminating a sync surface.
 
-The `references` map is **auto-maintained** by opys — it links a feature to its
-work items (see `references/work-items.md`) and is kept bidirectional and
-title-fresh on every write. You do not hand-edit it; a closed work item leaves a
-struck-through (`~~title~~`) tombstone here. Bare feature/work-item ID mentions
+The `references` map is **auto-maintained** by opys — it links a document to the
+others it relates to and is kept bidirectional and title-fresh on every write.
+You do not hand-edit it; a closed document leaves a struck-through (`~~title~~`)
+tombstone here. Bare `PREFIX-NNNN` ID mentions
 in body prose are rewritten into markdown links on sync.
 
 ### Custom-field type mapping
@@ -138,9 +155,9 @@ in body prose are rewritten into markdown links on sync.
 | `enum` | a string listed in the field's `values` | any string not in `values`, and non-strings |
 
 An `enum` field must declare a non-empty `values` array (verify errors on an
-empty one). Reserved fields (`id`, `status`, `tags`, `spec`, `wontfix_reason`,
-`references`, `blocked_by`, `blocks`) are always allowed; every other key must
-be declared under `[fields.*]` or verify rejects it. Richer YAML does not relax
+empty one). Reserved keys (`id`, `status`, `tags`, `references`, `blocked_by`,
+`blocks`) are always allowed; every other key must be declared under the type's
+`[types.<name>.fields.*]` or verify rejects it. Richer YAML does not relax
 the declare-or-fail rule.
 
 ### Filtering by field
@@ -155,7 +172,7 @@ opys list --status partial --field area=cli     # combine with status
 opys list --field tag-list=osc --format ids     # list-membership match
 ```
 
-The same `--field` filter is available on `opys work-item list`.
+`opys list --type <name>` restricts the listing to one document type.
 
 ## Blockers
 
@@ -291,5 +308,6 @@ sprint metadata. CI owns automated results; committed runbook instances own
 manual results; this system owns intent only.
 
 Implementation logs, task checklists, and branch/PR links also do not belong
-here — they go in a **work item** (`references/work-items.md`), which is deleted
-when the change lands. The feature is permanent; the work item is throwaway.
+here — they go in an ephemeral document (a `task`/`bug`/`chore`), which is
+deleted when the change lands. The feature is permanent; the work item is
+throwaway.

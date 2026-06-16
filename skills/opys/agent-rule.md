@@ -1,22 +1,24 @@
-# opys feature inventory
+# opys document inventory
 
-This project may use **opys** — a file-based feature inventory, with optional
-work items, under `docs/opys/`. Follow this when
-`docs/opys/features/_config.toml` exists; otherwise ignore it.
+This project may use **opys** — a file-based inventory of typed markdown
+documents under `docs/opys/`, configured by `docs/opys/opys.toml`. Follow this
+when that file exists; otherwise ignore it.
 
-- **Model.** One markdown file per feature (`FEAT-NNNN`) is the *permanent*
-  record of what the project does. *Work items* (typed `TASK-`/`BUG-`/`CHORE-NNNN`,
-  optional) are *ephemeral* per-change companions — tasks, a progress log, branch/PR links —
-  deleted on completion. Durable knowledge → features; "what I'm doing now" →
-  work items.
-- **Reads.** Never bulk-read `docs/opys/`. Start at
-  `docs/opys/features/INDEX.md`, then `rg` by tag/status, then open the 2–5
-  relevant files. `INDEX.md` and `views/` are generated — never edit them.
+- **Model.** One markdown file per document, with `---`-fenced YAML frontmatter
+  (a stable `PREFIX-NNNN` id, status, tags, relation maps) and a markdown body.
+  The document *types* — their id prefixes, statuses, fields, required sections,
+  and validation rules — are declared in `opys.toml`. The default config ships a
+  permanent `feature` type plus ephemeral `task`/`bug`/`chore` types that are
+  deleted on `close`. Durable knowledge → features; "what I'm doing right now" →
+  a task/bug/chore.
+- **Reads.** Never bulk-read `docs/opys/`. Start at `docs/opys/INDEX.md`, then
+  `rg` by tag/status, then open the 2–5 relevant files. `INDEX.md` and `views/`
+  are generated — never edit them.
 - **Writes go through the `opys` CLI** so invariants hold and parallel agents
-  don't collide: `opys new`, `set-status`, `tag`, `retire`; `opys work-item
-  new`, `set-status`, `close`. Spec prose, `## Test plan`, and `## Tasks` edits
-  are normal file edits. Run `opys verify` before finishing.
-- **Never** put test results, dates, or completion claims in feature files, or
-  implementation logs in a feature (those belong in a work item).
-- Full guide: the `opys` skill — `SKILL.md`, `references/format.md`,
-  `references/work-items.md`. Install the CLI with `cargo install opys`.
+  don't collide: `opys new --type <T>`, `set-status`, `tag`, `retire`, `block`,
+  `close`. Body prose, `## Test plan`, and `## Tasks` edits are normal file
+  edits. Run `opys verify` before finishing.
+- **Never** put test results, dates, or completion claims in documents, or
+  implementation logs in a permanent feature (those belong in a task/bug/chore).
+- Full guide: the `opys` skill — `SKILL.md`, `references/format.md`. Install the
+  CLI with `cargo install opys`.

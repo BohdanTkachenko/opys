@@ -1,19 +1,20 @@
 ---
 name: opys
-description: Set up and operate a file-based feature inventory ("file-based JIRA") — one markdown file per feature with YAML frontmatter, stable IDs, tags, test plans, manual-verification runbooks, and a verify gate for CI. It also tracks work items — ephemeral, per-change companion files (tasks, a progress log, branch/PR links) that link to features and are deleted on completion. Use this skill whenever the user wants to track implemented features, requirements coverage, feature parity with another product, a traceability matrix between features and tests, in-flight implementation work, or asks how to share a large feature list between themselves and LLM agents. Also use it when working inside a project that already has a docs/opys/features/ directory with _config.toml — for creating features, changing status, updating test plans, creating and closing work items, running verify, or generating views, reports, and manual-test runbooks.
+description: Set up and operate a file-based inventory of typed markdown documents ("file-based JIRA") — one markdown file per document with YAML frontmatter, stable IDs, tags, and configurable types/statuses/fields/sections/rules in one docs/opys/opys.toml, with test plans, manual-verification runbooks, and a verify gate for CI. The default config ships a permanent feature type plus ephemeral task/bug/chore types (deleted on close); projects can add their own (epic, adr, risk, …). Use this skill whenever the user wants to track implemented features, requirements coverage, feature parity with another product, a traceability matrix between features and tests, in-flight implementation work, or asks how to share a large list between themselves and LLM agents. Also use it when working inside a project that already has a docs/opys/opys.toml — for creating documents (opys new --type), changing status, updating test plans, closing work, running verify, or generating views, reports, and manual-test runbooks.
 ---
 
-# opys — feature inventory & work items
+# opys — typed-document inventory
 
-A version-controlled inventory of what a product does (features) and the
-in-flight work changing it (work items): one markdown file per item, managed by
-the `opys` CLI, verified in CI. Features are the *permanent* inventory and their
-test coverage; work items are *ephemeral* per-change companions. Deliberately
-not a task board (no sprints, assignees, priorities).
+A version-controlled inventory of typed markdown documents — what a product does
+(permanent `feature` documents and their test coverage) and the in-flight work
+changing it (ephemeral `task`/`bug`/`chore` documents) — one markdown file per
+item, managed by the `opys` CLI, verified in CI. Document types are configured in
+`docs/opys/opys.toml`; projects add their own. Deliberately not a task board (no
+sprints, assignees, priorities).
 
-Read `references/format.md` before authoring or editing feature files, and
-`references/work-items.md` before creating or editing work items — they are the
-normative file-format specs and design rationale. This file covers operation.
+Read `references/format.md` before authoring or editing documents or the
+`opys.toml` config — it is the normative file-format spec and design rationale.
+This file covers operation.
 
 > **Feature vs work item.** A *feature* is a permanent record of what the
 > product does — spec, test plan, manual verification — and is never deleted
@@ -48,56 +49,46 @@ Install it with `cargo install opys`, or build from source with `cargo build
 one step.
 
 The inventory lives under a base directory (default `docs/opys/`, set with
-`--dir` or `OPYS_DIR`): `docs/opys/features/` (config + feature files +
-`INDEX.md`), `docs/opys/work-items/` (optional), `docs/opys/views/`,
-`docs/opys/runbooks/`. Mutating commands regenerate `INDEX.md` and `views/`
-automatically (pass `--no-sync` to skip).
+`--dir` or `OPYS_DIR`): `docs/opys/opys.toml` (the config), the document files
+(each type's `dir`, by default the shared `docs/opys/items/`), and the generated
+`docs/opys/INDEX.md`, `docs/opys/views/`, `docs/opys/runbooks/`. Mutating commands
+regenerate `INDEX.md` and `views/` automatically (pass `--no-sync` to skip).
+
+The document **types** are configured in `opys.toml` (`opys config init` writes
+the opinionated default; `opys config validate` checks it). The default ships a
+permanent `feature` type plus ephemeral `task`/`bug`/`chore` types
+(`TASK-`/`BUG-`/`CHORE-NNNN`, deleted on `close`); add a `[types.<name>]` block
+for your own (prefix, statuses, fields, sections, rules). A document's type is
+its ID prefix.
 
 | Command | Purpose |
 |---|---|
-| `init` | bootstrap `docs/opys/features/_config.toml`, print CLAUDE.md snippet |
-| `new --title T --tags a,b [--status S] [--reason R] [--field k=v]` | create file with next ID (auto-syncs) |
-| `import FILE.jsonl` | bulk-create features from JSONL (sequential IDs, one sync, transactional) — for migrations |
-| `show ID` / `list [--tag T] [--status S] [--field k=v]… [--format table\|ids\|paths]` | retrieval; `--field` filters by any custom field (repeatable, ANDed) |
-| `set-status ID S [--reason R]` | guarded transitions (wontfix needs reason; implemented needs a checked test item) |
+| `init` | bootstrap `docs/opys/opys.toml` + `items/`, print CLAUDE.md snippet |
+| `config init` / `config validate` | generate / check the universal `opys.toml` |
+| `new --type T --title … [--tags a,b] [--status S] [--features F1,F2] [--reason R] [--field k=v]` | create a doc of type `T` with the next ID (`--type` defaults to `feature`; auto-syncs) |
+| `import FILE.jsonl` | bulk-create `feature` docs from JSONL (sequential IDs, one sync, transactional) |
+| `show ID` / `list [--type T] [--tag T] [--status S] [--field k=v]… [--format table\|ids\|paths]` | retrieval; `--field` filters by any custom field (repeatable, ANDed) |
+| `set-status ID S [--reason R]` | guarded transition against the type's statuses + rules; a terminal status is reached only via `close` |
 | `tag ID --add a,b --remove c` | tag maintenance |
-| `block ID --by BLOCKER` / `unblock ID --by BLOCKER` | record/remove a blocker link (`blocked_by`/`blocks`, bidirectional); blocking a work item auto-sets `blocked` |
+| `block ID --by BLOCKER` / `unblock ID --by BLOCKER` | record/remove a blocker link (`blocked_by`/`blocks`); blocking auto-sets `blocked` when the type has it |
 | `retire ID --reason R` | delete file, log ID to `_retired.txt` so it is never reallocated |
-| `verify` | full integrity check (features + work items); nonzero exit on problems — wire into CI |
-| `sync-views` | reconcile references, linkify prose, regenerate `INDEX.md` + `views/` (for hand edits) |
-| `report` | status counts, coverage gaps, and (opt-in) parity % |
-| `manual-runbook [--out docs/opys/runbooks/X.md]` | aggregate all manual items into an executable checklist, grouped by Setup, uncovered ones flagged ⚠ |
-| `schema --kind config\|frontmatter` | emit a JSON Schema for editor/CI validation |
-
-### Work-item commands
-
-Work items (`references/work-items.md`) are the ephemeral companions to
-features. Enable them with `opys work-item init`; they come in hardcoded types —
-`task`/`bug`/`chore` → `TASK-`/`BUG-`/`CHORE-NNNN` — and live in
-`docs/opys/work-items/`. (Alias: `opys wi …`.)
-
-| Command | Purpose |
-|---|---|
-| `work-item init` | scaffold `docs/opys/work-items/_config.toml` |
-| `work-item new --title T [--type task\|bug\|chore] --features F1,F2 [--tags a,b] [--status S] [--field k=v]` | create file with the next ID for that type (default task); linked features must exist (auto-syncs) |
-| `work-item show ID` / `list [--feature F] [--type T] [--status S] [--field k=v]… [--format …]` | retrieval; `--type`/`--field` filter the listing |
-| `work-item set-status ID S [--reason R]` | guarded transition (`todo`/`in-progress`/`blocked`; `done` is reached only via `close`) |
-| `work-item tag ID --add a,b --remove c` | tag maintenance (work-item tags are optional) |
-| `work-item close ID [--force]` | finish: delete the file and strike its title through in every referencing doc (the struck reference reserves the ID) |
-| `work-item cleanup` | strip struck-through (completed) work-item references from all docs |
+| `close ID [--force]` / `cleanup` | finish a doc whose type has a terminal status (strike its refs everywhere); strip struck refs |
+| `verify` | full integrity check; nonzero exit on problems — wire into CI |
+| `sync-views` | reconcile references, linkify prose, regenerate `INDEX.md` + `views/` |
+| `report` | per-type status counts, coverage gaps, and (opt-in) parity % |
+| `manual-runbook [--out docs/opys/runbooks/X.md]` | aggregate manual items into an executable checklist, grouped by Setup, uncovered flagged ⚠ |
+| `agent-rules --tool <editor>` | generate a rules-based editor's instruction file from the canonical rule |
 
 ## Workflow: bootstrapping a project
 
-1. Run `opys init`, then edit `docs/opys/features/_config.toml`: set
-   `test_search_paths`, and declare any project-specific frontmatter fields
-   under `[fields.<name>]` (type, required, description). Unknown fields in
-   feature files fail verify until declared — this keeps the schema honest.
-   For parity projects set `parity = true`. To validate that test references
-   point at real tests, set `test_reference_check = "extract"` plus a
-   `test_name_pattern` regex; otherwise the default `"grep"` substring check
-   applies. `opys schema --kind config` and `--kind frontmatter` emit JSON
-   Schemas you can wire into editors (Even Better TOML) or CI to stop
-   hallucinated fields.
+1. Run `opys init`, then edit `docs/opys/opys.toml`: declare your document
+   `[types.<name>]` (prefix, statuses, `[fields.*]`, `[[sections]]`, and
+   `[[rules]]`), and set `[tests]` (`search_paths`, `reference_check`). Unknown
+   frontmatter fields fail verify until declared on the type — this keeps the
+   schema honest. For parity projects set `[report] parity = true`. To validate
+   that test references point at real tests, set `reference_check = "extract"`
+   plus a `name_pattern` regex; otherwise the default `"grep"` substring check
+   applies. `opys config validate` checks the config is well-formed.
 2. Add the printed snippet to the project's CLAUDE.md.
 3. Add `opys verify` (and optionally a `sync-views` freshness diff) to CI.
 4. If migrating an existing feature list: at small scale, convert each entry
@@ -111,7 +102,7 @@ features. Enable them with `opys work-item init`; they come in hardcoded types �
 
 ## Workflow: implementing a feature (for coding agents)
 
-1. Read `docs/opys/features/INDEX.md`, locate the feature, read its file fully.
+1. Read `docs/opys/INDEX.md`, locate the feature, read its file fully.
 2. Implement. Add tests.
 3. In the test plan, check the covered items and append backticked test
    references — `module::test_name`, or `path/to/file::test_name` when the
@@ -128,17 +119,18 @@ A work item is your scratchpad for one change — a file, so it survives context
 resets and is greppable, deleted when you finish.
 
 1. Identify the feature(s) you will change; read their files.
-2. `opys work-item new --title "…" --features FEAT-0001`. This scaffolds
-   `## Tasks` / `## Progress` and links the feature(s); the CLI rejects a link to
-   a feature that doesn't exist, and auto-adds the reverse link on the feature.
+2. `opys new --type bug --title "…" --features FEAT-0001` (or `--type task`/
+   `chore`). This scaffolds the type's required sections (`## Tasks` / `## Progress`,
+   plus `## Reproduction` for a bug) and links the feature(s); the CLI rejects a
+   link to a feature that doesn't exist, and auto-adds the reverse link.
 3. As you work, edit `## Tasks` (check items off) and append dated `## Progress`
    lines with branch/commit/PR — normal file edits. Don't hand-maintain the
    `references` map or linkify prose; `opys` does both on each write.
 4. Fold anything durable back into the **feature**, not the work item: check the
    covered test-plan items and add refs, `opys set-status … implemented`, write
    spec prose. The feature is what survives.
-5. `opys work-item close ID` — deletes the file and strikes its reference through
-   in the feature as a tombstone. Do this only after step 4.
+5. `opys close ID` — deletes the file and strikes its reference through in the
+   feature as a tombstone. Do this only after step 4.
 6. `opys verify`.
 
 ## Workflow: authoring features (interview style)
@@ -155,12 +147,11 @@ and counted in `report`.
 
 ## Retrieval discipline
 
-Never bulk-read `docs/opys/features/`. The path is: `INDEX.md` (the one
-whole-inventory file, deliberately small) → `rg` by tag/status or `list` →
-read the 2–5 relevant files. Generated `views/` files are read-only
-conveniences; regenerate with `sync-views`, never edit. Work items follow the
-same discipline: `docs/opys/work-items/INDEX.md` → `rg`/`work-item list
---feature FEAT-0001` → the relevant `TASK-`/`BUG-`/`CHORE-NNNN.md` files.
+Never bulk-read `docs/opys/`. The path is: `docs/opys/INDEX.md` (the one
+whole-inventory file, grouped by type, deliberately small) → `rg` by tag/status
+or `opys list [--type T]` → read the 2–5 relevant files. Generated `views/` files
+(`by-tag/`, `status/`, `by-reference/`) are read-only conveniences; regenerate
+with `sync-views`, never edit.
 
 ## Release testing
 
