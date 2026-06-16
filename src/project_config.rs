@@ -1,13 +1,11 @@
-//! The universal typed-document config (`docs/opys/opys.toml`).
+//! The universal typed-document config (`docs/opys/opys.toml`) — the sole
+//! source of truth for the engine.
 //!
-//! This is the data model for the upcoming configurable engine: a project
-//! declares its own document **types** (each with statuses, fields, and required
-//! sections) plus a list of conditional **validation rules**. Nothing executes
-//! against this yet — `opys config validate` parses it and checks it is
-//! well-formed, and later phases will make the rest of the tool read it.
-//!
-//! It deliberately coexists with the legacy `config::Config`/`WorkItemConfig`
-//! during the transition; reuses `config::FieldSpec`/`FieldType`/`TestRefCheck`.
+//! A project declares its own document **types** (each with a prefix, dir,
+//! statuses, fields, and required sections) plus a list of conditional
+//! **validation rules**. `Project::open` loads this; every command reads it, and
+//! `verify` enforces it via [`crate::rules`]. Reuses
+//! `config::FieldSpec`/`FieldType`/`TestRefCheck`.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
