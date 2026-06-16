@@ -2,7 +2,7 @@
 
 This project may use **opys** — a file-based inventory of typed markdown
 documents, configured by an `opys.toml` at the project root (which declares
-where the documents live, default `docs/opys/`). Follow this when `opys.toml`
+where the documents live, default `opys/`). Follow this when `opys.toml`
 exists; otherwise ignore it.
 
 - **Model.** One markdown file per document, with `---`-fenced YAML frontmatter
@@ -12,7 +12,7 @@ exists; otherwise ignore it.
   permanent `feature` type plus ephemeral `task`/`bug`/`chore` types that are
   deleted on `close`. Durable knowledge → features; "what I'm doing right now" →
   a task/bug/chore.
-- **Reads.** Never bulk-read `docs/opys/`. Start at `docs/opys/INDEX.md`, then
+- **Reads.** Never bulk-read `opys/`. Start at `opys/INDEX.md`, then
   `rg` by tag/status, then open the 2–5 relevant files. `INDEX.md` and `views/`
   are generated — never edit them.
 - **Writes go through the `opys` CLI** so invariants hold and parallel agents

@@ -1,5 +1,5 @@
 //! The project: `opys.toml` at the project root (found by searching upward),
-//! plus the inventory base it points at (default `docs/opys/`, holding the
+//! plus the inventory base it points at (default `opys/`, holding the
 //! document files, `INDEX.md`, `views/`, `runbooks/`, and `_retired.txt`).
 
 use std::collections::HashSet;
@@ -52,7 +52,7 @@ pub struct Project {
 impl Project {
     /// Open the project by searching upward from `root` (default the cwd) for
     /// `opys.toml`. The directory holding it is the project root; the inventory
-    /// base is `<root>/<config.base>` (default `docs/opys`).
+    /// base is `<root>/<config.base>` (default `opys`).
     pub fn open(root: &str) -> Result<Project> {
         let start = start_dir(root)?;
         let root = find_root(&start).ok_or_else(|| {

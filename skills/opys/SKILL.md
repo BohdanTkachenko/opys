@@ -49,10 +49,10 @@ Install it with `cargo install opys`, or build from source with `cargo build
 one step.
 
 `opys.toml` lives at the **project root** (opys finds it by searching upward from
-the cwd, like git/Cargo). It declares a `base` directory (default `docs/opys/`,
+the cwd, like git/Cargo). It declares a `base` directory (default `opys/`,
 relative to the root) holding the document files (each type's `dir`, by default
-the shared `docs/opys/items/`) and the generated `docs/opys/INDEX.md`,
-`docs/opys/views/`, `docs/opys/runbooks/`. Mutating commands regenerate
+the shared `opys/items/`) and the generated `opys/INDEX.md`,
+`opys/views/`, `opys/runbooks/`. Mutating commands regenerate
 `INDEX.md` and `views/` automatically (pass `--no-sync` to skip).
 
 The document **types** are configured in `opys.toml` (`opys config init` writes
@@ -77,7 +77,7 @@ its ID prefix.
 | `verify` | full integrity check; nonzero exit on problems — wire into CI |
 | `sync-views` | reconcile references, linkify prose, regenerate `INDEX.md` + `views/` |
 | `report` | per-type status counts, coverage gaps, and (opt-in) parity % |
-| `manual-runbook [--out docs/opys/runbooks/X.md]` | aggregate manual items into an executable checklist, grouped by Setup, uncovered flagged ⚠ |
+| `manual-runbook [--out opys/runbooks/X.md]` | aggregate manual items into an executable checklist, grouped by Setup, uncovered flagged ⚠ |
 | `agent-rules --tool <editor>` | generate a rules-based editor's instruction file from the canonical rule |
 
 ## Workflow: bootstrapping a project
@@ -103,7 +103,7 @@ its ID prefix.
 
 ## Workflow: implementing a feature (for coding agents)
 
-1. Read `docs/opys/INDEX.md`, locate the feature, read its file fully.
+1. Read `opys/INDEX.md`, locate the feature, read its file fully.
 2. Implement. Add tests.
 3. In the test plan, check the covered items and append backticked test
    references — `module::test_name`, or `path/to/file::test_name` when the
@@ -148,7 +148,7 @@ and counted in `report`.
 
 ## Retrieval discipline
 
-Never bulk-read `docs/opys/`. The path is: `docs/opys/INDEX.md` (the one
+Never bulk-read `opys/`. The path is: `opys/INDEX.md` (the one
 whole-inventory file, grouped by type, deliberately small) → `rg` by tag/status
 or `opys list [--type T]` → read the 2–5 relevant files. Generated `views/` files
 (`by-tag/`, `status/`, `by-reference/`) are read-only conveniences; regenerate
@@ -156,7 +156,7 @@ with `sync-views`, never edit.
 
 ## Release testing
 
-`manual-runbook --out docs/opys/runbooks/release-X.md` produces the checklist,
+`manual-runbook --out opys/runbooks/release-X.md` produces the checklist,
 grouped by Setup line so environments are reconfigured once, not per item;
 items without automated coverage are flagged ⚠ so you prioritize them. The
 executed, annotated runbook is committed — that file, not the feature files,

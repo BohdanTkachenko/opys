@@ -1,4 +1,4 @@
-//! The universal typed-document config (`docs/opys/opys.toml`) — the sole
+//! The universal typed-document config (`opys.toml`) — the sole
 //! source of truth for the engine.
 //!
 //! A project declares its own document **types** (each with a prefix, dir,
@@ -33,7 +33,7 @@ fn default_min() -> usize {
 /// Inventory base directory (holding the documents, `INDEX.md`, `views/`,
 /// `runbooks/`, `_retired.txt`), relative to the project root that holds
 /// `opys.toml` — when the config declares no `base`.
-pub const DEFAULT_BASE: &str = "docs/opys";
+pub const DEFAULT_BASE: &str = "opys";
 
 /// Directory (under the inventory base) for a type that declares no explicit
 /// `dir` — by default every type's docs live together here.
@@ -190,7 +190,7 @@ pub struct ReportConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProjectConfig {
     /// Inventory base directory, relative to the project root (the dir holding
-    /// `opys.toml`). Defaults to `docs/opys`.
+    /// `opys.toml`). Defaults to `opys`.
     #[serde(default = "default_base")]
     pub base: String,
     #[serde(default = "default_pad")]

@@ -37,10 +37,10 @@ cargo build --release   # target/release/opys
 
 `opys.toml` lives at the **project root** — opys finds it by searching upward
 from the current directory (like git or Cargo). It declares a `base` directory
-(default `docs/opys/`, relative to the root) so the inventory stays out of the
+(default `opys/`, relative to the root) so the inventory stays out of the
 repo root: the document files (in each type's `dir`, by default the shared
-`docs/opys/items/`), and the generated `docs/opys/INDEX.md`, `docs/opys/views/`,
-`docs/opys/runbooks/`. A document's type is its ID prefix.
+`opys/items/`), and the generated `opys/INDEX.md`, `opys/views/`,
+`opys/runbooks/`. A document's type is its ID prefix.
 
 ## Quick start
 
@@ -53,7 +53,7 @@ opys list --status planned
 opys set-status FEAT-0001 implemented       # rejected unless a test item is checked
 opys verify                                 # integrity check; nonzero exit on problems
 opys report                                 # status, coverage gaps (parity if enabled)
-opys manual-runbook --out docs/opys/runbooks/release-0.3.md
+opys manual-runbook --out opys/runbooks/release-0.3.md
 
 # Ephemeral work, linked to a feature (default types: task/bug/chore):
 opys new --type bug --title "Survive profile switch" --features FEAT-0001
@@ -140,7 +140,7 @@ cp -r /tmp/opys/skills/opys <your-project>/.claude/skills/   # or .cursor/skills
 ```
 
 **Always-on rule file** (a short, self-gating pointer — activates only when the
-project has a `docs/opys/` inventory) for rules-based editors: `opys` *generates*
+project has a `opys/` inventory) for rules-based editors: `opys` *generates*
 it from one canonical rule (`skills/opys/agent-rule.md`), so there
 are no duplicate files to keep in sync. Run it in your project:
 
@@ -160,7 +160,7 @@ The CLI itself is universal — any agent that can run a shell command can use
 `opys`. For tools that read project instructions instead of skills, the
 cross-tool standard is **AGENTS.md** (this repo ships one). The substance is the
 same everywhere: `opys new --type/set-status/close/verify ...` for writes,
-`opys`/`rg` + `docs/opys/INDEX.md` for reads.
+`opys`/`rg` + `opys/INDEX.md` for reads.
 
 ## License
 

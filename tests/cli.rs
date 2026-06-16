@@ -146,8 +146,7 @@ fn init_bootstraps_and_prints_snippet() {
         .stdout(predicate::str::contains("## Feature inventory"))
         .stdout(predicate::str::contains("opys verify"));
     dir.child("opys.toml").assert(predicate::path::exists());
-    dir.child("docs/opys/runbooks")
-        .assert(predicate::path::is_dir());
+    dir.child("opys/runbooks").assert(predicate::path::is_dir());
 }
 
 #[test]
@@ -158,7 +157,7 @@ fn new_allocates_next_id_and_requires_tags() {
         .assert()
         .success()
         .stdout(predicate::str::contains("FEAT-0001.md"));
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .assert(predicate::str::contains("# First"));
 
     opys(&dir)
@@ -181,9 +180,9 @@ fn new_auto_syncs_index_and_views() {
         .args(["new", "--title", "First", "--tags", "osc"])
         .assert()
         .success();
-    dir.child("docs/opys/INDEX.md")
+    dir.child("opys/INDEX.md")
         .assert(predicate::str::contains("FEAT-0001"));
-    dir.child("docs/opys/views/by-tag/osc.md")
+    dir.child("opys/views/by-tag/osc.md")
         .assert(predicate::path::exists());
 }
 
@@ -212,7 +211,7 @@ fn finds_config_by_searching_upward() {
         .success();
     let mut cmd = Command::cargo_bin("opys").unwrap();
     cmd.arg("--root")
-        .arg(dir.child("docs/opys/features").path())
+        .arg(dir.child("opys/features").path())
         .args(["list", "--format", "ids"]);
     cmd.assert()
         .success()
@@ -235,7 +234,7 @@ fn set_status_implemented_requires_checked_item() {
             "'## Test plan' needs at least one checked item",
         ));
 
-    let path = dir.child("docs/opys/features/FEAT-0001.md");
+    let path = dir.child("opys/features/FEAT-0001.md");
     let mut text = std::fs::read_to_string(path.path()).unwrap();
     text.push_str("\n## Test plan\n- [x] does a thing — `mod::test_thing`\n");
     std::fs::write(path.path(), text).unwrap();
@@ -258,9 +257,9 @@ fn retire_deletes_and_reserves_id() {
         .args(["retire", "FEAT-0001", "--reason", "dupe"])
         .assert()
         .success();
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .assert(predicate::path::missing());
-    dir.child("docs/opys/_retired.txt")
+    dir.child("opys/_retired.txt")
         .assert(predicate::str::contains("FEAT-0001"));
 
     opys(&dir)
@@ -288,7 +287,7 @@ fn retired_ledger_is_sorted_by_number() {
         .args(["retire", "FEAT-0001", "--reason", "x"])
         .assert()
         .success();
-    let text = std::fs::read_to_string(dir.child("docs/opys/_retired.txt").path()).unwrap();
+    let text = std::fs::read_to_string(dir.child("opys/_retired.txt").path()).unwrap();
     let p1 = text.find("FEAT-0001").unwrap();
     let p3 = text.find("FEAT-0003").unwrap();
     assert!(p1 < p3, "retired ledger not sorted: {text:?}");
@@ -297,7 +296,7 @@ fn retired_ledger_is_sorted_by_number() {
 #[test]
 fn verify_passes_clean_and_flags_violations() {
     let dir = project();
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .write_str(
             "---\nid: FEAT-0001\nstatus: planned\ntags: [osc, tabs]\n---\n\n# Clean feature\n",
         )
@@ -308,7 +307,7 @@ fn verify_passes_clean_and_flags_violations() {
         .success()
         .stdout(predicate::str::contains("verify: OK (1 documents)"));
 
-    dir.child("docs/opys/features/FEAT-0002.md")
+    dir.child("opys/features/FEAT-0002.md")
         .write_str(
             "---\nid: FEAT-0002\nstatus: implemented\ntags: [Bad_Tag]\nbogus: 1\n---\n\n# Broken\n",
         )
@@ -371,7 +370,7 @@ fn no_sync_skips_regeneration() {
         .args(["--no-sync", "new", "--title", "First", "--tags", "osc"])
         .assert()
         .success();
-    dir.child("docs/opys/INDEX.md")
+    dir.child("opys/INDEX.md")
         .assert(predicate::path::missing());
 }
 
@@ -390,7 +389,7 @@ fn new_coerces_custom_field_types() {
         ])
         .assert()
         .success();
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .assert(predicate::str::contains("ptyxis_ref: src/x.c"));
 }
 
@@ -418,7 +417,7 @@ fn set_status_wontfix_requires_reason() {
         ])
         .assert()
         .success();
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .assert(predicate::str::contains("wontfix_reason: out of scope"));
 }
 
@@ -444,7 +443,7 @@ fn tag_keeps_at_least_one() {
 #[test]
 fn verify_checks_manual_item_shape() {
     let dir = project();
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .write_str(
             "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# F\n\n## Manual verification\n- Looks right — *manual: visual*\n",
         )
@@ -468,7 +467,7 @@ fn verify_ignores_prose_code_span_on_checked_item() {
     dir.child("src/lib.rs")
         .write_str("fn sftp_uri_rewrites_to_ssh() {}\n")
         .unwrap();
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .write_str(
             "---\nid: FEAT-0001\nstatus: implemented\ntags: [ssh]\n---\n\n# Sftp\n\n## Test plan\n- [x] sftp:// rewrites to `ssh -t exec $SHELL` not a path — `lib.rs::sftp_uri_rewrites_to_ssh`\n",
         )
@@ -479,7 +478,7 @@ fn verify_ignores_prose_code_span_on_checked_item() {
 #[test]
 fn verify_hints_at_unquoted_colon() {
     let dir = project();
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .write_str(
             "---\nid: FEAT-0001\nstatus: wontfix\ntags: [a]\nwontfix_reason: MVP scope: containers\n---\n\n# F\n",
         )
@@ -513,7 +512,7 @@ fn import_bulk_creates_sequential_ids_and_syncs_once() {
         .stdout(predicate::str::contains(
             "imported 2 feature(s): FEAT-0002..FEAT-0003",
         ));
-    dir.child("docs/opys/features/FEAT-0002.md")
+    dir.child("opys/features/FEAT-0002.md")
         .assert(predicate::str::contains("ptyxis_ref: src/a.c"));
     opys(&dir).arg("verify").assert().success();
 }
@@ -531,7 +530,7 @@ fn import_is_transactional_on_bad_record() {
         .failure()
         .stderr(predicate::str::contains("import aborted"))
         .stderr(predicate::str::contains("line 2"));
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .assert(predicate::path::missing());
 }
 
@@ -546,12 +545,12 @@ fn verify_extract_mode_resolves_real_tests() {
     dir.child("src/lib.rs")
         .write_str("fn real_test() {}\nfn another() {}\n")
         .unwrap();
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .write_str("---\nid: FEAT-0001\nstatus: implemented\ntags: [a]\n---\n\n# Good\n\n## Test plan\n- [x] a — `mod::real_test`\n- [x] b — `src/lib.rs::another`\n")
         .unwrap();
     opys(&dir).arg("verify").assert().success();
 
-    dir.child("docs/opys/features/FEAT-0002.md")
+    dir.child("opys/features/FEAT-0002.md")
         .write_str("---\nid: FEAT-0002\nstatus: implemented\ntags: [a]\n---\n\n# Bad\n\n## Test plan\n- [x] c — `mod::nope`\n")
         .unwrap();
     opys(&dir)
@@ -566,25 +565,25 @@ fn verify_extract_mode_resolves_real_tests() {
 #[test]
 fn sync_views_generates_and_prunes() {
     let dir = project();
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [osc]\n---\n\n# One\n")
         .unwrap();
-    dir.child("docs/opys/views/by-tag/stale.md")
+    dir.child("opys/views/by-tag/stale.md")
         .write_str("old\n")
         .unwrap();
     opys(&dir).arg("sync-views").assert().success();
-    dir.child("docs/opys/INDEX.md")
+    dir.child("opys/INDEX.md")
         .assert(predicate::str::contains("FEAT-0001 [planned] (osc) One"));
-    dir.child("docs/opys/views/by-tag/osc.md")
+    dir.child("opys/views/by-tag/osc.md")
         .assert(predicate::path::exists());
-    dir.child("docs/opys/views/by-tag/stale.md")
+    dir.child("opys/views/by-tag/stale.md")
         .assert(predicate::path::missing());
 }
 
 #[test]
 fn report_parity_is_opt_in() {
     let dir = project();
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# A\n")
         .unwrap();
     opys(&dir)
@@ -599,7 +598,7 @@ fn report_parity_is_opt_in() {
         "[report]\nparity = true\n",
         "",
     ));
-    dir2.child("docs/opys/features/FEAT-0001.md")
+    dir2.child("opys/features/FEAT-0001.md")
         .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# A\n")
         .unwrap();
     opys(&dir2)
@@ -612,7 +611,7 @@ fn report_parity_is_opt_in() {
 #[test]
 fn manual_runbook_groups_and_flags_uncovered() {
     let dir = project();
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .write_str(
             "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# A\n\n## Manual verification\n- Check it — *manual: visual*\n  - Setup: monitor at 150%\n  - Steps:\n    1. open\n  - Expect: looks good\n",
         )
@@ -687,10 +686,10 @@ fn work_item_new_auto_links_feature_bidirectionally() {
         .stdout(predicate::str::contains("TASK-0002.md"));
 
     // Work item references the feature...
-    dir.child("docs/opys/work-items/TASK-0002.md")
+    dir.child("opys/work-items/TASK-0002.md")
         .assert(predicate::str::contains("FEAT-0001: Auth login"));
     // ...and the feature gained the reverse reference automatically.
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .assert(predicate::str::contains("TASK-0002: Wire login"));
     opys(&dir)
         .arg("verify")
@@ -720,14 +719,14 @@ fn ref_title_auto_syncs_on_rename() {
         .assert()
         .success();
 
-    let fpath = dir.child("docs/opys/features/FEAT-0001.md");
+    let fpath = dir.child("opys/features/FEAT-0001.md");
     let text = std::fs::read_to_string(fpath.path())
         .unwrap()
         .replace("# Old name", "# New name");
     std::fs::write(fpath.path(), text).unwrap();
     opys(&dir).arg("sync-views").assert().success();
 
-    dir.child("docs/opys/work-items/TASK-0002.md")
+    dir.child("opys/work-items/TASK-0002.md")
         .assert(predicate::str::contains("FEAT-0001: New name"));
 }
 
@@ -752,7 +751,7 @@ fn body_refs_are_linkified_idempotently() {
         .assert()
         .success();
 
-    let wpath = dir.child("docs/opys/work-items/TASK-0002.md");
+    let wpath = dir.child("opys/work-items/TASK-0002.md");
     let mut text = std::fs::read_to_string(wpath.path()).unwrap();
     text.push_str("\nSee FEAT-0001 and `FEAT-0001` literal.\n");
     std::fs::write(wpath.path(), text).unwrap();
@@ -799,7 +798,7 @@ fn work_item_close_requires_all_tasks_checked() {
         .args(["close", "TASK-0002", "--force"])
         .assert()
         .success();
-    dir.child("docs/opys/work-items/TASK-0002.md")
+    dir.child("opys/work-items/TASK-0002.md")
         .assert(predicate::path::missing());
 }
 
@@ -829,7 +828,7 @@ fn work_item_close_strikes_ref_reserves_id_and_cleanup_strips() {
         .success();
 
     // The reference becomes a struck-through tombstone.
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .assert(predicate::str::contains("TASK-0002: ~~First~~"));
     // verify accepts the struck (closed) reference.
     opys(&dir)
@@ -854,7 +853,7 @@ fn work_item_close_strikes_ref_reserves_id_and_cleanup_strips() {
 
     // cleanup removes the struck tombstone.
     opys(&dir).args(["cleanup"]).assert().success();
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .assert(predicate::str::contains("~~First~~").not());
 }
 
@@ -863,7 +862,7 @@ fn verify_fails_on_dangling_unstruck_reference() {
     let dir = project();
     enable_work_items(&dir);
     // A reference to a non-existent, non-struck id is an error.
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .write_str(
             "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\nreferences:\n  TASK-0099: Ghost\n---\n\n# F\n",
         )
@@ -877,7 +876,7 @@ fn verify_fails_on_dangling_unstruck_reference() {
         ));
 
     // The same reference, struck through, is an accepted tombstone.
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .write_str(
             "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\nreferences:\n  TASK-0099: ~~Ghost~~\n---\n\n# F\n",
         )
@@ -938,7 +937,7 @@ fn work_item_verify_flags_missing_required_section() {
         .success();
     // Hand-written work item missing the ## Progress section (TASK-0002 so its
     // number doesn't collide with FEAT-0001 under the global id sequence).
-    dir.child("docs/opys/work-items/TASK-0002.md")
+    dir.child("opys/work-items/TASK-0002.md")
         .write_str(
             "---\nid: TASK-0002\nstatus: todo\nreferences:\n  FEAT-0001: F\n---\n\n# W\n\n## Tasks\n- [ ] do it\n",
         )
@@ -978,7 +977,7 @@ fn agent_rules_generates_editor_files() {
         .success()
         .stdout(predicate::str::contains(".cursor/rules/opys.mdc"));
     dir.child(".cursor/rules/opys.mdc")
-        .assert(predicate::str::contains("globs: docs/opys/**"))
+        .assert(predicate::str::contains("globs: opys/**"))
         .assert(predicate::str::contains("# opys document inventory"));
 
     // --stdout prints instead of writing; --tool all is rejected with --stdout.
@@ -999,7 +998,7 @@ fn agent_rules_generates_editor_files() {
         .assert()
         .success();
     dir.child(".github/instructions/opys.instructions.md")
-        .assert(predicate::str::contains("applyTo: \"docs/opys/**\""));
+        .assert(predicate::str::contains("applyTo: \"opys/**\""));
     dir.child(".clinerules/opys.md")
         .assert(predicate::path::exists());
 }
@@ -1202,11 +1201,11 @@ fn block_links_both_directions_and_sets_blocked_status() {
         .stdout(predicate::str::contains("TASK-0003 blocked by FEAT-0002"));
 
     // The blocked work item gained blocked_by and was auto-set to blocked.
-    dir.child("docs/opys/work-items/TASK-0003.md")
+    dir.child("opys/work-items/TASK-0003.md")
         .assert(predicate::str::contains("status: blocked"))
         .assert(predicate::str::contains("FEAT-0002: Beta"));
     // The blocker gained the reverse `blocks` edge.
-    dir.child("docs/opys/features/FEAT-0002.md")
+    dir.child("opys/features/FEAT-0002.md")
         .assert(predicate::str::contains("blocks:"))
         .assert(predicate::str::contains("TASK-0003: Wire"));
     // No blocked_reason is needed — the blocker link satisfies the guard.
@@ -1254,10 +1253,10 @@ fn unblock_removes_link_and_reverts_status() {
         .assert()
         .success();
     // Both sides cleared, and the auto-blocked status reverted to in-progress.
-    dir.child("docs/opys/work-items/TASK-0003.md")
+    dir.child("opys/work-items/TASK-0003.md")
         .assert(predicate::str::contains("status: in-progress"))
         .assert(predicate::str::contains("blocked_by").not());
-    dir.child("docs/opys/features/FEAT-0002.md")
+    dir.child("opys/features/FEAT-0002.md")
         .assert(predicate::str::contains("blocks").not());
     opys(&dir).arg("verify").assert().success();
 
@@ -1300,7 +1299,7 @@ fn close_strikes_blocker_and_reserves_id() {
         .args(["close", "TASK-0002", "--force"])
         .assert()
         .success();
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .assert(predicate::str::contains("TASK-0002: ~~Wire~~"));
     opys(&dir).arg("verify").assert().success();
 
@@ -1326,7 +1325,7 @@ fn close_strikes_blocker_and_reserves_id() {
         .args(["unblock", "FEAT-0001", "--by", "TASK-0002"])
         .assert()
         .success();
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .assert(predicate::str::contains("blocked_by").not());
     opys(&dir).arg("verify").assert().success();
 }
@@ -1369,7 +1368,7 @@ fn wi_new_type_selects_prefix_and_sections() {
         .assert()
         .success()
         .stdout(predicate::str::contains("BUG-0003.md"));
-    dir.child("docs/opys/work-items/BUG-0003.md")
+    dir.child("opys/work-items/BUG-0003.md")
         .assert(predicate::str::contains("## Reproduction"))
         .assert(predicate::str::contains("## Tasks"))
         .assert(predicate::str::contains("## Progress"));
@@ -1402,7 +1401,7 @@ fn wi_bug_requires_reproduction_section() {
         .success();
     // Hand-written bug missing the per-type ## Reproduction section (BUG-0002 so
     // its number doesn't collide with FEAT-0001 under the global id sequence).
-    dir.child("docs/opys/work-items/BUG-0002.md")
+    dir.child("opys/work-items/BUG-0002.md")
         .write_str(
             "---\nid: BUG-0002\nstatus: todo\nreferences:\n  FEAT-0001: F\n---\n\n# B\n\n## Tasks\n- [ ] x\n\n## Progress\n",
         )
@@ -1535,7 +1534,7 @@ fn body_links_work_item_type_prefixes() {
         .assert()
         .success();
     // A bare BUG-0002 mention in the feature body is linkified on sync.
-    let fpath = dir.child("docs/opys/features/FEAT-0001.md");
+    let fpath = dir.child("opys/features/FEAT-0001.md");
     let mut text = std::fs::read_to_string(fpath.path()).unwrap();
     text.push_str("\nSee BUG-0002 for the regression.\n");
     std::fs::write(fpath.path(), text).unwrap();
@@ -1620,7 +1619,7 @@ fn verify_enforces_opys_rules_when_present() {
 
     // An archived feature with no archived_reason — the opys.toml rule fires.
     // (The default opys.toml puts every type's docs in the shared `items/` dir.)
-    dir.child("docs/opys/items/FEAT-0001.md")
+    dir.child("opys/items/FEAT-0001.md")
         .write_str("---\nid: FEAT-0001\nstatus: archived\ntags: [a]\n---\n\n# F\n")
         .unwrap();
     opys(&dir)
@@ -1633,7 +1632,7 @@ fn verify_enforces_opys_rules_when_present() {
         ));
 
     // Supplying the reason satisfies both the legacy checks and the rule.
-    dir.child("docs/opys/items/FEAT-0001.md")
+    dir.child("opys/items/FEAT-0001.md")
         .write_str(
             "---\nid: FEAT-0001\nstatus: archived\ntags: [a]\narchived_reason: removed in v3\n---\n\n# F\n",
         )
@@ -1664,7 +1663,7 @@ fn verify_enforces_field_pattern_from_opys_config() {
             "[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\nstatuses = [\"planned\"]\ndefault_status = \"planned\"\ntags_required = true\n\n[types.feature.fields.ticket]\ntype = \"string\"\npattern = '^JIRA-[0-9]+$'\n",
         )
         .unwrap();
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [a]\nticket: nope\n---\n\n# F\n")
         .unwrap();
     opys(&dir)
@@ -1676,7 +1675,7 @@ fn verify_enforces_field_pattern_from_opys_config() {
             "FEAT-0001: field 'ticket' must match",
         ));
 
-    dir.child("docs/opys/features/FEAT-0001.md")
+    dir.child("opys/features/FEAT-0001.md")
         .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [a]\nticket: JIRA-42\n---\n\n# F\n")
         .unwrap();
     opys(&dir).arg("verify").assert().success();

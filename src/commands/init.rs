@@ -19,7 +19,7 @@ pub fn run(ctx: &Ctx) -> Result<()> {
         );
     }
 
-    // Scaffold the default inventory base (docs/opys/), matching the default config.
+    // Scaffold the default inventory base (opys/), matching the default config.
     let base = root.join(DEFAULT_BASE);
     std::fs::create_dir_all(base.join(DEFAULT_DOC_DIR))?;
     std::fs::create_dir_all(base.join("runbooks"))?;

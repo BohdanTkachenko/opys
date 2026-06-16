@@ -7,12 +7,12 @@ pub const AGENT_RULE: &str = include_str!("../skills/opys/agent-rule.md");
 
 pub const CLAUDE_MD_SNIPPET: &str = r#"## Feature inventory
 
-- opys manages a file-based inventory of typed documents under `docs/opys/`,
+- opys manages a file-based inventory of typed documents under `opys/`,
   one markdown file per document; the document *types* (their ID prefixes,
   statuses, fields, required sections, and validation rules) are configured in
-  `docs/opys/opys.toml`. `docs/opys/INDEX.md` and `docs/opys/views/` are
+  `opys.toml`. `opys/INDEX.md` and `opys/views/` are
   generated — read them, never edit them.
-- To find documents: read `docs/opys/INDEX.md` first, then `rg` by tag/status,
+- To find documents: read `opys/INDEX.md` first, then `rg` by tag/status,
   then read only the relevant files. Do not bulk-read the inventory.
 - To create or change documents, use `opys` (`new --type`, set-status, tag,
   retire, block, close); these regenerate INDEX.md/views automatically. Body
@@ -26,13 +26,12 @@ pub const CLAUDE_MD_SNIPPET: &str = r#"## Feature inventory
   Never record test results, dates, or completion claims in documents.
 "#;
 
-/// The opinionated default `opys.toml` written by `opys config init`. This is
-/// the target shape for the upcoming universal typed-document engine; opys does
-/// not consume it yet. A unit test below pins that it stays valid TOML.
+/// The opinionated default `opys.toml` written by `opys init` / `opys config
+/// init`. A unit test below pins that it stays valid TOML.
 pub const DEFAULT_OPYS_CONFIG: &str = r##"# opys.toml — the opys document-inventory config. Lives at the project root;
 # opys finds it by searching upward from the current directory.
 
-base = "docs/opys"                   # inventory dir (relative to this file): the
+base = "opys"                        # inventory dir (relative to this file): the
                                      # documents, INDEX.md, views/, runbooks/
 pad = 4                              # zero-padding width for the numeric id part
 

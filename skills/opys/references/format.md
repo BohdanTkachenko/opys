@@ -4,13 +4,13 @@
 
 `opys.toml` lives at the **project root** — opys finds it by searching upward
 from the current directory (like git or Cargo). It declares the inventory
-`base` directory (default `docs/opys/`, relative to the root), which holds the
+`base` directory (default `opys/`, relative to the root), which holds the
 documents and generated artifacts:
 
 ```
 <project root>/
   opys.toml             # the config (found by searching upward) — declares `base`
-  docs/opys/            # the inventory base (config `base`, default docs/opys)
+  opys/            # the inventory base (config `base`, default opys)
     items/              # default directory for documents (FEAT-0001.md, …)
     views/              # generated — never hand-edit
     runbooks/           # dated manual-runbook instances, committed after execution

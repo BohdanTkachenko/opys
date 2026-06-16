@@ -11,9 +11,9 @@ use crate::templates::AGENT_RULE;
 use crate::Ctx;
 
 /// Cursor scopes the rule to inventory files via `globs`.
-const CURSOR_FRONTMATTER: &str = "---\ndescription: opys feature inventory — operate the opys CLI when the project has a docs/opys/ inventory.\nglobs: docs/opys/**\nalwaysApply: false\n---\n\n";
+const CURSOR_FRONTMATTER: &str = "---\ndescription: opys feature inventory — operate the opys CLI when the project has a opys/ inventory.\nglobs: opys/**\nalwaysApply: false\n---\n\n";
 /// Copilot path-specific instruction file, scoped with `applyTo`.
-const COPILOT_FRONTMATTER: &str = "---\napplyTo: \"docs/opys/**\"\n---\n\n";
+const COPILOT_FRONTMATTER: &str = "---\napplyTo: \"opys/**\"\n---\n\n";
 
 /// (output path relative to the project root, host-specific frontmatter).
 fn target(tool: AgentTool) -> (&'static str, &'static str) {

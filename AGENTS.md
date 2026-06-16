@@ -9,13 +9,13 @@ documents**: one markdown file per document, each with `---`-fenced YAML
 frontmatter (a stable `PREFIX-NNNN` id, status, tags, relation maps) plus a
 markdown body. All writes go through the CLI so invariants hold at write time and
 parallel agents don't collide; reads are plain `grep` + targeted file reads.
-`verify` is the CI gate. The inventory base dir defaults to `docs/opys/`. It is
+`verify` is the CI gate. The inventory base dir defaults to `opys/`. It is
 deliberately *not* a task board — no sprints, assignees, or priorities.
 
 Everything is driven by **one config, `opys.toml`** (parsed into `ProjectConfig`,
 `src/project_config.rs`), which lives at the **project root** — `Project::open`
 finds it by searching upward from the cwd (`find_root`), and it declares the
-inventory `base` (default `docs/opys/`, relative to the root). The config
+inventory `base` (default `opys/`, relative to the root). The config
 declares document **types**, each with an id `prefix`, a `dir` (default the
 shared `items/`, under `base`), its own `statuses`
 (plus `default_status` / `terminal_statuses`), `[fields.*]` (custom frontmatter

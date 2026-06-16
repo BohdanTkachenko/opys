@@ -192,6 +192,6 @@ pub enum Command {
 pub enum ConfigCommand {
     /// Generate the opinionated default opys.toml (never overwrites an existing one).
     Init,
-    /// Parse docs/opys/opys.toml and check it is well-formed (exit 1 on problems).
+    /// Parse opys.toml and check it is well-formed (exit 1 on problems).
     Validate,
 }
