@@ -14,7 +14,7 @@ pub struct Cli {
     #[arg(long, default_value = ".", global = true)]
     pub root: String,
 
-    /// Skip the automatic INDEX.md/views regeneration after mutating commands.
+    /// Skip the automatic INDEX.md regeneration after mutating commands.
     #[arg(long, global = true)]
     pub no_sync: bool,
 
@@ -144,21 +144,11 @@ pub enum Command {
     /// Integrity check (CI gate).
     Verify,
 
-    /// Regenerate INDEX.md and views/.
-    SyncViews,
+    /// Reconcile references, linkify prose, and regenerate INDEX.md (after hand edits).
+    Sync,
 
     /// Progress, coverage, and (optionally) parity stats.
     Report,
-
-    /// Aggregate manual items into a runbook.
-    ManualRunbook {
-        /// Write to file (e.g. runbooks/release-0.3.md).
-        #[arg(long)]
-        out: Option<String>,
-        /// Runbook title suffix.
-        #[arg(long)]
-        name: Option<String>,
-    },
 
     /// Finish a document of a type with a terminal status: delete the file and
     /// strike its title in every referencing doc (the struck reference reserves

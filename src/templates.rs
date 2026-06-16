@@ -10,12 +10,11 @@ pub const CLAUDE_MD_SNIPPET: &str = r#"## Feature inventory
 - opys manages a file-based inventory of typed documents under `opys/`,
   one markdown file per document; the document *types* (their ID prefixes,
   statuses, fields, required sections, and validation rules) are configured in
-  `opys.toml`. `opys/INDEX.md` and `opys/views/` are
-  generated — read them, never edit them.
-- To find documents: read `opys/INDEX.md` first, then `rg` by tag/status,
-  then read only the relevant files. Do not bulk-read the inventory.
+  `opys.toml`. `opys/INDEX.md` is generated — read it, never edit it.
+- To find documents: read `opys/INDEX.md` first, then `rg` by tag/status or
+  `opys list`, then read only the relevant files. Do not bulk-read the inventory.
 - To create or change documents, use `opys` (`new --type`, set-status, tag,
-  retire, block, close); these regenerate INDEX.md/views automatically. Body
+  retire, block, close); these regenerate INDEX.md automatically. Body
   prose and section edits are normal file edits — run `opys verify` before
   finishing.
 - When implementing a feature: read its file fully; implement; add tests; check
@@ -32,7 +31,7 @@ pub const DEFAULT_OPYS_CONFIG: &str = r##"# opys.toml — the opys document-inve
 # opys finds it by searching upward from the current directory.
 
 base = "opys"                        # inventory dir (relative to this file): the
-                                     # documents, INDEX.md, views/, runbooks/
+                                     # documents, INDEX.md
 pad = 4                              # zero-padding width for the numeric id part
 
 # Test-reference resolution, used by sections of kind "test-plan".

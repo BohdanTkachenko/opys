@@ -30,9 +30,9 @@ fn default_min() -> usize {
     1
 }
 
-/// Inventory base directory (holding the documents, `INDEX.md`, `views/`,
-/// `runbooks/`, `_retired.txt`), relative to the project root that holds
-/// `opys.toml` — when the config declares no `base`.
+/// Inventory base directory (the documents, `INDEX.md`, `_retired.txt`),
+/// relative to the project root that holds `opys.toml`; the config `base`
+/// default.
 pub const DEFAULT_BASE: &str = "opys";
 
 /// Directory (under the inventory base) for a type that declares no explicit

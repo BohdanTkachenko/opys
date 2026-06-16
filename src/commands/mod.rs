@@ -12,7 +12,6 @@ pub mod list;
 pub mod new;
 pub mod report;
 pub mod retire;
-pub mod runbook;
 pub mod set_status;
 pub mod show;
 pub mod sync;
@@ -79,7 +78,7 @@ pub fn field_matches(fm: &Frontmatter, filters: &[(String, String)]) -> bool {
     })
 }
 
-/// Reconcile references, linkify bodies, and regenerate INDEX.md/views after a
+/// Reconcile references, linkify bodies, and regenerate INDEX.md after a
 /// mutating command, unless `--no-sync`. Best-effort: a parse error elsewhere
 /// is reported but does not fail the mutation that already succeeded.
 pub fn maybe_sync(ctx: &Ctx, prj: &Project) {

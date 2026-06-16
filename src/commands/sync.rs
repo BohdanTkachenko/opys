@@ -1,6 +1,6 @@
 //! The full auto-sync pass: reconcile cross-references, linkify body prose,
-//! and regenerate INDEX.md/views. Invoked by `maybe_sync` after every mutating
-//! command and by the `sync-views` command.
+//! and regenerate INDEX.md. Invoked by `maybe_sync` after every mutating
+//! command and by the `sync` command.
 
 use crate::commands::sync_views;
 use crate::error::{usage, Result};

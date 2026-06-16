@@ -1,6 +1,6 @@
 //! The project: `opys.toml` at the project root (found by searching upward),
 //! plus the inventory base it points at (default `opys/`, holding the
-//! document files, `INDEX.md`, `views/`, `runbooks/`, and `_retired.txt`).
+//! document files, `INDEX.md`, and `_retired.txt`).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -42,8 +42,6 @@ pub fn find_root(start: &Path) -> Option<PathBuf> {
 pub struct Project {
     pub root: PathBuf,
     pub base: PathBuf,
-    pub views_dir: PathBuf,
-    pub runbooks_dir: PathBuf,
     /// The universal engine config (`<root>/opys.toml`), the sole source of
     /// truth for document types, statuses, fields, sections, and rules.
     pub pcfg: ProjectConfig,
@@ -63,13 +61,7 @@ impl Project {
         })?;
         let pcfg = ProjectConfig::load(&root.join("opys.toml"))?;
         let base = root.join(&pcfg.base);
-        Ok(Project {
-            views_dir: base.join("views"),
-            runbooks_dir: base.join("runbooks"),
-            base,
-            root,
-            pcfg,
-        })
+        Ok(Project { base, root, pcfg })
     }
 
     /// Generic discovery: load every document across all configured type

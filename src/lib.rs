@@ -1,6 +1,6 @@
-//! opys — a file-based feature inventory: one markdown file per feature, with
-//! YAML frontmatter, stable IDs, tags, test plans, manual-verification
-//! runbooks, and a `verify` gate for CI.
+//! opys — a file-based inventory of typed markdown documents: one markdown file
+//! per document, with YAML frontmatter, stable IDs, tags, configurable types,
+//! test plans, and a `verify` gate for CI.
 //!
 //! The binary is a thin wrapper around [`run`]. The modules are public so the
 //! crate can be used as a library.
@@ -119,16 +119,12 @@ pub fn run(cli: Cli) -> Result<i32> {
             Ok(0)
         }
         Command::Verify => commands::verify::run(&ctx),
-        Command::SyncViews => {
+        Command::Sync => {
             commands::sync_views::run(&ctx)?;
             Ok(0)
         }
         Command::Report => {
             commands::report::run(&ctx)?;
-            Ok(0)
-        }
-        Command::ManualRunbook { out, name } => {
-            commands::runbook::run(&ctx, out.as_deref(), name.as_deref())?;
             Ok(0)
         }
         Command::Close { id, force } => {

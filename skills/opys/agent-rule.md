@@ -13,8 +13,8 @@ exists; otherwise ignore it.
   deleted on `close`. Durable knowledge → features; "what I'm doing right now" →
   a task/bug/chore.
 - **Reads.** Never bulk-read `opys/`. Start at `opys/INDEX.md`, then
-  `rg` by tag/status, then open the 2–5 relevant files. `INDEX.md` and `views/`
-  are generated — never edit them.
+  `rg` by tag/status (or `opys list`), then open the 2–5 relevant files.
+  `INDEX.md` is generated — never edit it.
 - **Writes go through the `opys` CLI** so invariants hold and parallel agents
   don't collide: `opys new --type <T>`, `set-status`, `tag`, `retire`, `block`,
   `close`. Body prose, `## Test plan`, and `## Tasks` edits are normal file

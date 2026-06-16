@@ -10,10 +10,8 @@ documents and generated artifacts:
 ```
 <project root>/
   opys.toml             # the config (found by searching upward) — declares `base`
-  opys/            # the inventory base (config `base`, default opys)
+  opys/                 # the inventory base (config `base`, default opys)
     items/              # default directory for documents (FEAT-0001.md, …)
-    views/              # generated — never hand-edit
-    runbooks/           # dated manual-runbook instances, committed after execution
     INDEX.md            # generated — never hand-edit
     _retired.txt        # append-only log of deleted IDs (never reused), sorted
 ```
@@ -22,7 +20,7 @@ Each document is one markdown file named after its ID (`FEAT-0001.md`,
 `EPIC-0003.md`). **A document's type is its ID prefix.** By default every type's
 files live together in `items/`; a type may set its own `dir` (`epic` →
 `epics/`). Directory structure must never encode taxonomy — that is what tags and
-generated views are for. If a directory becomes unwieldy (~2000+ files), shard
+`opys list` are for. If a directory becomes unwieldy (~2000+ files), shard
 mechanically by ID prefix; sharding is cosmetic, tooling treats the tree as flat.
 
 ## Configuration: `opys.toml`
@@ -256,16 +254,16 @@ that automated tests already cover (an end-to-end sanity pass), or it may be
 the only coverage a case has.
 
 - Plain list items, never checkboxes — manual cases have no in-file state;
-  they are executed per release and results live in runbook instances.
+  they are executed per release and results live in CI or commit history.
 - Each item: a one-line description, then a sublist with `Setup:` (single
   bullet — preconditions), `Steps:` (numbered — the sequence), `Expect:`
   (single bullet — a judgment-free pass criterion). If a crisp Expect cannot
   be written, the case is under-specified.
 - **Automated-coverage signal:** add ≥1 backticked test ref on the item's
   description line to mark it as also automated. Items with **no** ref have no
-  automated coverage — `report` counts them and `manual-runbook` flags them ⚠
-  and lists them first, since they are the most important to run by hand. When
-  an item exists *because* it cannot be automated, say so in the description
+  automated coverage — `report` counts them, since they are the most important
+  to run by hand. When an item exists *because* it cannot be automated, say so
+  in the description
   (e.g. *manual: cannot assert rendering quality*) so the reason is recorded.
 - Write for a competent operator who knows the project but not this case:
   assume they can run the app; spell out exact escape sequences, config
@@ -275,16 +273,16 @@ the only coverage a case has.
 
 ## Bulk creation and migration
 
-`opys new` creates one feature per process and regenerates `INDEX.md` + all
-`views/` each time — fine interactively, far too slow for migrating hundreds or
-thousands of features. Two supported bulk paths avoid that:
+`opys new` creates one feature per process and regenerates `INDEX.md` each time
+— fine interactively, far too slow for migrating hundreds or thousands of
+features. Two supported bulk paths avoid that:
 
 - **`opys import <file.jsonl>`** — one JSON object per line, each describing a
   feature. `title` and `tags` are required; `status` (default `planned`),
   `spec`, and any declared custom fields are optional top-level keys; `body` is
   optional markdown placed under the `# Title` heading (use it to carry a
-  `## Test plan` or `## Manual verification`). One ID allocation and one view
-  sync cover the whole batch, and it is **transactional** — if any record is
+  `## Test plan` or `## Manual verification`). One ID allocation and one sync
+  cover the whole batch, and it is **transactional** — if any record is
   rejected, nothing is written. The same write-time status guards as `new`
   apply (a record with `"status": "implemented"` must include a checked
   test-plan item in its `body`). Run `opys verify` afterwards for the deep
@@ -296,19 +294,18 @@ thousands of features. Two supported bulk paths avoid that:
 
 - **Write the files directly** — `opys` reads plain markdown, so you can emit
   canonical `FEAT-NNNN.md` files yourself (matching the frontmatter rules
-  above), then run `opys sync-views` once and `opys verify`. This is a fully
+  above), then run `opys sync` once and `opys verify`. This is a fully
   supported escape hatch when your source data does not map cleanly onto the
   JSONL schema; allocate IDs monotonically and never reuse a retired one.
 
 Either way: do **not** loop `opys new` over a large migration. After import,
-review in batches per tag using the generated views, exactly as for a
-hand-built inventory.
+review in batches per tag using `opys list`, exactly as for a hand-built
+inventory.
 
 ## What never goes in feature files
 
 Test results, execution dates, completion claims, assignees, priorities, or
-sprint metadata. CI owns automated results; committed runbook instances own
-manual results; this system owns intent only.
+sprint metadata. CI owns automated results; this system owns intent only.
 
 Implementation logs, task checklists, and branch/PR links also do not belong
 here — they go in an ephemeral document (a `task`/`bug`/`chore`), which is

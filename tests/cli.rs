@@ -146,7 +146,6 @@ fn init_bootstraps_and_prints_snippet() {
         .stdout(predicate::str::contains("## Feature inventory"))
         .stdout(predicate::str::contains("opys verify"));
     dir.child("opys.toml").assert(predicate::path::exists());
-    dir.child("opys/runbooks").assert(predicate::path::is_dir());
 }
 
 #[test]
@@ -174,7 +173,7 @@ fn new_allocates_next_id_and_requires_tags() {
 }
 
 #[test]
-fn new_auto_syncs_index_and_views() {
+fn new_auto_syncs_index() {
     let dir = project();
     opys(&dir)
         .args(["new", "--title", "First", "--tags", "osc"])
@@ -182,8 +181,6 @@ fn new_auto_syncs_index_and_views() {
         .success();
     dir.child("opys/INDEX.md")
         .assert(predicate::str::contains("FEAT-0001"));
-    dir.child("opys/views/by-tag/osc.md")
-        .assert(predicate::path::exists());
 }
 
 #[test]
@@ -563,21 +560,14 @@ fn verify_extract_mode_resolves_real_tests() {
 }
 
 #[test]
-fn sync_views_generates_and_prunes() {
+fn sync_regenerates_index() {
     let dir = project();
     dir.child("opys/features/FEAT-0001.md")
         .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [osc]\n---\n\n# One\n")
         .unwrap();
-    dir.child("opys/views/by-tag/stale.md")
-        .write_str("old\n")
-        .unwrap();
-    opys(&dir).arg("sync-views").assert().success();
+    opys(&dir).arg("sync").assert().success();
     dir.child("opys/INDEX.md")
         .assert(predicate::str::contains("FEAT-0001 [planned] (osc) One"));
-    dir.child("opys/views/by-tag/osc.md")
-        .assert(predicate::path::exists());
-    dir.child("opys/views/by-tag/stale.md")
-        .assert(predicate::path::missing());
 }
 
 #[test]
@@ -606,23 +596,6 @@ fn report_parity_is_opt_in() {
         .assert()
         .success()
         .stdout(predicate::str::contains("parity (impl / all)"));
-}
-
-#[test]
-fn manual_runbook_groups_and_flags_uncovered() {
-    let dir = project();
-    dir.child("opys/features/FEAT-0001.md")
-        .write_str(
-            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# A\n\n## Manual verification\n- Check it — *manual: visual*\n  - Setup: monitor at 150%\n  - Steps:\n    1. open\n  - Expect: looks good\n",
-        )
-        .unwrap();
-    opys(&dir)
-        .arg("manual-runbook")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("## Setup: monitor at 150%"))
-        .stdout(predicate::str::contains("⚠ FEAT-0001 — Check it"))
-        .stdout(predicate::str::contains("Expect: looks good"));
 }
 
 // --- Work items -----------------------------------------------------------
@@ -724,7 +697,7 @@ fn ref_title_auto_syncs_on_rename() {
         .unwrap()
         .replace("# Old name", "# New name");
     std::fs::write(fpath.path(), text).unwrap();
-    opys(&dir).arg("sync-views").assert().success();
+    opys(&dir).arg("sync").assert().success();
 
     dir.child("opys/work-items/TASK-0002.md")
         .assert(predicate::str::contains("FEAT-0001: New name"));
@@ -756,14 +729,14 @@ fn body_refs_are_linkified_idempotently() {
     text.push_str("\nSee FEAT-0001 and `FEAT-0001` literal.\n");
     std::fs::write(wpath.path(), text).unwrap();
 
-    opys(&dir).arg("sync-views").assert().success();
+    opys(&dir).arg("sync").assert().success();
     let once = std::fs::read_to_string(wpath.path()).unwrap();
     assert!(
         once.contains("[FEAT-0001 — Auth login](../features/FEAT-0001.md) and `FEAT-0001` literal"),
         "linkify failed: {once}"
     );
 
-    opys(&dir).arg("sync-views").assert().success();
+    opys(&dir).arg("sync").assert().success();
     let twice = std::fs::read_to_string(wpath.path()).unwrap();
     assert_eq!(once, twice, "linkify is not idempotent");
 }
@@ -1538,7 +1511,7 @@ fn body_links_work_item_type_prefixes() {
     let mut text = std::fs::read_to_string(fpath.path()).unwrap();
     text.push_str("\nSee BUG-0002 for the regression.\n");
     std::fs::write(fpath.path(), text).unwrap();
-    opys(&dir).arg("sync-views").assert().success();
+    opys(&dir).arg("sync").assert().success();
     let out = std::fs::read_to_string(fpath.path()).unwrap();
     assert!(
         out.contains("[BUG-0002 — Crash](../work-items/BUG-0002.md)"),

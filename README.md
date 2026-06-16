@@ -16,7 +16,7 @@ targeted file reads. A `verify` subcommand is the CI gate. It is deliberately
 *not* a task board — no sprints, assignees, or priorities.
 
 Need a different lifecycle — an `epic`, an `adr`, a `risk`? Add a `[types.<name>]`
-block to `opys.toml` and the whole tool (create, verify, index, views) works for
+block to `opys.toml` and the whole tool (create, verify, index) works for
 it. Durable knowledge → features; "what I'm doing right now" → a task/bug/chore.
 
 It pairs with the `opys` skill (under `skills/`), which
@@ -39,8 +39,8 @@ cargo build --release   # target/release/opys
 from the current directory (like git or Cargo). It declares a `base` directory
 (default `opys/`, relative to the root) so the inventory stays out of the
 repo root: the document files (in each type's `dir`, by default the shared
-`opys/items/`), and the generated `opys/INDEX.md`, `opys/views/`,
-`opys/runbooks/`. A document's type is its ID prefix.
+`opys/items/`) and the generated `opys/INDEX.md`. A document's type is its ID
+prefix.
 
 ## Quick start
 
@@ -53,7 +53,6 @@ opys list --status planned
 opys set-status FEAT-0001 implemented       # rejected unless a test item is checked
 opys verify                                 # integrity check; nonzero exit on problems
 opys report                                 # status, coverage gaps (parity if enabled)
-opys manual-runbook --out opys/runbooks/release-0.3.md
 
 # Ephemeral work, linked to a feature (default types: task/bug/chore):
 opys new --type bug --title "Survive profile switch" --features FEAT-0001
@@ -61,9 +60,9 @@ opys close BUG-0002                         # deletes the file; reference struck
 ```
 
 Mutating commands (`new`, `set-status`, `tag`, `retire`, `block`, `close`,
-`cleanup`) reconcile cross-references, linkify prose, and regenerate
-`INDEX.md`/`views/` automatically; pass `--no-sync` to skip, or run `sync-views`
-after editing files by hand.
+`cleanup`) reconcile cross-references, linkify prose, and regenerate `INDEX.md`
+automatically; pass `--no-sync` to skip, or run `opys sync` after editing files
+by hand.
 
 ## Commands
 
@@ -80,9 +79,8 @@ after editing files by hand.
 | `block` / `unblock` | record a directional blocker between two documents |
 | `close` / `cleanup` | finish a document of a type with a terminal status; strip struck refs |
 | `verify` | full integrity check — wire into CI |
-| `sync-views` | regenerate `INDEX.md` and `views/` (for hand edits) |
+| `sync` | reconcile references, linkify prose, regenerate `INDEX.md` (for hand edits) |
 | `report` | status counts, coverage gaps, opt-in parity % |
-| `manual-runbook` | aggregate manual items into an executable checklist |
 | `agent-rules --tool <editor>` | generate a rules-based editor's instruction file from the canonical rule |
 
 A feature file looks like (the `references` map is auto-maintained — a work
