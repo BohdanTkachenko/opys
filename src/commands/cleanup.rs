@@ -13,7 +13,7 @@ pub fn run(ctx: &Ctx) -> Result<()> {
     let (mut docs, _) = prj.load_docs();
     for d in docs.iter_mut() {
         if strip_struck(&mut d.frontmatter) {
-            project::write_doc(d)?;
+            project::save_doc(&prj, d)?;
             changed += 1;
         }
     }

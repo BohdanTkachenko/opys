@@ -27,7 +27,7 @@ pub fn block(ctx: &Ctx, id: &str, by: &str) -> Result<()> {
     let by_title = title_of(&docs, by).ok_or_else(|| OpysError::NotFound { id: by.to_string() })?;
 
     let id_blockable = has_status(&prj, id, "blocked");
-    edit_doc(&mut docs, id, |fm| {
+    edit_doc(&prj, &mut docs, id, |fm| {
         let mut changed = refs::add_to_map(fm, refs::BLOCKED_BY, by, &by_title);
         if id_blockable && fm.status() != Some("blocked") {
             fm.set_str("status", "blocked");
@@ -35,7 +35,7 @@ pub fn block(ctx: &Ctx, id: &str, by: &str) -> Result<()> {
         }
         changed
     })?;
-    edit_doc(&mut docs, by, |fm| {
+    edit_doc(&prj, &mut docs, by, |fm| {
         refs::add_to_map(fm, refs::BLOCKS, id, &id_title)
     })?;
 
@@ -61,7 +61,7 @@ pub fn unblock(ctx: &Ctx, id: &str, by: &str) -> Result<()> {
     }
 
     let id_blockable = has_status(&prj, id, "blocked") && has_status(&prj, id, "in-progress");
-    edit_doc(&mut docs, id, |fm| {
+    edit_doc(&prj, &mut docs, id, |fm| {
         let mut changed = refs::remove_from_map(fm, refs::BLOCKED_BY, by);
         if id_blockable
             && fm.status() == Some("blocked")
@@ -75,7 +75,7 @@ pub fn unblock(ctx: &Ctx, id: &str, by: &str) -> Result<()> {
     })?;
     // The blocker may already be gone (a closed doc's struck tombstone); cleaning
     // the target side is enough, so a missing blocker is not an error.
-    match edit_doc(&mut docs, by, |fm| {
+    match edit_doc(&prj, &mut docs, by, |fm| {
         refs::remove_from_map(fm, refs::BLOCKS, id)
     }) {
         Ok(()) | Err(OpysError::NotFound { .. }) => {}
@@ -114,13 +114,13 @@ fn has_entry(docs: &[Doc], id: &str, field: &str, target: &str) -> bool {
 
 /// Apply `f` to the frontmatter of the doc with `id`, writing it back only if
 /// `f` reports a change. Errors if `id` is not found.
-fn edit_doc<F>(docs: &mut [Doc], id: &str, f: F) -> Result<()>
+fn edit_doc<F>(prj: &Project, docs: &mut [Doc], id: &str, f: F) -> Result<()>
 where
     F: FnOnce(&mut Frontmatter) -> bool,
 {
     if let Some(d) = docs.iter_mut().find(|x| x.id() == Some(id)) {
         if f(&mut d.frontmatter) {
-            project::write_doc(d)?;
+            project::save_doc(prj, d)?;
         }
         return Ok(());
     }

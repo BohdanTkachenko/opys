@@ -32,7 +32,7 @@ pub fn run(ctx: &Ctx, id: &str, add: Option<&str>, remove: Option<&str>) -> Resu
         d.frontmatter.set_tags(&tags);
     }
 
-    project::write_doc(d)?;
+    project::save_doc(&prj, d)?;
     println!("{id} tags: {}", tags.join(", "));
     maybe_sync(ctx, &prj);
     Ok(())

@@ -49,7 +49,7 @@ pub fn run(ctx: &Ctx, id: &str, status: &str, reason: Option<&str>) -> Result<()
         )));
     }
 
-    project::write_doc(d)?;
+    project::save_doc(&prj, d)?;
     println!("{id} -> {status}");
     maybe_sync(ctx, &prj);
     Ok(())

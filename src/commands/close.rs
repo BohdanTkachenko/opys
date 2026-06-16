@@ -65,7 +65,7 @@ pub fn run(ctx: &Ctx, id: &str, force: bool) -> Result<()> {
         }
         let add_ref = ref_targets.contains(d.id().unwrap_or(""));
         if strike_everywhere(&mut d.frontmatter, id, &struck, add_ref) {
-            project::write_doc(d)?;
+            project::save_doc(&prj, d)?;
         }
     }
 

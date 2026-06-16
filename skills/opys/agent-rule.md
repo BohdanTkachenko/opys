@@ -12,9 +12,8 @@ exists; otherwise ignore it.
   permanent `feature` type plus ephemeral `task`/`bug`/`chore` types that are
   deleted on `close`. Durable knowledge → features; "what I'm doing right now" →
   a task/bug/chore.
-- **Reads.** Never bulk-read `opys/`. Start at `opys/INDEX.md`, then
-  `rg` by tag/status (or `opys list`), then open the 2–5 relevant files.
-  `INDEX.md` is generated — never edit it.
+- **Reads.** Never bulk-read `opys/`. Use `rg` by tag/status (or `opys list`),
+  then open the 2–5 relevant files. There is no generated index.
 - **Writes go through the `opys` CLI** so invariants hold and parallel agents
   don't collide: `opys new --type <T>`, `set-status`, `tag`, `retire`, `block`,
   `close`. Body prose, `## Test plan`, and `## Tasks` edits are normal file

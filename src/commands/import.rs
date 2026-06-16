@@ -160,7 +160,7 @@ fn build_record(
     }
 
     Ok(Doc {
-        path: prj.base.join(ft.resolved_dir()).join(format!("{id}.md")),
+        path: prj.doc_path(id, &status),
         frontmatter: fm,
         body,
         title,

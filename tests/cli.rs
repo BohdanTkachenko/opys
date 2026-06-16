@@ -173,14 +173,33 @@ fn new_allocates_next_id_and_requires_tags() {
 }
 
 #[test]
-fn new_auto_syncs_index() {
+fn new_writes_doc_and_no_index() {
     let dir = project();
     opys(&dir)
         .args(["new", "--title", "First", "--tags", "osc"])
         .assert()
         .success();
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::path::exists());
+    // opys no longer generates an index.
     dir.child("opys/INDEX.md")
-        .assert(predicate::str::contains("FEAT-0001"));
+        .assert(predicate::path::missing());
+}
+
+#[test]
+fn flat_layout_is_the_default() {
+    // With no `dir`/`status_dirs`/`[layout]`, documents live flat at the base.
+    let dir = project_with(
+        "pad = 4\n[tests]\nreference_check = \"none\"\n\
+[types.feature]\nprefix = \"FEAT\"\nstatuses = [\"planned\"]\n\
+default_status = \"planned\"\ntags_required = true\n",
+    );
+    opys(&dir)
+        .args(["new", "--title", "X", "--tags", "a"])
+        .assert()
+        .success();
+    dir.child("opys/FEAT-0001.md")
+        .assert(predicate::path::exists());
 }
 
 #[test]
@@ -361,14 +380,14 @@ fn init_does_not_overwrite_existing_config() {
 }
 
 #[test]
-fn no_sync_skips_regeneration() {
+fn no_sync_still_writes_the_doc() {
     let dir = project();
     opys(&dir)
         .args(["--no-sync", "new", "--title", "First", "--tags", "osc"])
         .assert()
         .success();
-    dir.child("opys/INDEX.md")
-        .assert(predicate::path::missing());
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::path::exists());
 }
 
 #[test]
@@ -581,15 +600,116 @@ fn verify_extract_mode_resolves_real_tests() {
         ));
 }
 
+/// A config whose `feature` type sends `archived` docs to a `_archived/`
+/// segment. `layout` is the `[layout]` table body (empty for the flat default);
+/// `feature_extra` adds lines to the `[types.feature]` table (e.g. a `dir`).
+fn archived_cfg(layout: &str, feature_extra: &str) -> String {
+    format!(
+        "pad = 4\n{layout}[tests]\nreference_check = \"none\"\n\
+[types.feature]\nprefix = \"FEAT\"\n{feature_extra}\
+statuses = [\"planned\", \"archived\"]\ndefault_status = \"planned\"\n\
+tags_required = true\nstatus_dirs = {{ archived = \"_archived\" }}\n\
+[types.feature.fields.archived_reason]\ntype = \"string\"\n\
+[[rules]]\nwhen = {{ type = \"feature\", status = \"archived\" }}\nrequire_field = \"archived_reason\"\n"
+    )
+}
+
 #[test]
-fn sync_regenerates_index() {
+fn archived_status_relocates_into_subdir_and_back() {
+    let dir = project_with(&archived_cfg("", ""));
+    opys(&dir)
+        .args(["new", "--title", "X", "--tags", "a"])
+        .assert()
+        .success();
+    dir.child("opys/FEAT-0001.md")
+        .assert(predicate::path::exists());
+
+    // Archiving moves the file into the status_dirs subdir; it stays in inventory.
+    opys(&dir)
+        .args(["set-status", "FEAT-0001", "archived", "--reason", "gone"])
+        .assert()
+        .success();
+    dir.child("opys/_archived/FEAT-0001.md")
+        .assert(predicate::path::exists());
+    dir.child("opys/FEAT-0001.md")
+        .assert(predicate::path::missing());
+    opys(&dir).arg("verify").assert().success();
+    opys(&dir)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0001"));
+
+    // Moving off `archived` relocates it back to the base.
+    opys(&dir)
+        .args(["set-status", "FEAT-0001", "planned"])
+        .assert()
+        .success();
+    dir.child("opys/FEAT-0001.md")
+        .assert(predicate::path::exists());
+    dir.child("opys/_archived/FEAT-0001.md")
+        .assert(predicate::path::missing());
+}
+
+#[test]
+fn layout_template_order_is_configurable() {
+    // `{status}/{type}/{id}.md` groups by status first; empty status collapses.
+    let cfg = archived_cfg(
+        "[layout]\npath = \"{status}/{type}/{id}.md\"\n",
+        "dir = \"features\"\n",
+    );
+    let dir = project_with(&cfg);
+    opys(&dir)
+        .args(["new", "--title", "X", "--tags", "a"])
+        .assert()
+        .success();
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::path::exists());
+
+    opys(&dir)
+        .args(["set-status", "FEAT-0001", "archived", "--reason", "gone"])
+        .assert()
+        .success();
+    dir.child("opys/_archived/features/FEAT-0001.md")
+        .assert(predicate::path::exists());
+}
+
+#[test]
+fn config_validate_flags_bad_layout() {
+    let dir = TempDir::new().unwrap();
+    dir.child("opys.toml")
+        .write_str(
+            "[layout]\npath = \"{type}/{status}\"\n\
+[types.feature]\nprefix = \"FEAT\"\nstatuses = [\"planned\"]\n\
+default_status = \"planned\"\nstatus_dirs = { ghost = \"x\" }\n",
+        )
+        .unwrap();
+    opys(&dir)
+        .args(["config", "validate"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "layout.path must contain the {id} placeholder",
+        ))
+        .stderr(predicate::str::contains(
+            "status_dirs key 'ghost' is not a status",
+        ));
+}
+
+#[test]
+fn sync_reconciles_and_writes_no_index() {
     let dir = project();
     dir.child("opys/features/FEAT-0001.md")
         .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [osc]\n---\n\n# One\n")
         .unwrap();
+    // A stale index from an older version is cleaned up, not regenerated.
+    dir.child("opys/INDEX.md").write_str("old\n").unwrap();
     opys(&dir).arg("sync").assert().success();
     dir.child("opys/INDEX.md")
-        .assert(predicate::str::contains("FEAT-0001 [planned] (osc) One"));
+        .assert(predicate::path::missing());
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::path::exists());
 }
 
 #[test]
@@ -1611,8 +1731,8 @@ fn verify_enforces_opys_rules_when_present() {
     opys(&dir).args(["config", "init"]).assert().success();
 
     // An archived feature with no archived_reason — the opys.toml rule fires.
-    // (The default opys.toml puts every type's docs in the shared `items/` dir.)
-    dir.child("opys/items/FEAT-0001.md")
+    // (The default opys.toml sends archived features to `opys/_archived/`.)
+    dir.child("opys/_archived/FEAT-0001.md")
         .write_str("---\nid: FEAT-0001\nstatus: archived\ntags: [a]\n---\n\n# F\n")
         .unwrap();
     opys(&dir)
@@ -1625,7 +1745,7 @@ fn verify_enforces_opys_rules_when_present() {
         ));
 
     // Supplying the reason satisfies both the legacy checks and the rule.
-    dir.child("opys/items/FEAT-0001.md")
+    dir.child("opys/_archived/FEAT-0001.md")
         .write_str(
             "---\nid: FEAT-0001\nstatus: archived\ntags: [a]\narchived_reason: removed in v3\n---\n\n# F\n",
         )

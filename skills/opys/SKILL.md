@@ -50,9 +50,10 @@ one step.
 
 `opys.toml` lives at the **project root** (opys finds it by searching upward from
 the cwd, like git/Cargo). It declares a `base` directory (default `opys/`,
-relative to the root) holding the document files (each type's `dir`, by default
-the shared `opys/items/`) and the generated `opys/INDEX.md`. Mutating commands
-regenerate `INDEX.md` automatically (pass `--no-sync` to skip).
+relative to the root) holding the document files, flat at `opys/` by default (the
+path is rendered from a configurable `[layout]` template). Mutating commands
+auto-sync — reconcile, linkify, and relocate docs to their layout path (pass
+`--no-sync` to skip).
 
 The document **types** are configured in `opys.toml` (`opys config init` writes
 the opinionated default; `opys config validate` checks it). The default ships a
@@ -63,7 +64,7 @@ its ID prefix.
 
 | Command | Purpose |
 |---|---|
-| `init` | bootstrap `opys.toml` + `items/`, print CLAUDE.md snippet |
+| `init` | bootstrap `opys.toml` + `opys/`, print CLAUDE.md snippet |
 | `config init` / `config validate` | generate / check the universal `opys.toml` |
 | `new --type T --title … [--tags a,b] [--status S] [--features F1,F2] [--reason R] [--field k=v]` | create a doc of type `T` with the next ID (`--type` defaults to `feature`; auto-syncs) |
 | `import --type T FILE.jsonl` | bulk-create docs of type `T` from JSONL (sequential IDs, one sync, transactional) |
@@ -74,7 +75,7 @@ its ID prefix.
 | `retire ID --reason R` | delete file, log ID to `_retired.txt` so it is never reallocated |
 | `close ID [--force]` / `cleanup` | finish a doc whose type has a terminal status (strike its refs everywhere); strip struck refs |
 | `verify` | full integrity check; nonzero exit on problems — wire into CI |
-| `sync` | reconcile references, linkify prose, regenerate `INDEX.md` |
+| `sync` | reconcile references, linkify prose, relocate docs to their layout path |
 | `stats` | per-type status counts + percentages, and coverage gaps |
 | `agent-rules --tool <editor>` | generate a rules-based editor's instruction file from the canonical rule |
 
@@ -101,7 +102,7 @@ its ID prefix.
 
 ## Workflow: implementing a feature (for coding agents)
 
-1. Read `opys/INDEX.md`, locate the feature, read its file fully.
+1. Locate the feature (`opys list` / `rg` by tag or status), read its file fully.
 2. Implement. Add tests.
 3. In the test plan, check the covered items and append backticked test
    references — `module::test_name`, or `path/to/file::test_name` when the
@@ -145,8 +146,6 @@ have no automated coverage and are counted in `opys stats`.
 
 ## Retrieval discipline
 
-Never bulk-read `opys/`. The path is: `opys/INDEX.md` (the one
-whole-inventory file, grouped by type, deliberately small) → `rg` by tag/status
-or `opys list [--type T]` → read the 2–5 relevant files. `INDEX.md` is generated
-(regenerated on every write, or via `opys sync`) — read it, never edit it; slice
-the inventory live with `opys list`, not pre-generated files.
+Never bulk-read `opys/`. The path is: `rg` by tag/status or
+`opys list [--type T]` → read the 2–5 relevant files. There is no generated index
+— slice the inventory live with `opys list`, not pre-generated files.

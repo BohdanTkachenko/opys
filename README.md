@@ -38,14 +38,14 @@ cargo build --release   # target/release/opys
 `opys.toml` lives at the **project root** — opys finds it by searching upward
 from the current directory (like git or Cargo). It declares a `base` directory
 (default `opys/`, relative to the root) so the inventory stays out of the
-repo root: the document files (in each type's `dir`, by default the shared
-`opys/items/`) and the generated `opys/INDEX.md`. A document's type is its ID
-prefix.
+repo root: the document files, flat at `opys/` by default (the path is rendered
+from a configurable `[layout]` template — see the spec). A document's type is its
+ID prefix.
 
 ## Quick start
 
 ```sh
-opys init                                   # bootstrap opys.toml + items/
+opys init                                   # bootstrap opys.toml + opys/
 # edit opys.toml: types, statuses, fields, sections, rules
 
 opys new --title "Tab title follows OSC 0/2" --tags osc,tabs
@@ -60,7 +60,8 @@ opys close BUG-0002                         # deletes the file; reference struck
 ```
 
 Mutating commands (`new`, `set-status`, `tag`, `retire`, `block`, `close`,
-`cleanup`) reconcile cross-references, linkify prose, and regenerate `INDEX.md`
+`cleanup`) reconcile cross-references, linkify prose, and relocate documents to
+their canonical layout path (e.g. an archived doc moves into `_archived/`)
 automatically; pass `--no-sync` to skip, or run `opys sync` after editing files
 by hand.
 
@@ -68,7 +69,7 @@ by hand.
 
 | Command | Purpose |
 |---|---|
-| `init` | bootstrap `opys.toml` + `items/`, print a CLAUDE.md snippet |
+| `init` | bootstrap `opys.toml` + `opys/`, print a CLAUDE.md snippet |
 | `config <init\|validate>` | generate / validate the universal `opys.toml` |
 | `new --type <T>` | allocate the next ID and write a skeleton document of type `T` (auto-syncs) |
 | `import --type <T>` | bulk-create documents of type `T` from a JSONL file (sequential IDs, one sync) |
@@ -79,7 +80,7 @@ by hand.
 | `block` / `unblock` | record a directional blocker between two documents |
 | `close` / `cleanup` | finish a document of a type with a terminal status; strip struck refs |
 | `verify` | full integrity check — wire into CI |
-| `sync` | reconcile references, linkify prose, regenerate `INDEX.md` (for hand edits) |
+| `sync` | reconcile references, linkify prose, relocate docs to their layout path (for hand edits) |
 | `stats` | per-type status counts + percentages, coverage gaps |
 | `agent-rules --tool <editor>` | generate a rules-based editor's instruction file from the canonical rule |
 
@@ -158,7 +159,7 @@ The CLI itself is universal — any agent that can run a shell command can use
 `opys`. For tools that read project instructions instead of skills, the
 cross-tool standard is **AGENTS.md** (this repo ships one). The substance is the
 same everywhere: `opys new --type/set-status/close/verify ...` for writes,
-`opys`/`rg` + `opys/INDEX.md` for reads.
+`opys list`/`rg` for reads.
 
 ## License
 

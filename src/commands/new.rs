@@ -102,7 +102,7 @@ pub fn run(
         )));
     }
 
-    let path = prj.base.join(t.resolved_dir()).join(format!("{id}.md"));
+    let path = prj.doc_path(&id, status);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }

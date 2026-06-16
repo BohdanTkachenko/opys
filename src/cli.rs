@@ -14,7 +14,7 @@ pub struct Cli {
     #[arg(long, default_value = ".", global = true)]
     pub root: String,
 
-    /// Skip the automatic INDEX.md regeneration after mutating commands.
+    /// Skip the automatic sync (reconcile/linkify/relocate) after mutating commands.
     #[arg(long, global = true)]
     pub no_sync: bool,
 
@@ -147,7 +147,7 @@ pub enum Command {
     /// Integrity check (CI gate).
     Verify,
 
-    /// Reconcile references, linkify prose, and regenerate INDEX.md (after hand edits).
+    /// Reconcile references, linkify prose, and relocate docs to their layout path (after hand edits).
     Sync,
 
     /// Per-type status breakdown (counts + percentages) and coverage stats.

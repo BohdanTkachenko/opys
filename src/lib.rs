@@ -120,7 +120,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         }
         Command::Verify => commands::verify::run(&ctx),
         Command::Sync => {
-            commands::sync_views::run(&ctx)?;
+            commands::sync::run_command(&ctx)?;
             Ok(0)
         }
         Command::Stats => {

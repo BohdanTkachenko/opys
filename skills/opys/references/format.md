@@ -5,23 +5,33 @@
 `opys.toml` lives at the **project root** — opys finds it by searching upward
 from the current directory (like git or Cargo). It declares the inventory
 `base` directory (default `opys/`, relative to the root), which holds the
-documents and generated artifacts:
+documents:
 
 ```
 <project root>/
   opys.toml             # the config (found by searching upward) — declares `base`
   opys/                 # the inventory base (config `base`, default opys)
-    items/              # default directory for documents (FEAT-0001.md, …)
-    INDEX.md            # generated — never hand-edit
+    FEAT-0001.md        # documents live flat at the base by default
+    FEAT-0002.md
+    _archived/          # e.g. status_dirs = { archived = "_archived" }
+      FEAT-0003.md
     _retired.txt        # append-only log of deleted IDs (never reused), sorted
 ```
 
 Each document is one markdown file named after its ID (`FEAT-0001.md`,
-`EPIC-0003.md`). **A document's type is its ID prefix.** By default every type's
-files live together in `items/`; a type may set its own `dir` (`epic` →
-`epics/`). Directory structure must never encode taxonomy — that is what tags and
-`opys list` are for. If a directory becomes unwieldy (~2000+ files), shard
-mechanically by ID prefix; sharding is cosmetic, tooling treats the tree as flat.
+`EPIC-0003.md`). **A document's type is its ID prefix.** Discovery scans the base
+recursively and only treats ID-named files (`PREFIX-NNNN.md`) as documents, so
+stray markdown (READMEs, notes) and `_`-prefixed files are ignored.
+
+**Layout.** A document's path under `base` is rendered from the `[layout]`
+`path` template (default `"{type}/{status}/{id}.md"`): `{type}` → the type's
+`dir`, `{status}` → the type's `status_dirs[status]`, `{id}` → `PREFIX-NNNN`.
+Both the `{type}` and `{status}` segments are empty by default, so documents
+live flat at the base; empty segments collapse, so the order is free (e.g.
+`"{status}/{type}/{id}.md"` groups by status first). Setting a doc's status (or
+editing the layout) moves its file to the new canonical path on the next write —
+relocated documents stay fully in the inventory. Directory structure must never
+encode taxonomy — that is what tags and `opys list` are for.
 
 ## Configuration: `opys.toml`
 
@@ -32,6 +42,9 @@ init` writes the opinionated default (a permanent `feature` type plus ephemeral
 ```toml
 pad = 4                              # zero-padding width for the numeric id part
 
+# [layout]                           # on-disk path template (relative to base)
+# path = "{type}/{status}/{id}.md"   # default; {type}/{status} empty → flat
+
 [tests]                              # test-reference resolution (test-plan sections)
 search_paths = ["src", "tests"]
 reference_check = "grep"             # "grep" | "extract" | "none"
@@ -39,10 +52,11 @@ reference_check = "grep"             # "grep" | "extract" | "none"
 
 [types.feature]                      # one [types.<name>] block per document type
 prefix = "FEAT"                      # ^[A-Z][A-Z0-9]*$, unique across types
-# dir = "features"                   # default: the shared items/
+# dir = "features"                   # the {type} layout segment; default empty (flat)
 statuses = ["planned", "partial", "implemented", "wontfix", "archived"]
 default_status = "planned"
 terminal_statuses = []               # statuses reached only via `close` (which deletes)
+status_dirs = { archived = "_archived" }   # per-status {status} segment; default empty
 tags_required = true
 # requires_link = { to = "feature", min = 1 }   # must reference ≥min docs of a type
 
@@ -271,7 +285,7 @@ the only coverage a case has.
 
 ## Bulk creation and migration
 
-`opys new` creates one feature per process and regenerates `INDEX.md` each time
+`opys new` creates one feature per process and runs a full sync each time
 — fine interactively, far too slow for migrating hundreds or thousands of
 features. Two supported bulk paths avoid that:
 
