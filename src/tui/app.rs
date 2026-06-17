@@ -1,6 +1,6 @@
 //! The TUI application state (the TEA model) and the input reducer.
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::commands::new::scaffold_body;
 use crate::doc::Doc;
@@ -190,6 +190,7 @@ impl App {
 
     /// Map a key press to a state change, dispatched by the current mode.
     pub fn handle_key(&mut self, key: KeyEvent) {
+        let key = normalize_key(key);
         match self.mode {
             Mode::Browse => self.handle_browse(key),
             Mode::Filter => self.handle_filter(key),
@@ -254,7 +255,7 @@ impl App {
                     self.refilter();
                 }
             }
-            KeyCode::Char(c) => {
+            KeyCode::Char(c) if !is_control_combo(&key) => {
                 if let Some(text) = self.focused_text_mut() {
                     text.push(c);
                     self.refilter();
@@ -466,5 +467,40 @@ impl App {
             }
             Err(e) => self.status = Some(format!("close failed: {e}")),
         }
+    }
+}
+
+/// True when a `Char` event carries Ctrl/Alt — a control combo, not text input.
+fn is_control_combo(key: &KeyEvent) -> bool {
+    key.modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+}
+
+/// Normalize quirky terminal key reports. Some terminals send Backspace as
+/// Ctrl-H (ASCII 0x08), which crossterm surfaces as Ctrl+'h' — treat it as
+/// Backspace so it deletes instead of typing an 'h'.
+fn normalize_key(key: KeyEvent) -> KeyEvent {
+    if key.code == KeyCode::Char('h') && key.modifiers == KeyModifiers::CONTROL {
+        return KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
+    }
+    key
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_control_combo, normalize_key};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn ctrl_h_normalizes_to_backspace() {
+        let k = normalize_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
+        assert_eq!(k.code, KeyCode::Backspace);
+    }
+
+    #[test]
+    fn plain_h_is_unchanged() {
+        let k = normalize_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        assert_eq!(k.code, KeyCode::Char('h'));
+        assert!(!is_control_combo(&k));
     }
 }

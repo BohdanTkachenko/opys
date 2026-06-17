@@ -8,7 +8,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::markdown;
 
@@ -81,8 +81,12 @@ impl TextArea {
     /// dirty); pure navigation returns `false`. `Tab` is never consumed here —
     /// the form uses it to move focus.
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
+        let ctrl_or_alt = key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         match key.code {
-            KeyCode::Char(c) => {
+            // Skip control/alt combos so they are never inserted as text.
+            KeyCode::Char(c) if !ctrl_or_alt => {
                 self.insert(c);
                 true
             }
@@ -257,7 +261,7 @@ impl TextArea {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::from(code)
@@ -291,5 +295,13 @@ mod tests {
         let changed = ta.handle_key(key(KeyCode::Enter));
         assert!(!changed);
         assert_eq!(ta.text(), "x");
+    }
+
+    #[test]
+    fn control_combo_is_not_inserted_as_text() {
+        let mut ta = TextArea::new("", true);
+        let changed = ta.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
+        assert!(!changed);
+        assert_eq!(ta.text(), "");
     }
 }
