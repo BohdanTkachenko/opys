@@ -287,6 +287,175 @@ fn parse_link(chars: &[char], start: usize) -> Option<(String, usize)> {
     Some((text, close_paren + 1))
 }
 
+/// Highlight one line for the **editor** — non-destructive: every character is
+/// preserved (delimiters included) so the cursor column stays aligned. `in_code`
+/// marks a line inside a fenced block. (The preview's [`render`] rewrites text,
+/// which would misalign an editable cursor, so the editor uses this instead.)
+pub fn highlight_edit_line(line: &str, in_code: bool) -> Line<'static> {
+    if line.trim_start().starts_with("```") {
+        return Line::from(Span::styled(
+            line.to_string(),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    if in_code {
+        return Line::from(Span::styled(
+            line.to_string(),
+            Style::default().fg(Color::Green),
+        ));
+    }
+
+    let trimmed = line.trim_start();
+    let indent = &line[..line.len() - trimmed.len()];
+
+    if let Some(level) = heading_level(trimmed) {
+        let color = match level {
+            1 => Color::Cyan,
+            2 => Color::LightMagenta,
+            3 => Color::Yellow,
+            _ => Color::Blue,
+        };
+        return Line::from(Span::styled(
+            line.to_string(),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("> ") {
+        let mut spans = vec![Span::styled(
+            format!("{indent}> "),
+            Style::default().fg(Color::DarkGray),
+        )];
+        spans.extend(inline_keep(
+            rest,
+            Style::default()
+                .add_modifier(Modifier::ITALIC)
+                .fg(Color::Gray),
+        ));
+        return Line::from(spans);
+    }
+
+    // Checkbox: keep the literal `- [x] ` / `- [ ] `, just color the box.
+    if trimmed.starts_with("- [ ] ") || trimmed.starts_with("- [x] ") {
+        let checked = trimmed.starts_with("- [x] ");
+        let box_style = if checked {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        let mut spans = vec![
+            Span::raw(indent.to_string()),
+            Span::styled("- ".to_string(), Style::default().fg(Color::Yellow)),
+            Span::styled(trimmed[2..6].to_string(), box_style),
+        ];
+        spans.extend(inline_keep(&trimmed[6..], Style::default()));
+        return Line::from(spans);
+    }
+
+    if let Some(rest) = list_marker(trimmed) {
+        let marker = &trimmed[..trimmed.len() - rest.len()];
+        let mut spans = vec![
+            Span::raw(indent.to_string()),
+            Span::styled(marker.to_string(), Style::default().fg(Color::Yellow)),
+        ];
+        spans.extend(inline_keep(rest, Style::default()));
+        return Line::from(spans);
+    }
+
+    let mut spans = vec![Span::raw(indent.to_string())];
+    spans.extend(inline_keep(trimmed, Style::default()));
+    Line::from(spans)
+}
+
+/// Inline highlighter that **keeps all characters** (markers included), for the
+/// editor. Colors code/bold/italic/strike spans and the two halves of a link.
+fn inline_keep(s: &str, base: Style) -> Vec<Span<'static>> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut buf = String::new();
+    let mut i = 0;
+
+    let flush = |spans: &mut Vec<Span<'static>>, buf: &mut String| {
+        if !buf.is_empty() {
+            spans.push(Span::styled(std::mem::take(buf), base));
+        }
+    };
+
+    while i < chars.len() {
+        if chars[i] == '`' {
+            if let Some(close) = find_char(&chars, i + 1, '`') {
+                flush(&mut spans, &mut buf);
+                spans.push(Span::styled(
+                    chars[i..=close].iter().collect::<String>(),
+                    Style::default().fg(Color::Green),
+                ));
+                i = close + 1;
+                continue;
+            }
+        }
+        if is_seq(&chars, i, "**") {
+            if let Some(close) = find_seq(&chars, i + 2, "**") {
+                flush(&mut spans, &mut buf);
+                spans.push(Span::styled(
+                    chars[i..close + 2].iter().collect::<String>(),
+                    base.add_modifier(Modifier::BOLD),
+                ));
+                i = close + 2;
+                continue;
+            }
+        }
+        if chars[i] == '*' {
+            if let Some(close) = find_char(&chars, i + 1, '*') {
+                if close > i + 1 {
+                    flush(&mut spans, &mut buf);
+                    spans.push(Span::styled(
+                        chars[i..=close].iter().collect::<String>(),
+                        base.add_modifier(Modifier::ITALIC),
+                    ));
+                    i = close + 1;
+                    continue;
+                }
+            }
+        }
+        if is_seq(&chars, i, "~~") {
+            if let Some(close) = find_seq(&chars, i + 2, "~~") {
+                flush(&mut spans, &mut buf);
+                spans.push(Span::styled(
+                    chars[i..close + 2].iter().collect::<String>(),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::CROSSED_OUT),
+                ));
+                i = close + 2;
+                continue;
+            }
+        }
+        if chars[i] == '[' {
+            if let Some(close_br) = find_char(&chars, i + 1, ']') {
+                if chars.get(close_br + 1) == Some(&'(') {
+                    if let Some(close_paren) = find_char(&chars, close_br + 2, ')') {
+                        flush(&mut spans, &mut buf);
+                        spans.push(Span::styled(
+                            chars[i..=close_br].iter().collect::<String>(),
+                            Style::default().fg(Color::Cyan),
+                        ));
+                        spans.push(Span::styled(
+                            chars[close_br + 1..=close_paren].iter().collect::<String>(),
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                        i = close_paren + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        buf.push(chars[i]);
+        i += 1;
+    }
+    flush(&mut spans, &mut buf);
+    spans
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,5 +500,28 @@ mod tests {
         let spans = inline("call mod::persist_test now", Style::default());
         let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(joined, "call mod::persist_test now");
+    }
+
+    #[test]
+    fn editor_highlight_preserves_every_character() {
+        // The cursor maps by column, so the rendered spans must concatenate back
+        // to the exact input line for every markup shape.
+        for line in [
+            "# Heading",
+            "## Test plan",
+            "- [x] done `mod::test` and **bold**",
+            "- [ ] todo with [FEAT-2](path.md)",
+            "> a *quote* with ~~strike~~",
+            "  - nested bullet",
+            "1. ordered item",
+            "plain text, no markup",
+        ] {
+            let rendered: String = highlight_edit_line(line, false)
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            assert_eq!(rendered, line, "character drift on {line:?}");
+        }
     }
 }

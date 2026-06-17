@@ -141,7 +141,7 @@ impl EditForm {
             status_idx,
             tags: TextArea::new(&tags, false),
             custom,
-            body: TextArea::new(&body_rest, true),
+            body: TextArea::new(&body_rest, true).highlighted(),
             order,
             focus: 0,
         }

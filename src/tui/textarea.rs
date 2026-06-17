@@ -4,10 +4,13 @@
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
+
+use super::markdown;
 
 pub struct TextArea {
     /// Always at least one line; characters (not bytes) so the cursor column is
@@ -17,6 +20,8 @@ pub struct TextArea {
     col: usize,
     scroll: usize,
     multiline: bool,
+    /// Apply (non-destructive) markdown syntax highlighting on render.
+    highlight: bool,
 }
 
 impl TextArea {
@@ -33,7 +38,34 @@ impl TextArea {
             col,
             scroll: 0,
             multiline,
+            highlight: false,
         }
+    }
+
+    /// Enable markdown syntax highlighting while editing (for the body editor).
+    pub fn highlighted(mut self) -> TextArea {
+        self.highlight = true;
+        self
+    }
+
+    /// Whether each line sits inside a fenced code block (for highlighting).
+    fn code_states(&self) -> Vec<bool> {
+        let mut states = Vec::with_capacity(self.lines.len());
+        let mut inside = false;
+        for line in &self.lines {
+            let is_fence = line
+                .iter()
+                .collect::<String>()
+                .trim_start()
+                .starts_with("```");
+            if is_fence {
+                states.push(false);
+                inside = !inside;
+            } else {
+                states.push(inside);
+            }
+        }
+        states
     }
 
     /// Single-line convenience: the buffer joined with newlines.
@@ -178,14 +210,21 @@ impl TextArea {
         let inner_h = area.height.saturating_sub(2) as usize;
         self.ensure_visible(inner_h);
 
-        let text: String = self
-            .lines
+        let end = (self.scroll + inner_h.max(1)).min(self.lines.len());
+        let visible: Vec<String> = self.lines[self.scroll..end]
             .iter()
-            .skip(self.scroll)
-            .take(inner_h.max(1))
             .map(|l| l.iter().collect::<String>())
-            .collect::<Vec<_>>()
-            .join("\n");
+            .collect();
+        let rendered: Vec<Line> = if self.highlight {
+            let states = self.code_states();
+            visible
+                .iter()
+                .enumerate()
+                .map(|(k, s)| markdown::highlight_edit_line(s, states[self.scroll + k]))
+                .collect()
+        } else {
+            visible.iter().map(|s| Line::from(s.clone())).collect()
+        };
 
         let border = if focused {
             Style::default().fg(Color::Yellow)
@@ -205,7 +244,7 @@ impl TextArea {
             .border_style(border)
             .title_style(title_style)
             .title(title);
-        frame.render_widget(Paragraph::new(text).block(block), area);
+        frame.render_widget(Paragraph::new(rendered).block(block), area);
 
         if focused {
             let cx = area.x + 1 + self.col.min(area.width.saturating_sub(2) as usize) as u16;
