@@ -10,7 +10,10 @@ mod app;
 mod data;
 mod event;
 mod filter;
+mod form;
+mod save;
 mod sort;
+mod textarea;
 mod theme;
 mod view;
 
@@ -52,6 +55,7 @@ fn event_loop(
         terminal
             .draw(|frame| view::render(frame, app))
             .map_err(OpysError::from)?;
+        // (app is &mut App; view::render takes &mut to scroll the body editor)
 
         match rx.recv() {
             Ok(Event::Input(CtEvent::Key(key))) if key.kind == KeyEventKind::Press => {
@@ -97,9 +101,11 @@ default_status = \"planned\"\ntags_required = false\n";
             root: dir.path().to_string_lossy().into_owned(),
             no_sync: true,
         };
-        let app = App::new(&ctx).unwrap();
+        let mut app = App::new(&ctx).unwrap();
         let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
-        terminal.draw(|frame| view::render(frame, &app)).unwrap();
+        terminal
+            .draw(|frame| view::render(frame, &mut app))
+            .unwrap();
         terminal
             .backend()
             .buffer()

@@ -2,13 +2,17 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
+use crate::commands::new::scaffold_body;
 use crate::doc::Doc;
 use crate::error::Result;
+use crate::frontmatter::Frontmatter;
 use crate::project::Project;
 use crate::Ctx;
 
 use super::data::Board;
 use super::filter::{self, FilterField, FilterState};
+use super::form::{EditForm, FormAction};
+use super::save;
 use super::sort::{sort_docs, SortKey, SortState};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -24,6 +28,10 @@ pub enum Mode {
     Browse,
     Filter,
     Stats,
+    /// Picking a type for a new document.
+    NewType,
+    /// Editing (or creating) a document.
+    Edit,
 }
 
 pub struct App {
@@ -38,6 +46,13 @@ pub struct App {
     pub mode: Mode,
     pub filter: FilterState,
     pub filter_focus: FilterField,
+    /// The open edit/new form, when `mode == Edit`.
+    pub edit: Option<EditForm>,
+    /// Type names offered by the new-document picker, and the cursor into them.
+    pub new_types: Vec<String>,
+    pub new_type_idx: usize,
+    /// A pending close confirmation (the document id awaiting `y`).
+    pub confirm_close: Option<String>,
     pub status: Option<String>,
     pub should_quit: bool,
 }
@@ -57,6 +72,10 @@ impl App {
             mode: Mode::Browse,
             filter: FilterState::default(),
             filter_focus: FilterField::Type,
+            edit: None,
+            new_types: Vec::new(),
+            new_type_idx: 0,
+            confirm_close: None,
             status: None,
             should_quit: false,
         };
@@ -108,11 +127,18 @@ impl App {
     }
 
     /// Reload the board from disk, preserving selection and the active filter.
+    /// While a form is open, also reconcile it with the external change
+    /// (silent reload when clean, conflict prompt when dirty).
     pub fn reload(&mut self) {
         let keep = self.selected_id();
         self.board.reload(&self.prj, self.sort);
         self.recompute_visible(keep.as_deref());
         self.refresh_status();
+        if self.mode == Mode::Edit {
+            if let Some(form) = self.edit.as_mut() {
+                form.on_external_change(&self.prj);
+            }
+        }
     }
 
     fn resort(&mut self) {
@@ -168,10 +194,26 @@ impl App {
             Mode::Browse => self.handle_browse(key),
             Mode::Filter => self.handle_filter(key),
             Mode::Stats => self.handle_stats(key),
+            Mode::NewType => self.handle_new_type(key),
+            Mode::Edit => self.handle_edit(key),
         }
     }
 
     fn handle_browse(&mut self, key: KeyEvent) {
+        // A pending close confirmation captures y/n first.
+        if let Some(id) = self.confirm_close.clone() {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    self.confirm_close = None;
+                    self.do_close(&id);
+                }
+                _ => {
+                    self.confirm_close = None;
+                    self.status = Some("close cancelled".into());
+                }
+            }
+            return;
+        }
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Down | KeyCode::Char('j') => self.move_down(),
@@ -192,6 +234,9 @@ impl App {
                 self.refilter();
             }
             KeyCode::Char('S') => self.mode = Mode::Stats,
+            KeyCode::Char('e') | KeyCode::Enter => self.start_edit(),
+            KeyCode::Char('n') => self.start_new(),
+            KeyCode::Char('D') => self.request_close(),
             _ => {}
         }
     }
@@ -267,5 +312,159 @@ impl App {
             _ => {}
         }
         self.refilter();
+    }
+
+    // --- edit / new / close ---
+
+    fn start_edit(&mut self) {
+        if let Some(doc) = self.selected_doc().cloned() {
+            self.edit = Some(EditForm::new(&self.prj, doc, false));
+            self.mode = Mode::Edit;
+            self.status = None;
+        }
+    }
+
+    fn start_new(&mut self) {
+        self.new_types = self.prj.pcfg.types.keys().cloned().collect();
+        if self.new_types.is_empty() {
+            self.status = Some("no document types defined".into());
+            return;
+        }
+        self.new_type_idx = 0;
+        if self.new_types.len() == 1 {
+            // Only one type — skip the picker.
+            self.scaffold_new(0);
+        } else {
+            self.mode = Mode::NewType;
+        }
+    }
+
+    fn handle_new_type(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::Browse,
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.new_type_idx = self.new_type_idx.saturating_sub(1)
+            }
+            KeyCode::Down | KeyCode::Char('j') if self.new_type_idx + 1 < self.new_types.len() => {
+                self.new_type_idx += 1;
+            }
+            KeyCode::Enter => self.scaffold_new(self.new_type_idx),
+            _ => {}
+        }
+    }
+
+    /// Scaffold a fresh in-memory document of the chosen type and open it in the
+    /// edit form. It is not written until the form is saved.
+    fn scaffold_new(&mut self, type_idx: usize) {
+        let Some(tname) = self.new_types.get(type_idx).cloned() else {
+            return;
+        };
+        let t = &self.prj.pcfg.types[&tname];
+        let id = self.prj.next_id_for(&t.prefix, &self.board.docs);
+        let status = t.default_status.clone();
+        let body = scaffold_body("", t);
+        let mut fm = Frontmatter::new();
+        fm.set_str("id", &id);
+        fm.set_str("status", &status);
+        let path = self.prj.doc_path(&id, &status);
+        let doc = Doc {
+            path,
+            frontmatter: fm,
+            body,
+            title: String::new(),
+        };
+        self.edit = Some(EditForm::new(&self.prj, doc, true));
+        self.mode = Mode::Edit;
+        self.status = None;
+    }
+
+    fn handle_edit(&mut self, key: KeyEvent) {
+        let action = match self.edit.as_mut() {
+            Some(form) => form.handle_key(key),
+            None => {
+                self.mode = Mode::Browse;
+                return;
+            }
+        };
+        match action {
+            FormAction::None => {}
+            FormAction::Cancel => {
+                self.edit = None;
+                self.mode = Mode::Browse;
+            }
+            FormAction::Reload => {
+                if let Some(form) = self.edit.as_mut() {
+                    form.reload_from_disk(&self.prj);
+                }
+            }
+            FormAction::Save => self.save_form(),
+        }
+    }
+
+    fn save_form(&mut self) {
+        // Borrow the disjoint fields directly so `apply` (→ &mut Doc) and `&prj`
+        // can be held together.
+        let result = {
+            let Some(form) = self.edit.as_mut() else {
+                return;
+            };
+            match form.apply() {
+                Err(msg) => Err(msg),
+                Ok(doc) => save::save_edited_doc(&self.prj, doc).map_err(|e| e.to_string()),
+            }
+        };
+        match result {
+            Ok(()) => {
+                let id = self.edit.as_ref().map(|f| f.title_id()).unwrap_or_default();
+                if let Some(form) = self.edit.as_mut() {
+                    form.mark_saved();
+                }
+                // Persist the relation/linkify/relocate pass, then refresh.
+                let _ = crate::commands::sync::run(&self.prj);
+                self.edit = None;
+                self.mode = Mode::Browse;
+                self.reload();
+                self.select_id(&id);
+                self.status = Some(format!("saved {id}"));
+            }
+            Err(msg) => self.status = Some(format!("not saved: {msg}")),
+        }
+    }
+
+    fn select_id(&mut self, id: &str) {
+        if let Some(pos) = self
+            .visible
+            .iter()
+            .position(|&i| self.board.docs[i].id() == Some(id))
+        {
+            self.selected = pos;
+        }
+    }
+
+    fn request_close(&mut self) {
+        let Some(doc) = self.selected_doc() else {
+            return;
+        };
+        let Some(id) = doc.id() else { return };
+        let tname = self.prj.pcfg.type_name_for_id(id);
+        let closable = tname
+            .and_then(|n| self.prj.pcfg.types.get(n))
+            .is_some_and(|t| !t.terminal_statuses.is_empty());
+        if !closable {
+            self.status = Some(format!("{id}: type has no terminal status — cannot close"));
+            return;
+        }
+        self.confirm_close = Some(id.to_string());
+    }
+
+    fn do_close(&mut self, id: &str) {
+        match crate::commands::close::core(&self.prj, id, false) {
+            Ok(()) => {
+                let _ = crate::commands::sync::run(&self.prj);
+                self.reload();
+                self.status = Some(format!("closed {id}"));
+            }
+            Err(e) => self.status = Some(format!("close failed: {e}")),
+        }
     }
 }

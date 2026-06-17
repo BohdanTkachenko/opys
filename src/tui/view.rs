@@ -11,15 +11,28 @@ use crate::commands::stats;
 
 use super::app::{App, Mode, PreviewLayout};
 use super::filter::{self, FilterField};
+use super::form::FieldView;
 use super::theme;
 
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
     let (body, status_bar) = (rows[0], rows[1]);
 
     if app.mode == Mode::Stats {
         render_stats(frame, app, body);
+        render_status(frame, app, status_bar);
+        return;
+    }
+
+    if app.mode == Mode::Edit {
+        render_edit(frame, app, body);
+        render_status(frame, app, status_bar);
+        return;
+    }
+
+    if app.mode == Mode::NewType {
+        render_new_type(frame, app, body);
         render_status(frame, app, status_bar);
         return;
     }
@@ -232,24 +245,171 @@ fn render_stats(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn render_status(frame: &mut Frame, app: &App, area: Rect) {
-    if let Some(msg) = &app.status {
-        let line = Line::from(Span::styled(
-            format!(" {msg} "),
-            Style::default().add_modifier(Modifier::REVERSED),
-        ));
-        frame.render_widget(Paragraph::new(line), area);
+fn render_edit(frame: &mut Frame, app: &mut App, area: Rect) {
+    let Some(form) = app.edit.as_mut() else {
         return;
+    };
+
+    let fields = form.fields();
+    // Fields block height: one line per field (minus the body) + borders.
+    let field_lines = fields.len().saturating_sub(1).max(1) as u16;
+    let relations = form.relations_summary();
+    let rel_height = if relations.is_empty() {
+        0
+    } else {
+        relations.len() as u16 + 2
+    };
+
+    let chunks = Layout::vertical([
+        Constraint::Length(field_lines + 2),
+        Constraint::Length(rel_height),
+        Constraint::Min(5),
+    ])
+    .split(area);
+    let (fields_area, rel_area, body_area) = (chunks[0], chunks[1], chunks[2]);
+
+    // Fields.
+    let mut lines: Vec<Line> = Vec::new();
+    for fv in &fields {
+        lines.push(field_line(fv));
+    }
+    let kind = if form.is_new { "new" } else { "edit" };
+    let dirty = if form.dirty { " ●" } else { "" };
+    let title = format!(" {kind} {}{dirty} ", form.title_id());
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(title)),
+        fields_area,
+    );
+
+    // Read-only relations.
+    if rel_height > 0 {
+        let rel_lines: Vec<Line> = relations
+            .iter()
+            .map(|(field, items)| {
+                let joined = items
+                    .iter()
+                    .map(|(id, t)| format!("{id} ({t})"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Line::from(format!("{field}: {joined}"))
+            })
+            .collect();
+        frame.render_widget(
+            Paragraph::new(rel_lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" relations (read-only) "),
+            ),
+            rel_area,
+        );
+    }
+
+    // Body editor (the one multi-line widget; draws its own cursor when focused).
+    form.render_body(frame, body_area);
+}
+
+fn field_line(fv: &FieldView) -> Line<'static> {
+    let (focused, label, value, hint) = match fv {
+        FieldView::Line {
+            focused,
+            label,
+            text,
+        } => (*focused, label.to_string(), text.clone(), "type"),
+        FieldView::Choice {
+            focused,
+            label,
+            value,
+        } => (*focused, label.to_string(), value.clone(), "←/→"),
+        FieldView::Custom {
+            focused,
+            label,
+            value,
+        } => (*focused, label.clone(), value.clone(), "edit"),
+        FieldView::Body { focused } => (*focused, "body".to_string(), "(below)".to_string(), ""),
+    };
+    let marker = if focused { "›" } else { " " };
+    let label_style = if focused {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let suffix = if focused && !hint.is_empty() {
+        format!("  ({hint})")
+    } else {
+        String::new()
+    };
+    Line::from(vec![
+        Span::styled(format!("{marker} {label:<12}"), label_style),
+        Span::raw(format!(": {value}{suffix}")),
+    ])
+}
+
+fn render_new_type(frame: &mut Frame, app: &App, area: Rect) {
+    let lines: Vec<Line> = app
+        .new_types
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let marker = if i == app.new_type_idx { "›" } else { " " };
+            let style = if i == app.new_type_idx {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            Line::from(Span::styled(format!("{marker} {name}"), style))
+        })
+        .collect();
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" new document · pick a type · ↑/↓ · Enter · Esc "),
+        ),
+        area,
+    );
+}
+
+fn render_status(frame: &mut Frame, app: &App, area: Rect) {
+    // Highest-priority transient prompts first.
+    if let Some(id) = &app.confirm_close {
+        return reversed(
+            frame,
+            area,
+            &format!(" close {id}? this deletes the file · y / n "),
+        );
+    }
+    if app.mode == Mode::Edit {
+        if let Some(form) = &app.edit {
+            if form.conflict.is_some() {
+                return reversed(
+                    frame,
+                    area,
+                    " file changed on disk · r reload (discard) · i ignore (keep edits) ",
+                );
+            }
+            if let Some(msg) = &form.message {
+                return reversed(frame, area, &format!(" {msg} "));
+            }
+        }
+    }
+    if let Some(msg) = &app.status {
+        return reversed(frame, area, &format!(" {msg} "));
     }
 
     let help = match app.mode {
         Mode::Browse => {
-            " q quit · j/k move · p preview · f filter · x clear · S stats · u/c/s/t/i sort "
+            " q quit · j/k · e edit · n new · D close · p preview · f filter · S stats · u/c/s/t/i sort "
         }
-        Mode::Filter => " filter mode · Tab field · ←/→ choose · type to search · Enter/Esc done ",
+        Mode::Filter => " filter · Tab field · ←/→ choose · type to search · Enter/Esc done ",
         Mode::Stats => " stats · Esc/S back · q quit ",
+        Mode::NewType => " new · ↑/↓ pick type · Enter create · Esc cancel ",
+        Mode::Edit => " edit · Tab next field · ←/→ choose · Ctrl-S save · Esc cancel ",
     };
-    let filter_hint = if app.filter.is_active() {
+    let filter_hint = if app.mode == Mode::Browse && app.filter.is_active() {
         format!(" · filter: {}", app.filter.summary())
     } else {
         String::new()
@@ -258,4 +418,12 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(Line::from(format!("{help}{filter_hint}"))),
         area,
     );
+}
+
+fn reversed(frame: &mut Frame, area: Rect, text: &str) {
+    let line = Line::from(Span::styled(
+        text.to_string(),
+        Style::default().add_modifier(Modifier::REVERSED),
+    ));
+    frame.render_widget(Paragraph::new(line), area);
 }
