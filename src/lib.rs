@@ -150,6 +150,16 @@ pub fn run(cli: Cli) -> Result<i32> {
             Ok(0)
         }
         #[cfg(feature = "tui")]
-        Command::Tui => tui::run(&ctx),
+        Command::Tui { dir } => {
+            // A positional directory overrides the global `--root`.
+            let ctx = match dir {
+                Some(root) => Ctx {
+                    root,
+                    no_sync: ctx.no_sync,
+                },
+                None => ctx,
+            };
+            tui::run(&ctx)
+        }
     }
 }

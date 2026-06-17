@@ -173,7 +173,11 @@ pub enum Command {
     /// Launch the interactive terminal UI: a live board over the inventory that
     /// updates as documents change on disk.
     #[cfg(feature = "tui")]
-    Tui,
+    Tui {
+        /// Project directory to open (where to search upward for opys.toml).
+        /// Overrides `--root`; defaults to the current directory.
+        dir: Option<String>,
+    },
 
     /// Generate the always-on agent rule file for a rules-based editor
     /// (Cursor/Windsurf/Cline/Copilot/Kiro) from the canonical rule.
