@@ -9,6 +9,7 @@
 mod app;
 mod data;
 mod event;
+mod filter;
 mod sort;
 mod theme;
 mod view;

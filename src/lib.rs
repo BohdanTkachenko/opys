@@ -13,6 +13,7 @@ pub mod doc;
 pub mod error;
 pub mod frontmatter;
 pub mod links;
+pub mod palette;
 pub mod project;
 pub mod project_config;
 pub mod refs;

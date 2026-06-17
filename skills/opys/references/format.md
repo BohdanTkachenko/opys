@@ -82,6 +82,38 @@ assertion set for `[[rules]]` is `require_field`, `field_matches`,
 `require_section`, `require_checked_section`, `require_link`, `require_any`.
 `opys list --field <key>=<value>` filters by any custom field (see below).
 
+### `[palette]` — TUI presentation (optional)
+
+Purely cosmetic styling for the `opys tui` board; the core engine ignores it,
+but `opys config validate` checks it so mistakes surface in CI. Each named entry
+has `matchers` (`{status?, type?}`) and a `style`. A document matches an entry
+when **any** matcher matches (a matcher matches when every field it sets equals
+the document's; an empty matcher `{}` matches all). For a document, the styles
+of all matching entries are merged field-wise in ascending **specificity**
+(constrained-field count; ties by entry name), so more-specific rules win.
+
+```toml
+[palette.blocked]
+matchers = [ { status = "blocked" } ]
+[palette.blocked.style]
+fg_color = "red"        # a name, #rrggbb / #rgb hex, or a 0–255 index
+bg_color = "#111"
+icon = "⏸"              # any string; overrides the default per-type glyph
+bold = true
+italic = false
+strikethrough = false
+
+[palette.bug]
+matchers = [ { type = "bug" } ]
+[palette.bug.style]
+icon = "🐞"
+```
+
+Validation rejects a matcher whose `type` is not a defined type or whose
+`status` is not a real status (of that type when both are given, else of any
+type), an unparseable color, and an entry with no matchers. Where the palette
+sets nothing, the TUI falls back to a default icon per type and color per status.
+
 ## A complete feature file
 
 ````markdown

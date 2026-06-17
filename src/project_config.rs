@@ -15,6 +15,7 @@ use serde::Deserialize;
 
 use crate::config::{FieldSpec, FieldType, TestRefCheck};
 use crate::error::{usage, OpysError, Result};
+use crate::palette::{parse_color, PaletteEntry};
 use crate::refs;
 
 fn default_pad() -> usize {
@@ -251,6 +252,11 @@ pub struct ProjectConfig {
     pub types: BTreeMap<String, DocType>,
     #[serde(default)]
     pub rules: Vec<Rule>,
+    /// Presentation rules for the TUI. Ignored by the core engine; parsed and
+    /// validated here so `config validate` catches mistakes regardless of the
+    /// `tui` feature. See [`crate::palette`].
+    #[serde(default)]
+    pub palette: BTreeMap<String, PaletteEntry>,
 }
 
 impl ProjectConfig {
@@ -424,7 +430,60 @@ impl ProjectConfig {
         for (i, rule) in self.rules.iter().enumerate() {
             self.validate_rule(i + 1, rule, &type_names, &mut errs);
         }
+
+        self.validate_palette(&type_names, &mut errs);
         errs
+    }
+
+    /// Validate the `[palette]` rules: every matcher must reference a real type
+    /// and/or a real status, the colors must parse, and each entry needs ≥1
+    /// matcher.
+    fn validate_palette(&self, types: &HashSet<&str>, errs: &mut Vec<String>) {
+        for (name, entry) in &self.palette {
+            if entry.matchers.is_empty() {
+                errs.push(format!("palette '{name}': needs at least one matcher"));
+            }
+            for m in &entry.matchers {
+                if let Some(t) = &m.doc_type {
+                    if !types.contains(t.as_str()) {
+                        errs.push(format!(
+                            "palette '{name}': matcher type '{t}' is not a defined type"
+                        ));
+                    }
+                }
+                if let Some(s) = &m.status {
+                    let ok = match &m.doc_type {
+                        // When the matcher also fixes a type, the status must be
+                        // one of that type's statuses; otherwise it must be a
+                        // status of some type.
+                        Some(t) => self.types.get(t).is_some_and(|dt| dt.statuses.contains(s)),
+                        None => self.types.values().any(|dt| dt.statuses.contains(s)),
+                    };
+                    if !ok {
+                        let scope = m
+                            .doc_type
+                            .as_ref()
+                            .map(|t| format!(" of type '{t}'"))
+                            .unwrap_or_default();
+                        errs.push(format!(
+                            "palette '{name}': matcher status '{s}' is not a status{scope}"
+                        ));
+                    }
+                }
+            }
+            for (label, color) in [
+                ("fg_color", &entry.style.fg_color),
+                ("bg_color", &entry.style.bg_color),
+            ] {
+                if let Some(c) = color {
+                    if parse_color(c).is_none() {
+                        errs.push(format!(
+                            "palette '{name}': {label} '{c}' is not a valid color (a name, #rrggbb, or 0-255)"
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     fn validate_rule(&self, n: usize, r: &Rule, types: &HashSet<&str>, errs: &mut Vec<String>) {
@@ -551,6 +610,58 @@ mod tests {
             "default config has problems: {problems:?}"
         );
         assert_eq!(cfg.types.len(), 4);
+    }
+
+    #[test]
+    fn flags_palette_unknown_type_status_and_bad_color() {
+        let cfg: ProjectConfig = toml::from_str(
+            r#"
+[types.feature]
+prefix = "FEAT"
+statuses = ["planned", "done"]
+default_status = "planned"
+
+[palette.ghost]
+matchers = [ { type = "ghost" } ]
+
+[palette.badstatus]
+matchers = [ { status = "nope" } ]
+
+[palette.typedstatus]
+matchers = [ { type = "feature", status = "nope" } ]
+
+[palette.badcolor]
+matchers = [ { status = "done" } ]
+[palette.badcolor.style]
+fg_color = "rainbow"
+
+[palette.empty]
+matchers = []
+"#,
+        )
+        .unwrap();
+        let joined = cfg.validate().join("\n");
+        assert!(
+            joined.contains("matcher type 'ghost' is not a defined type"),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("matcher status 'nope' is not a status\n")
+                || joined.contains("matcher status 'nope' is not a status of"),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("matcher status 'nope' is not a status of type 'feature'"),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("fg_color 'rainbow' is not a valid color"),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("palette 'empty': needs at least one matcher"),
+            "{joined}"
+        );
     }
 
     #[test]
