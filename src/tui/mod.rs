@@ -11,6 +11,7 @@ mod data;
 mod event;
 mod filter;
 mod form;
+mod markdown;
 mod save;
 mod sort;
 mod textarea;

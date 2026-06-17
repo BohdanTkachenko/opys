@@ -17,6 +17,7 @@ use crate::project::Project;
 use super::app::{App, Mode, PreviewLayout};
 use super::filter::{self, FilterField};
 use super::form::FieldView;
+use super::markdown;
 use super::theme;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -174,12 +175,11 @@ fn column_width(key: &str) -> Constraint {
 
 fn render_preview(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default().borders(Borders::ALL).title(" preview ");
-    let text = match app.selected_doc() {
-        Some(d) => d.to_text(),
-        None => "no document selected".to_string(),
+    let paragraph = match app.selected_doc() {
+        Some(d) => Paragraph::new(markdown::render(&d.to_text())),
+        None => Paragraph::new("no document selected"),
     };
-    let paragraph = Paragraph::new(text).block(block).wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, area);
+    frame.render_widget(paragraph.block(block).wrap(Wrap { trim: false }), area);
 }
 
 fn render_filter(frame: &mut Frame, app: &App, area: Rect) {
