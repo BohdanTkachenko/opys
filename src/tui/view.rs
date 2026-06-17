@@ -7,7 +7,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap};
 use ratatui::Frame;
 
+use serde_norway::Value;
+
 use crate::commands::stats;
+use crate::doc::Doc;
+use crate::frontmatter::Frontmatter;
+use crate::project::Project;
 
 use super::app::{App, Mode, PreviewLayout};
 use super::filter::{self, FilterField};
@@ -71,32 +76,27 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_list(frame: &mut Frame, app: &App, area: Rect) {
-    let header = Row::new(["", "id", "title", "status", "tags"])
-        .style(Style::default().add_modifier(Modifier::BOLD));
+    let columns = &app.prj.pcfg.tui.columns;
+
+    // Header: a leading icon column, then the configured columns.
+    let mut header_cells = vec![Cell::from("")];
+    header_cells.extend(columns.iter().map(|c| Cell::from(c.as_str())));
+    let header = Row::new(header_cells).style(Style::default().add_modifier(Modifier::BOLD));
 
     let rows = app.visible.iter().map(|&i| {
         let d = &app.board.docs[i];
         let st = theme::doc_style(&app.prj, d);
-        let id = d.id().unwrap_or("?").to_string();
-        let status = d.status().unwrap_or("").to_string();
-        let tags = d.frontmatter.tags().unwrap_or_default().join(", ");
-        Row::new(vec![
-            Cell::from(st.icon),
-            Cell::from(id),
-            Cell::from(d.title.clone()),
-            Cell::from(status),
-            Cell::from(tags),
-        ])
-        .style(st.style)
+        let mut cells = vec![Cell::from(st.icon)];
+        cells.extend(
+            columns
+                .iter()
+                .map(|c| Cell::from(column_value(&app.prj, d, c))),
+        );
+        Row::new(cells).style(st.style)
     });
 
-    let widths = [
-        Constraint::Length(2),
-        Constraint::Length(12),
-        Constraint::Min(16),
-        Constraint::Length(14),
-        Constraint::Length(22),
-    ];
+    let mut widths = vec![Constraint::Length(2)];
+    widths.extend(columns.iter().map(|c| column_width(c)));
 
     let arrow = if app.sort.desc { "▼" } else { "▲" };
     let count = if app.filter.is_active() {
@@ -119,6 +119,57 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
         state.select(Some(app.selected));
     }
     frame.render_stateful_widget(table, area, &mut state);
+}
+
+/// The display value of a list column for a document — a built-in or a custom
+/// frontmatter field.
+fn column_value(prj: &Project, d: &Doc, key: &str) -> String {
+    match key {
+        "id" => d.id().unwrap_or("?").to_string(),
+        "type" => d
+            .id()
+            .and_then(|id| prj.pcfg.type_name_for_id(id))
+            .unwrap_or("")
+            .to_string(),
+        "title" => d.title.clone(),
+        "status" => d.status().unwrap_or("").to_string(),
+        "tags" => d.frontmatter.tags().unwrap_or_default().join(", "),
+        // Trim the timezone for a compact, aligned timestamp column.
+        "created" | "updated" => d
+            .frontmatter
+            .get_str(key)
+            .map(|s| s.chars().take(16).collect())
+            .unwrap_or_default(),
+        other => custom_value(&d.frontmatter, other),
+    }
+}
+
+fn custom_value(fm: &Frontmatter, key: &str) -> String {
+    fn scalar(v: &Value) -> Option<String> {
+        match v {
+            Value::String(s) => Some(s.clone()),
+            Value::Bool(b) => Some(b.to_string()),
+            Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        }
+    }
+    match fm.get(key) {
+        Some(Value::Sequence(seq)) => seq.iter().filter_map(scalar).collect::<Vec<_>>().join(", "),
+        Some(v) => scalar(v).unwrap_or_default(),
+        None => String::new(),
+    }
+}
+
+fn column_width(key: &str) -> Constraint {
+    match key {
+        "title" => Constraint::Min(16),
+        "id" => Constraint::Length(12),
+        "status" => Constraint::Length(13),
+        "tags" => Constraint::Length(22),
+        "type" => Constraint::Length(10),
+        "created" | "updated" => Constraint::Length(18),
+        _ => Constraint::Length(14),
+    }
 }
 
 fn render_preview(frame: &mut Frame, app: &App, area: Rect) {

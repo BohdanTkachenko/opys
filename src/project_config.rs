@@ -236,6 +236,36 @@ pub struct TestsConfig {
     pub name_pattern: Option<String>,
 }
 
+/// Built-in column keys for the TUI list (everything else is a custom field).
+pub const BUILTIN_COLUMNS: [&str; 7] = [
+    "id", "type", "title", "status", "tags", "created", "updated",
+];
+
+fn default_columns() -> Vec<String> {
+    ["id", "title", "status", "tags"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// `[tui]` — presentation knobs for the `opys tui` board (ignored by the core
+/// engine, validated here so `config validate` catches mistakes).
+#[derive(Debug, Clone, Deserialize)]
+pub struct TuiConfig {
+    /// The list columns, left to right. Each is a [`BUILTIN_COLUMNS`] key or the
+    /// name of a custom frontmatter field (shown as that field's value).
+    #[serde(default = "default_columns")]
+    pub columns: Vec<String>,
+}
+
+impl Default for TuiConfig {
+    fn default() -> Self {
+        TuiConfig {
+            columns: default_columns(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProjectConfig {
     /// Inventory base directory, relative to the project root (the dir holding
@@ -257,6 +287,9 @@ pub struct ProjectConfig {
     /// `tui` feature. See [`crate::palette`].
     #[serde(default)]
     pub palette: BTreeMap<String, PaletteEntry>,
+    /// TUI list presentation. Ignored by the core engine; see [`TuiConfig`].
+    #[serde(default)]
+    pub tui: TuiConfig,
 }
 
 impl ProjectConfig {
@@ -432,7 +465,21 @@ impl ProjectConfig {
         }
 
         self.validate_palette(&type_names, &mut errs);
+        self.validate_tui(&mut errs);
         errs
+    }
+
+    /// Validate `[tui].columns`: each must be a built-in key or a custom field
+    /// declared on some type.
+    fn validate_tui(&self, errs: &mut Vec<String>) {
+        let known_field = |key: &str| self.types.values().any(|t| t.fields.contains_key(key));
+        for col in &self.tui.columns {
+            if !BUILTIN_COLUMNS.contains(&col.as_str()) && !known_field(col) {
+                errs.push(format!(
+                    "tui.columns: '{col}' is not a built-in column or a declared field"
+                ));
+            }
+        }
     }
 
     /// Validate the `[palette]` rules: every matcher must reference a real type
@@ -610,6 +657,29 @@ mod tests {
             "default config has problems: {problems:?}"
         );
         assert_eq!(cfg.types.len(), 4);
+    }
+
+    #[test]
+    fn flags_unknown_tui_column() {
+        let cfg: ProjectConfig = toml::from_str(
+            r#"
+[types.feature]
+prefix = "FEAT"
+statuses = ["planned"]
+default_status = "planned"
+[types.feature.fields.priority]
+type = "string"
+
+[tui]
+columns = ["id", "title", "priority", "bogus"]
+"#,
+        )
+        .unwrap();
+        let joined = cfg.validate().join("\n");
+        assert!(joined.contains("tui.columns: 'bogus'"), "{joined}");
+        // built-ins and declared fields are accepted
+        assert!(!joined.contains("'priority'"), "{joined}");
+        assert!(!joined.contains("'id'"), "{joined}");
     }
 
     #[test]

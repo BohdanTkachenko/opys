@@ -114,6 +114,19 @@ Validation rejects a matcher whose `type` is not a defined type or whose
 type), an unparseable color, and an entry with no matchers. Where the palette
 sets nothing, the TUI falls back to a default icon per type and color per status.
 
+### `[tui]` — board columns (optional)
+
+```toml
+[tui]
+columns = ["id", "title", "status", "priority", "updated"]
+```
+
+The list columns, left to right. Each is a built-in (`id`, `type`, `title`,
+`status`, `tags`, `created`, `updated`) or the name of a custom frontmatter
+field (shown as that field's value, blank where a document lacks it). Defaults to
+`["id", "title", "status", "tags"]`. `config validate` rejects a column that is
+neither a built-in nor a field declared on some type.
+
 ## A complete feature file
 
 ````markdown
