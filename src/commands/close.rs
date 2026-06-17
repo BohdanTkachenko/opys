@@ -7,11 +7,14 @@ use crate::body;
 use crate::commands::maybe_sync;
 use crate::error::{usage, Result};
 use crate::frontmatter::Frontmatter;
+use crate::project::{self, Project};
 use crate::project_config::SectionKind;
-use crate::{project, refs, Ctx};
+use crate::{refs, Ctx};
 
-pub fn run(ctx: &Ctx, id: &str, force: bool) -> Result<()> {
-    let prj = ctx.open()?;
+/// Close `id`: delete its file and strike every reference to it. Does not print
+/// or sync — the shared core for the CLI wrapper and the TUI. Striking other
+/// docs' relation maps is housekeeping, so it does not bump their `updated`.
+pub fn core(prj: &Project, id: &str, force: bool) -> Result<()> {
     let tname = prj
         .pcfg
         .type_name_for_id(id)
@@ -65,11 +68,17 @@ pub fn run(ctx: &Ctx, id: &str, force: bool) -> Result<()> {
         }
         let add_ref = ref_targets.contains(d.id().unwrap_or(""));
         if strike_everywhere(&mut d.frontmatter, id, &struck, add_ref) {
-            project::save_doc(&prj, d)?;
+            project::save_doc(prj, d)?;
         }
     }
 
     std::fs::remove_file(&path)?;
+    Ok(())
+}
+
+pub fn run(ctx: &Ctx, id: &str, force: bool) -> Result<()> {
+    let prj = ctx.open()?;
+    core(&prj, id, force)?;
     println!("closed {id} (deleted; references struck through)");
     maybe_sync(ctx, &prj);
     Ok(())

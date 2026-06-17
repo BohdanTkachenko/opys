@@ -1,10 +1,12 @@
-use crate::commands::{maybe_sync, split_csv};
+use crate::commands::{maybe_sync, split_csv, touch};
+use crate::doc::Doc;
 use crate::error::{usage, Result};
-use crate::project;
+use crate::project::{self, Project};
 use crate::Ctx;
 
-pub fn run(ctx: &Ctx, id: &str, add: Option<&str>, remove: Option<&str>) -> Result<()> {
-    let prj = ctx.open()?;
+/// Add and/or remove tags on a document; returns the saved [`Doc`]. Does not
+/// print or sync — the shared core for the CLI wrapper and the TUI.
+pub fn core(prj: &Project, id: &str, add: Option<&str>, remove: Option<&str>) -> Result<Doc> {
     let tags_required = prj
         .pcfg
         .type_name_for_id(id)
@@ -31,8 +33,20 @@ pub fn run(ctx: &Ctx, id: &str, add: Option<&str>, remove: Option<&str>) -> Resu
     } else {
         d.frontmatter.set_tags(&tags);
     }
+    touch(&mut d.frontmatter);
 
-    project::save_doc(&prj, d)?;
+    project::save_doc(prj, d)?;
+    let idx = docs
+        .iter()
+        .position(|x| x.id() == Some(id))
+        .expect("doc just saved is present");
+    Ok(docs.swap_remove(idx))
+}
+
+pub fn run(ctx: &Ctx, id: &str, add: Option<&str>, remove: Option<&str>) -> Result<()> {
+    let prj = ctx.open()?;
+    let doc = core(&prj, id, add, remove)?;
+    let tags = doc.frontmatter.tags().unwrap_or_default();
     println!("{id} tags: {}", tags.join(", "));
     maybe_sync(ctx, &prj);
     Ok(())

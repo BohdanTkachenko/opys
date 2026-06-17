@@ -2,6 +2,10 @@
 //! relocate documents to their canonical layout path. Invoked by `maybe_sync`
 //! after every mutating command and by the `opys sync` command.
 
+use std::path::Path;
+
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+
 use crate::error::{usage, Result};
 use crate::links;
 use crate::project::{self, Project};
@@ -30,6 +34,24 @@ pub fn run(prj: &Project) -> Result<usize> {
 
     let orig: Vec<String> = docs.iter().map(|d| d.to_text()).collect();
 
+    // Backfill the auto-maintained timestamps on docs predating the fields, from
+    // the file's mtime. This is housekeeping, not a user edit, so it must not
+    // bump `updated` on docs that already have it — only fill genuine gaps.
+    for d in docs.iter_mut() {
+        let need_created = !d.frontmatter.contains_key("created");
+        let need_updated = !d.frontmatter.contains_key("updated");
+        if need_created || need_updated {
+            if let Some(ts) = mtime_rfc3339(&d.path) {
+                if need_created {
+                    d.frontmatter.set_str("created", ts.clone());
+                }
+                if need_updated {
+                    d.frontmatter.set_str("updated", ts);
+                }
+            }
+        }
+    }
+
     links::reconcile(&mut docs);
     links::reconcile_blockers(&mut docs);
     let index = links::build_index(&docs);
@@ -55,4 +77,14 @@ pub fn run(prj: &Project) -> Result<usize> {
         }
     }
     Ok(count)
+}
+
+/// A file's modification time as an RFC3339 datetime (second precision), or
+/// `None` if it cannot be read. Used to backfill `created`/`updated` on docs
+/// that predate those fields.
+fn mtime_rfc3339(path: &Path) -> Option<String> {
+    let mt = std::fs::metadata(path).ok()?.modified().ok()?;
+    let dt = OffsetDateTime::from(mt);
+    let dt = dt.replace_nanosecond(0).unwrap_or(dt);
+    dt.format(&Rfc3339).ok()
 }

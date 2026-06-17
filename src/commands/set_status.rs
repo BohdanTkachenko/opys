@@ -1,12 +1,15 @@
 use std::collections::HashSet;
 
-use crate::commands::maybe_sync;
+use crate::commands::{maybe_sync, touch};
+use crate::doc::Doc;
 use crate::error::{usage, Result};
+use crate::project::{self, Project};
+use crate::rules;
 use crate::Ctx;
-use crate::{project, rules};
 
-pub fn run(ctx: &Ctx, id: &str, status: &str, reason: Option<&str>) -> Result<()> {
-    let prj = ctx.open()?;
+/// Compute and write a status transition; returns the saved [`Doc`]. Does not
+/// print or sync — the shared core for the CLI wrapper and the TUI.
+pub fn core(prj: &Project, id: &str, status: &str, reason: Option<&str>) -> Result<Doc> {
     let pcfg = &prj.pcfg;
     let tname = pcfg
         .type_name_for_id(id)
@@ -39,6 +42,7 @@ pub fn run(ctx: &Ctx, id: &str, status: &str, reason: Option<&str>) -> Result<()
         d.frontmatter.set_str(&format!("{status}_reason"), r);
     }
     d.frontmatter.set_str("status", status);
+    touch(&mut d.frontmatter);
 
     // Enforce the engine at write time, exactly as verify does.
     let problems = rules::evaluate(pcfg, &tname, status, &d.frontmatter, &d.body, &doc_ids);
@@ -49,7 +53,17 @@ pub fn run(ctx: &Ctx, id: &str, status: &str, reason: Option<&str>) -> Result<()
         )));
     }
 
-    project::save_doc(&prj, d)?;
+    project::save_doc(prj, d)?;
+    let idx = docs
+        .iter()
+        .position(|x| x.id() == Some(id))
+        .expect("doc just saved is present");
+    Ok(docs.swap_remove(idx))
+}
+
+pub fn run(ctx: &Ctx, id: &str, status: &str, reason: Option<&str>) -> Result<()> {
+    let prj = ctx.open()?;
+    core(&prj, id, status, reason)?;
     println!("{id} -> {status}");
     maybe_sync(ctx, &prj);
     Ok(())

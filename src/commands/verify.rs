@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use regex::Regex;
 use serde_norway::Value;
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use walkdir::WalkDir;
 
 use crate::body;
@@ -93,6 +94,7 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
             errors.push(format!("{id}: missing '# Title' heading"));
         }
 
+        check_timestamps(m, id, &mut errors);
         check_references(m, id, &doc_ids, &mut errors);
         check_custom_fields(
             &t.fields,
@@ -138,9 +140,27 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
 /// Frontmatter keys allowed on any document regardless of type (everything else
 /// must be a declared field of the doc's type).
 fn reserved_fields() -> Vec<&'static str> {
-    let mut v = vec!["id", "status", "tags"];
+    let mut v = vec!["id", "status", "tags", "created", "updated"];
     v.extend(refs::RELATION_FIELDS);
     v
+}
+
+/// The auto-maintained timestamp fields, when present, must be valid RFC3339
+/// datetimes. They are optional: older docs predating the fields are not flagged
+/// for absence (a `sync` pass backfills them).
+fn check_timestamps(m: &Frontmatter, id: &str, errors: &mut Vec<String>) {
+    for key in ["created", "updated"] {
+        if let Some(v) = m.get(key) {
+            let ok = v
+                .as_str()
+                .is_some_and(|s| OffsetDateTime::parse(s, &Rfc3339).is_ok());
+            if !ok {
+                errors.push(format!(
+                    "{id}: '{key}' must be an RFC3339 datetime (e.g. 2026-06-16T14:30:00Z)"
+                ));
+            }
+        }
+    }
 }
 
 /// Every entry in each relation map (`references`, `blocked_by`, `blocks`) must

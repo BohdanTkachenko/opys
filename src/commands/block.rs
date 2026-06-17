@@ -7,7 +7,7 @@
 //! link itself serves as the `blocked_reason`. A single top-level command pair
 //! accepts any id; the prefix resolves the type and file.
 
-use crate::commands::maybe_sync;
+use crate::commands::{maybe_sync, touch};
 use crate::doc::Doc;
 use crate::error::{usage, OpysError, Result};
 use crate::frontmatter::Frontmatter;
@@ -15,30 +15,41 @@ use crate::project::{self, Project};
 use crate::refs;
 use crate::Ctx;
 
-/// Mark `id` as blocked by `by`, linking both directions.
-pub fn block(ctx: &Ctx, id: &str, by: &str) -> Result<()> {
+/// Mark `id` as blocked by `by`, linking both directions. Does not print or
+/// sync — the shared core for the CLI wrapper and the TUI.
+pub fn block_core(prj: &Project, id: &str, by: &str) -> Result<()> {
     if id == by {
         return Err(usage("an item cannot block itself"));
     }
-    let prj = ctx.open()?;
     let (mut docs, _) = prj.load_docs();
 
     let id_title = title_of(&docs, id).ok_or_else(|| OpysError::NotFound { id: id.to_string() })?;
     let by_title = title_of(&docs, by).ok_or_else(|| OpysError::NotFound { id: by.to_string() })?;
 
-    let id_blockable = has_status(&prj, id, "blocked");
-    edit_doc(&prj, &mut docs, id, |fm| {
+    let id_blockable = has_status(prj, id, "blocked");
+    edit_doc(prj, &mut docs, id, |fm| {
         let mut changed = refs::add_to_map(fm, refs::BLOCKED_BY, by, &by_title);
         if id_blockable && fm.status() != Some("blocked") {
             fm.set_str("status", "blocked");
             changed = true;
         }
+        if changed {
+            touch(fm);
+        }
         changed
     })?;
-    edit_doc(&prj, &mut docs, by, |fm| {
+    // The reverse `blocks` link on the blocker is derived bookkeeping (the same
+    // link reconcile maintains), so it does not bump the blocker's `updated`.
+    edit_doc(prj, &mut docs, by, |fm| {
         refs::add_to_map(fm, refs::BLOCKS, id, &id_title)
     })?;
+    Ok(())
+}
 
+/// Mark `id` as blocked by `by`, linking both directions.
+pub fn block(ctx: &Ctx, id: &str, by: &str) -> Result<()> {
+    let prj = ctx.open()?;
+    block_core(&prj, id, by)?;
     println!("{id} blocked by {by}");
     maybe_sync(ctx, &prj);
     Ok(())
@@ -46,9 +57,9 @@ pub fn block(ctx: &Ctx, id: &str, by: &str) -> Result<()> {
 
 /// Remove the blocker link from both sides. When the blocked document's type has
 /// a `blocked` status, is left at `blocked` with no remaining blockers and no
-/// free-text `blocked_reason`, its status reverts to `in-progress`.
-pub fn unblock(ctx: &Ctx, id: &str, by: &str) -> Result<()> {
-    let prj = ctx.open()?;
+/// free-text `blocked_reason`, its status reverts to `in-progress`. Does not
+/// print or sync — the shared core for the CLI wrapper and the TUI.
+pub fn unblock_core(prj: &Project, id: &str, by: &str) -> Result<()> {
     let (mut docs, _) = prj.load_docs();
 
     if title_of(&docs, id).is_none() {
@@ -60,8 +71,8 @@ pub fn unblock(ctx: &Ctx, id: &str, by: &str) -> Result<()> {
         return Err(usage(format!("no blocker '{by}' recorded on '{id}'")));
     }
 
-    let id_blockable = has_status(&prj, id, "blocked") && has_status(&prj, id, "in-progress");
-    edit_doc(&prj, &mut docs, id, |fm| {
+    let id_blockable = has_status(prj, id, "blocked") && has_status(prj, id, "in-progress");
+    edit_doc(prj, &mut docs, id, |fm| {
         let mut changed = refs::remove_from_map(fm, refs::BLOCKED_BY, by);
         if id_blockable
             && fm.status() == Some("blocked")
@@ -71,17 +82,26 @@ pub fn unblock(ctx: &Ctx, id: &str, by: &str) -> Result<()> {
             fm.set_str("status", "in-progress");
             changed = true;
         }
+        if changed {
+            touch(fm);
+        }
         changed
     })?;
     // The blocker may already be gone (a closed doc's struck tombstone); cleaning
     // the target side is enough, so a missing blocker is not an error.
-    match edit_doc(&prj, &mut docs, by, |fm| {
+    match edit_doc(prj, &mut docs, by, |fm| {
         refs::remove_from_map(fm, refs::BLOCKS, id)
     }) {
         Ok(()) | Err(OpysError::NotFound { .. }) => {}
         Err(e) => return Err(e),
     }
+    Ok(())
+}
 
+/// Remove the blocker link from both sides.
+pub fn unblock(ctx: &Ctx, id: &str, by: &str) -> Result<()> {
+    let prj = ctx.open()?;
+    unblock_core(&prj, id, by)?;
     println!("{id} no longer blocked by {by}");
     maybe_sync(ctx, &prj);
     Ok(())

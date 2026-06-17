@@ -14,10 +14,12 @@ use serde_norway::{Mapping, Value};
 /// custom field (or rejected by `verify`). `references` is the uniform
 /// ID->title map linking to other features and work items; `blocked_by` /
 /// `blocks` are the directional blocker-relation maps (see `refs.rs`).
-pub const RESERVED_FIELDS: [&str; 8] = [
+pub const RESERVED_FIELDS: [&str; 10] = [
     "id",
     "status",
     "tags",
+    "created",
+    "updated",
     "spec",
     "wontfix_reason",
     "references",
@@ -26,18 +28,23 @@ pub const RESERVED_FIELDS: [&str; 8] = [
 ];
 
 /// Work-item reserved field keys. Work items share `id`/`status`/`tags`/
-/// `references`/`blocked_by`/`blocks` with features and add `blocked_reason`.
-pub const WI_RESERVED_FIELDS: [&str; 7] = [
+/// `created`/`updated`/`references`/`blocked_by`/`blocks` with features and add
+/// `blocked_reason`.
+pub const WI_RESERVED_FIELDS: [&str; 9] = [
     "id",
     "status",
     "tags",
+    "created",
+    "updated",
     "references",
     "blocked_by",
     "blocks",
     "blocked_reason",
 ];
 
-const ORDER: [&str; 3] = ["id", "status", "tags"];
+/// Core fields emitted first, in this order, before the remaining keys
+/// (alphabetical). `created`/`updated` are auto-maintained RFC3339 datetimes.
+const ORDER: [&str; 5] = ["id", "status", "tags", "created", "updated"];
 
 /// Parsed frontmatter, retaining the full YAML mapping so `verify` can inspect
 /// wrong-typed values (rather than failing to parse them).
@@ -287,6 +294,22 @@ mod tests {
         fm.set_str("ptyxis_ref", "src/x.c");
         let out = serialize(&fm, "# Title\n");
         let expected = "---\nid: VIK-0001\nstatus: planned\ntags: [osc, tabs]\nptyxis_ref: src/x.c\n---\n\n# Title\n";
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn timestamps_order_after_tags_before_custom() {
+        let mut fm = Frontmatter::new();
+        fm.set_str("custom_field", "x");
+        fm.set_str("id", "VIK-0001");
+        fm.set_str("updated", "2026-06-16T14:30:00Z");
+        fm.set_str("status", "planned");
+        fm.set_str("created", "2026-06-01T09:00:00Z");
+        fm.set_tags(&["osc".into()]);
+        // RFC3339 strings contain colons, so the conservative serializer quotes
+        // them — valid YAML that round-trips and parses back to the same string.
+        let out = serialize(&fm, "# Title\n");
+        let expected = "---\nid: VIK-0001\nstatus: planned\ntags: [osc]\ncreated: \"2026-06-01T09:00:00Z\"\nupdated: \"2026-06-16T14:30:00Z\"\ncustom_field: x\n---\n\n# Title\n";
         assert_eq!(out, expected);
     }
 

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::commands::{maybe_sync, split_csv};
+use crate::commands::{maybe_sync, split_csv, touch};
 use crate::doc::Doc;
 use crate::error::{usage, Result};
 use crate::frontmatter::Frontmatter;
@@ -9,9 +9,11 @@ use crate::project_config::{DocType, SectionKind};
 use crate::Ctx;
 use crate::{refs, rules};
 
+/// Build, validate, and write a new document; returns the created [`Doc`]. Does
+/// not print or sync — the shared core for the CLI wrapper and the TUI.
 #[allow(clippy::too_many_arguments)]
-pub fn run(
-    ctx: &Ctx,
+pub fn core(
+    prj: &Project,
     type_name: &str,
     title: &str,
     tags: &str,
@@ -19,8 +21,7 @@ pub fn run(
     features: &str,
     reason: Option<&str>,
     fields: &[String],
-) -> Result<()> {
-    let prj = Project::open(&ctx.root)?;
+) -> Result<Doc> {
     let pcfg = &prj.pcfg;
     let t = pcfg.types.get(type_name).ok_or_else(|| {
         let mut names: Vec<&str> = pcfg.types.keys().map(String::as_str).collect();
@@ -85,6 +86,7 @@ pub fn run(
         let (k, v) = project::parse_field(kv)?;
         fm.insert(&k, v);
     }
+    touch(&mut fm);
 
     let body = scaffold_body(title, t);
 
@@ -107,13 +109,31 @@ pub fn run(
         std::fs::create_dir_all(parent)?;
     }
     let doc = Doc {
-        path: path.clone(),
+        path,
         frontmatter: fm,
         body,
         title: title.to_string(),
     };
-    std::fs::write(&path, doc.to_text())?;
-    println!("{}", path.display());
+    std::fs::write(&doc.path, doc.to_text())?;
+    Ok(doc)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run(
+    ctx: &Ctx,
+    type_name: &str,
+    title: &str,
+    tags: &str,
+    status: &str,
+    features: &str,
+    reason: Option<&str>,
+    fields: &[String],
+) -> Result<()> {
+    let prj = Project::open(&ctx.root)?;
+    let doc = core(
+        &prj, type_name, title, tags, status, features, reason, fields,
+    )?;
+    println!("{}", doc.path.display());
     maybe_sync(ctx, &prj);
     Ok(())
 }

@@ -1793,3 +1793,75 @@ fn verify_enforces_field_pattern_from_opys_config() {
         .unwrap();
     opys(&dir).arg("verify").assert().success();
 }
+
+#[test]
+fn new_stamps_created_and_updated_and_set_status_bumps_updated() {
+    let dir = project();
+    // `OPYS_NOW` pins the clock so the stamped timestamps are deterministic.
+    opys(&dir)
+        .env("OPYS_NOW", "2026-06-16T14:30:00Z")
+        .args(["new", "--title", "First", "--tags", "a"])
+        .assert()
+        .success();
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::str::contains(
+            "created: \"2026-06-16T14:30:00Z\"",
+        ))
+        .assert(predicate::str::contains(
+            "updated: \"2026-06-16T14:30:00Z\"",
+        ));
+
+    // A later status change refreshes `updated` but leaves `created` untouched.
+    opys(&dir)
+        .env("OPYS_NOW", "2026-07-01T09:00:00Z")
+        .args(["set-status", "FEAT-0001", "partial"])
+        .assert()
+        .success();
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::str::contains(
+            "created: \"2026-06-16T14:30:00Z\"",
+        ))
+        .assert(predicate::str::contains(
+            "updated: \"2026-07-01T09:00:00Z\"",
+        ));
+}
+
+#[test]
+fn verify_rejects_malformed_timestamp_but_allows_absent() {
+    let dir = project();
+    // Absent timestamps (docs predating the fields) are allowed.
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# F\n")
+        .unwrap();
+    opys(&dir).arg("verify").assert().success();
+
+    // A malformed `created` is a content problem (exit 1).
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str(
+            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\ncreated: not-a-date\n---\n\n# F\n",
+        )
+        .unwrap();
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "FEAT-0001: 'created' must be an RFC3339 datetime",
+        ));
+}
+
+#[test]
+fn sync_backfills_missing_timestamps_from_mtime() {
+    let dir = project();
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# F\n")
+        .unwrap();
+    opys(&dir).arg("sync").assert().success();
+    // After a sync pass the doc carries both auto-maintained timestamps.
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::str::contains("created:"))
+        .assert(predicate::str::contains("updated:"));
+    // And the backfilled values are valid RFC3339, so verify still passes.
+    opys(&dir).arg("verify").assert().success();
+}

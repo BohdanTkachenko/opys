@@ -139,6 +139,8 @@ may reflow the formatting (not the meaning) of complex values.
 | `id` | yes | `FEAT-NNNN`; must match filename; unique forever |
 | `status` | yes | `planned` \| `partial` \| `implemented` \| `wontfix` (+ configured extras) |
 | `tags` | yes | non-empty list, lowercase kebab-case, open vocabulary |
+| `created` | no | RFC3339 datetime (e.g. `2026-06-16T14:30:00Z`); set once at creation; auto-maintained |
+| `updated` | no | RFC3339 datetime; refreshed on every user-initiated write; auto-maintained |
 | `references` | no | ID→title map of linked work items (and features); auto-maintained |
 | `blocked_by` / `blocks` | no | ID→title maps of the blocker relation; auto-maintained (see Blockers) |
 | `wontfix_reason` | iff wontfix | one-line ADR for the scope exception |
@@ -167,8 +169,9 @@ in body prose are rewritten into markdown links on sync.
 | `enum` | a string listed in the field's `values` | any string not in `values`, and non-strings |
 
 An `enum` field must declare a non-empty `values` array (verify errors on an
-empty one). Reserved keys (`id`, `status`, `tags`, `references`, `blocked_by`,
-`blocks`) are always allowed; every other key must be declared under the type's
+empty one). Reserved keys (`id`, `status`, `tags`, `created`, `updated`,
+`references`, `blocked_by`, `blocks`) are always allowed; every other key must be
+declared under the type's
 `[types.<name>.fields.*]` or verify rejects it. Richer YAML does not relax
 the declare-or-fail rule.
 
