@@ -29,6 +29,12 @@ path = "src/lib.rs"
 name = "opys"
 path = "src/main.rs"
 
+[features]
+default = []
+# The interactive terminal UI (`opys tui`). Off by default so the standard
+# `cargo install opys` stays lean; build with `--features tui` to include it.
+tui = ["dep:ratatui", "dep:notify-debouncer-full"]
+
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
@@ -40,6 +46,11 @@ walkdir = "2"
 anyhow = "1"
 thiserror = "1"
 time = { version = "0.3", features = ["formatting", "parsing", "local-offset", "macros"] }
+
+# TUI stack (optional, enabled by the `tui` feature). crossterm is used via
+# ratatui's re-export (`ratatui::crossterm`) to avoid version skew.
+ratatui = { version = "0.29", optional = true }
+notify-debouncer-full = { version = "0.3", optional = true }
 
 [dev-dependencies]
 assert_cmd = "2"

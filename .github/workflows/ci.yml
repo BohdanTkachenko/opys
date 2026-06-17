@@ -24,6 +24,12 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test --all
+      # The `tui` feature is off by default, so lint and test it explicitly or
+      # the gated code rots unchecked.
+      - name: Clippy (tui)
+        run: cargo clippy --all-targets --features tui -- -D warnings
+      - name: Test (tui)
+        run: cargo test --all --features tui
 
   msrv:
     name: Build (MSRV 1.88)
@@ -34,3 +40,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --all-targets
+      # Ensure the TUI dependency stack also builds on the MSRV.
+      - name: Build (tui)
+        run: cargo build --all-targets --features tui

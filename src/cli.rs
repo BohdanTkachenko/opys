@@ -170,6 +170,11 @@ pub enum Command {
     #[command(subcommand)]
     Config(ConfigCommand),
 
+    /// Launch the interactive terminal UI: a live board over the inventory that
+    /// updates as documents change on disk.
+    #[cfg(feature = "tui")]
+    Tui,
+
     /// Generate the always-on agent rule file for a rules-based editor
     /// (Cursor/Windsurf/Cline/Copilot/Kiro) from the canonical rule.
     AgentRules {
