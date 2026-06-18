@@ -1,6 +1,6 @@
 {
   "name": "opys",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "File-based feature inventory + work items operated through the opys CLI.",
   "contextFileName": "skills/opys/agent-rule.md"
 }

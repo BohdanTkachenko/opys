@@ -172,7 +172,6 @@ pub enum Command {
 
     /// Launch the interactive terminal UI: a live board over the inventory that
     /// updates as documents change on disk.
-    #[cfg(feature = "tui")]
     Tui {
         /// Project directory to open (where to search upward for opys.toml).
         /// Overrides `--root`; defaults to the current directory.

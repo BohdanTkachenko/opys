@@ -19,7 +19,6 @@ pub mod project_config;
 pub mod refs;
 pub mod rules;
 pub mod templates;
-#[cfg(feature = "tui")]
 pub mod tui;
 
 pub use error::{OpysError, Result};
@@ -149,7 +148,6 @@ pub fn run(cli: Cli) -> Result<i32> {
             commands::agent_rules::run(&ctx, tool, stdout)?;
             Ok(0)
         }
-        #[cfg(feature = "tui")]
         Command::Tui { dir } => {
             // A positional directory overrides the global `--root`.
             let ctx = match dir {

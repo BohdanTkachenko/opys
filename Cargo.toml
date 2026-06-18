@@ -1,6 +1,6 @@
 [package]
 name = "opys"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 rust-version = "1.88"
 description = "File-based feature inventory for human + AI codebases — one markdown file per feature, verified in CI"
@@ -29,12 +29,6 @@ path = "src/lib.rs"
 name = "opys"
 path = "src/main.rs"
 
-[features]
-default = []
-# The interactive terminal UI (`opys tui`). Off by default so the standard
-# `cargo install opys` stays lean; build with `--features tui` to include it.
-tui = ["dep:ratatui", "dep:notify-debouncer-full"]
-
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
@@ -47,10 +41,10 @@ anyhow = "1"
 thiserror = "1"
 time = { version = "0.3", features = ["formatting", "parsing", "local-offset", "macros"] }
 
-# TUI stack (optional, enabled by the `tui` feature). crossterm is used via
-# ratatui's re-export (`ratatui::crossterm`) to avoid version skew.
-ratatui = { version = "0.29", optional = true }
-notify-debouncer-full = { version = "0.3", optional = true }
+# TUI stack (powers `opys tui`). crossterm is used via ratatui's re-export
+# (`ratatui::crossterm`) to avoid version skew.
+ratatui = "0.29"
+notify-debouncer-full = "0.3"
 
 [dev-dependencies]
 assert_cmd = "2"
