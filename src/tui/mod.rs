@@ -81,7 +81,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
-    const CONFIG: &str = "pad = 4\n[tests]\nreference_check = \"none\"\n\
+    const CONFIG: &str = "pad = 4\n\
 [types.feature]\nprefix = \"FEAT\"\nstatuses = [\"planned\"]\n\
 default_status = \"planned\"\ntags_required = false\n";
 

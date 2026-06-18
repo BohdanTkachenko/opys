@@ -139,12 +139,12 @@ pub fn run(
 }
 
 /// Scaffold the body: the title heading plus each declared section, seeded per
-/// kind (a checklist/test-plan gets a starter item; others just the heading).
+/// kind (a checklist gets a starter item; others just the heading).
 pub(crate) fn scaffold_body(title: &str, t: &DocType) -> String {
     let mut body = format!("# {title}\n");
     for sec in t.sections.iter().filter(|s| s.required) {
         body.push_str(&format!("\n## {}\n", sec.heading));
-        if matches!(sec.kind, SectionKind::Checklist | SectionKind::TestPlan) {
+        if matches!(sec.kind, SectionKind::Checklist) {
             body.push_str("- [ ] First item\n");
         }
     }

@@ -1,4 +1,5 @@
-//! Parsing of the markdown body: title, `## Test plan`, `## Manual verification`.
+//! Parsing of the markdown body: title, sections, checklist items, and
+//! `## Manual verification` items.
 
 use std::sync::LazyLock;
 
@@ -58,11 +59,6 @@ pub fn checklist_items(body: &str, header: &str) -> Vec<ChecklistItem> {
     out
 }
 
-/// Top-level checkbox items under `## Test plan`.
-pub fn test_plan_items(body: &str) -> Vec<ChecklistItem> {
-    checklist_items(body, "Test plan")
-}
-
 /// Whether the body contains a `## <header>` section heading.
 pub fn has_section(body: &str, header: &str) -> bool {
     Regex::new(&format!(r"(?m)^## {}\s*$", regex::escape(header)))
@@ -70,12 +66,14 @@ pub fn has_section(body: &str, header: &str) -> bool {
         .is_match(body)
 }
 
-/// Backticked test references on a test-plan or manual-verification line.
+/// Backticked test references on a manual-verification line, used only for the
+/// manual-coverage signal (`opys stats` flags items with no automated backing).
+/// Section content checks own their own ref shape via their `pattern`.
 ///
 /// Only spans shaped like a reference — containing the `::` module/path
 /// separator (`mod::test_name`, `path/to/file.rs::test_name`) — are returned.
 /// Inline code spans used in the item's *prose* (shell snippets, literals,
-/// escape sequences) are deliberately ignored, so a checked item can explain
+/// escape sequences) are deliberately ignored, so an item can explain
 /// itself with backticked code without that code being mistaken for a ref.
 pub fn test_refs(line: &str) -> Vec<String> {
     TEST_REF_RE
@@ -160,7 +158,7 @@ mod tests {
 
     #[test]
     fn parses_test_plan() {
-        let items = test_plan_items(BODY);
+        let items = checklist_items(BODY, "Test plan");
         assert_eq!(items.len(), 2);
         assert!(items[0].checked);
         assert!(!items[1].checked);

@@ -22,7 +22,8 @@ per-status `status_dirs` (the `{type}`/`{status}` segments of the configurable
 its own `statuses`
 (plus `default_status` / `terminal_statuses`), `[fields.*]` (custom frontmatter
 fields, with optional regex `pattern`), and required `sections` (each a
-code-backed *kind*: prose/log/checklist/test-plan/manual), plus a list of
+code-backed *kind*: prose/log/checklist/manual, with optional config-driven
+`checks`), plus a list of
 conditional `[[rules]]` (`when {type?, status?}` + one assertion). **A document's
 type is its id prefix.** There is no hardcoded type set: the default config ships
 a permanent `feature` type plus ephemeral `task`/`bug`/`chore` types (deleted on
@@ -151,15 +152,19 @@ All status/section/link guards are *config*, enforced by one engine
   checked `## Test plan` item; any `blocked`⇒a reason or blocker link) are
   `[[rules]]`, enforced at write time and by `verify`. "Removed from the product"
   is just a status (e.g. `archived`), never a deletion.
-- **Test references**: a backtick span is a test reference only when it contains
-  `::` (`` `mod::test_name` ``); prose code spans are ignored (`body::is_test_ref`).
-  Referenced tests must resolve — `verify`'s `TestIndex` does this from the
-  `[tests]` config (`reference_check` = `grep` / `extract` / `none`) for every
-  section of kind `test-plan`.
+- **Section checks** (`[[types.X.sections.checks]]`): a universal, config-driven
+  validation attachable to any section. A `pattern` regex parses each line into
+  named capture groups; an optional `file` group (a path that must exist under
+  `roots`) and/or `must_match` regex (built from `${group}` substitutions, matched
+  in that file or the corpus) assert the parsed reference resolves. `scope`
+  (`all`/`checked`) selects the lines. The default config reproduces the old
+  test-plan grep with one such check on the `Test plan` `checklist`; the engine is
+  `run_check` in `commands/verify.rs`. (There is no longer a `test-plan` kind or a
+  `[tests]` block.)
 - **Sections**: a type's `sections` each declare a `kind` (prose/log/checklist/
-  test-plan/manual) and `required`. `verify` checks a required section is present,
-  runs the test-ref check on `test-plan` sections and the Setup/Steps/Expect shape
-  on `manual` sections (keyed by heading), and `new` scaffolds the required ones.
+  manual), optional `checks`, and `required`. `verify` checks a required section is
+  present, runs each section's `checks`, and applies the Setup/Steps/Expect shape
+  on `manual` sections (keyed by heading); `new` scaffolds the required ones.
 - **Frontmatter is closed**: only the reserved keys (`id`/`status`/`tags` +
   `references`/`blocked_by`/`blocks`) plus the doc type's declared `[fields.*]`
   are allowed; unknown keys fail `verify`. Declared fields are type-checked

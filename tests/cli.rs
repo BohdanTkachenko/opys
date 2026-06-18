@@ -5,11 +5,13 @@ use assert_fs::prelude::*;
 use assert_fs::TempDir;
 use predicates::prelude::*;
 
-/// Build an `opys.toml` with the standard `feature` type (dir `features/`),
-/// splicing in `[tests]`/`[report]` blocks and extra `[fields.*]` tables.
-fn opys_cfg(tests: &str, report: &str, fields: &str) -> String {
+/// Build an `opys.toml` with the standard `feature` type (dir `features/`). The
+/// `Test plan` section is a `checklist` carrying a grep-style check (a checked
+/// item must end in a `mod::name` ref whose name is found under `src`/`tests`).
+/// Extra `[fields.*]` tables are spliced in via `fields`.
+fn opys_cfg(fields: &str) -> String {
     format!(
-        "pad = 4\n{tests}{report}\n\
+        "pad = 4\n\
 [types.feature]\n\
 prefix = \"FEAT\"\n\
 dir = \"features\"\n\
@@ -19,28 +21,28 @@ tags_required = true\n\
 [types.feature.fields.spec]\ntype = \"string\"\n\
 [types.feature.fields.wontfix_reason]\ntype = \"string\"\n\
 {fields}\
-[[types.feature.sections]]\nheading = \"Test plan\"\nkind = \"test-plan\"\n\
+[[types.feature.sections]]\nheading = \"Test plan\"\nkind = \"checklist\"\n\
+[[types.feature.sections.checks]]\n\
+pattern = '`(?P<ref>[^`]*::(?P<name>[^`]+))`'\n\
+roots = [\"src\", \"tests\"]\n\
+must_match = '${{name}}'\n\
+scope = \"checked\"\n\
+message = \"test reference `${{ref}}` not found\"\n\
 [[types.feature.sections]]\nheading = \"Manual verification\"\nkind = \"manual\"\n\
 [[rules]]\nwhen = {{ type = \"feature\", status = \"wontfix\" }}\nrequire_field = \"wontfix_reason\"\n\
 [[rules]]\nwhen = {{ type = \"feature\", status = \"implemented\" }}\nrequire_checked_section = \"Test plan\"\n"
     )
 }
 
-/// The default feature-only config (no test-ref checking, plus the `ptyxis_ref`
-/// custom field used across tests).
+/// The default feature-only config (plus the `ptyxis_ref` custom field used
+/// across tests).
 fn default_cfg() -> String {
-    opys_cfg(
-        "[tests]\nreference_check = \"none\"\n",
-        "",
-        "[types.feature.fields.ptyxis_ref]\ntype = \"string\"\n",
-    )
+    opys_cfg("[types.feature.fields.ptyxis_ref]\ntype = \"string\"\n")
 }
 
 /// Feature config with `enum`/`list` custom fields, for the enum/filter tests.
 fn enum_cfg() -> String {
     opys_cfg(
-        "[tests]\nreference_check = \"none\"\n",
-        "",
         "[types.feature.fields.priority]\ntype = \"enum\"\nvalues = [\"low\", \"high\"]\n\
 [types.feature.fields.area]\ntype = \"list\"\n",
     )
@@ -190,7 +192,7 @@ fn new_writes_doc_and_no_index() {
 fn flat_layout_is_the_default() {
     // With no `dir`/`status_dirs`/`[layout]`, documents live flat at the base.
     let dir = project_with(
-        "pad = 4\n[tests]\nreference_check = \"none\"\n\
+        "pad = 4\n\
 [types.feature]\nprefix = \"FEAT\"\nstatuses = [\"planned\"]\n\
 default_status = \"planned\"\ntags_required = true\n",
     );
@@ -475,11 +477,7 @@ fn verify_checks_manual_item_shape() {
 
 #[test]
 fn verify_ignores_prose_code_span_on_checked_item() {
-    let dir = project_with(&opys_cfg(
-        "[tests]\nsearch_paths = [\"src\"]\nreference_check = \"grep\"\n",
-        "",
-        "",
-    ));
+    let dir = project_with(&opys_cfg(""));
     dir.child("src/lib.rs")
         .write_str("fn sftp_uri_rewrites_to_ssh() {}\n")
         .unwrap();
@@ -573,13 +571,10 @@ fn import_is_transactional_on_bad_record() {
 }
 
 #[test]
-fn verify_extract_mode_resolves_real_tests() {
-    let config = opys_cfg(
-        "[tests]\nsearch_paths = [\"src\"]\nreference_check = \"extract\"\nname_pattern = \"fn\\\\s+(\\\\w+)\\\\s*\\\\(\"\n",
-        "",
-        "",
-    );
-    let dir = project_with(&config);
+fn verify_corpus_grep_check_resolves_test_refs() {
+    // The default `Test plan` check greps the test name (the part after the
+    // last `::`) under src/tests; a real name passes, a bogus one fails.
+    let dir = project_with(&opys_cfg(""));
     dir.child("src/lib.rs")
         .write_str("fn real_test() {}\nfn another() {}\n")
         .unwrap();
@@ -600,12 +595,111 @@ fn verify_extract_mode_resolves_real_tests() {
         ));
 }
 
+/// A feature config (modeled on the real FEAT-0207) with a `Code Pointers`
+/// prose section validated by a `file`+`must_match` `scope = "all"` check, next
+/// to the default `Test plan` corpus-grep check (with a multi-`::` ref).
+const CODE_POINTERS_CFG: &str = r#"pad = 4
+[types.feature]
+prefix = "FEAT"
+dir = "features"
+statuses = ["planned", "implemented"]
+default_status = "planned"
+tags_required = true
+
+[[types.feature.sections]]
+heading = "Code Pointers"
+kind = "prose"
+[[types.feature.sections.checks]]
+pattern = '`(?P<file>[^`]+\.rs)` — `(?P<sym>[^`]+)`'
+file = "file"
+roots = ["src"]
+must_match = '${sym}'
+scope = "all"
+message = "`${sym}` not found in `${file}`"
+
+[[types.feature.sections]]
+heading = "Test plan"
+kind = "checklist"
+[[types.feature.sections.checks]]
+pattern = '`(?P<ref>[^`]*::(?P<name>[^`]+))`'
+roots = ["src", "tests"]
+must_match = '${name}'
+scope = "checked"
+message = "test reference `${ref}` not found"
+"#;
+
+#[test]
+fn verify_code_pointers_file_and_symbol_check() {
+    let dir = project_with(CODE_POINTERS_CFG);
+    dir.child("src/preferences/appearance.rs")
+        .write_str("fn cursor_group() {}\nfn appearance_page() {}\n")
+        .unwrap();
+    // The multi-`::` test ref resolves to the last segment, found under tests/.
+    dir.child("tests/e2e.rs")
+        .write_str("fn ocr_cursor_group_exposes_shape_and_blink_combos() {}\n")
+        .unwrap();
+
+    // A doc whose Code Pointers line points at a real (file, symbol) pair, and
+    // whose checked Test plan item carries a resolvable multi-`::` ref, passes.
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str(concat!(
+            "---\nid: FEAT-0001\nstatus: implemented\ntags: [a]\n---\n\n",
+            "# Cursor group\n\n",
+            "## Code Pointers\n",
+            "- `preferences/appearance.rs` — `cursor_group`: builds the group\n\n",
+            "## Test plan\n",
+            "- [x] exposes combos — `e2e::preferences::ocr::ocr_cursor_group_exposes_shape_and_blink_combos`\n",
+        ))
+        .unwrap();
+    opys(&dir).arg("verify").assert().success();
+
+    // A wrong symbol fails with the check's custom message.
+    dir.child("opys/features/FEAT-0002.md")
+        .write_str(concat!(
+            "---\nid: FEAT-0002\nstatus: planned\ntags: [a]\n---\n\n",
+            "# Bad symbol\n\n",
+            "## Code Pointers\n",
+            "- `preferences/appearance.rs` — `nonexistent_fn`: nope\n",
+        ))
+        .unwrap();
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "`nonexistent_fn` not found in `preferences/appearance.rs`",
+        ));
+}
+
+#[test]
+fn verify_code_pointers_missing_file_fails() {
+    let dir = project_with(CODE_POINTERS_CFG);
+    dir.child("src/preferences/appearance.rs")
+        .write_str("fn cursor_group() {}\n")
+        .unwrap();
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str(concat!(
+            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n",
+            "# Missing file\n\n",
+            "## Code Pointers\n",
+            "- `preferences/missing.rs` — `cursor_group`: points nowhere\n",
+        ))
+        .unwrap();
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "file 'preferences/missing.rs' not found",
+        ));
+}
+
 /// A config whose `feature` type sends `archived` docs to a `_archived/`
 /// segment. `layout` is the `[layout]` table body (empty for the flat default);
 /// `feature_extra` adds lines to the `[types.feature]` table (e.g. a `dir`).
 fn archived_cfg(layout: &str, feature_extra: &str) -> String {
     format!(
-        "pad = 4\n{layout}[tests]\nreference_check = \"none\"\n\
+        "pad = 4\n{layout}\
 [types.feature]\nprefix = \"FEAT\"\n{feature_extra}\
 statuses = [\"planned\", \"archived\"]\ndefault_status = \"planned\"\n\
 tags_required = true\nstatus_dirs = {{ archived = \"_archived\" }}\n\
@@ -1160,11 +1254,7 @@ fn enum_field_validates_against_declared_values() {
 
 #[test]
 fn enum_field_requires_declared_values() {
-    let dir = project_with(&opys_cfg(
-        "[tests]\nreference_check = \"none\"\n",
-        "",
-        "[types.feature.fields.bad]\ntype = \"enum\"\n",
-    ));
+    let dir = project_with(&opys_cfg("[types.feature.fields.bad]\ntype = \"enum\"\n"));
     opys(&dir)
         .arg("verify")
         .assert()
@@ -1670,7 +1760,9 @@ fn config_init_generates_opys_toml() {
     dir.child("opys.toml")
         .assert(predicate::str::contains("[types.feature]"))
         .assert(predicate::str::contains("prefix = \"FEAT\""))
-        .assert(predicate::str::contains("kind = \"test-plan\""))
+        .assert(predicate::str::contains(
+            "[[types.feature.sections.checks]]",
+        ))
         .assert(predicate::str::contains("[[rules]]"));
 
     // Re-running refuses to overwrite.

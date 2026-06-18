@@ -83,12 +83,14 @@ its ID prefix.
 
 1. Run `opys init`, then edit `opys.toml`: declare your document
    `[types.<name>]` (prefix, statuses, `[fields.*]`, `[[sections]]`, and
-   `[[rules]]`), and set `[tests]` (`search_paths`, `reference_check`). Unknown
-   frontmatter fields fail verify until declared on the type — this keeps the
-   schema honest. To validate that test references point at real tests, set
-   `reference_check = "extract"`
-   plus a `name_pattern` regex; otherwise the default `"grep"` substring check
-   applies. `opys config validate` checks the config is well-formed.
+   `[[rules]]`). Unknown frontmatter fields fail verify until declared on the
+   type — this keeps the schema honest. To validate that a section's references
+   point at something real (e.g. a test plan's `mod::name` refs, or a
+   `` `file` — `symbol` `` code-pointer line), attach a
+   `[[types.<name>.sections.checks]]` — a `pattern` parsing each line into named
+   groups plus a `file` and/or `must_match` resolving them against `roots`. The
+   default config ships one on the feature `Test plan`. `opys config validate`
+   checks the config is well-formed.
 2. Add the printed snippet to the project's CLAUDE.md.
 3. Add `opys verify` (and optionally a `sync` freshness diff) to CI.
 4. If migrating an existing feature list: at small scale, convert each entry
@@ -105,11 +107,11 @@ its ID prefix.
 1. Locate the feature (`opys list` / `rg` by tag or status), read its file fully.
 2. Implement. Add tests.
 3. In the test plan, check the covered items and append backticked test
-   references — `module::test_name`, or `path/to/file::test_name` when the
-   project uses `extract` mode. A case may be covered by several tests (list
-   several refs), and one test may cover several cases. If the enumeration of
-   cases looks incomplete versus the spec prose, raise it — do not silently
-   implement only the listed cases.
+   references in the shape the section's check expects — by default
+   `module::test_name` (or `path/to/file::test_name`). A case may be covered by
+   several tests (list several refs), and one test may cover several cases. If the
+   enumeration of cases looks incomplete versus the spec prose, raise it — do not
+   silently implement only the listed cases.
 4. `opys set-status ID implemented` (the CLI rejects this if no checked
    test item exists), then `opys verify`.
 

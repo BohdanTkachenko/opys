@@ -40,12 +40,6 @@ pad = 4                              # zero-padding width for the numeric id par
 [layout]
 path = "{type}/{status}/{id}.md"
 
-# Test-reference resolution, used by sections of kind "test-plan".
-[tests]
-search_paths = ["src", "tests"]
-reference_check = "grep"             # "grep" | "extract" | "none"
-# name_pattern = "fn\\s+(\\w+)\\s*\\("   # required when reference_check = "extract"
-
 # ---------------------------------- feature ----------------------------------
 # Permanent description of product behavior. A feature removed from the product
 # becomes status "archived" (kept in the inventory), never deleted.
@@ -70,7 +64,16 @@ type = "string"
 
 [[types.feature.sections]]
 heading = "Test plan"
-kind = "test-plan"                   # checked items carry resolvable test refs
+kind = "checklist"                   # structure: checkbox items
+
+# Each checked item must carry a resolvable test reference. `pattern` parses a
+# `mod::name` backtick span; `must_match` greps the test name under `roots`.
+[[types.feature.sections.checks]]
+pattern = '`(?P<ref>[^`]*::(?P<name>[^`]+))`'
+roots = ["src", "tests"]
+must_match = '${name}'               # ${group} = the regex-escaped capture
+scope = "checked"                    # "all" (every line) | "checked" (checked items)
+message = "test reference `${ref}` not found"
 
 [[types.feature.sections]]
 heading = "Manual verification"

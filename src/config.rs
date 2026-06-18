@@ -1,21 +1,7 @@
-//! Shared field-spec and test-reference-check types used by the universal
-//! config (`opys.toml`). See [`crate::project_config`] for the engine config.
+//! Shared field-spec types used by the universal config (`opys.toml`). See
+//! [`crate::project_config`] for the engine config.
 
 use serde::Deserialize;
-
-/// How `verify` checks that a referenced test exists (the `[tests]` mode).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TestRefCheck {
-    /// Every test reference must appear as a substring under the search paths.
-    #[default]
-    Grep,
-    /// Extract real test names with `name_pattern` and resolve each reference
-    /// against that set (and, for `path::name` refs, the named file).
-    Extract,
-    /// Skip test-reference existence checking.
-    None,
-}
 
 /// Declared type of a custom frontmatter field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]

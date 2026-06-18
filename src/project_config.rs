@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use regex::Regex;
 use serde::Deserialize;
 
-use crate::config::{FieldSpec, FieldType, TestRefCheck};
+use crate::config::{FieldSpec, FieldType};
 use crate::error::{usage, OpysError, Result};
 use crate::palette::{parse_color, PaletteEntry};
 use crate::refs;
@@ -24,8 +24,8 @@ fn default_pad() -> usize {
 fn default_base() -> String {
     DEFAULT_BASE.to_string()
 }
-fn default_search_paths() -> Vec<String> {
-    vec!["src".to_string(), "tests".to_string()]
+fn default_roots() -> Vec<String> {
+    vec![".".to_string()]
 }
 fn default_min() -> usize {
     1
@@ -94,15 +94,57 @@ pub enum SectionKind {
     Prose,
     Log,
     Checklist,
-    TestPlan,
     Manual,
 }
 
 impl SectionKind {
     /// Whether "≥1 checked item" is meaningful for this kind.
     pub fn is_checkable(self) -> bool {
-        matches!(self, SectionKind::Checklist | SectionKind::TestPlan)
+        matches!(self, SectionKind::Checklist)
     }
+}
+
+/// Which lines of a section a [`SectionCheck`] validates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckScope {
+    /// Every line in the section; lines not matching `pattern` are skipped.
+    #[default]
+    All,
+    /// Only checked checklist items; a checked item with no `pattern` match is
+    /// itself an error.
+    Checked,
+}
+
+/// A universal, config-driven content check attached to a section. `pattern`
+/// parses a line into named capture groups; `file` (a group name) and/or
+/// `must_match` (a regex built from `${group}` substitutions) then assert the
+/// captured reference points at something real.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SectionCheck {
+    /// Regex parsing one line into named groups. A line that does not match is
+    /// prose (skipped); a match is validated.
+    pub pattern: String,
+    /// Optional capture-group name holding a file path to open (resolved against
+    /// `roots`). Its presence is what makes the check file-scoped vs corpus-wide.
+    #[serde(default)]
+    pub file: Option<String>,
+    /// Directories the `file` path / corpus resolve against (project-root
+    /// relative). Defaults to `["."]`.
+    #[serde(default = "default_roots")]
+    pub roots: Vec<String>,
+    /// Optional regex that must match in the opened file (or, when `file` is
+    /// unset, in the concatenated corpus under `roots`). `${group}` is replaced
+    /// by the regex-escaped capture from `pattern`.
+    #[serde(default)]
+    pub must_match: Option<String>,
+    /// Which lines to validate. Defaults to `all`.
+    #[serde(default)]
+    pub scope: CheckScope,
+    /// Optional custom failure message; `${group}` is replaced by the raw
+    /// capture from `pattern`.
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -112,6 +154,9 @@ pub struct SectionSpec {
     /// Whether the section must be present (verify enforces it; `new` scaffolds it).
     #[serde(default)]
     pub required: bool,
+    /// Universal content checks run over this section at `verify` time.
+    #[serde(default)]
+    pub checks: Vec<SectionCheck>,
 }
 
 /// `requires_link = { to = "feature", min = 1 }` — a type must reference ≥`min`
@@ -226,16 +271,6 @@ impl Rule {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct TestsConfig {
-    #[serde(default = "default_search_paths")]
-    pub search_paths: Vec<String>,
-    #[serde(default)]
-    pub reference_check: TestRefCheck,
-    #[serde(default)]
-    pub name_pattern: Option<String>,
-}
-
 /// Built-in column keys for the TUI list (everything else is a custom field).
 pub const BUILTIN_COLUMNS: [&str; 7] = [
     "id", "type", "title", "status", "tags", "created", "updated",
@@ -276,8 +311,6 @@ pub struct ProjectConfig {
     pub pad: usize,
     #[serde(default)]
     pub layout: Layout,
-    #[serde(default)]
-    pub tests: TestsConfig,
     #[serde(default)]
     pub types: BTreeMap<String, DocType>,
     #[serde(default)]
@@ -446,17 +479,9 @@ impl ProjectConfig {
                         sec.heading
                     ));
                 }
-            }
-        }
-
-        if self.tests.reference_check == TestRefCheck::Extract {
-            match &self.tests.name_pattern {
-                None => errs
-                    .push("tests.reference_check = \"extract\" requires tests.name_pattern".into()),
-                Some(p) if Regex::new(p).is_err() => {
-                    errs.push("tests.name_pattern is not a valid regex".into())
+                for (ci, chk) in sec.checks.iter().enumerate() {
+                    validate_check(name, &sec.heading, sec.kind, ci + 1, chk, &mut errs);
                 }
-                _ => {}
             }
         }
 
@@ -640,6 +665,69 @@ impl ProjectConfig {
                 }
             }
         }
+    }
+}
+
+/// Validate one [`SectionCheck`]: its `pattern` compiles, `file` / every
+/// `${group}` reference name real capture groups, at least one of `file` /
+/// `must_match` is set, `must_match` compiles, and `scope = "checked"` only
+/// targets a checklist section.
+fn validate_check(
+    type_name: &str,
+    heading: &str,
+    kind: SectionKind,
+    n: usize,
+    chk: &SectionCheck,
+    errs: &mut Vec<String>,
+) {
+    let tag = format!("type '{type_name}' section '{heading}' check #{n}");
+    let names: HashSet<String> = match Regex::new(&chk.pattern) {
+        Ok(re) => re
+            .capture_names()
+            .flatten()
+            .map(|s| s.to_string())
+            .collect(),
+        Err(_) => {
+            errs.push(format!("{tag}: pattern is not a valid regex"));
+            return;
+        }
+    };
+
+    if let Some(f) = &chk.file {
+        if !names.contains(f) {
+            errs.push(format!(
+                "{tag}: file '{f}' is not a named capture group of pattern"
+            ));
+        }
+    }
+    if chk.file.is_none() && chk.must_match.is_none() {
+        errs.push(format!("{tag}: needs at least one of file / must_match"));
+    }
+
+    let group_re = Regex::new(r"\$\{(\w+)\}").unwrap();
+    for tmpl in [chk.must_match.as_deref(), chk.message.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        for c in group_re.captures_iter(tmpl) {
+            let g = &c[1];
+            if !names.contains(g) {
+                errs.push(format!(
+                    "{tag}: ${{{g}}} is not a named capture group of pattern"
+                ));
+            }
+        }
+    }
+    if let Some(mm) = &chk.must_match {
+        let probe = group_re.replace_all(mm, "x");
+        if Regex::new(&probe).is_err() {
+            errs.push(format!("{tag}: must_match is not a valid regex"));
+        }
+    }
+    if chk.scope == CheckScope::Checked && !kind.is_checkable() {
+        errs.push(format!(
+            "{tag}: scope = \"checked\" requires a checklist section"
+        ));
     }
 }
 
