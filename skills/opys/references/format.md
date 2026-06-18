@@ -45,11 +45,6 @@ pad = 4                              # zero-padding width for the numeric id par
 # [layout]                           # on-disk path template (relative to base)
 # path = "{type}/{status}/{id}.md"   # default; {type}/{status} empty → flat
 
-[tests]                              # test-reference resolution (test-plan sections)
-search_paths = ["src", "tests"]
-reference_check = "grep"             # "grep" | "extract" | "none"
-# name_pattern = "fn\\s+(\\w+)\\s*\\("   # required for "extract"
-
 [types.feature]                      # one [types.<name>] block per document type
 prefix = "FEAT"                      # ^[A-Z][A-Z0-9]*$, unique across types
 # dir = "features"                   # the {type} layout segment; default empty (flat)
@@ -67,8 +62,15 @@ values = ["low", "high"]             # an enum constrains the value
 
 [[types.feature.sections]]           # required/known body sections, by kind
 heading = "Test plan"
-kind = "test-plan"                   # prose | log | checklist | test-plan | manual
+kind = "checklist"                   # prose | log | checklist | manual
 # required = true
+
+[[types.feature.sections.checks]]    # universal content checks (see below)
+pattern = '`(?P<ref>[^`]*::(?P<name>[^`]+))`'   # parse a line → named groups
+roots = ["src", "tests"]             # file / corpus resolved against these (default ["."])
+must_match = '${name}'               # regex; ${group} = the regex-escaped capture
+scope = "checked"                    # "all" (every line) | "checked" (checked items)
+message = "test reference `${ref}` not found"   # optional custom failure message
 
 [[rules]]                            # conditional guards: a `when` + one assertion
 when = { type = "feature", status = "implemented" }
@@ -141,6 +143,9 @@ ptyxis_ref: src/ptyxis-tab.c, set_title handler
 
 Optional spec prose. One sentence for most features; full behavioral
 description, edge cases, and divergence notes where warranted.
+
+## Code Pointers
+- `src/ptyxis-tab.c` — `set_title`: applies the parsed OSC title to the tab
 
 ## Test plan
 - [x] OSC 2 with valid UTF-8 updates title — `tab::osc_title_updates`
@@ -268,16 +273,16 @@ there.
 
 - A test-plan item is a *behavioral case*, not a single test. `[x]` means "at
   least one automated test covers this case" — plan-state, not run-results.
-- Every checked item ends with ≥1 backticked test reference; verify confirms
-  each exists (see below). A case may list **several** refs (covered by several
-  tests), and one test may legitimately be referenced by several cases.
-- Reference format: `module::test_name`, or `path/to/file::test_name` when the
-  project uses `extract` mode and you want to pin the test to its file.
-- **Only backtick spans containing `::` are parsed as references.** A checked
-  item may therefore carry other inline code in its *prose* — a shell snippet,
-  an escape sequence, a literal argument — without it being mistaken for a test
-  reference. (`` `ssh -t … exec $SHELL` `` is prose; `` `app.rs::sftp_rewrite` ``
-  is the reference.)
+- The structure is just a `checklist` section; a [section check](#section-checks)
+  (below) is what makes a checked item carry a resolvable reference. The default
+  config attaches one whose `pattern` parses a `` `module::test_name` `` span and
+  whose `must_match` greps the test name under `src`/`tests`. A case may list
+  **several** refs, and one test may be referenced by several cases.
+- Because the ref shape is the check's `pattern` (here, backtick spans containing
+  `::`), a checked item may carry other inline code in its *prose* — a shell
+  snippet, an escape sequence, a literal argument — without it being mistaken for
+  a reference. (`` `ssh -t … exec $SHELL` `` is prose; `` `app.rs::sftp_rewrite` ``
+  matches the pattern.)
 - Unit vs e2e is not a structural boundary — annotate informally, e.g.
   `(waydriver)`.
 - Items are permanent. Once covered, shorten — never delete. The enumeration
@@ -285,26 +290,48 @@ there.
   only gaps cannot be reviewed, and it is how you catch an implementation
   that covered three of seven edge cases.
 
-### How references are validated (`test_reference_check`)
+## Section checks
 
-- `"grep"` (default): the test name (the part after the last `::`) must appear
-  as a substring somewhere under `test_search_paths`. Language-agnostic but
-  **unsound** — it matches any occurrence, so a comment, a string literal, or
-  another test's body that happens to contain the name passes. Use it only
-  before `extract` is set up; prefer `extract` once tests exist.
-- `"extract"`: `test_name_pattern` (a regex with one capture group) extracts
-  the real test names from every file under `test_search_paths`, so a reference
-  resolves against a *defined test*, not any substring. The strongest option.
-  How a reference's prefix is classified:
-  - **Module ref** — the prefix has no `/` or `.` (e.g. `window::grid_px`):
-    `name` need only appear among the extracted names anywhere under the search
-    paths.
-  - **Path ref** — the prefix contains `/` or `.` (e.g. `window.rs::grid_px` or
-    `src/window.rs::grid_px`): the file is resolved relative to the project
-    root *and* to each `test_search_paths` entry, and `name` must be defined in
-    that file. So a bare `window.rs::name` resolves `src/window.rs` when that is
-    where it lives; write `src/window.rs::name` to pin the file unambiguously.
-- `"none"`: skip existence checking (e.g. before any tests exist).
+Any section of any type may carry a list of `[[types.<name>.sections.checks]]`
+— a **universal, config-driven content check** run at `verify` time. Each check
+declares a `pattern` regex that parses one body line into **named capture
+groups**, then asserts those captures point at something real via `file` and/or
+`must_match`:
+
+```toml
+[[types.feature.sections.checks]]
+pattern    = '`(?P<file>[^`]+\.rs)` — `(?P<sym>[^`]+)`'   # parse → named groups
+file       = "file"                  # capture group naming a file to open
+roots      = ["src"]                 # resolve file / corpus against these (default ["."])
+must_match = '${sym}'                # regex; ${group} = the regex-escaped capture
+scope      = "all"                   # "all" (every line) | "checked" (checked items)
+message    = "`${sym}` not found in `${file}`"   # optional custom failure message
+```
+
+- **`scope = "all"`** (default): every line of the section is scanned; lines not
+  matching `pattern` are skipped as prose. Each match is validated.
+- **`scope = "checked"`**: only checked checklist items are scanned, and a checked
+  item with **zero** `pattern` matches is itself an error (this is how the test
+  plan requires every checked case to carry a reference). Only valid on a
+  `checklist` section.
+- For each match: if `file` is set, the captured path is resolved as
+  `<root>/<capture>` over `roots` (project-root relative) and must exist. If
+  `must_match` is set, its `${group}` placeholders are replaced by the
+  **regex-escaped** captures and the resulting regex must match ≥1 time — in the
+  opened file when `file` is set, otherwise in the concatenated corpus of all
+  files under `roots`.
+- `file` alone is a pure existence pointer; `must_match` alone is a corpus grep;
+  both together pin a symbol to a specific file. At least one must be set.
+- `message` (optional) customizes the failure text for a `must_match` miss;
+  `${group}` is inserted **raw** (a missing `file` always reports
+  `file '<path>' not found`). The example above is the real "Code Pointers"
+  pattern — each `` `file` — `symbol` `` line must name a file that exists and
+  contain that symbol.
+
+The corpus grep is language-agnostic but **unsound** — it matches any occurrence
+(a comment or string literal containing the name passes). For a precise check,
+point `file` at the defining file and make `must_match` a definition pattern
+(e.g. `fn ${name}\b`).
 
 ## Manual verification rules
 

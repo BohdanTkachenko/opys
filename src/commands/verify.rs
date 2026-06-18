@@ -6,12 +6,12 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use walkdir::WalkDir;
 
 use crate::body;
-use crate::config::{FieldSpec, FieldType, TestRefCheck};
+use crate::config::{FieldSpec, FieldType};
 use crate::doc::Doc;
 use crate::error::Result;
 use crate::frontmatter::Frontmatter;
 use crate::project::{id_format_re, Project, KEBAB_RE};
-use crate::project_config::SectionKind;
+use crate::project_config::{CheckScope, SectionCheck, SectionKind};
 use crate::refs;
 use crate::rules;
 use crate::Ctx;
@@ -30,8 +30,10 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
     }
 
     let retired = prj.retired_ids();
-    let index = TestIndex::build(&prj, &mut errors);
     let reserved = reserved_fields();
+    // Corpus for `must_match` checks without a `file`, scanned at most once per
+    // distinct set of `roots`.
+    let mut corpus_cache: HashMap<Vec<String>, String> = HashMap::new();
 
     // The set of ids that a `references` entry may resolve to.
     let doc_ids: HashSet<String> = docs
@@ -107,12 +109,20 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
 
         // Section-kind validators, by the type's section headings.
         for sec in &t.sections {
-            match sec.kind {
-                SectionKind::TestPlan => {
-                    check_test_plan(d, id, &sec.heading, &index, &prj, &mut errors)
-                }
-                SectionKind::Manual => check_manual(d, id, &sec.heading, &mut errors),
-                _ => {}
+            if sec.kind == SectionKind::Manual {
+                check_manual(d, id, &sec.heading, &mut errors);
+            }
+            // Universal content checks, run regardless of kind.
+            for chk in &sec.checks {
+                run_check(
+                    d,
+                    id,
+                    &sec.heading,
+                    chk,
+                    &prj,
+                    &mut corpus_cache,
+                    &mut errors,
+                );
             }
         }
     }
@@ -311,34 +321,154 @@ fn check_custom_fields(
     }
 }
 
-/// Structural test-plan check: every *checked* item carries ≥1 resolvable test
-/// reference. (The "implemented ⇒ a checked item" guard is now an engine rule.)
-fn check_test_plan(
+/// Run one universal [`SectionCheck`] over a document's section. `pattern`
+/// parses each line into named groups; `file` (a captured path that must exist
+/// under `roots`) and/or `must_match` (a regex of `${group}` substitutions that
+/// must match in that file, or in the corpus when `file` is unset) then assert
+/// the parsed reference points at something real.
+fn run_check(
     d: &Doc,
     id: &str,
     heading: &str,
-    index: &TestIndex,
+    chk: &SectionCheck,
     prj: &Project,
+    corpus_cache: &mut HashMap<Vec<String>, String>,
     errors: &mut Vec<String>,
 ) {
-    for item in body::checklist_items(&d.body, heading) {
-        if !item.checked {
-            continue;
+    // An invalid pattern is already reported by config validation; skip here.
+    let Ok(pat) = Regex::new(&chk.pattern) else {
+        return;
+    };
+
+    match chk.scope {
+        CheckScope::All => {
+            for line in body::section(&d.body, heading).lines() {
+                for caps in pat.captures_iter(line) {
+                    validate_match(id, heading, chk, &caps, prj, corpus_cache, errors);
+                }
+            }
         }
-        let refs = body::test_refs(&item.line);
-        if refs.is_empty() {
-            errors.push(format!(
-                "{id}: checked test-plan item has no `test reference`: {}",
-                item.line.trim()
-            ));
-            continue;
-        }
-        for r in &refs {
-            if let Some(problem) = index.resolve(r, prj) {
-                errors.push(format!("{id}: {problem}"));
+        CheckScope::Checked => {
+            for item in body::checklist_items(&d.body, heading) {
+                if !item.checked {
+                    continue;
+                }
+                let mut matched = false;
+                for caps in pat.captures_iter(&item.line) {
+                    matched = true;
+                    validate_match(id, heading, chk, &caps, prj, corpus_cache, errors);
+                }
+                if !matched {
+                    errors.push(format!(
+                        "{id}: section '{heading}': checked item has no reference: {}",
+                        item.line.trim()
+                    ));
+                }
             }
         }
     }
+}
+
+/// Validate one `pattern` match against a check's `file` / `must_match` rules,
+/// pushing a problem (the check's `message`, or a default) when it fails.
+fn validate_match(
+    id: &str,
+    heading: &str,
+    chk: &SectionCheck,
+    caps: &regex::Captures,
+    prj: &Project,
+    corpus_cache: &mut HashMap<Vec<String>, String>,
+    errors: &mut Vec<String>,
+) {
+    // The text the `must_match` regex searches: a specific file, or the corpus.
+    // A missing `file` is a failure in its own right (always the default
+    // message — the custom `message` describes the `must_match` assertion).
+    let haystack: Option<String> = match &chk.file {
+        Some(group) => {
+            let rel = caps.name(group).map_or("", |m| m.as_str());
+            match resolve_file(prj, rel, &chk.roots) {
+                Some(text) => Some(text),
+                None => {
+                    errors.push(format!("{id}: section '{heading}': file '{rel}' not found"));
+                    return;
+                }
+            }
+        }
+        None => None,
+    };
+
+    let Some(mm) = &chk.must_match else {
+        return; // `file` existence alone was the whole check.
+    };
+    let Ok(re) = Regex::new(&interp(mm, caps, true)) else {
+        return; // invalid must_match already reported by config validation
+    };
+    let found = match &haystack {
+        Some(text) => re.is_match(text),
+        None => re.is_match(corpus(prj, &chk.roots, corpus_cache)),
+    };
+    if !found {
+        errors.push(match &chk.message {
+            Some(msg) => format!("{id}: {}", interp(msg, caps, false)),
+            None => format!(
+                "{id}: section '{heading}': no match for the check in {:?}",
+                chk.roots
+            ),
+        });
+    }
+}
+
+/// Substitute `${group}` references in `template` with the named captures from
+/// `caps`. When `escape`, each value is `regex::escape`d (for a `must_match`
+/// regex); otherwise it is inserted raw (for a human-readable `message`).
+fn interp(template: &str, caps: &regex::Captures, escape: bool) -> String {
+    static GROUP_RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"\$\{(\w+)\}").unwrap());
+    GROUP_RE
+        .replace_all(template, |c: &regex::Captures| {
+            let val = caps.name(&c[1]).map_or("", |m| m.as_str());
+            if escape {
+                regex::escape(val)
+            } else {
+                val.to_string()
+            }
+        })
+        .into_owned()
+}
+
+/// The concatenated text of every readable file under `roots` (project-root
+/// relative), memoized per `roots` set across the whole verify run.
+fn corpus<'a>(
+    prj: &Project,
+    roots: &[String],
+    cache: &'a mut HashMap<Vec<String>, String>,
+) -> &'a str {
+    cache.entry(roots.to_vec()).or_insert_with(|| {
+        let mut text = String::new();
+        for d in roots {
+            for entry in WalkDir::new(prj.root.join(d))
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
+                if entry.file_type().is_file() {
+                    if let Ok(bytes) = std::fs::read(entry.path()) {
+                        text.push_str(&String::from_utf8_lossy(&bytes));
+                    }
+                }
+            }
+        }
+        text
+    })
+}
+
+/// Resolve a relative file path against each of `roots` (project-root relative);
+/// return the first existing file's text.
+fn resolve_file(prj: &Project, rel: &str, roots: &[String]) -> Option<String> {
+    roots
+        .iter()
+        .map(|root| prj.root.join(root).join(rel))
+        .find(|p| p.is_file())
+        .and_then(|p| std::fs::read_to_string(p).ok())
 }
 
 fn check_manual(d: &Doc, id: &str, heading: &str, errors: &mut Vec<String>) {
@@ -361,131 +491,6 @@ fn check_manual(d: &Doc, id: &str, heading: &str, errors: &mut Vec<String>) {
             errors.push(format!("{id}: manual items must not be checkboxes: {desc}"));
         }
     }
-}
-
-/// How `verify` checks that a referenced test exists.
-enum TestIndex {
-    /// No existence checking.
-    Off,
-    /// Test name must appear as a substring anywhere under `test_search_paths`.
-    Grep(String),
-    /// Test names extracted via the configured regex.
-    Extract { names: HashSet<String>, re: Regex },
-}
-
-impl TestIndex {
-    fn build(prj: &Project, errors: &mut Vec<String>) -> TestIndex {
-        match prj.pcfg.tests.reference_check {
-            TestRefCheck::None => TestIndex::Off,
-            TestRefCheck::Grep => {
-                let mut corpus = String::new();
-                for (_, text) in scan_files(prj) {
-                    corpus.push_str(&text);
-                }
-                TestIndex::Grep(corpus)
-            }
-            TestRefCheck::Extract => {
-                let Some(pat) = &prj.pcfg.tests.name_pattern else {
-                    errors.push(
-                        "config: tests.reference_check = \"extract\" requires tests.name_pattern"
-                            .into(),
-                    );
-                    return TestIndex::Off;
-                };
-                let re = match Regex::new(pat) {
-                    Ok(re) => re,
-                    Err(e) => {
-                        errors.push(format!("config: invalid tests.name_pattern: {e}"));
-                        return TestIndex::Off;
-                    }
-                };
-                let mut names = HashSet::new();
-                for (_, text) in scan_files(prj) {
-                    for c in re.captures_iter(&text) {
-                        if let Some(g) = c.get(1) {
-                            names.insert(g.as_str().to_string());
-                        }
-                    }
-                }
-                TestIndex::Extract { names, re }
-            }
-        }
-    }
-
-    /// Returns a problem message if the reference does not resolve.
-    fn resolve(&self, reference: &str, prj: &Project) -> Option<String> {
-        let (prefix, name) = match reference.rsplit_once("::") {
-            Some((p, n)) => (p, n),
-            None => ("", reference),
-        };
-        match self {
-            TestIndex::Off => None,
-            TestIndex::Grep(corpus) => (!corpus.contains(name)).then(|| {
-                format!(
-                    "test reference `{reference}` not found under {:?}",
-                    prj.pcfg.tests.search_paths
-                )
-            }),
-            TestIndex::Extract { names, re } => {
-                if is_path_ref(prefix) {
-                    match resolve_file(prj, prefix) {
-                        None => Some(format!("test file `{prefix}` not found")),
-                        Some(text) => {
-                            let in_file = re
-                                .captures_iter(&text)
-                                .filter_map(|c| c.get(1))
-                                .any(|g| g.as_str() == name);
-                            (!in_file).then(|| format!("test `{name}` not defined in `{prefix}`"))
-                        }
-                    }
-                } else {
-                    (!names.contains(name)).then(|| {
-                        format!(
-                            "test reference `{reference}` not found under {:?}",
-                            prj.pcfg.tests.search_paths
-                        )
-                    })
-                }
-            }
-        }
-    }
-}
-
-/// All readable files under `test_search_paths`, as (path, contents).
-fn scan_files(prj: &Project) -> Vec<(std::path::PathBuf, String)> {
-    let mut out = Vec::new();
-    for d in &prj.pcfg.tests.search_paths {
-        for entry in WalkDir::new(prj.root.join(d))
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            if entry.file_type().is_file() {
-                if let Ok(bytes) = std::fs::read(entry.path()) {
-                    out.push((
-                        entry.path().to_path_buf(),
-                        String::from_utf8_lossy(&bytes).into_owned(),
-                    ));
-                }
-            }
-        }
-    }
-    out
-}
-
-fn is_path_ref(prefix: &str) -> bool {
-    prefix.contains('/') || prefix.contains('.')
-}
-
-/// Resolve a `path::name` file prefix against the root and the search paths.
-fn resolve_file(prj: &Project, prefix: &str) -> Option<String> {
-    let mut candidates = vec![prj.root.join(prefix)];
-    for d in &prj.pcfg.tests.search_paths {
-        candidates.push(prj.root.join(d).join(prefix));
-    }
-    candidates
-        .into_iter()
-        .find(|p| p.is_file())
-        .and_then(|p| std::fs::read_to_string(p).ok())
 }
 
 fn type_ok(v: &Value, want: FieldType) -> bool {

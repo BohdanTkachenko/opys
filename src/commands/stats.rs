@@ -4,7 +4,7 @@
 use crate::body;
 use crate::doc::Doc;
 use crate::error::Result;
-use crate::project_config::{ProjectConfig, SectionKind};
+use crate::project_config::{CheckScope, ProjectConfig, SectionKind};
 use crate::Ctx;
 
 /// One status row within a type: its name, count, and percent of the type total.
@@ -76,7 +76,11 @@ pub fn compute(pcfg: &ProjectConfig, docs: &[&Doc]) -> StatsReport {
         };
         for sec in &pcfg.types[tname].sections {
             match sec.kind {
-                SectionKind::TestPlan => {
+                // A "validated checklist" (one carrying a scope=checked check) is
+                // the new test plan: unchecked items are uncovered.
+                SectionKind::Checklist
+                    if sec.checks.iter().any(|c| c.scope == CheckScope::Checked) =>
+                {
                     uncovered_testplan += body::checklist_items(&d.body, &sec.heading)
                         .iter()
                         .filter(|i| !i.checked)
