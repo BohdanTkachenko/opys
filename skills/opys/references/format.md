@@ -246,7 +246,9 @@ Mark a dependency between two items (features and/or work items) with
 removes it. The relation is **directional and bidirectional**: the blocked item
 gains a `blocked_by` entry and the blocker gains the inverse `blocks` entry,
 both kept title-fresh and sorted automatically (you do not hand-edit them).
-Either id may be a document of any type.
+Either id may be a document of any type. The blocked side accepts a comma-
+separated list (`opys block FEAT-1,FEAT-2 --by FEAT-9`), or `-` to read the list
+from stdin, to point several documents at one blocker in a single command.
 
 Blocking a document whose type has a `blocked` status auto-sets it — the blocker
 link itself serves as the `blocked_reason`, so none is required; `unblock`

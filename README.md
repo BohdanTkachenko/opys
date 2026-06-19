@@ -57,6 +57,10 @@ opys stats                                  # per-type status counts + percentag
 # Ephemeral work, linked to a feature (default types: task/bug/chore):
 opys new --type bug --title "Survive profile switch" --features FEAT-0001
 opys close BUG-0002                         # deletes the file; reference struck through
+
+# Bulk: the mutating commands take a comma-separated id list, or `-` for stdin
+opys set-status FEAT-0001,FEAT-0002 wontfix --reason "superseded"
+opys list --type task --status done --format ids | opys close -
 ```
 
 Mutating commands (`new`, `set-status`, `tag`, `retire`, `block`, `close`,
@@ -76,9 +80,9 @@ by hand.
 | `show` / `list` | retrieval (`--type`, `--tag`, `--status`, `--format table\|ids\|paths`) |
 | `set-status` | guarded transitions, enforced by the type's configured rules |
 | `tag` | add/remove tags (`--add a,b --remove c`) |
-| `retire` | delete a document; its ID is logged and never reused |
-| `block` / `unblock` | record a directional blocker between two documents |
-| `close` / `cleanup` | finish a document of a type with a terminal status; strip struck refs |
+| `retire` | delete document(s); each ID is logged and never reused |
+| `block` / `unblock` | record a directional blocker between documents |
+| `close` / `cleanup` | finish document(s) of a type with a terminal status; strip struck refs |
 | `verify` | full integrity check — wire into CI |
 | `sync` | reconcile references, linkify prose, relocate docs to their layout path (for hand edits) |
 | `stats` | per-type status counts + percentages, coverage gaps |

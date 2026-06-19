@@ -1,4 +1,4 @@
-use crate::commands::{maybe_sync, split_csv, touch};
+use crate::commands::{expand_ids, for_each_id, maybe_sync, split_csv, touch};
 use crate::doc::Doc;
 use crate::error::{usage, Result};
 use crate::project::{self, Project};
@@ -43,11 +43,15 @@ pub fn core(prj: &Project, id: &str, add: Option<&str>, remove: Option<&str>) ->
     Ok(docs.swap_remove(idx))
 }
 
-pub fn run(ctx: &Ctx, id: &str, add: Option<&str>, remove: Option<&str>) -> Result<()> {
+pub fn run(ctx: &Ctx, ids: &str, add: Option<&str>, remove: Option<&str>) -> Result<()> {
     let prj = ctx.open()?;
-    let doc = core(&prj, id, add, remove)?;
-    let tags = doc.frontmatter.tags().unwrap_or_default();
-    println!("{id} tags: {}", tags.join(", "));
+    let ids = expand_ids(ids)?;
+    let res = for_each_id(&ids, |id| {
+        let doc = core(&prj, id, add, remove)?;
+        let tags = doc.frontmatter.tags().unwrap_or_default();
+        println!("{id} tags: {}", tags.join(", "));
+        Ok(())
+    });
     maybe_sync(ctx, &prj);
-    Ok(())
+    res
 }

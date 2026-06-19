@@ -69,11 +69,20 @@ its ID prefix.
 | `new --type T --title … [--tags a,b] [--status S] [--features F1,F2] [--reason R] [--field k=v]` | create a doc of type `T` with the next ID (`--type` defaults to `feature`; auto-syncs) |
 | `import --type T FILE.jsonl` | bulk-create docs of type `T` from JSONL (sequential IDs, one sync, transactional) |
 | `show ID` / `list [--type T] [--tag T] [--status S] [--field k=v]… [--format table\|ids\|paths]` | retrieval; `--field` filters by any custom field (repeatable, ANDed) |
-| `set-status ID S [--reason R]` | guarded transition against the type's statuses + rules; a terminal status is reached only via `close` |
-| `tag ID --add a,b --remove c` | tag maintenance |
-| `block ID --by BLOCKER` / `unblock ID --by BLOCKER` | record/remove a blocker link (`blocked_by`/`blocks`); blocking auto-sets `blocked` when the type has it |
-| `retire ID --reason R` | delete file, log ID to `_retired.txt` so it is never reallocated |
-| `close ID [--force]` / `cleanup` | finish a doc whose type has a terminal status (strike its refs everywhere); strip struck refs |
+| `set-status IDS S [--reason R]` | guarded transition against the type's statuses + rules; a terminal status is reached only via `close`. `IDS` may be a comma-separated list to move several at once |
+| `tag IDS --add a,b --remove c` | tag maintenance; `IDS` may be a comma-separated list |
+| `block IDS --by BLOCKER` / `unblock IDS --by BLOCKER` | record/remove a blocker link (`blocked_by`/`blocks`); the blocked side may be a comma-separated list; blocking auto-sets `blocked` when the type has it |
+| `retire IDS --reason R` | delete file(s), log each ID to `_retired.txt` so it is never reallocated |
+| `close IDS [--force]` / `cleanup` | finish doc(s) whose type has a terminal status (strike its refs everywhere); strip struck refs |
+
+Every mutating command above takes **one or more ids** for bulk operations.
+Pass an explicit comma-separated list (`set-status FEAT-1,FEAT-2 done`) — bulk is
+opt-in, so an accidental space-separated expansion is rejected rather than
+silently widening the batch. Or pass `-` to read the list from stdin, where
+comma/space/newline separation are all accepted, composing with `list`:
+`opys list --type task --status done --format ids | opys close -`. With several
+ids the run is best-effort — each is attempted, failures are reported, and the
+command exits nonzero if any failed while the successful writes stand.
 | `verify` | full integrity check; nonzero exit on problems — wire into CI |
 | `sync` | reconcile references, linkify prose, relocate docs to their layout path |
 | `stats` | per-type status counts + percentages, and coverage gaps |
