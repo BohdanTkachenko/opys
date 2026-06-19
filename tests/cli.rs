@@ -1957,3 +1957,113 @@ fn sync_backfills_missing_timestamps_from_mtime() {
     // And the backfilled values are valid RFC3339, so verify still passes.
     opys(&dir).arg("verify").assert().success();
 }
+
+// --- `opys history` (optional `history` feature) -------------------------------
+
+/// Run a git command in `dir`, asserting success. Author identity is passed per
+/// invocation so commits don't depend on ambient global git config.
+#[cfg(feature = "history")]
+fn git(dir: &TempDir, args: &[&str]) {
+    let ok = std::process::Command::new("git")
+        .current_dir(dir.path())
+        .args(args)
+        .status()
+        .expect("git available")
+        .success();
+    assert!(ok, "git {args:?} failed");
+}
+
+/// Stage everything and commit as the given author.
+#[cfg(feature = "history")]
+fn git_commit(dir: &TempDir, author: &str, message: &str) {
+    git(dir, &["add", "-A"]);
+    git(
+        dir,
+        &[
+            "-c",
+            &format!("user.name={author}"),
+            "-c",
+            &format!("user.email={author}@example.com"),
+            "commit",
+            "-q",
+            "-m",
+            message,
+        ],
+    );
+}
+
+#[cfg(feature = "history")]
+#[test]
+fn history_shows_status_timeline_with_authors() {
+    let dir = project();
+    git(&dir, &["init", "-q"]);
+
+    opys(&dir)
+        .args(["new", "--title", "Login", "--tags", "auth"])
+        .assert()
+        .success();
+    git_commit(&dir, "Alice", "create feature");
+
+    opys(&dir)
+        .args(["set-status", "FEAT-0001", "partial"])
+        .assert()
+        .success();
+    git_commit(&dir, "Bob", "move to partial");
+
+    // Newest-first timeline: both revisions, their statuses, and per-commit authors.
+    opys(&dir)
+        .args(["history", "FEAT-0001"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2 revisions"))
+        .stdout(predicate::str::contains("planned"))
+        .stdout(predicate::str::contains("partial"))
+        .stdout(predicate::str::contains("Alice"))
+        .stdout(predicate::str::contains("Bob"));
+}
+
+#[cfg(feature = "history")]
+#[test]
+fn history_follows_a_relocation_without_leaking_paths() {
+    // A config whose `archived` status relocates the file into an `_archived/`
+    // subdir, so the doc moves on disk between commits.
+    let cfg = "pad = 4\n\
+[types.feature]\n\
+prefix = \"FEAT\"\n\
+dir = \"features\"\n\
+status_dirs = { archived = \"_archived\" }\n\
+statuses = [\"planned\", \"partial\", \"archived\"]\n\
+default_status = \"planned\"\n\
+tags_required = true\n\
+[[types.feature.sections]]\nheading = \"Notes\"\nkind = \"prose\"\n";
+    let dir = project_with(cfg);
+    git(&dir, &["init", "-q"]);
+
+    opys(&dir)
+        .args(["new", "--title", "Login", "--tags", "auth"])
+        .assert()
+        .success();
+    git_commit(&dir, "Alice", "create feature");
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::path::exists());
+
+    opys(&dir)
+        .args(["set-status", "FEAT-0001", "archived"])
+        .assert()
+        .success();
+    // The file physically moved into the `_archived/` subdir.
+    dir.child("opys/features/_archived/FEAT-0001.md")
+        .assert(predicate::path::exists());
+    git_commit(&dir, "Bob", "archive feature");
+
+    // History still spans both revisions despite the move — and never surfaces
+    // the on-disk path (taxonomy is opys's concern, not the user's).
+    opys(&dir)
+        .args(["history", "FEAT-0001"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2 revisions"))
+        .stdout(predicate::str::contains("planned"))
+        .stdout(predicate::str::contains("archived"))
+        .stdout(predicate::str::contains("_archived").not());
+}

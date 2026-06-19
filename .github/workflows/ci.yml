@@ -24,6 +24,10 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test --all
+      - name: Clippy (history feature)
+        run: cargo clippy --all-targets --features history -- -D warnings
+      - name: Test (history feature)
+        run: cargo test --all --features history
       - name: Packaging manifest versions in sync
         run: scripts/sync-versions.sh --check
 
