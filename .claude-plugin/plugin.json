@@ -1,6 +1,6 @@
 {
   "name": "opys",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Operate the opys file-based feature inventory and work items — track what a project does and its in-flight changes. Requires the `opys` CLI (cargo install opys).",
   "author": {
     "name": "Bohdan Tkachenko",
