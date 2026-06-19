@@ -6,6 +6,8 @@ pub mod block;
 pub mod cleanup;
 pub mod close;
 pub mod config;
+#[cfg(feature = "history")]
+pub mod history;
 pub mod import;
 pub mod init;
 pub mod list;

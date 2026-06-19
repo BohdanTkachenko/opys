@@ -21,6 +21,12 @@ exclude = [
     "opencode.json",
 ]
 
+[features]
+default = []
+# In-process git history for `opys history <id>`, via gix. Off by default so the
+# standard build (and the MSRV check) never depends on gix or any git library.
+history = ["dep:gix"]
+
 [lib]
 name = "opys"
 path = "src/lib.rs"
@@ -45,6 +51,11 @@ time = { version = "0.3", features = ["formatting", "parsing", "local-offset", "
 # (`ratatui::crossterm`) to avoid version skew.
 ratatui = "0.29"
 notify-debouncer-full = "0.3"
+
+# Optional: only compiled in with `--features history`.
+gix = { version = "0.84", default-features = false, features = [
+    "sha1",
+], optional = true }
 
 [dev-dependencies]
 assert_cmd = "2"

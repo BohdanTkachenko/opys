@@ -129,6 +129,11 @@ pub fn run(cli: Cli) -> Result<i32> {
             commands::stats::run(&ctx)?;
             Ok(0)
         }
+        #[cfg(feature = "history")]
+        Command::History { id } => {
+            commands::history::run(&ctx, &id)?;
+            Ok(0)
+        }
         Command::Close { id, force } => {
             commands::close::run(&ctx, &id, force)?;
             Ok(0)

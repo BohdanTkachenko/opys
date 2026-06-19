@@ -153,6 +153,14 @@ pub enum Command {
     /// Per-type status breakdown (counts + percentages) and coverage stats.
     Stats,
 
+    /// Reconstruct a document's lifecycle from git history: the status timeline
+    /// across commits, following the file across relocations (e.g. into
+    /// `_archived/`). Reads the repository in-process and decodes each revision
+    /// through the document parser — no subprocess, no string scraping.
+    /// Requires the optional `history` build feature.
+    #[cfg(feature = "history")]
+    History { id: String },
+
     /// Finish a document of a type with a terminal status: delete the file and
     /// strike its title in every referencing doc (the struck reference reserves
     /// the ID forever).
