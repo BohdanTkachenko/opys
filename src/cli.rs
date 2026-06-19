@@ -102,44 +102,54 @@ pub enum Command {
         format: ListFormat,
     },
 
-    /// Guarded status transition.
+    /// Guarded status transition. The id may be a comma-separated list to move
+    /// several documents at once (same status/reason applied to each).
     SetStatus {
-        id: String,
+        /// One id, a comma-separated list (e.g. `FEAT-1,FEAT-2`), or `-` to read
+        /// the list from stdin (comma/space/newline-separated).
+        ids: String,
         status: String,
         /// Required when moving to wontfix.
         #[arg(long)]
         reason: Option<String>,
     },
 
-    /// Add/remove tags.
+    /// Add/remove tags on one or more documents.
     Tag {
-        id: String,
+        /// One id, a comma-separated list (e.g. `FEAT-1,FEAT-2`), or `-` to read
+        /// the list from stdin (comma/space/newline-separated).
+        ids: String,
         #[arg(long)]
         add: Option<String>,
         #[arg(long)]
         remove: Option<String>,
     },
 
-    /// Delete a document; its ID is logged and never reused.
+    /// Delete one or more documents; each ID is logged and never reused.
     Retire {
-        id: String,
+        /// One id, a comma-separated list (e.g. `FEAT-1,FEAT-2`), or `-` to read
+        /// the list from stdin (comma/space/newline-separated).
+        ids: String,
         #[arg(long)]
         reason: String,
     },
 
-    /// Mark a document as blocked by another, linking both directions. The
-    /// blocked document is auto-set to `blocked` if its type has that status.
+    /// Mark one or more documents as blocked by another, linking both
+    /// directions. Each blocked document is auto-set to `blocked` if its type
+    /// has that status.
     Block {
-        /// The blocked document's ID.
-        id: String,
+        /// The blocked document's id, a comma-separated list, or `-` for stdin.
+        ids: String,
         /// The blocking document's ID.
         #[arg(long = "by")]
         by: String,
     },
 
-    /// Remove a blocker link added by `block`.
+    /// Remove a blocker link added by `block` from one or more documents.
     Unblock {
-        id: String,
+        /// One id, a comma-separated list (e.g. `FEAT-1,FEAT-2`), or `-` to read
+        /// the list from stdin (comma/space/newline-separated).
+        ids: String,
         #[arg(long = "by")]
         by: String,
     },
@@ -165,7 +175,9 @@ pub enum Command {
     /// strike its title in every referencing doc (the struck reference reserves
     /// the ID forever).
     Close {
-        id: String,
+        /// One id, a comma-separated list (e.g. `FEAT-1,FEAT-2`), or `-` to read
+        /// the list from stdin (comma/space/newline-separated).
+        ids: String,
         /// Close even if a required checklist section has unchecked items.
         #[arg(long)]
         force: bool,

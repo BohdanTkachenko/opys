@@ -73,6 +73,76 @@ pub fn split_csv(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// Parse the id argument of a bulk command into a deduplicated, order-preserving
+/// list. Bulk is opt-in via an explicit comma-separated list (`FEAT-1,FEAT-2`):
+/// a single id is just a one-element list. Space-separated ids are *not* accepted
+/// as positionals — clap rejects the extra positional, so shell word-splitting
+/// (e.g. an unintended `$(opys list --format ids)` expansion) fails loudly
+/// instead of silently widening a destructive batch. The literal `-` instead
+/// reads the list from stdin, where comma, space, and newline separation are all
+/// accepted (so `opys list --format ids | opys close -` works directly). Errors
+/// if no ids remain after trimming.
+pub fn expand_ids(arg: &str) -> Result<Vec<String>> {
+    let ids = if arg.trim() == "-" {
+        read_ids_from_stdin()?
+    } else {
+        split_csv(arg)
+    };
+    let mut out: Vec<String> = Vec::new();
+    for id in ids {
+        if !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    if out.is_empty() {
+        return Err(usage("expected at least one id"));
+    }
+    Ok(out)
+}
+
+/// Read ids from stdin for the `-` argument, accepting any mix of comma, space,
+/// and newline separation.
+fn read_ids_from_stdin() -> Result<Vec<String>> {
+    use std::io::Read;
+    let mut buf = String::new();
+    std::io::stdin().read_to_string(&mut buf)?;
+    Ok(buf
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// Run `f` against each id of a bulk command. A single id behaves exactly like
+/// the original one-shot command (its error propagates verbatim). With several
+/// ids it is best-effort: every id is attempted, each failure is reported, and
+/// an aggregate error is returned if any failed (so the exit code is nonzero)
+/// while the successful writes stand.
+pub fn for_each_id<F>(ids: &[String], mut f: F) -> Result<()>
+where
+    F: FnMut(&str) -> Result<()>,
+{
+    if let [only] = ids {
+        return f(only);
+    }
+    let mut failed: Vec<&str> = Vec::new();
+    for id in ids {
+        if let Err(e) = f(id) {
+            eprintln!("error: {id}: {e}");
+            failed.push(id);
+        }
+    }
+    if !failed.is_empty() {
+        return Err(usage(format!(
+            "{} of {} ids failed: {}",
+            failed.len(),
+            ids.len(),
+            failed.join(", ")
+        )));
+    }
+    Ok(())
+}
+
 /// Parse repeatable `--field key=value` list filters into `(key, value)` pairs.
 pub fn parse_field_filters(args: &[String]) -> Result<Vec<(String, String)>> {
     args.iter()

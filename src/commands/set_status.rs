@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::commands::{maybe_sync, touch};
+use crate::commands::{expand_ids, for_each_id, maybe_sync, touch};
 use crate::doc::Doc;
 use crate::error::{usage, Result};
 use crate::project::{self, Project};
@@ -61,10 +61,14 @@ pub fn core(prj: &Project, id: &str, status: &str, reason: Option<&str>) -> Resu
     Ok(docs.swap_remove(idx))
 }
 
-pub fn run(ctx: &Ctx, id: &str, status: &str, reason: Option<&str>) -> Result<()> {
+pub fn run(ctx: &Ctx, ids: &str, status: &str, reason: Option<&str>) -> Result<()> {
     let prj = ctx.open()?;
-    core(&prj, id, status, reason)?;
-    println!("{id} -> {status}");
+    let ids = expand_ids(ids)?;
+    let res = for_each_id(&ids, |id| {
+        core(&prj, id, status, reason)?;
+        println!("{id} -> {status}");
+        Ok(())
+    });
     maybe_sync(ctx, &prj);
-    Ok(())
+    res
 }

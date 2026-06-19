@@ -100,24 +100,28 @@ pub fn run(cli: Cli) -> Result<i32> {
             )?;
             Ok(0)
         }
-        Command::SetStatus { id, status, reason } => {
-            commands::set_status::run(&ctx, &id, &status, reason.as_deref())?;
+        Command::SetStatus {
+            ids,
+            status,
+            reason,
+        } => {
+            commands::set_status::run(&ctx, &ids, &status, reason.as_deref())?;
             Ok(0)
         }
-        Command::Tag { id, add, remove } => {
-            commands::tag::run(&ctx, &id, add.as_deref(), remove.as_deref())?;
+        Command::Tag { ids, add, remove } => {
+            commands::tag::run(&ctx, &ids, add.as_deref(), remove.as_deref())?;
             Ok(0)
         }
-        Command::Retire { id, reason } => {
-            commands::retire::run(&ctx, &id, &reason)?;
+        Command::Retire { ids, reason } => {
+            commands::retire::run(&ctx, &ids, &reason)?;
             Ok(0)
         }
-        Command::Block { id, by } => {
-            commands::block::block(&ctx, &id, &by)?;
+        Command::Block { ids, by } => {
+            commands::block::block(&ctx, &ids, &by)?;
             Ok(0)
         }
-        Command::Unblock { id, by } => {
-            commands::block::unblock(&ctx, &id, &by)?;
+        Command::Unblock { ids, by } => {
+            commands::block::unblock(&ctx, &ids, &by)?;
             Ok(0)
         }
         Command::Verify => commands::verify::run(&ctx),
@@ -134,8 +138,8 @@ pub fn run(cli: Cli) -> Result<i32> {
             commands::history::run(&ctx, &id)?;
             Ok(0)
         }
-        Command::Close { id, force } => {
-            commands::close::run(&ctx, &id, force)?;
+        Command::Close { ids, force } => {
+            commands::close::run(&ctx, &ids, force)?;
             Ok(0)
         }
         Command::Cleanup => {

@@ -7,7 +7,7 @@
 //! link itself serves as the `blocked_reason`. A single top-level command pair
 //! accepts any id; the prefix resolves the type and file.
 
-use crate::commands::{maybe_sync, touch};
+use crate::commands::{expand_ids, for_each_id, maybe_sync, touch};
 use crate::doc::Doc;
 use crate::error::{usage, OpysError, Result};
 use crate::frontmatter::Frontmatter;
@@ -46,13 +46,17 @@ pub fn block_core(prj: &Project, id: &str, by: &str) -> Result<()> {
     Ok(())
 }
 
-/// Mark `id` as blocked by `by`, linking both directions.
-pub fn block(ctx: &Ctx, id: &str, by: &str) -> Result<()> {
+/// Mark one or more documents as blocked by `by`, linking both directions.
+pub fn block(ctx: &Ctx, ids: &str, by: &str) -> Result<()> {
     let prj = ctx.open()?;
-    block_core(&prj, id, by)?;
-    println!("{id} blocked by {by}");
+    let ids = expand_ids(ids)?;
+    let res = for_each_id(&ids, |id| {
+        block_core(&prj, id, by)?;
+        println!("{id} blocked by {by}");
+        Ok(())
+    });
     maybe_sync(ctx, &prj);
-    Ok(())
+    res
 }
 
 /// Remove the blocker link from both sides. When the blocked document's type has
@@ -98,13 +102,17 @@ pub fn unblock_core(prj: &Project, id: &str, by: &str) -> Result<()> {
     Ok(())
 }
 
-/// Remove the blocker link from both sides.
-pub fn unblock(ctx: &Ctx, id: &str, by: &str) -> Result<()> {
+/// Remove the blocker link from both sides for one or more documents.
+pub fn unblock(ctx: &Ctx, ids: &str, by: &str) -> Result<()> {
     let prj = ctx.open()?;
-    unblock_core(&prj, id, by)?;
-    println!("{id} no longer blocked by {by}");
+    let ids = expand_ids(ids)?;
+    let res = for_each_id(&ids, |id| {
+        unblock_core(&prj, id, by)?;
+        println!("{id} no longer blocked by {by}");
+        Ok(())
+    });
     maybe_sync(ctx, &prj);
-    Ok(())
+    res
 }
 
 /// Whether the type of `id` declares `status`.

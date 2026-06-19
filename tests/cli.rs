@@ -2067,3 +2067,200 @@ tags_required = true\n\
         .stdout(predicate::str::contains("archived"))
         .stdout(predicate::str::contains("_archived").not());
 }
+
+#[test]
+fn bulk_set_status_moves_several_features_with_a_comma_list() {
+    let dir = project();
+    for t in ["A", "B", "C"] {
+        opys(&dir)
+            .args(["new", "--title", t, "--tags", "a"])
+            .assert()
+            .success();
+    }
+    // One command, comma-separated ids — same status applied to each.
+    opys(&dir)
+        .args(["set-status", "FEAT-0001,FEAT-0002,FEAT-0003", "partial"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0001 -> partial"))
+        .stdout(predicate::str::contains("FEAT-0002 -> partial"))
+        .stdout(predicate::str::contains("FEAT-0003 -> partial"));
+    for n in 1..=3 {
+        dir.child(format!("opys/features/FEAT-000{n}.md"))
+            .assert(predicate::str::contains("status: partial"));
+    }
+}
+
+#[test]
+fn bulk_tag_takes_a_comma_list() {
+    let dir = project();
+    for t in ["A", "B"] {
+        opys(&dir)
+            .args(["new", "--title", t, "--tags", "a"])
+            .assert()
+            .success();
+    }
+    opys(&dir)
+        .args(["tag", "FEAT-0001,FEAT-0002", "--add", "x"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0001 tags: a, x"))
+        .stdout(predicate::str::contains("FEAT-0002 tags: a, x"));
+}
+
+#[test]
+fn bulk_retire_reserves_every_id() {
+    let dir = project();
+    for t in ["A", "B"] {
+        opys(&dir)
+            .args(["new", "--title", t, "--tags", "a"])
+            .assert()
+            .success();
+    }
+    opys(&dir)
+        .args(["retire", "FEAT-0001,FEAT-0002", "--reason", "dupes"])
+        .assert()
+        .success();
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::path::missing());
+    dir.child("opys/features/FEAT-0002.md")
+        .assert(predicate::path::missing());
+    // Both numbers are reserved — the next new doc is FEAT-0003.
+    opys(&dir)
+        .args(["new", "--title", "C", "--tags", "a"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0003.md"));
+}
+
+#[test]
+fn space_separated_ids_are_rejected_not_silently_widened() {
+    // Bulk is opt-in via commas. Space-separated ids (e.g. an unintended
+    // `$(opys list --format ids)` expansion) must fail loudly rather than
+    // operate on the whole set — the safety property of the single positional.
+    let dir = project();
+    for t in ["A", "B"] {
+        opys(&dir)
+            .args(["new", "--title", t, "--tags", "a"])
+            .assert()
+            .success();
+    }
+    opys(&dir)
+        .args(["close", "FEAT-0001", "FEAT-0002"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unexpected argument"));
+    // Nothing was closed — both files are intact.
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::path::exists());
+    dir.child("opys/features/FEAT-0002.md")
+        .assert(predicate::path::exists());
+}
+
+#[test]
+fn bulk_is_best_effort_and_reports_failures() {
+    let dir = project();
+    for t in ["A", "B"] {
+        opys(&dir)
+            .args(["new", "--title", t, "--tags", "a"])
+            .assert()
+            .success();
+    }
+    // FEAT-0002 exists; FEAT-0099 does not. The valid one still moves, the
+    // bad one is reported, and the command exits nonzero.
+    opys(&dir)
+        .args(["set-status", "FEAT-0002,FEAT-0099", "partial"])
+        .assert()
+        .failure()
+        .code(2)
+        .stdout(predicate::str::contains("FEAT-0002 -> partial"))
+        .stderr(predicate::str::contains("FEAT-0099"))
+        .stderr(predicate::str::contains("1 of 2 ids failed"));
+    dir.child("opys/features/FEAT-0002.md")
+        .assert(predicate::str::contains("status: partial"));
+}
+
+#[test]
+fn bulk_reads_ids_from_stdin_with_dash() {
+    let dir = project();
+    for t in ["A", "B", "C"] {
+        opys(&dir)
+            .args(["new", "--title", t, "--tags", "a"])
+            .assert()
+            .success();
+    }
+    // `-` reads the list from stdin; newline separation (as `list --format ids`
+    // emits) is accepted, alongside commas and spaces.
+    opys(&dir)
+        .args(["set-status", "-", "partial"])
+        .write_stdin("FEAT-0001\nFEAT-0002 FEAT-0003\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0001 -> partial"))
+        .stdout(predicate::str::contains("FEAT-0002 -> partial"))
+        .stdout(predicate::str::contains("FEAT-0003 -> partial"));
+    for n in 1..=3 {
+        dir.child(format!("opys/features/FEAT-000{n}.md"))
+            .assert(predicate::str::contains("status: partial"));
+    }
+}
+
+#[test]
+fn bulk_stdin_pipe_from_list_closes_the_selection() {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "Feature", "--tags", "a"])
+        .assert()
+        .success();
+    for t in ["One", "Two"] {
+        opys(&dir)
+            .args([
+                "new",
+                "--type",
+                "task",
+                "--title",
+                t,
+                "--features",
+                "FEAT-0001",
+            ])
+            .assert()
+            .success();
+    }
+    // The canonical pipe: select ids, close them. Done with a real shell so the
+    // pipe and `-` work end to end.
+    let close = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "{bin} --root {root} list --type task --format ids | {bin} --root {root} close - --force",
+            bin = assert_cmd::cargo::cargo_bin("opys").display(),
+            root = dir.path().display(),
+        ))
+        .output()
+        .unwrap();
+    assert!(
+        close.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&close.stderr)
+    );
+    dir.child("opys/work-items/TASK-0002.md")
+        .assert(predicate::path::missing());
+    dir.child("opys/work-items/TASK-0003.md")
+        .assert(predicate::path::missing());
+}
+
+#[test]
+fn bulk_dedupes_repeated_ids() {
+    let dir = project();
+    opys(&dir)
+        .args(["new", "--title", "A", "--tags", "a"])
+        .assert()
+        .success();
+    // A repeated id is collapsed — retire runs once, not twice (the second
+    // pass would fail on the already-deleted file).
+    opys(&dir)
+        .args(["retire", "FEAT-0001,FEAT-0001", "--reason", "x"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("retired FEAT-0001"));
+}

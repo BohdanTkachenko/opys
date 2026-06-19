@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use crate::body;
-use crate::commands::maybe_sync;
+use crate::commands::{expand_ids, for_each_id, maybe_sync};
 use crate::error::{usage, Result};
 use crate::frontmatter::Frontmatter;
 use crate::project::{self, Project};
@@ -76,12 +76,16 @@ pub fn core(prj: &Project, id: &str, force: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn run(ctx: &Ctx, id: &str, force: bool) -> Result<()> {
+pub fn run(ctx: &Ctx, ids: &str, force: bool) -> Result<()> {
     let prj = ctx.open()?;
-    core(&prj, id, force)?;
-    println!("closed {id} (deleted; references struck through)");
+    let ids = expand_ids(ids)?;
+    let res = for_each_id(&ids, |id| {
+        core(&prj, id, force)?;
+        println!("closed {id} (deleted; references struck through)");
+        Ok(())
+    });
     maybe_sync(ctx, &prj);
-    Ok(())
+    res
 }
 
 /// Strike `id` to a tombstone in every relation map that lists it; for
