@@ -1,0 +1,80 @@
+name: Release-plz
+
+# release-plz drives the release process from conventional commits on `main`:
+#   * release-pr  — opens/updates a "release" PR that bumps the crate version and
+#                   updates CHANGELOG.md. Merging it is the act of releasing.
+#   * release     — once that PR is merged (the version on `main` changed),
+#                   publishes the crate to crates.io and cuts a GitHub release.
+#
+# Requires a `CARGO_REGISTRY_TOKEN` repository secret (crates.io API token) for
+# publishing. The default `GITHUB_TOKEN` covers the PR/tag/release steps; note
+# that PRs it opens do not trigger the CI workflow — swap in a PAT or GitHub App
+# token (as `GITHUB_TOKEN`) if you want CI to run on the release PR.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  # Publish to crates.io + GitHub release when a release PR has been merged.
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'BohdanTkachenko' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # Open/update the release PR (version bump + changelog), then sync the
+  # packaging manifests onto its branch so they ship in lockstep.
+  release-pr:
+    name: Release PR
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'BohdanTkachenko' }}
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run release-plz
+        id: release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Sync packaging manifests on the release PR
+        if: ${{ steps.release-plz.outputs.prs_created == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          branch='${{ fromJSON(steps.release-plz.outputs.pr).head_branch }}'
+          git fetch origin "$branch"
+          git switch "$branch"
+          scripts/sync-versions.sh
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -am "chore: sync packaging manifests to crate version"
+            git push origin "$branch"
+          fi

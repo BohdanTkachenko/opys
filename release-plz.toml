@@ -1,0 +1,8 @@
+# release-plz configuration — https://release-plz.dev/docs/config
+[workspace]
+# Maintain CHANGELOG.md from conventional commits and cut a GitHub release per tag.
+changelog_update = true
+git_release_enable = true
+# Single-crate repo: tag/release as `v{version}` (not `{crate}-v{version}`).
+git_tag_name = "v{{ version }}"
+git_release_name = "v{{ version }}"

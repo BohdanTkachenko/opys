@@ -24,6 +24,8 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test --all
+      - name: Packaging manifest versions in sync
+        run: scripts/sync-versions.sh --check
 
   msrv:
     name: Build (MSRV 1.88)
