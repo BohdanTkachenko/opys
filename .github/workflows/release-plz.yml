@@ -63,7 +63,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - name: Sync packaging manifests on the release PR
-        if: ${{ steps.release-plz.outputs.prs_created == 'true' }}
+        # Run whenever a release PR exists (created *or* updated): release-plz
+        # force-pushes the release branch on every update, dropping any prior sync
+        # commit, so we must re-apply the manifest sync on top each time.
+        if: ${{ steps.release-plz.outputs.pr != '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
