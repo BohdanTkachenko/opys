@@ -299,15 +299,19 @@ fn render_stats(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(format!(
-        "uncovered test-plan items: {}",
-        report.uncovered_testplan
-    )));
-    lines.push(Line::from(format!(
-        "manual verification items: {}  (without automated coverage: {})",
-        report.manual_total, report.manual_uncovered
-    )));
+    if !report.coverage.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "coverage",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        for c in &report.coverage {
+            lines.push(Line::from(format!(
+                "  {:<16} {:<10} {} uncovered / {} items",
+                c.heading, c.kind, c.uncovered, c.items
+            )));
+        }
+    }
 
     let block = Block::default()
         .borders(Borders::ALL)

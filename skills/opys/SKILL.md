@@ -148,12 +148,13 @@ resets and is greppable, deleted when you finish.
 
 When drafting a feature file with a user, ask for edge cases — they become
 test-plan items. Then ask which behaviors warrant a human eye on a real
-build, and record a manual-verification item with Setup / numbered Steps /
-Expect while the details are fresh. Manual verification is *not* reserved for
-the unautomatable: a manual item may re-check behavior that automated tests
-also cover (a friendlier, end-to-end sanity pass). To mark it as also
-automated, add backticked test refs on the item's line; items with no refs
-have no automated coverage and are counted in `opys stats`.
+build, and record a `structured` "Manual verification" item with the
+configured parts (the default config ships Setup / numbered Steps / Expect)
+while the details are fresh. Manual verification is *not* reserved for the
+unautomatable: a manual item may re-check behavior that automated tests also
+cover (a friendlier, end-to-end sanity pass). The item format is whatever the
+type's `[[parts]]` declare — `verify` requires every `required` part on each
+item.
 
 ## Retrieval discipline
 

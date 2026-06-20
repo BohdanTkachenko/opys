@@ -62,7 +62,7 @@ values = ["low", "high"]             # an enum constrains the value
 
 [[types.feature.sections]]           # required/known body sections, by kind
 heading = "Test plan"
-kind = "checklist"                   # prose | log | checklist | manual
+kind = "checklist"                   # prose | log | checklist | structured
 # required = true
 
 [[types.feature.sections.checks]]    # universal content checks (see below)
@@ -251,8 +251,10 @@ opys list --field tag-list=osc --format ids     # list-membership match
 
 `opys tags` enumerates the distinct tags in the inventory (sorted, one per line);
 `opys tags --keys` collapses the `key:value` / `key=value` forms to their keys,
-pairing with `list --tag <key>`. `opys stats` adds a tag breakdown: keyed tags
-grouped by key with a per-value count, and plain tags counted per document.
+pairing with `list --tag <key>`. `opys stats` reports a per-type status
+breakdown, per-section coverage (one row per validated checklist, labeled by its
+real heading), and a tag breakdown: keyed tags grouped by key with a per-value
+count, and plain tags counted per document.
 
 ## Blockers
 
@@ -350,30 +352,59 @@ The corpus grep is language-agnostic but **unsound** — it matches any occurren
 point `file` at the defining file and make `must_match` a definition pattern
 (e.g. `fn ${name}\b`).
 
-## Manual verification rules
+## Structured sections
 
-Manual verification is independent of automation — it is not reserved for the
-unautomatable. A manual item may re-check, in a user-friendly way, behavior
-that automated tests already cover (an end-to-end sanity pass), or it may be
-the only coverage a case has.
+A `structured` section is a list of items whose **format is configured**, not
+hardcoded. The section declares its item format with `[[…sections.parts]]`; each
+`PartSpec` is `{ label, form = "value" | "ordered", required }`. `verify` then
+requires every `required` part on every item, and `new` scaffolds an item with
+each part's bullet.
 
-- Plain list items, never checkboxes — manual cases have no in-file state;
-  they are executed per release and results live in CI or commit history.
-- Each item: a one-line description, then a sublist with `Setup:` (single
-  bullet — preconditions), `Steps:` (numbered — the sequence), `Expect:`
-  (single bullet — a judgment-free pass criterion). If a crisp Expect cannot
-  be written, the case is under-specified.
-- **Automated-coverage signal:** add ≥1 backticked test ref on the item's
-  description line to mark it as also automated. Items with **no** ref have no
-  automated coverage — `opys stats` counts them, since they are the most important
-  to run by hand. When an item exists *because* it cannot be automated, say so
-  in the description
-  (e.g. *manual: cannot assert rendering quality*) so the reason is recorded.
-- Write for a competent operator who knows the project but not this case:
-  assume they can run the app; spell out exact escape sequences, config
-  values, and the precise defect to look for.
+```toml
+[[types.feature.sections]]
+heading = "Manual verification"
+kind = "structured"
+[[types.feature.sections.parts]]
+label = "Setup"
+required = true
+[[types.feature.sections.parts]]
+label = "Steps"
+form = "ordered"      # a "- Steps:" bullet followed by a numbered list
+required = true
+[[types.feature.sections.parts]]
+label = "Expect"
+required = true
+```
+
+On the page that renders as a column-0 `- <description>` item, then indented
+`- <Label>: <value>` bullets (a `value` part) and a `- <Label>:` bullet followed
+by a numbered list (an `ordered` part):
+
+```markdown
+## Manual verification
+- Title legible at fractional scaling
+  - Setup: external monitor at 150% scaling
+  - Steps:
+    1. Open a tab
+    2. `printf '\033]2;Ünïcödé\007'`
+  - Expect: crisp glyphs, no clipping
+```
+
+Rules and conventions:
+
+- Item leads are plain `- ` lines, **never checkboxes** (`verify` rejects a
+  checkbox lead — that is what `checklist` is for).
+- The default config ships the classic manual-QA shape (`Setup` / ordered
+  `Steps` / `Expect`), but the parts are yours: rename, add, drop, or make
+  optional per type. A part label must be non-empty, unique, and contain no `:`.
+- Write for a competent operator who knows the project but not this case: spell
+  out exact escape sequences, config values, and the precise defect to look for.
+  If a crisp `Expect` cannot be written, the case is under-specified.
 - Procedures longer than ~10 lines or shared across features move to a shared
   doc and are referenced.
+
+(`structured` sections do not contribute to `opys stats` coverage — only
+`checklist` sections do.)
 
 ## Bulk creation and migration
 

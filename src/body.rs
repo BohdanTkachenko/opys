@@ -1,6 +1,7 @@
 //! Parsing of the markdown body: title, sections, checklist items, and
-//! `## Manual verification` items.
+//! `structured` section items.
 
+use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -8,7 +9,6 @@ use regex::Regex;
 static TITLE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^# (.+)$").unwrap());
 static CHECKED_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^- \[x\] ").unwrap());
 static UNCHECKED_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^- \[ \] ").unwrap());
-static TEST_REF_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`([^`]+)`").unwrap());
 static STEP_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+\.").unwrap());
 
 /// First `# Heading` line, or `""`.
@@ -66,80 +66,68 @@ pub fn has_section(body: &str, header: &str) -> bool {
         .is_match(body)
 }
 
-/// Backticked test references on a manual-verification line, used only for the
-/// manual-coverage signal (`opys stats` flags items with no automated backing).
-/// Section content checks own their own ref shape via their `pattern`.
-///
-/// Only spans shaped like a reference — containing the `::` module/path
-/// separator (`mod::test_name`, `path/to/file.rs::test_name`) — are returned.
-/// Inline code spans used in the item's *prose* (shell snippets, literals,
-/// escape sequences) are deliberately ignored, so an item can explain
-/// itself with backticked code without that code being mistaken for a ref.
-pub fn test_refs(line: &str) -> Vec<String> {
-    TEST_REF_RE
-        .captures_iter(line)
-        .map(|c| c[1].to_string())
-        .filter(|s| is_test_ref(s))
-        .collect()
-}
-
-/// Whether a backtick span has the shape of a test reference. A reference is
-/// always `module::name` or `path/to/file::name`, so the `::` separator is
-/// what distinguishes a real reference from a prose code span.
-pub fn is_test_ref(span: &str) -> bool {
-    span.contains("::")
-}
-
+/// One item of a `structured` section: its lead `- <desc>` line plus the named
+/// parts found under it. `values` holds `- <Label>: <value>` bullets; `ordered`
+/// holds `- <Label>:` bullets whose numbered list follows. The set of part
+/// labels comes from config — this parser is label-agnostic.
 #[derive(Debug, Clone)]
-pub struct ManualItem {
+pub struct StructuredItem {
     pub desc: String,
-    pub setup: Option<String>,
-    pub steps: Vec<String>,
-    pub expect: Option<String>,
-    /// Backticked test references on the item's description line. An item with
-    /// no refs has no automated coverage and is prioritized for manual runs.
-    pub refs: Vec<String>,
+    pub values: BTreeMap<String, String>,
+    pub ordered: BTreeMap<String, Vec<String>>,
 }
 
-impl ManualItem {
-    /// True when no automated test backs this manual check.
-    pub fn uncovered(&self) -> bool {
-        self.refs.is_empty()
+impl StructuredItem {
+    /// Whether the named part is present: a non-empty `value` part, or an
+    /// `ordered` part with at least one numbered entry.
+    pub fn has_part(&self, label: &str) -> bool {
+        self.values.contains_key(label) || self.ordered.get(label).is_some_and(|v| !v.is_empty())
     }
 }
 
-/// Structured items under `## Manual verification`. A column-0 `- ` line
-/// starts a new item; indented bullets supply its Setup/Steps/Expect.
-pub fn manual_items(body: &str) -> Vec<ManualItem> {
-    manual_items_in(body, "Manual verification")
-}
-
-/// Like [`manual_items`] but for an arbitrary section heading (a type may name
-/// its manual-kind section however it likes).
-pub fn manual_items_in(body: &str, heading: &str) -> Vec<ManualItem> {
-    let mut items: Vec<ManualItem> = Vec::new();
+/// Items under a `structured` `## <heading>`. A column-0 `- ` line starts an
+/// item; an indented `- <Label>: <value>` bullet is a value part, and an
+/// indented `- <Label>:` bullet followed by a numbered list is an ordered part.
+pub fn structured_items(body: &str, heading: &str) -> Vec<StructuredItem> {
+    let mut items: Vec<StructuredItem> = Vec::new();
+    // The ordered part currently collecting numbered lines (None after a value
+    // part or a new item).
+    let mut current: Option<String> = None;
     for line in section(body, heading).lines() {
         if let Some(rest) = line.strip_prefix("- ") {
-            items.push(ManualItem {
+            items.push(StructuredItem {
                 desc: rest.trim().to_string(),
-                setup: None,
-                steps: Vec::new(),
-                expect: None,
-                refs: test_refs(rest),
+                values: BTreeMap::new(),
+                ordered: BTreeMap::new(),
             });
+            current = None;
             continue;
         }
         let Some(cur) = items.last_mut() else {
             continue;
         };
         let s = line.trim();
-        if let Some(v) = s.strip_prefix("- Setup:") {
-            cur.setup = Some(v.trim().to_string());
-        } else if let Some(v) = s.strip_prefix("- Expect:") {
-            cur.expect = Some(v.trim().to_string());
+        if let Some(bullet) = s.strip_prefix("- ") {
+            match bullet.split_once(':') {
+                // `- Label:` (empty value) opens an ordered part.
+                Some((label, value)) if value.trim().is_empty() => {
+                    let label = label.trim().to_string();
+                    cur.ordered.entry(label.clone()).or_default();
+                    current = Some(label);
+                }
+                // `- Label: value` is a value part.
+                Some((label, value)) => {
+                    cur.values
+                        .insert(label.trim().to_string(), value.trim().to_string());
+                    current = None;
+                }
+                None => current = None,
+            }
         } else if STEP_RE.is_match(s) {
-            cur.steps
-                .push(STEP_RE.replace(s, "").trim_start().to_string());
+            if let Some(label) = &current {
+                let step = STEP_RE.replace(s, "").trim_start().to_string();
+                cur.ordered.entry(label.clone()).or_default().push(step);
+            }
         }
     }
     items
@@ -162,40 +150,27 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert!(items[0].checked);
         assert!(!items[1].checked);
-        assert_eq!(
-            test_refs(&items[0].line),
-            vec!["tab::osc_title".to_string()]
-        );
+        assert!(items[0].line.contains("tab::osc_title"));
     }
 
     #[test]
-    fn ignores_prose_code_spans() {
-        // A real ref plus a prose code span on the same checked item: only the
-        // `::`-shaped span is a reference; the shell snippet is left as prose.
-        let line = "- [x] sftp:// rewrites to `ssh -t exec $SHELL -l` not a path — \
-                    `application.rs::sftp_uri_rewrites_to_ssh`";
-        assert_eq!(
-            test_refs(line),
-            vec!["application.rs::sftp_uri_rewrites_to_ssh".to_string()]
-        );
-    }
-
-    #[test]
-    fn prose_only_span_is_not_a_ref() {
-        // No `::` anywhere: nothing is treated as a reference (so verify will
-        // correctly flag a checked item that lacks a real ref).
-        let line = "- [x] split_command handles quotes (`bash -c \"echo hi\"` is 3 argv)";
-        assert!(test_refs(line).is_empty());
-    }
-
-    #[test]
-    fn parses_manual_item() {
-        let items = manual_items(BODY);
+    fn parses_structured_item() {
+        let items = structured_items(BODY, "Manual verification");
         assert_eq!(items.len(), 1);
         let it = &items[0];
-        assert_eq!(it.setup.as_deref(), Some("external monitor at 150%"));
-        assert_eq!(it.steps.len(), 2);
-        assert_eq!(it.steps[0], "Open a tab");
-        assert_eq!(it.expect.as_deref(), Some("crisp glyphs"));
+        assert_eq!(
+            it.values.get("Setup").map(String::as_str),
+            Some("external monitor at 150%")
+        );
+        assert_eq!(it.ordered.get("Steps").map(Vec::len), Some(2));
+        assert_eq!(it.ordered["Steps"][0], "Open a tab");
+        assert_eq!(
+            it.values.get("Expect").map(String::as_str),
+            Some("crisp glyphs")
+        );
+        // Convenience: required-part presence.
+        assert!(it.has_part("Setup"));
+        assert!(it.has_part("Steps"));
+        assert!(!it.has_part("Teardown"));
     }
 }

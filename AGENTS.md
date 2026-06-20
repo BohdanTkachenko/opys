@@ -22,7 +22,8 @@ per-status `status_dirs` (the `{type}`/`{status}` segments of the configurable
 its own `statuses`
 (plus `default_status` / `terminal_statuses`), `[fields.*]` (custom frontmatter
 fields, with optional regex `pattern`), and required `sections` (each a
-code-backed *kind*: prose/log/checklist/manual, with optional config-driven
+code-backed *kind*: prose/log/checklist/structured — the `structured` kind's
+item format is config-driven via `[[parts]]` — with optional config-driven
 `checks`), plus a list of
 conditional `[[rules]]` (`when {type?, status?}` + one assertion). **A document's
 type is its id prefix.** There is no hardcoded type set: the default config ships
@@ -106,7 +107,8 @@ Layering, roughly outermost-in:
   the single document struct (`{path, frontmatter, body, title}`; type derived
   from the id prefix). `frontmatter` parses YAML with `serde_norway` and
   re-serializes canonically; `body` extracts the title, checkbox items
-  (`checklist_items(body, heading)`), and manual items (`manual_items_in`).
+  (`checklist_items(body, heading)`), and structured-section items
+  (`structured_items(body, heading)`).
 - `src/refs.rs` — the uniform relation maps (`references`/`blocked_by`/`blocks`),
   ID→title: parse/serialize (sorted by item number), strikethrough tombstone
   helpers, `id_number`.
@@ -162,9 +164,11 @@ All status/section/link guards are *config*, enforced by one engine
   `run_check` in `commands/verify.rs`. (There is no longer a `test-plan` kind or a
   `[tests]` block.)
 - **Sections**: a type's `sections` each declare a `kind` (prose/log/checklist/
-  manual), optional `checks`, and `required`. `verify` checks a required section is
-  present, runs each section's `checks`, and applies the Setup/Steps/Expect shape
-  on `manual` sections (keyed by heading); `new` scaffolds the required ones.
+  structured), optional `checks`, and `required`. `verify` checks a required
+  section is present, runs each section's `checks`, and enforces a `structured`
+  section's configured `[[parts]]` on each item (required parts present, lead not
+  a checkbox); `new` scaffolds the required ones (a `structured` item gets each
+  part's bullet).
 - **Frontmatter is closed**: only the reserved keys (`id`/`status`/`tags` +
   `references`/`blocked_by`/`blocks`) plus the doc type's declared `[fields.*]`
   are allowed; unknown keys fail `verify`. Declared fields are type-checked
