@@ -37,27 +37,27 @@ spec_url? @spec: /^https?:\/\//        -- optional URL; alias renamed key -> "sp
 
 ## @manual Manual verification         -- heading nests headings
   ### @setup Setup
-    - @items+                          -- bullet list, one or more
+    - +@items                          -- bullet list, one or more
   ### @procedure Procedure
-    1. @steps+                         -- ordered list, one or more
-      - @note?                         -- list item nests an optional bullet
+    1. +@steps                         -- ordered list, one or more
+      - ?@note                         -- list item nests an optional bullet
   ### @expect Expectations
-    - [ ] @checks*                     -- checklist, zero or more (optional)
+    - [ ] *@checks                     -- checklist, zero or more (optional)
 
 ## @risks Risks
-  - @items*                            -- bullet list, zero or more
+  - *@items                            -- bullet list, zero or more
 
 ## @signoff Sign-off                   -- bare literal labels -> scalar captures
   - @docs Docs:                        -- a bullet starting "Docs:"; value = text after it
   - @tests Tests:
 
 ## @decisions Decisions
-  ### @entries+ /.+/                    -- repeated subsection: one or more, any title
+  ### +@entries /.+/                    -- repeated subsection: one or more, any title
     > @state /status:/i                -- a paragraph matching /status:/i
-    - @points{1,5}                     -- 1..5 rationale bullets (explicit range)
+    - {1,5}@points                     -- 1..5 rationale bullets (explicit range)
 
-## @refs? References                   -- optional heading (?)
-  - @links* /^\[.+\]\(.+\)$/           -- regex-labeled bullets, zero or more
+## ?@refs References                   -- optional heading (?)
+  - *@links /^\[.+\]\(.+\)$/           -- regex-labeled bullets, zero or more
 ```
 
 ---
@@ -163,7 +163,7 @@ Status: accepted
   unless the item has named children, in which case each item is an object with
   its lead text under `"text"` plus the child aliases (see `procedure.steps`).
 - A **heading** with named children → an object of those children. A
-  **variable-title** heading (regex/repeated, e.g. `### @entries+ /.+/`) also
+  **variable-title** heading (regex/repeated, e.g. `### +@entries /.+/`) also
   captures its heading text under `"title"`; a literal-title heading does not.
 - **Single vs array** is decided by cardinality: bare/`?` ⇒ scalar-or-object,
   `+`/`*`/`{m,n}` ⇒ array.
@@ -251,12 +251,12 @@ Status:
 | Frontmatter alias override | `spec_url @spec` (key `spec_url` → alias `spec`) |
 | Heading levels 1 / 2 / 3 | `# @title /.+/`, `## Summary`, `### @setup Setup` |
 | Literal vs regex heading title | `## Summary` vs `# @title /.+/` |
-| Repeated subsection | `### @entries+ /.+/` under Decisions |
-| Optional heading `?` | `## @refs? References` |
+| Repeated subsection | `### +@entries /.+/` under Decisions |
+| Optional heading `?` | `## ?@refs References` |
 | Bullet / ordered / checklist / prose | `-` / `1.` / `- [ ]` / `>` |
 | Bare literal label (→ scalar) | `- @docs Docs:` |
-| Regex label | `- @links* /^\[.+\]\(.+\)$/`, `> @state /status:/i` |
-| Cardinality bare / `+` / `*` / `?` / `{m,n}` (glued) | `@cases` / `@items+` / `@checks*` / `@note?` / `@points{1,5}` |
+| Regex label | `- *@links /^\[.+\]\(.+\)$/`, `> @state /status:/i` |
+| Cardinality (leads head) bare / `+` / `*` / `?` / `{m,n}` | `@cases` / `+@items` / `*@checks` / `?@note` / `{1,5}@points` |
 | Nesting: heading→heading | Manual → Setup/Procedure/Expectations |
 | Nesting: heading→list | Setup → bullets |
 | Nesting: list-item→list | Procedure step → `note` |
