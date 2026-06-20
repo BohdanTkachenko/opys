@@ -107,13 +107,14 @@ fm-type  = "string" | "int" | "bool" | "date"
 
 ### 3.3 Body structure
 
-Each node is one line — `marker @name? label? card? -- desc?` — plus an
+Each node is one line — `marker @name? card? label? -- desc?` — plus an
 optionally indented child block. The `@name` alias comes **immediately after the
-marker**, before the label/heading text; the description trails. Indentation
-(normalized) encodes nesting.
+marker**; a `card` suffix is **glued** (no space) to the marker-or-name; a space
+then begins the optional `label` (the heading title / item match); the
+description trails. Indentation (normalized) encodes nesting.
 
 ```ebnf
-node     = INDENT marker ("@" name)? label? card? (" -- " desc)? NEWLINE children?
+node     = INDENT marker ("@" name)? card? (SP label)? (" -- " desc)? NEWLINE children?
 children = (node, indented one level deeper)+
 
 marker   = heading | bullet | ordered | checkbox | prose
@@ -123,10 +124,12 @@ ordered  = digits "."                # "1."
 checkbox = "- [ ]"
 prose    = ">"                        # a non-empty paragraph
 
-label    = '"' literal '"'            # item/heading text starts with literal
-         | "/" regex "/"              # …or matches regex
-         | text                       # a bare literal heading title
-card     = "+" | "*" | "?" | "{" int ("," int?)? "}"
+card     = "+" | "*" | "?" | "{" int ("," int?)? "}"   # glued to marker/name
+
+label    = "/" regex "/"              # regex if it starts with '/'
+         | text                       # …else a bare literal (text must start with it)
+         | '"' literal '"'            # quotes OPTIONAL — only to escape a leading '/'
+                                      #   or preserve exact whitespace
 ```
 
 **Cardinality** (item count on lists; presence on headings/prose):
@@ -137,7 +140,7 @@ card     = "+" | "*" | "?" | "{" int ("," int?)? "}"
 | `+` / `*` / `?` | ≥1 / ≥0 / optional |
 | `{m}` `{m,}` `{m,n}` | explicit bounds |
 
-`## @entries /.+/+` = one or more headings at that level (repeated subsection). A
+`## @entries+ /.+/` = one or more headings at that level (repeated subsection). A
 child block under a **list** constrains *each item*.
 
 **Annotations**: `@name` (right after the marker) is a capture **alias**
