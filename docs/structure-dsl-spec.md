@@ -50,26 +50,27 @@ own opys's reserved-key / relation / ID logic.
 
 A schema is a skeletal markdown file: an optional `--- … ---` frontmatter block
 of typed keys, then a body skeleton of headings and typed (optionally nested)
-lists. Any node may carry a `@name` (capture id) and a ` -- description`.
+lists. The `@name` alias sits **right after the marker**; a ` -- description`
+trails the line.
 
 ```
 ---
-title: string                        @title -- human title, also the H1
-status: enum(planned, partial, implemented, wontfix) @status -- lifecycle state
-owner?: string                       @owner
+title: string                        -- human title, also the H1
+status: enum(planned, partial, implemented, wontfix)  -- lifecycle state
+owner?: string
 ---
 
-## Test plan                         @test_plan
-  - [ ]+                             @cases -- one checkbox per behavior
+## @test_plan Test plan
+  - [ ] @cases                       -- one checkbox per behavior
 
-## Manual verification               @manual
-  ### Setup                          @setup -- preconditions for the run
-    -+                               @items
-  ### Procedure                      @procedure
-    1.+                              @steps -- ordered, reproducible steps
-      -?                             @notes -- optional note under a step
-  ### Expectations                   @expect
-    - [ ]+                           @checks
+## @manual Manual verification
+  ### @setup Setup                   -- preconditions for the run
+    - @items+
+  ### @procedure Procedure
+    1. @steps+                       -- ordered, reproducible steps
+      - @note?                       -- optional note under a step
+  ### @expect Expectations
+    - [ ] @checks+
 ```
 
 The same text — cardinality stripped, placeholders filled — is the **scaffold**
@@ -92,30 +93,31 @@ body        = node*
 ### 3.2 Frontmatter schema
 
 ```ebnf
-fm-field = key "?"? ":" SP fm-type ann? NEWLINE
+fm-field = key "?"? ("@" name)? ":" SP fm-type (" -- " desc)? NEWLINE
 fm-type  = "string" | "int" | "bool" | "date"
          | "enum(" ident ("," SP? ident)* ")"
          | "[" fm-type "]"          # list of T
          | "/" regex "/"            # string matching regex
-ann      = SP "@" name              # capture name (defaults to key)
-         | SP "--" SP text          # description
-         | SP "@" name SP "--" SP text
 ```
 
 - `key?` ⇒ optional key; otherwise required.
+- The alias **defaults to the key**; an explicit `@name` (right after the key)
+  renames it (`title @display: string`).
 - Frontmatter is **closed by default** (unknown keys are errors); `%frontmatter=open` allows extras.
 
 ### 3.3 Body structure
 
-Each node is one line — `marker label? card? ann?` — plus an optionally indented
-child block. Indentation (normalized) encodes nesting.
+Each node is one line — `marker @name? label? card? -- desc?` — plus an
+optionally indented child block. The `@name` alias comes **immediately after the
+marker**, before the label/heading text; the description trails. Indentation
+(normalized) encodes nesting.
 
 ```ebnf
-node     = INDENT marker label? card? ann? NEWLINE children?
+node     = INDENT marker ("@" name)? label? card? (" -- " desc)? NEWLINE children?
 children = (node, indented one level deeper)+
 
 marker   = heading | bullet | ordered | checkbox | prose
-heading  = "#"{1,6} SP text          # level = count of '#'
+heading  = "#"{1,6} SP                # level = count of '#'; title is the label
 bullet   = "-"
 ordered  = digits "."                # "1."
 checkbox = "- [ ]"
@@ -123,8 +125,8 @@ prose    = ">"                        # a non-empty paragraph
 
 label    = '"' literal '"'            # item/heading text starts with literal
          | "/" regex "/"              # …or matches regex
+         | text                       # a bare literal heading title
 card     = "+" | "*" | "?" | "{" int ("," int?)? "}"
-ann      = SP "@" name | SP "--" SP text | SP "@" name SP "--" SP text
 ```
 
 **Cardinality** (item count on lists; presence on headings/prose):
@@ -135,21 +137,50 @@ ann      = SP "@" name | SP "--" SP text | SP "@" name SP "--" SP text
 | `+` / `*` / `?` | ≥1 / ≥0 / optional |
 | `{m}` `{m,}` `{m,n}` | explicit bounds |
 
-`## /.+/+` = one or more headings at that level (repeated subsection). A child
-block under a **list** constrains *each item*.
+`## @entries /.+/+` = one or more headings at that level (repeated subsection). A
+child block under a **list** constrains *each item*.
 
-**Annotations** (`ann`): `@name` is a capture **alias** (`[a-z][a-z0-9_]*`),
-**unique within its scope**, attachable to *any* block (heading, list, item,
-prose, frontmatter field). The alias — not the heading text — is what selectors,
-extraction, and edits address, so it is **rename-proof**: changing a heading's
-displayed text never breaks consumers. A heading without an explicit `@name`
-gets an **auto-derived alias** = the slug of its title (`Manual verification` →
-`manual_verification`); an explicit `@name` overrides it. ` -- text` is a
-description.
+**Annotations**: `@name` (right after the marker) is a capture **alias**
+(`[a-z][a-z0-9_]*`), **unique within its scope**, attachable to *any* block
+(heading, list, item, prose, frontmatter field). The alias — not the heading
+text — is what selectors, extraction, and edits address, so it is
+**rename-proof**: changing a heading's displayed text never breaks consumers. A
+heading without an explicit `@name` gets an **auto-derived alias** = the slug of
+its title (`Manual verification` → `manual_verification`); an explicit `@name`
+overrides it. ` -- text` (trailing) is a description.
 
----
+### 3.4 Markdown coverage — does it support "full markdown"?
 
-## 4. Resolved defaults (all overridable)
+Two layers, kept separate:
+
+- **The document** may use the **full** CommonMark + GFM syntax — tables,
+  fenced code, blockquotes, emphasis, links, images, HTML, footnotes, etc. The
+  parser (§9, comrak) reads all of it; mdprism never restricts what a document
+  contains.
+- **The schema vocabulary** models *block structure*: headings, the three list
+  kinds, and paragraphs (`>`). That is what you can currently *assert and
+  capture*. **Inline** content inside a captured node (bold, links, inline code)
+  is preserved as raw markdown text — constrain it with a `/regex/` label, not a
+  sub-grammar.
+
+Block types the schema does **not** yet have markers for — tables, fenced code,
+blockquotes, thematic breaks, images, footnotes, raw HTML — are **opaque**: under
+`%strict=true` they must sit inside a region the schema allows as freeform (see
+the `*` wildcard below), and under `%strict=false` they're simply ignored.
+
+**Planned vocabulary extensions** (post-v0), so the schema can assert richer
+blocks:
+
+| Marker (proposed) | Asserts |
+|---|---|
+| `\| col \| col \|` | a GFM table with these columns |
+| ` ```lang ` | a fenced code block (optional language) |
+| `>> ` | a blockquote (its own child block) |
+| `*` / `*+` | a freeform wildcard — *any* block(s) here (the escape hatch that lets `%strict` schemas permit rich prose) |
+
+Until then, model rich/freeform regions with `>` (paragraph) or a future `*`
+wildcard; everything the document contains still round-trips through render/edit
+because spans are byte-preserved (§7).
 
 | Behavior | Default | Override |
 |---|---|---|
