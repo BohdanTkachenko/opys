@@ -2,9 +2,10 @@
 
 **Status:** draft / under review · **Working crate name:** `mdrubric` *(TBD — `md*` name, see naming)*
 
-A standalone Rust crate that, from a single compact schema, can **validate**,
-**scaffold**, **extract a typed data object from**, **query**, and **edit
-in-place** a markdown document (YAML frontmatter + body). The schema *looks like
+A standalone Rust crate defining a **bidirectional mapping** between a markdown
+document (YAML frontmatter + body) and a typed data object, from a single compact
+schema. It can **validate**, **extract** (parse → data), **render** (data →
+markdown), **scaffold**, **query**, and **edit in-place**. The schema *looks like
 a skeleton of the document it describes*. `opys` is the first consumer (for
 `kind = "structured"` section bodies), but the crate has no opys dependency and
 is independently useful (runbooks, ADRs, postmortems, release notes…).
@@ -13,25 +14,33 @@ is independently useful (runbooks, ADRs, postmortems, release notes…).
 
 ## 1. Capabilities
 
-From one schema:
+One schema defines a **bidirectional mapping** between a markdown document and a
+typed data object (think *serde, for documents*). From it:
 
 1. **Validate** — does a document conform? Located, descriptive errors.
-2. **Scaffold** — emit a conforming starter document.
-3. **Extract** — parse a conforming document into a typed **data object** (JSON),
-   keyed by the schema's capture **names**.
-4. **Query** — run jq-style selectors over that object (a section, a nested node,
-   a single list item).
-5. **Edit in-place** — given a capture name or query and a new value, splice that
-   one node in the source markdown, byte-accurately, leaving everything else
-   untouched. *(The "LLM updates a list item with one command, 100% accuracy"
-   use case — no hand-rolled `sed`, no full-file rewrite.)*
+2. **Extract** (parse) — markdown → typed **data object** (JSON), keyed by the
+   schema's capture **names**.
+3. **Render** (generate) — data object → markdown. Take a template (the schema) +
+   variables (the data) and produce a conforming file.
+4. **Scaffold** — `render` specialized to placeholder/default values: a starter
+   document.
+5. **Query** — jq-style selectors over the extracted object (a section, a nested
+   node, a single list item).
+6. **Edit in-place** — `render` specialized to *one* node: resolve a capture name
+   or query → its source span → splice the new value, byte-accurately, leaving
+   everything else untouched. *(The "LLM updates a list item with one command,
+   100% accuracy" case — no hand-rolled `sed`, no full-file rewrite.)*
 
-(3)–(5) build on two foundational features baked in from day one: **scope-unique
-capture names** and **source spans** on every node.
+**Extract and render are inverses**: `extract(render(data)) == data`, and
+`render(extract(md)) ≈ md` (modulo formatting normalization). Scaffold and edit
+are just render restricted to placeholders / a single node. (2)–(6) build on two
+foundational features baked in from day one: **scope-unique capture names** and
+**source spans** on every node.
 
-**Non-goals:** not a markdown renderer; not a programming language (only
-cardinality, regex labels, and jq queries); does not own opys's reserved-key /
-relation / ID logic.
+**Non-goals:** not a *general* markdown renderer (no markdown→HTML, no arbitrary
+CommonMark transforms — it only renders *its own schema* from data); not a
+programming language (only cardinality, regex labels, and jq queries); does not
+own opys's reserved-key / relation / ID logic.
 
 ---
 
@@ -261,9 +270,12 @@ pub fn parse_schema(src: &str) -> Result<Schema, SchemaError>;
 
 impl Schema {
     pub fn validate(&self, md: &str) -> Vec<Problem>;
-    pub fn scaffold(&self) -> String;
     /// Parse a conforming doc into the typed object (errors if non-conforming).
     pub fn extract(&self, md: &str) -> Result<serde_json::Value, Vec<Problem>>;
+    /// Render a data object into a conforming markdown document (inverse of extract).
+    pub fn render(&self, data: &serde_json::Value) -> Result<String, RenderError>;
+    /// Render with placeholder/default values — a starter document.
+    pub fn scaffold(&self) -> String;
     /// jq selector over the extracted object.
     pub fn query(&self, md: &str, jq: &str) -> Result<Vec<serde_json::Value>, QueryError>;
     /// Replace the node addressed by a capture name or jq path; returns new source.
@@ -321,6 +333,8 @@ structure = '''
    parsed and carried, spans tracked, errors. Wire opys `structured` sections;
    delete `[[parts]]`.
 3. **Extract:** schema → typed JSON object via capture names.
-4. **Query:** `jaq` selectors over the object.
-5. **Edit in-place:** name/path → span → byte-accurate splice; expose via opys.
-6. Docs + (optional) standalone publish + IDE integration groundwork.
+4. **Render:** data object → markdown (inverse of extract); scaffold becomes a
+   thin wrapper over it with placeholder data.
+5. **Query:** `jaq` selectors over the object.
+6. **Edit in-place:** name/path → span → byte-accurate splice; expose via opys.
+7. Docs + (optional) standalone publish + IDE integration groundwork.
