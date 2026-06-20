@@ -138,8 +138,14 @@ ann      = SP "@" name | SP "--" SP text | SP "@" name SP "--" SP text
 `## /.+/+` = one or more headings at that level (repeated subsection). A child
 block under a **list** constrains *each item*.
 
-**Annotations** (`ann`): `@name` is a capture identifier (`[a-z][a-z0-9_]*`),
-**unique within its scope**; ` -- text` is a description.
+**Annotations** (`ann`): `@name` is a capture **alias** (`[a-z][a-z0-9_]*`),
+**unique within its scope**, attachable to *any* block (heading, list, item,
+prose, frontmatter field). The alias — not the heading text — is what selectors,
+extraction, and edits address, so it is **rename-proof**: changing a heading's
+displayed text never breaks consumers. A heading without an explicit `@name`
+gets an **auto-derived alias** = the slug of its title (`Manual verification` →
+`manual_verification`); an explicit `@name` overrides it. ` -- text` is a
+description.
 
 ---
 
@@ -230,6 +236,12 @@ carries its source `Span`, two things fall out:
 
 This requires the markdown parser to provide **source positions** (§9), which is
 a hard requirement on the parser choice.
+
+**Addressing by alias.** Beyond jq paths, `edit`/`query` accept a bare alias
+(`steps`) when it is unique across the schema, resolving to the full path
+internally; ambiguous aliases require the dotted path (`manual.procedure.steps`).
+The crate maintains a name→node index for this. So consumers get short, stable
+handles that survive heading renames — the whole point of aliases.
 
 **Custom extraction templates (future, host-exposed):** because captures are
 named and queryable, a consumer can ship its own schemas purely to *extract*
