@@ -859,6 +859,66 @@ fn stats_reports_per_status_percentages() {
         .stdout(predicate::str::contains("parity").not());
 }
 
+#[test]
+fn stats_groups_keyed_tags_and_counts_plain_tags() {
+    let dir = project();
+    // Two docs share the `area` key with different values; one repeats a key
+    // with two values (counts once for the key, twice across values). `priority`
+    // uses the `=` form. `osc` is a plain tag on two docs.
+    let docs = [
+        ("0001", "[area:parsing, area:rendering, priority=high, osc]"),
+        ("0002", "[area:parsing, osc]"),
+        ("0003", "[priority=low]"),
+    ];
+    for (n, tags) in docs {
+        dir.child(format!("opys/features/FEAT-{n}.md"))
+            .write_str(&format!(
+                "---\nid: FEAT-{n}\nstatus: planned\ntags: {tags}\n---\n\n# F\n"
+            ))
+            .unwrap();
+    }
+    opys(&dir)
+        .arg("stats")
+        .assert()
+        .success()
+        // `area` appears on 2 docs (FEAT-0001 counts once despite two values).
+        .stdout(predicate::str::contains("area (2 docs)"))
+        .stdout(predicate::str::is_match(r"parsing\s+2").unwrap())
+        .stdout(predicate::str::is_match(r"rendering\s+1").unwrap())
+        // `priority` via the `=` form, grouped by key.
+        .stdout(predicate::str::contains("priority (2 docs)"))
+        // Plain tag counted across docs.
+        .stdout(predicate::str::is_match(r"osc\s+2").unwrap());
+}
+
+#[test]
+fn tags_lists_distinct_tags_and_keys() {
+    let dir = project();
+    let docs = [
+        ("0001", "[area:parsing, priority=high, osc]"),
+        ("0002", "[area:rendering, osc]"),
+    ];
+    for (n, tags) in docs {
+        dir.child(format!("opys/features/FEAT-{n}.md"))
+            .write_str(&format!(
+                "---\nid: FEAT-{n}\nstatus: planned\ntags: {tags}\n---\n\n# F\n"
+            ))
+            .unwrap();
+    }
+    // Full tags: distinct, sorted, deduped (osc appears once).
+    opys(&dir)
+        .arg("tags")
+        .assert()
+        .success()
+        .stdout("area:parsing\narea:rendering\nosc\npriority=high\n");
+    // Keys collapse the value forms down to their key.
+    opys(&dir)
+        .args(["tags", "--keys"])
+        .assert()
+        .success()
+        .stdout("area\nosc\npriority\n");
+}
+
 // --- Work items -----------------------------------------------------------
 
 #[test]

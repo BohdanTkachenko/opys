@@ -249,6 +249,11 @@ opys list --field tag-list=osc --format ids     # list-membership match
 
 `opys list --type <name>` restricts the listing to one document type.
 
+`opys tags` enumerates the distinct tags in the inventory (sorted, one per line);
+`opys tags --keys` collapses the `key:value` / `key=value` forms to their keys,
+pairing with `list --tag <key>`. `opys stats` adds a tag breakdown: keyed tags
+grouped by key with a per-value count, and plain tags counted per document.
+
 ## Blockers
 
 Mark a dependency between two items (features and/or work items) with

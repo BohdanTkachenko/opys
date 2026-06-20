@@ -1,5 +1,8 @@
-//! `opys stats` — per-type status breakdown (counts + percentages) and
-//! test-plan / manual coverage. Pure read; no feature/type special-casing.
+//! `opys stats` — per-type status breakdown (counts + percentages),
+//! test-plan / manual coverage, and a tag breakdown. Pure read; no
+//! feature/type special-casing.
+
+use std::collections::{BTreeMap, HashSet};
 
 use crate::body;
 use crate::doc::Doc;
@@ -21,6 +24,27 @@ pub struct TypeStats {
     pub by_status: Vec<StatusCount>,
 }
 
+/// One value within a keyed-tag group: the value and how many documents carry
+/// a `key:value` / `key=value` tag with it.
+pub struct TagValueCount {
+    pub value: String,
+    pub count: usize,
+}
+
+/// A keyed-tag group (`key:value` / `key=value`): the key, how many documents
+/// carry any tag with this key, and the per-value breakdown (count-descending).
+pub struct TagKeyStats {
+    pub key: String,
+    pub docs: usize,
+    pub by_value: Vec<TagValueCount>,
+}
+
+/// A plain (unkeyed) tag and how many documents carry it.
+pub struct TagCount {
+    pub tag: String,
+    pub count: usize,
+}
+
 /// The computed stats over a set of documents — the shared data behind the CLI
 /// `stats` command and the TUI stats screen (which feeds it a filtered slice).
 pub struct StatsReport {
@@ -29,6 +53,75 @@ pub struct StatsReport {
     pub uncovered_testplan: usize,
     pub manual_total: usize,
     pub manual_uncovered: usize,
+    /// Keyed tags grouped by key (alphabetical), each with its value breakdown.
+    pub tag_keys: Vec<TagKeyStats>,
+    /// Plain tags, count-descending then alphabetical.
+    pub plain_tags: Vec<TagCount>,
+}
+
+/// Split a tag into its key and optional value at the first `:` or `=`. A plain
+/// tag has no value (`osc` → `("osc", None)`); a keyed tag splits at the first
+/// separator (`area:parsing` → `("area", Some("parsing"))`).
+fn split_tag(t: &str) -> (&str, Option<&str>) {
+    match t.find([':', '=']) {
+        Some(i) => (&t[..i], Some(&t[i + 1..])),
+        None => (t, None),
+    }
+}
+
+/// Tally tags across `docs`: keyed tags grouped by key (with per-value counts
+/// and a distinct-document total per key), and plain tags counted per document.
+fn tag_stats(docs: &[&Doc]) -> (Vec<TagKeyStats>, Vec<TagCount>) {
+    let mut key_docs: BTreeMap<String, usize> = BTreeMap::new();
+    let mut value_counts: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+    let mut plain: BTreeMap<String, usize> = BTreeMap::new();
+
+    for d in docs {
+        let tags = d.frontmatter.tags().unwrap_or_default();
+        let mut keys_in_doc: HashSet<&str> = HashSet::new();
+        for t in &tags {
+            match split_tag(t) {
+                (key, Some(value)) => {
+                    *value_counts
+                        .entry(key.to_string())
+                        .or_default()
+                        .entry(value.to_string())
+                        .or_default() += 1;
+                    // A key counts once per document even if it has many values.
+                    if keys_in_doc.insert(key) {
+                        *key_docs.entry(key.to_string()).or_default() += 1;
+                    }
+                }
+                (tag, None) => *plain.entry(tag.to_string()).or_default() += 1,
+            }
+        }
+    }
+
+    let tag_keys = key_docs
+        .into_iter()
+        .map(|(key, docs)| {
+            let mut by_value: Vec<TagValueCount> = value_counts
+                .remove(&key)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(value, count)| TagValueCount { value, count })
+                .collect();
+            by_value.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.value.cmp(&b.value)));
+            TagKeyStats {
+                key,
+                docs,
+                by_value,
+            }
+        })
+        .collect();
+
+    let mut plain_tags: Vec<TagCount> = plain
+        .into_iter()
+        .map(|(tag, count)| TagCount { tag, count })
+        .collect();
+    plain_tags.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.tag.cmp(&b.tag)));
+
+    (tag_keys, plain_tags)
 }
 
 /// Compute the stats report over `docs` (already filtered by the caller). Pure;
@@ -99,12 +192,16 @@ pub fn compute(pcfg: &ProjectConfig, docs: &[&Doc]) -> StatsReport {
         }
     }
 
+    let (tag_keys, plain_tags) = tag_stats(docs);
+
     StatsReport {
         total: docs.len(),
         per_type,
         uncovered_testplan,
         manual_total,
         manual_uncovered,
+        tag_keys,
+        plain_tags,
     }
 }
 
@@ -121,6 +218,22 @@ pub fn run(ctx: &Ctx) -> Result<()> {
             println!("  {:<16} {:>4}  {:>3}%", sc.status, sc.count, sc.pct);
         }
     }
+    if !r.tag_keys.is_empty() {
+        println!("\ntags by key:");
+        for tk in &r.tag_keys {
+            println!("  {} ({} docs)", tk.key, tk.docs);
+            for v in &tk.by_value {
+                println!("    {:<16} {:>4}", v.value, v.count);
+            }
+        }
+    }
+    if !r.plain_tags.is_empty() {
+        println!("\ntags:");
+        for tc in &r.plain_tags {
+            println!("  {:<16} {:>4}", tc.tag, tc.count);
+        }
+    }
+
     println!("\nuncovered test-plan items: {}", r.uncovered_testplan);
     println!("manual verification items: {}", r.manual_total);
     println!(

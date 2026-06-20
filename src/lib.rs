@@ -129,6 +129,10 @@ pub fn run(cli: Cli) -> Result<i32> {
             commands::sync::run_command(&ctx)?;
             Ok(0)
         }
+        Command::Tags { keys } => {
+            commands::tags::run(&ctx, keys)?;
+            Ok(0)
+        }
         Command::Stats => {
             commands::stats::run(&ctx)?;
             Ok(0)

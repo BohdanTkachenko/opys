@@ -18,6 +18,7 @@ pub mod show;
 pub mod stats;
 pub mod sync;
 pub mod tag;
+pub mod tags;
 pub mod verify;
 
 use serde_norway::Value;

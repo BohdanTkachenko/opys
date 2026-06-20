@@ -50,9 +50,11 @@ opys init                                   # bootstrap opys.toml + opys/
 
 opys new --title "Tab title follows OSC 0/2" --tags osc,tabs
 opys list --status planned
+opys list --tag area                        # exact tag, or any tag with key `area`
 opys set-status FEAT-0001 implemented       # rejected unless a test item is checked
 opys verify                                 # integrity check; nonzero exit on problems
-opys stats                                  # per-type status counts + percentages
+opys stats                                  # status counts + tag breakdown
+opys tags                                   # distinct tags (--keys for just keys)
 
 # Ephemeral work, linked to a feature (default types: task/bug/chore):
 opys new --type bug --title "Survive profile switch" --features FEAT-0001

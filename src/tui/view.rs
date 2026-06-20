@@ -275,6 +275,30 @@ fn render_stats(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
+    if !report.tag_keys.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "tags by key",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        for tk in &report.tag_keys {
+            lines.push(Line::from(format!("  {} ({} docs)", tk.key, tk.docs)));
+            for v in &tk.by_value {
+                lines.push(Line::from(format!("    {:<16}{:>4}", v.value, v.count)));
+            }
+        }
+    }
+    if !report.plain_tags.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "tags",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        for tc in &report.plain_tags {
+            lines.push(Line::from(format!("  {:<16}{:>4}", tc.tag, tc.count)));
+        }
+    }
+
     lines.push(Line::from(""));
     lines.push(Line::from(format!(
         "uncovered test-plan items: {}",

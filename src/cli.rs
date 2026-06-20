@@ -105,6 +105,14 @@ pub enum Command {
         format: ListFormat,
     },
 
+    /// List the distinct tags in the inventory, sorted, one per line.
+    Tags {
+        /// List distinct tag keys (the head before `:` / `=`) instead of full
+        /// tags — pairs with `list --tag <key>`.
+        #[arg(long)]
+        keys: bool,
+    },
+
     /// Guarded status transition. The id may be a comma-separated list to move
     /// several documents at once (same status/reason applied to each).
     SetStatus {
