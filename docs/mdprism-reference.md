@@ -47,17 +47,17 @@ spec_url? @spec: /^https?:\/\//        -- optional URL; alias renamed key -> "sp
 ## @risks Risks
   - @items*                            -- bullet list, zero or more
 
-## @signoff Sign-off                   -- literal-labeled bullets -> scalar captures
-  - @docs "Docs:"                      -- a bullet starting "Docs:"; value = text after it
-  - @tests "Tests:"
+## @signoff Sign-off                   -- bare literal labels -> scalar captures
+  - @docs Docs:                        -- a bullet starting "Docs:"; value = text after it
+  - @tests Tests:
 
 ## @decisions Decisions
-  ### @entries /.+/+                   -- repeated subsection: one or more, any title
+  ### @entries+ /.+/                    -- repeated subsection: one or more, any title
     > @state /status:/i                -- a paragraph matching /status:/i
     - @points{1,5}                     -- 1..5 rationale bullets (explicit range)
 
-## @refs References?                   -- optional heading (?)
-  - @links /^\[.+\]\(.+\)$/*           -- regex-labeled bullets, zero or more
+## @refs? References                   -- optional heading (?)
+  - @links* /^\[.+\]\(.+\)$/           -- regex-labeled bullets, zero or more
 ```
 
 ---
@@ -158,13 +158,13 @@ Status: accepted
 ### Extraction conventions (worth pinning)
 
 - A **scalar** capture (frontmatter field, `>` prose, labeled bullet) → its value.
-  A **labeled bullet** (`- "Docs:"`) captures the text *after* the label.
+  A **labeled bullet** (`- @docs Docs:`) captures the text *after* the label.
 - An **unlabeled list** (`-`, `1.`, `- [ ]`) → an array. Items are plain strings
   unless the item has named children, in which case each item is an object with
   its lead text under `"text"` plus the child aliases (see `procedure.steps`).
 - A **heading** with named children → an object of those children. A
-  **variable-title** heading (regex/repeated, e.g. `### /.+/+`) also captures its
-  heading text under `"title"`; a literal-title heading does not (it's constant).
+  **variable-title** heading (regex/repeated, e.g. `### @entries+ /.+/`) also
+  captures its heading text under `"title"`; a literal-title heading does not.
 - **Single vs array** is decided by cardinality: bare/`?` ⇒ scalar-or-object,
   `+`/`*`/`{m,n}` ⇒ array.
 
@@ -249,14 +249,14 @@ Status:
 | Frontmatter `enum` / `[list]` / `/regex/` | `status` / `tags` / `spec_url` |
 | Optional key `?` | `owner?`, `spec_url?` |
 | Frontmatter alias override | `spec_url @spec` (key `spec_url` → alias `spec`) |
-| Heading levels 1 / 2 / 3 | `# /.+/`, `## Summary`, `### Setup` |
-| Literal vs regex heading title | `## Summary` vs `# /.+/` |
-| Repeated subsection `/.+/+` | `### /.+/+` under Decisions |
-| Optional heading `?` | `## References?` |
+| Heading levels 1 / 2 / 3 | `# @title /.+/`, `## Summary`, `### @setup Setup` |
+| Literal vs regex heading title | `## Summary` vs `# @title /.+/` |
+| Repeated subsection | `### @entries+ /.+/` under Decisions |
+| Optional heading `?` | `## @refs? References` |
 | Bullet / ordered / checklist / prose | `-` / `1.` / `- [ ]` / `>` |
-| Literal label (→ scalar) | `- @docs "Docs:"` |
-| Regex label | `- @links /^\[.+\]\(.+\)$/`, `> @state /status:/i` |
-| Cardinality bare / `+` / `*` / `?` / `{m,n}` | cases / items / checks / note / `-{1,5}` |
+| Bare literal label (→ scalar) | `- @docs Docs:` |
+| Regex label | `- @links* /^\[.+\]\(.+\)$/`, `> @state /status:/i` |
+| Cardinality bare / `+` / `*` / `?` / `{m,n}` (glued) | `@cases` / `@items+` / `@checks*` / `@note?` / `@points{1,5}` |
 | Nesting: heading→heading | Manual → Setup/Procedure/Expectations |
 | Nesting: heading→list | Setup → bullets |
 | Nesting: list-item→list | Procedure step → `note` |
