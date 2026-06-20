@@ -12,52 +12,64 @@ Every feature appears at least once; the trailing `--` text on each line is its
 description.
 
 ```
-%ordered = true            # body nodes must appear in declared order (default)
-%strict  = true            # error on mismatch / unexpected blocks (default)
-%frontmatter = closed      # unknown frontmatter keys are errors (default)
+%ordered = true            <? body nodes must appear in declared order (default) ?>
+%strict  = true            <? error on mismatch / unexpected blocks (default) ?>
+%frontmatter = closed      <? unknown frontmatter keys are errors (default) ?>
 
---- # ---- frontmatter: typed keys (alias defaults to the key) ----
-title:    string                       -- the feature name (also the H1)
-status:   enum(planned, partial, implemented, wontfix)  -- lifecycle state
-priority: int                          -- 1 (highest) .. 5
-breaking: bool                         -- API-breaking change?
-created:  date                         -- RFC3339 date
-tags:     [string]+                    -- non-empty list of labels
-owner?:   string                       -- optional assignee
-spec_url? @spec: /^https?:\/\//        -- optional URL; alias renamed key -> "spec"
+<? ---- frontmatter: typed keys (alias defaults to the key) ---- ?>
+---
+title:    string                       <? the feature name (also the H1) ?>
+status:   enum(planned, partial, implemented, wontfix)  <? lifecycle state ?>
+priority: int                          <? 1 (highest) .. 5 ?>
+breaking: bool                         <? API-breaking change? ?>
+created:  date                         <? RFC3339 date ?>
+tags:     [string]+                    <? non-empty list of labels ?>
+owner?:   string                       <? optional assignee ?>
+spec_url? @spec: /^https?:\/\//        <? optional URL; alias renamed key -> "spec" ?>
 ---
 
-# @title /.+/                          -- required H1, any text (regex-labeled, level 1)
+# @title /.+/                          <? required H1, any text (regex-labeled, level 1) ?>
 
-## Summary                             -- literal heading, NO @name -> auto-alias "summary"
-  > @blurb                             -- a required non-empty paragraph (prose)
+## Summary                             <? literal heading, NO @name -> auto-alias "summary" ?>
+  > @blurb                             <? a required non-empty paragraph (prose) ?>
 
 ## @test_plan Test plan
-  - [ ] @cases                         -- a checklist, required (bare = >=1)
+  - [ ] @cases                         <? a checklist, required (bare = >=1) ?>
 
-## @manual Manual verification         -- heading nests headings
+## @manual Manual verification         <? heading nests headings ?>
   ### @setup Setup
-    - +@items                          -- bullet list, one or more
+    - +@items                          <? bullet list, one or more ?>
   ### @procedure Procedure
-    1. +@steps                         -- ordered list, one or more
-      - ?@note                         -- list item nests an optional bullet
+    1. +@steps                         <? ordered list, one or more ?>
+      - ?@note                         <? list item nests an optional bullet ?>
   ### @expect Expectations
-    - [ ] *@checks                     -- checklist, zero or more (optional)
+    - [ ] *@checks                     <? checklist, zero or more (optional) ?>
 
 ## @risks Risks
-  - *@items                            -- bullet list, zero or more
+  - *@items                            <? bullet list, zero or more ?>
 
-## @signoff Sign-off                   -- bare literal labels -> scalar captures
-  - @docs Docs:                        -- a bullet starting "Docs:"; value = text after it
+## @signoff Sign-off                   <? bare literal labels -> scalar captures ?>
+  - @docs Docs:                        <? a bullet starting "Docs:"; value = text after it ?>
   - @tests Tests:
 
 ## @decisions Decisions
-  ### +@entries /.+/                    -- repeated subsection: one or more, any title
-    > @state /status:/i                -- a paragraph matching /status:/i
-    - {1,5}@points                     -- 1..5 rationale bullets (explicit range)
+  ### +@entries /.+/                    <? repeated subsection: one or more, any title ?>
+    > @state /status:/i                <? a paragraph matching /status:/i ?>
+    - {1,5}@points                     <? 1..5 rationale bullets (explicit range) ?>
 
-## ?@refs References                   -- optional heading (?)
-  - *@links /^\[.+\]\(.+\)$/           -- regex-labeled bullets, zero or more
+## ?@refs References                   <? optional heading (?) ?>
+  - *@links /^\[.+\]\(.+\)$/           <? regex-labeled bullets, zero or more ?>
+```
+
+### 1a. Descriptions & escaping
+
+```
+## Trade-offs: speed -- vs -- safety     <? '--' is fine: the desc is fenced by <? ?> ?>
+## C++ and user@host and a/b             <? +, @, / are literal mid-label ?>
+- \+must-start-with-plus                 <? escape a LEADING head char ?>
+## \/etc path                            <? escape a leading '/' so it is not a regex ?>
+## "+/- weird <?x?> title"               <? quotes: everything inside is literal ?>
+> @note Use \?> to write a literal ?> inside a description
 ```
 
 ---
@@ -262,4 +274,5 @@ Status:
 | Nesting: list-item→list | Procedure step → `note` |
 | `@name` alias | throughout |
 | Auto-derived alias | `## Summary` → `summary` |
-| `--` description | every line |
+| `<? … ?>` description / comment | every line + §1a |
+| Escaping (`\`, quotes, position-only specials) | §1a |

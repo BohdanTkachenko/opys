@@ -50,25 +50,25 @@ own opys's reserved-key / relation / ID logic.
 
 A schema is a skeletal markdown file: an optional `--- … ---` frontmatter block
 of typed keys, then a body skeleton of headings and typed (optionally nested)
-lists. The `@name` alias sits **right after the marker**; a ` -- description`
+lists. The `@name` alias sits **right after the marker**; a `<? description ?>`
 trails the line.
 
 ```
 ---
-title: string                        -- human title, also the H1
-status: enum(planned, partial, implemented, wontfix)  -- lifecycle state
+title: string                        <? human title, also the H1 ?>
+status: enum(planned, partial, implemented, wontfix)  <? lifecycle state ?>
 owner?: string
 ---
 
 ## @test_plan Test plan
-  - [ ] @cases                       -- one checkbox per behavior
+  - [ ] @cases                       <? one checkbox per behavior ?>
 
 ## @manual Manual verification
-  ### @setup Setup                   -- preconditions for the run
+  ### @setup Setup                   <? preconditions for the run ?>
     - +@items
   ### @procedure Procedure
-    1. +@steps                       -- ordered, reproducible steps
-      - ?@note                       -- optional note under a step
+    1. +@steps                       <? ordered, reproducible steps ?>
+      - ?@note                       <? optional note under a step ?>
   ### @expect Expectations
     - [ ] +@checks
 ```
@@ -93,11 +93,12 @@ body        = node*
 ### 3.2 Frontmatter schema
 
 ```ebnf
-fm-field = key "?"? ("@" name)? ":" SP fm-type (" -- " desc)? NEWLINE
+fm-field = key "?"? ("@" name)? ":" SP fm-type (SP desc)? NEWLINE
 fm-type  = "string" | "int" | "bool" | "date"
          | "enum(" ident ("," SP? ident)* ")"
          | "[" fm-type "]"          # list of T
          | "/" regex "/"            # string matching regex
+desc     = "<?" text "?>"           # delimited description / comment
 ```
 
 - `key?` ⇒ optional key; otherwise required.
@@ -107,15 +108,15 @@ fm-type  = "string" | "int" | "bool" | "date"
 
 ### 3.3 Body structure
 
-Each node is one line — `marker card?@name? label? -- desc?` — plus an
+Each node is one line — `marker card?@name? label? <? desc ?>?` — plus an
 optionally indented child block. Right after the marker comes a **glued head**:
 an optional `card`, then an optional `@name` (no space between them — `+@docs`).
-A space then begins the optional `label` (heading title / item match); the
-description trails. Cardinality is always in the same column, with or without a
-name. Indentation (normalized) encodes nesting.
+A space then begins the optional `label` (heading title / item match), which runs
+to the ` <?` description (or end of line). Cardinality is always in the same
+column, with or without a name. Indentation (normalized) encodes nesting.
 
 ```ebnf
-node     = INDENT marker (card? ("@" name)?) (SP label)? (" -- " desc)? NEWLINE children?
+node     = INDENT marker (card? ("@" name)?) (SP label)? (SP desc)? NEWLINE children?
 children = (node, indented one level deeper)+
 
 marker   = heading | bullet | ordered | checkbox | prose
@@ -154,7 +155,9 @@ text — is what selectors, extraction, and edits address, so it is
 **rename-proof**: changing a heading's displayed text never breaks consumers. A
 heading without an explicit `@name` gets an **auto-derived alias** = the slug of
 its title (`Manual verification` → `manual_verification`); an explicit `@name`
-overrides it. ` -- text` (trailing) is a description.
+overrides it. `<? text ?>` is a **delimited** description: because it is fenced,
+the label may contain any characters (including `--`, `—`), and a `<? … ?>` on
+its own line is just an ignored comment.
 
 ### 3.4 Markdown coverage — does it support "full markdown"?
 
@@ -189,6 +192,34 @@ Until then, model rich/freeform regions with `>` (paragraph) or a future `*`
 wildcard; everything the document contains still round-trips through render/edit
 because spans are byte-preserved (§7).
 
+### 3.5 Escaping
+
+Special tokens are special **only in the position that gives them meaning**;
+elsewhere they are literal, so most labels need no escaping:
+
+- `card` (`+ * ? { }`) and `@name` matter only in the **head** (right after the
+  marker). `## C++ trade-offs`, `## ping user@host`, `## a {set}` are all
+  literal — the `+`/`@`/`{` are mid-label.
+- `/` starts a **regex** only as the **first non-space char of the label**;
+  `## and/or` is literal.
+- `<?` starts a **description** anywhere on the line.
+
+To force a literal where a token *would* be special, use either:
+
+- **Backslash** — `\x` is a literal `x`, anywhere. For a label that must *start*
+  with a head/regex char, or that contains `<?`:
+  `## \+plus`, `## \@handle`, `## \/etc`, `## a \<? b`. `\\` is a literal backslash.
+- **Quotes** — wrap the whole label in `"…"`; inside, only `"` (`\"`) and `\`
+  (`\\`) are special, so `+ @ / <?` are all literal: `## "+/- tolerance; see <?x?>"`.
+  The easy escape for messy titles.
+
+Inside a **regex** `/…/`, `\/` is a literal slash (regex-native). Inside a
+**description** `<? … ?>`, `\?>` is a literal `?>`.
+
+---
+
+## 4. Resolved defaults (all overridable)
+
 | Behavior | Default | Override |
 |---|---|---|
 | **Ordering** | **strict** — body nodes must appear in declared order | `%ordered=false` (any order) |
@@ -203,7 +234,7 @@ can also set them programmatically.
 
 ## 5. Descriptions → richer everything
 
-A node's ` -- description` is used to:
+A node's `<? description ?>` is used to:
 
 - **Enrich errors:** `Procedure › steps: expected ≥1 ordered item — "ordered,
   reproducible steps"`.
@@ -375,7 +406,8 @@ structure = '''
 
 ## 12. Open decisions
 
-1. **Exact annotation syntax** — `@name` + ` -- description` proposed; confirm.
+1. **Exact annotation syntax** — `marker card?@name? label? <? desc ?>` with
+   backslash/quote escaping (§3.5); confirm.
 2. **Query engine** — `jaq` (jq in Rust) proposed.
 3. **Markdown library** — `comrak` (AST + sourcepos) proposed; `pulldown-cmark` alt.
 
