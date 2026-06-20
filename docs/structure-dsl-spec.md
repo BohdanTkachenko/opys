@@ -182,12 +182,19 @@ Descriptions are optional and never affect matching.
 Parsing a **conforming** document against the schema yields a JSON-like value,
 keyed by capture `@names`, ready for `serde_json` consumers and jq queries.
 
-- A named **heading** → an object of its named children.
-- A named **list** → an array (each item: an object of its named children, or
-  the item's text if it has none).
-- A named **scalar** (prose, frontmatter field, labeled bullet value) → a typed
-  value (string / int / bool / date / enum).
-- Unnamed nodes are validated but not captured.
+- A named **heading** → an object of its named children; a *variable-title*
+  heading (regex/repeated) also captures its heading text under `"title"`.
+- A named **list** → an array; items are plain strings unless they have named
+  children, in which case each item is an object with its lead text under
+  `"text"` plus the child aliases.
+- A named **scalar** (prose, frontmatter field, labeled bullet — which captures
+  the text *after* the label) → a typed value (string / int / bool / date /
+  enum). Single-vs-array follows cardinality: bare/`?` ⇒ scalar, `+`/`*`/`{m,n}` ⇒ array.
+- Unnamed nodes are validated but not captured (headings auto-derive an alias —
+  see §3.3 — so they remain addressable).
+
+A complete worked example of every construct, with the resulting object, lives in
+[`mdprism-reference.md`](./mdprism-reference.md).
 
 **Example** (schema from §2) →
 
