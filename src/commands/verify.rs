@@ -11,7 +11,7 @@ use crate::doc::Doc;
 use crate::error::Result;
 use crate::frontmatter::Frontmatter;
 use crate::project::{id_format_re, Project, KEBAB_RE};
-use crate::project_config::{CheckScope, SectionCheck, SectionKind};
+use crate::project_config::{CheckScope, PartForm, PartSpec, SectionCheck, SectionKind};
 use crate::refs;
 use crate::rules;
 use crate::Ctx;
@@ -109,8 +109,8 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
 
         // Section-kind validators, by the type's section headings.
         for sec in &t.sections {
-            if sec.kind == SectionKind::Manual {
-                check_manual(d, id, &sec.heading, &mut errors);
+            if sec.kind == SectionKind::Structured {
+                check_structured(d, id, &sec.heading, &sec.parts, &mut errors);
             }
             // Universal content checks, run regardless of kind.
             for chk in &sec.checks {
@@ -505,24 +505,37 @@ fn resolve_file(prj: &Project, rel: &str, roots: &[String]) -> Option<String> {
         .and_then(|p| std::fs::read_to_string(p).ok())
 }
 
-fn check_manual(d: &Doc, id: &str, heading: &str, errors: &mut Vec<String>) {
-    for it in body::manual_items_in(&d.body, heading) {
+/// A `structured` section: every item must carry each `required` part (a value
+/// part present, or an ordered part with ≥1 numbered entry), and an item's lead
+/// line must not be a checkbox (that is what `checklist` is for).
+fn check_structured(
+    d: &Doc,
+    id: &str,
+    heading: &str,
+    parts: &[PartSpec],
+    errors: &mut Vec<String>,
+) {
+    for it in body::structured_items(&d.body, heading) {
         let desc: String = it.desc.chars().take(50).collect();
-        if it.setup.is_none() {
-            errors.push(format!("{id}: manual item missing Setup: {desc}"));
-        }
-        if it.steps.is_empty() {
-            errors.push(format!("{id}: manual item missing numbered Steps: {desc}"));
-        }
-        if it.expect.is_none() {
-            errors.push(format!("{id}: manual item missing Expect: {desc}"));
+        for part in parts {
+            if part.required && !it.has_part(&part.label) {
+                let what = match part.form {
+                    PartForm::Ordered => format!("numbered {}", part.label),
+                    PartForm::Value => part.label.clone(),
+                };
+                errors.push(format!(
+                    "{id}: section '{heading}' item missing {what}: {desc}"
+                ));
+            }
         }
         let as_item = format!("- {}", it.desc);
         if as_item.to_lowercase().starts_with("- [x] ")
             || it.desc.starts_with("[ ]")
             || it.desc.starts_with("[x]")
         {
-            errors.push(format!("{id}: manual items must not be checkboxes: {desc}"));
+            errors.push(format!(
+                "{id}: section '{heading}' items must not be checkboxes: {desc}"
+            ));
         }
     }
 }

@@ -45,14 +45,28 @@ pub struct TagCount {
     pub count: usize,
 }
 
+/// Coverage for one section heading (aggregated across every document that has
+/// it): how many items it holds and how many are uncovered. The meaning of
+/// "uncovered" depends on `kind` — for `checklist` it is unchecked items, for
+/// `manual` it is items without automated coverage.
+pub struct SectionCoverage {
+    pub heading: String,
+    /// The section kind that made this a coverage section. Currently always
+    /// `"checklist"` (a validated checklist — one carrying a `scope=checked`
+    /// check); kept as a column so other coverage kinds can be added later.
+    pub kind: &'static str,
+    pub items: usize,
+    pub uncovered: usize,
+}
+
 /// The computed stats over a set of documents — the shared data behind the CLI
 /// `stats` command and the TUI stats screen (which feeds it a filtered slice).
 pub struct StatsReport {
     pub total: usize,
     pub per_type: Vec<TypeStats>,
-    pub uncovered_testplan: usize,
-    pub manual_total: usize,
-    pub manual_uncovered: usize,
+    /// Per-section coverage, keyed by the section's real heading (from config),
+    /// sorted by heading then kind. Empty sections are omitted.
+    pub coverage: Vec<SectionCoverage>,
     /// Keyed tags grouped by key (alphabetical), each with its value breakdown.
     pub tag_keys: Vec<TagKeyStats>,
     /// Plain tags, count-descending then alphabetical.
@@ -159,47 +173,47 @@ pub fn compute(pcfg: &ProjectConfig, docs: &[&Doc]) -> StatsReport {
         });
     }
 
-    // Test-plan / manual coverage across every type's relevant sections.
-    let mut uncovered_testplan = 0usize;
-    let mut manual_total = 0usize;
-    let mut manual_uncovered = 0usize;
+    // Coverage across every type's validated checklists, aggregated per heading
+    // (the real section name from config) so nothing is hardcoded.
+    // (heading, kind) -> (items, uncovered).
+    let mut coverage: BTreeMap<(String, &'static str), (usize, usize)> = BTreeMap::new();
     for d in docs {
         let Some(tname) = d.id().and_then(|id| pcfg.type_name_for_id(id)) else {
             continue;
         };
         for sec in &pcfg.types[tname].sections {
-            match sec.kind {
-                // A "validated checklist" (one carrying a scope=checked check) is
-                // the new test plan: unchecked items are uncovered.
-                SectionKind::Checklist
-                    if sec.checks.iter().any(|c| c.scope == CheckScope::Checked) =>
-                {
-                    uncovered_testplan += body::checklist_items(&d.body, &sec.heading)
-                        .iter()
-                        .filter(|i| !i.checked)
-                        .count();
-                }
-                SectionKind::Manual => {
-                    for it in body::manual_items_in(&d.body, &sec.heading) {
-                        manual_total += 1;
-                        if it.uncovered() {
-                            manual_uncovered += 1;
-                        }
-                    }
-                }
-                _ => {}
+            // A "validated checklist" (one carrying a scope=checked check):
+            // unchecked items are uncovered. Other kinds don't report coverage.
+            if sec.kind == SectionKind::Checklist
+                && sec.checks.iter().any(|c| c.scope == CheckScope::Checked)
+            {
+                let items = body::checklist_items(&d.body, &sec.heading);
+                let unchecked = items.iter().filter(|i| !i.checked).count();
+                let e = coverage
+                    .entry((sec.heading.clone(), "checklist"))
+                    .or_default();
+                e.0 += items.len();
+                e.1 += unchecked;
             }
         }
     }
+    let coverage = coverage
+        .into_iter()
+        .filter(|(_, (items, _))| *items > 0)
+        .map(|((heading, kind), (items, uncovered))| SectionCoverage {
+            heading,
+            kind,
+            items,
+            uncovered,
+        })
+        .collect();
 
     let (tag_keys, plain_tags) = tag_stats(docs);
 
     StatsReport {
         total: docs.len(),
         per_type,
-        uncovered_testplan,
-        manual_total,
-        manual_uncovered,
+        coverage,
         tag_keys,
         plain_tags,
     }
@@ -234,11 +248,14 @@ pub fn run(ctx: &Ctx) -> Result<()> {
         }
     }
 
-    println!("\nuncovered test-plan items: {}", r.uncovered_testplan);
-    println!("manual verification items: {}", r.manual_total);
-    println!(
-        "manual items without automated coverage: {}",
-        r.manual_uncovered
-    );
+    if !r.coverage.is_empty() {
+        println!("\ncoverage:");
+        for c in &r.coverage {
+            println!(
+                "  {:<16} {:<10} {} uncovered / {} items",
+                c.heading, c.kind, c.uncovered, c.items
+            );
+        }
+    }
     Ok(())
 }

@@ -28,7 +28,10 @@ roots = [\"src\", \"tests\"]\n\
 must_match = '${{name}}'\n\
 scope = \"checked\"\n\
 message = \"test reference `${{ref}}` not found\"\n\
-[[types.feature.sections]]\nheading = \"Manual verification\"\nkind = \"manual\"\n\
+[[types.feature.sections]]\nheading = \"Manual verification\"\nkind = \"structured\"\n\
+[[types.feature.sections.parts]]\nlabel = \"Setup\"\nrequired = true\n\
+[[types.feature.sections.parts]]\nlabel = \"Steps\"\nform = \"ordered\"\nrequired = true\n\
+[[types.feature.sections.parts]]\nlabel = \"Expect\"\nrequired = true\n\
 [[rules]]\nwhen = {{ type = \"feature\", status = \"wontfix\" }}\nrequire_field = \"wontfix_reason\"\n\
 [[rules]]\nwhen = {{ type = \"feature\", status = \"implemented\" }}\nrequire_checked_section = \"Test plan\"\n"
     )
@@ -186,6 +189,26 @@ fn new_writes_doc_and_no_index() {
     // opys no longer generates an index.
     dir.child("opys/INDEX.md")
         .assert(predicate::path::missing());
+}
+
+#[test]
+fn new_scaffolds_structured_section_parts() {
+    let dir = project_with(
+        "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\nstatuses = [\"planned\"]\n\
+default_status = \"planned\"\n\
+[[types.feature.sections]]\nheading = \"Manual verification\"\nkind = \"structured\"\nrequired = true\n\
+[[types.feature.sections.parts]]\nlabel = \"Setup\"\nrequired = true\n\
+[[types.feature.sections.parts]]\nlabel = \"Steps\"\nform = \"ordered\"\nrequired = true\n\
+[[types.feature.sections.parts]]\nlabel = \"Expect\"\nrequired = true\n",
+    );
+    opys(&dir).args(["new", "--title", "X"]).assert().success();
+    let body = std::fs::read_to_string(dir.child("opys/FEAT-0001.md").path()).unwrap();
+    assert!(body.contains("## Manual verification"), "{body}");
+    assert!(body.contains("- First item"), "{body}");
+    assert!(body.contains("  - Setup: "), "{body}");
+    assert!(body.contains("  - Steps:\n    1. "), "{body}");
+    assert!(body.contains("  - Expect: "), "{body}");
 }
 
 #[test]
@@ -486,20 +509,29 @@ fn tag_keeps_at_least_one() {
 }
 
 #[test]
-fn verify_checks_manual_item_shape() {
+fn verify_checks_structured_item_shape() {
     let dir = project();
+    // An item missing every required part of the `structured` section.
     dir.child("opys/features/FEAT-0001.md")
         .write_str(
-            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# F\n\n## Manual verification\n- Looks right — *manual: visual*\n",
+            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# F\n\n## Manual verification\n- Looks right\n",
         )
         .unwrap();
     opys(&dir)
         .arg("verify")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("manual item missing Setup"))
-        .stderr(predicate::str::contains("missing numbered Steps"))
-        .stderr(predicate::str::contains("missing Expect"));
+        .stderr(predicate::str::contains("item missing Setup"))
+        .stderr(predicate::str::contains("item missing numbered Steps"))
+        .stderr(predicate::str::contains("item missing Expect"));
+
+    // A fully-formed item passes the structured check.
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str(
+            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# F\n\n## Manual verification\n- Looks right\n  - Setup: a window\n  - Steps:\n    1. open it\n  - Expect: it renders\n",
+        )
+        .unwrap();
+    opys(&dir).arg("verify").assert().success();
 }
 
 #[test]
@@ -857,6 +889,31 @@ fn stats_reports_per_status_percentages() {
         .stdout(predicate::str::contains("planned"))
         .stdout(predicate::str::contains("67%"))
         .stdout(predicate::str::contains("parity").not());
+}
+
+#[test]
+fn stats_reports_coverage_by_real_section_heading() {
+    let dir = project();
+    // Two features with the default `Test plan` checklist: 4 items total, 2
+    // unchecked. Coverage is labeled by the real heading, not a hardcoded name.
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str(
+            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# A\n\n## Test plan\n- [x] one `m::a`\n- [ ] two\n",
+        )
+        .unwrap();
+    dir.child("opys/features/FEAT-0002.md")
+        .write_str(
+            "---\nid: FEAT-0002\nstatus: planned\ntags: [a]\n---\n\n# B\n\n## Test plan\n- [x] ok `m::b`\n- [ ] todo\n",
+        )
+        .unwrap();
+    opys(&dir)
+        .arg("stats")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("coverage:"))
+        // Real heading + kind, not "test-plan items".
+        .stdout(predicate::str::is_match(r"Test plan\s+checklist\s+2 uncovered / 4 items").unwrap())
+        .stdout(predicate::str::contains("test-plan items").not());
 }
 
 #[test]

@@ -87,14 +87,16 @@ impl Default for Layout {
 
 /// A built-in section behavior a type's section opts into. The validator and
 /// scaffold for each kind are compiled code (closed set, not extensible from
-/// config) — this is the guardrail that keeps the engine opinionated.
+/// config) — this is the guardrail that keeps the engine opinionated. The
+/// `structured` kind is the configurable one: its item format is declared by
+/// the section's `[[parts]]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SectionKind {
     Prose,
     Log,
     Checklist,
-    Manual,
+    Structured,
 }
 
 impl SectionKind {
@@ -102,6 +104,30 @@ impl SectionKind {
     pub fn is_checkable(self) -> bool {
         matches!(self, SectionKind::Checklist)
     }
+}
+
+/// How a `structured` section's part is written under an item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PartForm {
+    /// A single `- <Label>: <value>` bullet.
+    #[default]
+    Value,
+    /// A `- <Label>:` bullet followed by a numbered list.
+    Ordered,
+}
+
+/// One named part of a `structured` section's item (e.g. `Setup`, `Steps`,
+/// `Expect`). The set of parts *is* the configurable item format.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PartSpec {
+    /// The bullet label, written as `- <label>: …` under each item.
+    pub label: String,
+    #[serde(default)]
+    pub form: PartForm,
+    /// Whether every item must carry this part (verify enforces it).
+    #[serde(default)]
+    pub required: bool,
 }
 
 /// Which lines of a section a [`SectionCheck`] validates.
@@ -157,6 +183,10 @@ pub struct SectionSpec {
     /// Universal content checks run over this section at `verify` time.
     #[serde(default)]
     pub checks: Vec<SectionCheck>,
+    /// The item format for a `structured` section: its named parts. Empty (and
+    /// rejected by validation) for every other kind.
+    #[serde(default)]
+    pub parts: Vec<PartSpec>,
 }
 
 /// `requires_link = { to = "feature", min = 1 }` — a type must reference ≥`min`
@@ -489,6 +519,7 @@ impl ProjectConfig {
                 for (ci, chk) in sec.checks.iter().enumerate() {
                     validate_check(name, &sec.heading, sec.kind, ci + 1, chk, &mut errs);
                 }
+                validate_parts(name, sec, &mut errs);
             }
         }
 
@@ -676,6 +707,40 @@ impl ProjectConfig {
     }
 }
 
+/// Validate a section's `[[parts]]`: only a `structured` section may declare
+/// them, and then it must declare at least one, each with a non-empty, unique,
+/// colon-free label.
+fn validate_parts(type_name: &str, sec: &SectionSpec, errs: &mut Vec<String>) {
+    let tag = format!("type '{type_name}' section '{}'", sec.heading);
+    if sec.kind != SectionKind::Structured {
+        if !sec.parts.is_empty() {
+            errs.push(format!(
+                "{tag}: 'parts' is only allowed on a 'structured' section"
+            ));
+        }
+        return;
+    }
+    if sec.parts.is_empty() {
+        errs.push(format!(
+            "{tag}: a 'structured' section needs at least one part"
+        ));
+    }
+    let mut seen: HashSet<&str> = HashSet::new();
+    for p in &sec.parts {
+        if p.label.trim().is_empty() {
+            errs.push(format!("{tag}: a part label must not be empty"));
+        } else if p.label.contains(':') {
+            errs.push(format!(
+                "{tag}: part label '{}' must not contain ':'",
+                p.label
+            ));
+        }
+        if !seen.insert(p.label.as_str()) {
+            errs.push(format!("{tag}: duplicate part label '{}'", p.label));
+        }
+    }
+}
+
 /// Validate one [`SectionCheck`]: its `pattern` compiles, `file` / every
 /// `${group}` reference name real capture groups, at least one of `file` /
 /// `must_match` is set, `must_match` compiles, and `scope = "checked"` only
@@ -753,6 +818,50 @@ mod tests {
             "default config has problems: {problems:?}"
         );
         assert_eq!(cfg.types.len(), 4);
+    }
+
+    #[test]
+    fn flags_structured_parts_problems() {
+        // A structured section with no parts, and parts on a non-structured
+        // section, are both rejected; a bad label is flagged too.
+        let cfg: ProjectConfig = toml::from_str(
+            r#"
+[types.feature]
+prefix = "FEAT"
+statuses = ["planned"]
+default_status = "planned"
+
+[[types.feature.sections]]
+heading = "Empty"
+kind = "structured"
+
+[[types.feature.sections]]
+heading = "Steps"
+kind = "structured"
+[[types.feature.sections.parts]]
+label = "Bad:Label"
+
+[[types.feature.sections]]
+heading = "Notes"
+kind = "prose"
+[[types.feature.sections.parts]]
+label = "Whatever"
+"#,
+        )
+        .unwrap();
+        let joined = cfg.validate().join("\n");
+        assert!(
+            joined.contains("section 'Empty': a 'structured' section needs at least one part"),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("section 'Notes': 'parts' is only allowed on a 'structured' section"),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("section 'Steps': part label 'Bad:Label' must not contain ':'"),
+            "{joined}"
+        );
     }
 
     #[test]
