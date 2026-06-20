@@ -1,6 +1,8 @@
-# Markdown Structure DSL — design spec
+# mdprism — design spec
 
-**Status:** draft / under review · **Working crate name:** `mdrubric` *(TBD — `md*` name, see naming)*
+*Markdown ⇄ data, via a template.*
+
+**Status:** draft / under review · **Crate name:** `mdprism` *(chosen)*
 
 A standalone Rust crate defining a **bidirectional mapping** between a markdown
 document (YAML frontmatter + body) and a typed data object, from a single compact
@@ -316,10 +318,11 @@ structure = '''
 
 ## 12. Open decisions
 
-1. **Crate name** — `md*` shortlist (rec: `mdrubric` / `mdstruct`).
-2. **Exact annotation syntax** — `@name` + ` -- description` proposed; confirm.
-3. **Query engine** — `jaq` (jq in Rust) proposed.
-4. **Markdown library** — `comrak` (AST + sourcepos) proposed; `pulldown-cmark` alt.
+1. **Exact annotation syntax** — `@name` + ` -- description` proposed; confirm.
+2. **Query engine** — `jaq` (jq in Rust) proposed.
+3. **Markdown library** — `comrak` (AST + sourcepos) proposed; `pulldown-cmark` alt.
+
+(Crate name **`mdprism`** is **resolved**.)
 
 (Parser-is-a-library, strict ordering, strict matching, closed frontmatter are
 **resolved** per §4.)
