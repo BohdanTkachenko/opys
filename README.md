@@ -35,6 +35,38 @@ Or build from source:
 cargo build --release   # target/release/opys
 ```
 
+### Use from another flake
+
+The flake exposes `opys` as a package, an app, and an overlay, so other flakes
+can consume the CLI without going through crates.io:
+
+```nix
+{
+  inputs.opys.url = "github:BohdanTkachenko/opys";
+
+  outputs = { nixpkgs, opys, ... }:
+    let
+      system = "x86_64-linux";
+      # Either apply the overlay and use `pkgs.opys`…
+      pkgs = import nixpkgs {
+        inherit system;
+        overlays = [ opys.overlays.default ];
+      };
+    in {
+      devShells.${system}.default = pkgs.mkShell {
+        # …or reference the package directly: opys.packages.${system}.default
+        packages = [ pkgs.opys ];
+      };
+    };
+}
+```
+
+Or run it straight from the flake, no install:
+
+```sh
+nix run github:BohdanTkachenko/opys -- --help
+```
+
 `opys.toml` lives at the **project root** — opys finds it by searching upward
 from the current directory (like git or Cargo). It declares a `base` directory
 (default `opys/`, relative to the root) so the inventory stays out of the
