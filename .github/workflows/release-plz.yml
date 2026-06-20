@@ -72,6 +72,13 @@ jobs:
         run: |
           set -euo pipefail
           branch='${{ fromJSON(steps.release-plz.outputs.pr).head_branch }}'
+          # On the post-merge push there is no new release PR (release-plz still
+          # emits a non-empty `pr` object, but with an empty head_branch), so
+          # there is nothing to sync — skip rather than `git switch ''`.
+          if [ -z "$branch" ]; then
+            echo "No release-PR branch to sync; nothing to do."
+            exit 0
+          fi
           git fetch origin "$branch"
           git switch "$branch"
           scripts/sync-versions.sh
