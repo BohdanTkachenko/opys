@@ -16,48 +16,48 @@ description.
 %strict  = true            # error on mismatch / unexpected blocks (default)
 %frontmatter = closed      # unknown frontmatter keys are errors (default)
 
---- # ---- frontmatter: typed keys ----
-title:    string                                   @title    -- the feature name (also the H1)
-status:   enum(planned, partial, implemented, wontfix) @status -- lifecycle state
-priority: int                                      @priority -- 1 (highest) .. 5
-breaking: bool                                     @breaking -- API-breaking change?
-created:  date                                     @created  -- RFC3339 date
-tags:     [string]+                                @tags     -- non-empty list of labels
-owner?:   string                                   @owner    -- optional assignee
-spec?:    /^https?:\/\//                            @spec     -- optional, must be a URL
+--- # ---- frontmatter: typed keys (alias defaults to the key) ----
+title:    string                       -- the feature name (also the H1)
+status:   enum(planned, partial, implemented, wontfix)  -- lifecycle state
+priority: int                          -- 1 (highest) .. 5
+breaking: bool                         -- API-breaking change?
+created:  date                         -- RFC3339 date
+tags:     [string]+                    -- non-empty list of labels
+owner?:   string                       -- optional assignee
+spec_url? @spec: /^https?:\/\//        -- optional URL; alias renamed key -> "spec"
 ---
 
-# /.+/                                @title       -- required H1, any text (regex-labeled heading, level 1)
+# @title /.+/                          -- required H1, any text (regex-labeled, level 1)
 
-## Summary                                          -- literal heading, NO @name -> auto-alias "summary"
-  >                                   @blurb       -- a required non-empty paragraph (prose)
+## Summary                             -- literal heading, NO @name -> auto-alias "summary"
+  > @blurb                             -- a required non-empty paragraph (prose)
 
-## Test plan                          @test_plan
-  - [ ]                               @cases       -- a checklist, required (bare = >=1)
+## @test_plan Test plan
+  - [ ] @cases                         -- a checklist, required (bare = >=1)
 
-## Manual verification                @manual       -- heading nests headings
-  ### Setup                           @setup
-    -+                                @items       -- bullet list, one or more
-  ### Procedure                       @procedure
-    1.+                               @steps       -- ordered list, one or more
-      -?                              @note        -- list item nests an optional bullet
-  ### Expectations                    @expect
-    - [ ]*                            @checks      -- checklist, zero or more (optional)
+## @manual Manual verification         -- heading nests headings
+  ### @setup Setup
+    - @items+                          -- bullet list, one or more
+  ### @procedure Procedure
+    1. @steps+                         -- ordered list, one or more
+      - @note?                         -- list item nests an optional bullet
+  ### @expect Expectations
+    - [ ] @checks*                     -- checklist, zero or more (optional)
 
-## Risks                              @risks
-  -*                                  @items       -- bullet list, zero or more
+## @risks Risks
+  - @items*                            -- bullet list, zero or more
 
-## Sign-off                           @signoff      -- literal-labeled bullets -> scalar captures
-  - "Docs:"                           @docs        -- a bullet starting "Docs:"; value = text after it
-  - "Tests:"                          @tests
+## @signoff Sign-off                   -- literal-labeled bullets -> scalar captures
+  - @docs "Docs:"                      -- a bullet starting "Docs:"; value = text after it
+  - @tests "Tests:"
 
-## Decisions                          @decisions
-  ### /.+/+                           @entries     -- repeated subsection: one or more, any title
-    > /status:/i                      @state       -- a paragraph matching /status:/i
-    -{1,5}                            @points      -- 1..5 rationale bullets (explicit range)
+## @decisions Decisions
+  ### @entries /.+/+                   -- repeated subsection: one or more, any title
+    > @state /status:/i                -- a paragraph matching /status:/i
+    - @points{1,5}                     -- 1..5 rationale bullets (explicit range)
 
-## References?                        @refs         -- optional heading (?)
-  - /^\[.+\]\(.+\)$/*                 @links       -- regex-labeled bullets, zero or more
+## @refs References?                   -- optional heading (?)
+  - @links /^\[.+\]\(.+\)$/*           -- regex-labeled bullets, zero or more
 ```
 
 ---
@@ -73,7 +73,7 @@ breaking: false
 created: 2026-06-20
 tags: [osc, tabs, vte]
 owner: dan
-spec: https://example.com/osc
+spec_url: https://example.com/osc
 ---
 
 # Tab title follows OSC 0/2
@@ -246,15 +246,16 @@ Status:
 |---|---|
 | Directives `%ordered` / `%strict` / `%frontmatter` | top of §1 |
 | Frontmatter `string` / `int` / `bool` / `date` | `title` / `priority` / `breaking` / `created` |
-| Frontmatter `enum` / `[list]` / `/regex/` | `status` / `tags` / `spec` |
-| Optional key `?` | `owner?`, `spec?` |
+| Frontmatter `enum` / `[list]` / `/regex/` | `status` / `tags` / `spec_url` |
+| Optional key `?` | `owner?`, `spec_url?` |
+| Frontmatter alias override | `spec_url @spec` (key `spec_url` → alias `spec`) |
 | Heading levels 1 / 2 / 3 | `# /.+/`, `## Summary`, `### Setup` |
 | Literal vs regex heading title | `## Summary` vs `# /.+/` |
 | Repeated subsection `/.+/+` | `### /.+/+` under Decisions |
 | Optional heading `?` | `## References?` |
 | Bullet / ordered / checklist / prose | `-` / `1.` / `- [ ]` / `>` |
-| Literal label (→ scalar) | `- "Docs:"` |
-| Regex label | `- /^\[.+\]\(.+\)$/`, `> /status:/i` |
+| Literal label (→ scalar) | `- @docs "Docs:"` |
+| Regex label | `- @links /^\[.+\]\(.+\)$/`, `> @state /status:/i` |
 | Cardinality bare / `+` / `*` / `?` / `{m,n}` | cases / items / checks / note / `-{1,5}` |
 | Nesting: heading→heading | Manual → Setup/Procedure/Expectations |
 | Nesting: heading→list | Setup → bullets |
