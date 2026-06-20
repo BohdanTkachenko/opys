@@ -6,8 +6,8 @@
 //! `set-status`, `import`, and `verify` (today nothing in production calls it —
 //! it ships unit-tested, ready to wire in).
 //!
-//! A rule fires when its `when { type?, status? }` matches the document, then
-//! its one assertion (from the closed set) is checked.
+//! A rule fires when its `when { type?, status?, tag? }` matches the document,
+//! then its one assertion (from the closed set) is checked.
 
 use std::collections::HashSet;
 
@@ -42,7 +42,7 @@ pub fn evaluate(
         }
     }
     for rule in &prj.rules {
-        if applies(rule, type_name, status) {
+        if applies(rule, type_name, status, fm) {
             if let Some(msg) = check(prj, rule, fm, body, doc_ids) {
                 out.push(msg);
             }
@@ -51,10 +51,11 @@ pub fn evaluate(
     out
 }
 
-/// A rule applies when its (optional) type and status guards both match.
-fn applies(rule: &Rule, type_name: &str, status: &str) -> bool {
+/// A rule applies when its (optional) type, status, and tag guards all match.
+fn applies(rule: &Rule, type_name: &str, status: &str, fm: &Frontmatter) -> bool {
     rule.when.doc_type.as_deref().is_none_or(|t| t == type_name)
         && rule.when.status.as_deref().is_none_or(|s| s == status)
+        && rule.when.tag.as_deref().is_none_or(|t| fm.has_tag(t))
 }
 
 /// Check a rule's single assertion; `Some(msg)` if it fails.
@@ -144,6 +145,9 @@ fn any_term_holds(term: &AnyTerm, fm: &Frontmatter, body: &str) -> bool {
     if let Some(s) = &term.section {
         return body::has_section(body, s);
     }
+    if let Some(t) = &term.tag {
+        return fm.has_tag(t);
+    }
     false
 }
 
@@ -157,6 +161,8 @@ fn describe_any(terms: &[AnyTerm]) -> String {
                 format!("link '{l}'")
             } else if let Some(s) = &t.section {
                 format!("section '{s}'")
+            } else if let Some(tag) = &t.tag {
+                format!("tag '{tag}'")
             } else {
                 "?".to_string()
             }
@@ -237,6 +243,73 @@ mod tests {
             &ids(&["FEAT-0001", "FEAT-0002"])
         )
         .is_empty());
+    }
+
+    #[test]
+    fn when_tag_gates_a_rule_by_tag_key() {
+        // The rule fires only for docs carrying an `area` tag (exact or key),
+        // and then requires the `owner` field.
+        let p: ProjectConfig = toml::from_str(
+            r#"
+[types.feature]
+prefix = "FEAT"
+statuses = ["planned"]
+default_status = "planned"
+[types.feature.fields.owner]
+type = "string"
+
+[[rules]]
+when = { tag = "area" }
+require_field = "owner"
+"#,
+        )
+        .unwrap();
+        assert!(p.validate().is_empty(), "{:?}", p.validate());
+
+        // No `area` tag → rule does not fire, even without `owner`.
+        let mut fm = Frontmatter::new();
+        fm.set_tags(&["osc".into()]);
+        assert!(evaluate(&p, "feature", "planned", &fm, "# F\n", &ids(&[])).is_empty());
+
+        // `area:parsing` matches the `area` key → rule fires, `owner` missing.
+        fm.set_tags(&["area:parsing".into()]);
+        let problems = evaluate(&p, "feature", "planned", &fm, "# F\n", &ids(&[]));
+        assert!(problems.iter().any(|m| m.contains("owner")), "{problems:?}");
+
+        // Add `owner` → clean.
+        fm.set_str("owner", "dan");
+        assert!(evaluate(&p, "feature", "planned", &fm, "# F\n", &ids(&[])).is_empty());
+    }
+
+    #[test]
+    fn require_any_accepts_a_tag_term() {
+        let p: ProjectConfig = toml::from_str(
+            r#"
+[types.feature]
+prefix = "FEAT"
+statuses = ["planned"]
+default_status = "planned"
+
+[[rules]]
+when = { status = "planned" }
+require_any = [ { tag = "area" }, { section = "Notes" } ]
+"#,
+        )
+        .unwrap();
+        assert!(p.validate().is_empty(), "{:?}", p.validate());
+
+        // Neither a matching tag nor the section → fails.
+        let mut fm = Frontmatter::new();
+        fm.set_tags(&["osc".into()]);
+        let problems = evaluate(&p, "feature", "planned", &fm, "# F\n", &ids(&[]));
+        assert!(
+            problems.iter().any(|m| m.contains("requires one of")),
+            "{problems:?}"
+        );
+
+        // An `area=cli` tag satisfies the tag term.
+        fm.set_tags(&["area=cli".into()]);
+        assert!(evaluate(&p, "feature", "planned", &fm, "# F\n", &ids(&[])).is_empty());
     }
 
     #[test]

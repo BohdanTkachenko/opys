@@ -73,6 +73,13 @@ pub fn split_csv(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// The key portion of a tag, for filtering by key: the text before the first
+/// `:` or `=`. A bare tag is its own key (`osc` → `osc`), a namespaced or keyed
+/// tag exposes its head (`area:parsing` / `priority=high` → `area` / `priority`).
+pub fn tag_key(tag: &str) -> &str {
+    tag.split([':', '=']).next().unwrap_or(tag)
+}
+
 /// Parse the id argument of a bulk command into a deduplicated, order-preserving
 /// list. Bulk is opt-in via an explicit comma-separated list (`FEAT-1,FEAT-2`):
 /// a single id is just a one-element list. Space-separated ids are *not* accepted

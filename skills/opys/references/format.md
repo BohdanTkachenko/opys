@@ -75,22 +75,28 @@ message = "test reference `${ref}` not found"   # optional custom failure messag
 [[rules]]                            # conditional guards: a `when` + one assertion
 when = { type = "feature", status = "implemented" }
 require_checked_section = "Test plan"
+
+[[rules]]                            # `when.tag` gates on a tag (exact or key)
+when = { tag = "needs-review" }      # matches `needs-review`, `needs-review:ui`, …
+require_field = "reviewer"
 ```
 
 A frontmatter field used on any document must be declared on its type or verify
 fails — undeclared fields are how schema drift starts. An `enum` constrains its
 value to the declared `values`; a string field may carry a `pattern`. The closed
 assertion set for `[[rules]]` is `require_field`, `field_matches`,
-`require_section`, `require_checked_section`, `require_link`, `require_any`.
+`require_section`, `require_checked_section`, `require_link`, `require_any`
+(whose terms are `{field}`, `{link}`, `{section}`, or `{tag}`).
 `opys list --field <key>=<value>` filters by any custom field (see below).
 
 ### `[palette]` — TUI presentation (optional)
 
 Purely cosmetic styling for the `opys tui` board; the core engine ignores it,
 but `opys config validate` checks it so mistakes surface in CI. Each named entry
-has `matchers` (`{status?, type?}`) and a `style`. A document matches an entry
-when **any** matcher matches (a matcher matches when every field it sets equals
-the document's; an empty matcher `{}` matches all). For a document, the styles
+has `matchers` (`{status?, type?, tag?}`) and a `style`. A document matches an
+entry when **any** matcher matches (a matcher matches when every field it sets
+equals the document's — `tag` matches an exact tag or a tag key; an empty matcher
+`{}` matches all). For a document, the styles
 of all matching entries are merged field-wise in ascending **specificity**
 (constrained-field count; ties by entry name), so more-specific rules win.
 
@@ -188,7 +194,7 @@ may reflow the formatting (not the meaning) of complex values.
 |---|---|---|
 | `id` | yes | `FEAT-NNNN`; must match filename; unique forever |
 | `status` | yes | `planned` \| `partial` \| `implemented` \| `wontfix` (+ configured extras) |
-| `tags` | yes | non-empty list, lowercase kebab-case, open vocabulary |
+| `tags` | yes | non-empty list, open vocabulary; each tag is lowercase kebab-case, optionally a `key:value` pair (`area:parsing`, repeatable — same key may appear with several values) or a `key=value` pair (`priority=high`, single-valued — each `key=` at most once per document) |
 | `created` | no | RFC3339 datetime (e.g. `2026-06-16T14:30:00Z`); set once at creation; auto-maintained |
 | `updated` | no | RFC3339 datetime; refreshed on every user-initiated write; auto-maintained |
 | `references` | no | ID→title map of linked work items (and features); auto-maintained |
@@ -229,9 +235,13 @@ the declare-or-fail rule.
 
 `opys list` filters by `--tag` and `--status`, and additionally by any custom
 field with repeatable `--field <key>=<value>` (ANDed together). A scalar field
-matches on equality; a `list` field matches when it *contains* the value:
+matches on equality; a `list` field matches when it *contains* the value.
+`--tag` matches an exact tag *or* any tag with that key (the head before `:` or
+`=`), so a key search returns every value:
 
 ```sh
+opys list --tag osc                             # exact tag, or key `osc`
+opys list --tag area --format ids               # any area:* / area=* tag
 opys list --field priority=high                 # enum/scalar equality
 opys list --status partial --field area=cli     # combine with status
 opys list --field tag-list=osc --format ids     # list-membership match

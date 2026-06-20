@@ -335,12 +335,39 @@ fn verify_passes_clean_and_flags_violations() {
         .assert()
         .failure()
         .code(1)
-        .stderr(predicate::str::contains("is not lowercase kebab-case"))
+        .stderr(predicate::str::contains("must be lowercase kebab-case"))
         .stderr(predicate::str::contains(
             "unknown frontmatter field 'bogus'",
         ))
         .stderr(predicate::str::contains(
             "'## Test plan' needs at least one checked item",
+        ));
+}
+
+#[test]
+fn verify_accepts_namespaced_and_keyed_tags_but_rejects_duplicate_keys() {
+    let dir = project();
+    // Colon-namespaced and key=value tags are accepted.
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str(
+            "---\nid: FEAT-0001\nstatus: planned\ntags: [osc, area:parsing, priority=high]\n---\n\n# Clean\n",
+        )
+        .unwrap();
+    opys(&dir).arg("verify").assert().success();
+
+    // The same key=value key twice on one document is rejected.
+    dir.child("opys/features/FEAT-0002.md")
+        .write_str(
+            "---\nid: FEAT-0002\nstatus: planned\ntags: [priority=high, priority=low]\n---\n\n# Dup\n",
+        )
+        .unwrap();
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "tag key 'priority' is set more than once",
         ));
 }
 
@@ -1338,6 +1365,39 @@ fn list_filters_by_custom_field() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("expects key=value"));
+}
+
+#[test]
+fn list_filters_by_tag_key() {
+    let dir = project();
+    opys(&dir)
+        .args(["new", "--title", "A", "--tags", "area:parsing"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["new", "--title", "B", "--tags", "area=cli"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["new", "--title", "C", "--tags", "osc"])
+        .assert()
+        .success();
+
+    // A bare key matches both the colon and the equals forms.
+    opys(&dir)
+        .args(["list", "--tag", "area", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0001"))
+        .stdout(predicate::str::contains("FEAT-0002"))
+        .stdout(predicate::str::contains("FEAT-0003").not());
+    // The exact value still matches just that one.
+    opys(&dir)
+        .args(["list", "--tag", "area:parsing", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0001"))
+        .stdout(predicate::str::contains("FEAT-0002").not());
 }
 
 #[test]

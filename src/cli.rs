@@ -90,6 +90,9 @@ pub enum Command {
         /// Restrict to one document type.
         #[arg(long = "type")]
         type_name: Option<String>,
+        /// Filter by tag. Matches an exact tag, or any tag with this key
+        /// (the head before `:` or `=`, e.g. `--tag area` matches
+        /// `area:parsing` and `area=high`).
         #[arg(long)]
         tag: Option<String>,
         #[arg(long)]

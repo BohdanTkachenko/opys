@@ -98,6 +98,16 @@ impl Frontmatter {
         matches!(self.get("tags"), Some(Value::Sequence(s)) if !s.is_empty())
     }
 
+    /// True when the document carries `query` as a tag — either an exact tag, or
+    /// any tag whose key (the head before `:` or `=`) equals `query`. So `area`
+    /// matches `area`, `area:parsing`, and `area=high`.
+    pub fn has_tag(&self, query: &str) -> bool {
+        self.tags().is_some_and(|ts| {
+            ts.iter()
+                .any(|t| t == query || crate::commands::tag_key(t) == query)
+        })
+    }
+
     pub fn set_str(&mut self, key: &str, value: impl Into<String>) {
         self.map
             .insert(Value::String(key.to_string()), Value::String(value.into()));

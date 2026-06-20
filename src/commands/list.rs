@@ -6,12 +6,7 @@ use crate::Ctx;
 
 fn matches(d: &Doc, tag: Option<&str>, status: Option<&str>, fields: &[(String, String)]) -> bool {
     if let Some(tag) = tag {
-        let has = d
-            .frontmatter
-            .tags()
-            .map(|ts| ts.iter().any(|t| t == tag))
-            .unwrap_or(false);
-        if !has {
+        if !d.frontmatter.has_tag(tag) {
             return false;
         }
     }

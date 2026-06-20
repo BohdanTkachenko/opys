@@ -215,6 +215,10 @@ pub struct When {
     pub doc_type: Option<String>,
     #[serde(default)]
     pub status: Option<String>,
+    /// Applies only to documents carrying this tag (exact tag or tag key — see
+    /// [`Frontmatter::has_tag`](crate::frontmatter::Frontmatter::has_tag)).
+    #[serde(default)]
+    pub tag: Option<String>,
 }
 
 /// One term of a `require_any` (exactly one of the three is set).
@@ -226,6 +230,9 @@ pub struct AnyTerm {
     pub link: Option<String>,
     #[serde(default)]
     pub section: Option<String>,
+    /// Holds when the document carries this tag (exact tag or tag key).
+    #[serde(default)]
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -599,13 +606,14 @@ impl ProjectConfig {
                     term.field.is_some(),
                     term.link.is_some(),
                     term.section.is_some(),
+                    term.tag.is_some(),
                 ]
                 .iter()
                 .filter(|b| **b)
                 .count();
                 if count != 1 {
                     errs.push(format!(
-                        "{tag}: each require_any term needs exactly one of field/link/section"
+                        "{tag}: each require_any term needs exactly one of field/link/section/tag"
                     ));
                 }
                 if let Some(l) = &term.link {

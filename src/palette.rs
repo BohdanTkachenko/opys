@@ -25,13 +25,16 @@ pub struct PaletteEntry {
     pub style: Style,
 }
 
-/// A match condition. Both fields optional; an empty matcher matches everything.
+/// A match condition. All fields optional; an empty matcher matches everything.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Matcher {
     #[serde(default)]
     pub status: Option<String>,
     #[serde(default, rename = "type")]
     pub doc_type: Option<String>,
+    /// Matches documents carrying this tag (exact tag or tag key).
+    #[serde(default)]
+    pub tag: Option<String>,
 }
 
 /// The presentational attributes a rule can set. All optional so styles compose.
@@ -76,9 +79,16 @@ impl Style {
 }
 
 impl Matcher {
-    /// Whether this matcher matches the given document type/status, and if so its
+    /// Whether this matcher matches the given document, and if so its
     /// specificity (the count of constrained fields). `None` when it does not.
-    fn specificity(&self, doc_type: Option<&str>, status: Option<&str>) -> Option<usize> {
+    /// `has_tag` answers the tag guard (exact tag or tag key — see
+    /// [`Frontmatter::has_tag`](crate::frontmatter::Frontmatter::has_tag)).
+    fn specificity(
+        &self,
+        doc_type: Option<&str>,
+        status: Option<&str>,
+        has_tag: &dyn Fn(&str) -> bool,
+    ) -> Option<usize> {
         let mut spec = 0;
         if let Some(want) = &self.doc_type {
             if Some(want.as_str()) != doc_type {
@@ -92,6 +102,12 @@ impl Matcher {
             }
             spec += 1;
         }
+        if let Some(want) = &self.tag {
+            if !has_tag(want) {
+                return None;
+            }
+            spec += 1;
+        }
         Some(spec)
     }
 }
@@ -99,26 +115,33 @@ impl Matcher {
 impl PaletteEntry {
     /// The entry's specificity for a document: the highest specificity among its
     /// matching matchers, or `None` if none match.
-    fn specificity(&self, doc_type: Option<&str>, status: Option<&str>) -> Option<usize> {
+    fn specificity(
+        &self,
+        doc_type: Option<&str>,
+        status: Option<&str>,
+        has_tag: &dyn Fn(&str) -> bool,
+    ) -> Option<usize> {
         self.matchers
             .iter()
-            .filter_map(|m| m.specificity(doc_type, status))
+            .filter_map(|m| m.specificity(doc_type, status, has_tag))
             .max()
     }
 }
 
-/// Resolve the merged [`Style`] for a document from the whole palette.
+/// Resolve the merged [`Style`] for a document from the whole palette. `has_tag`
+/// answers tag matchers (exact tag or tag key).
 pub fn resolve(
     palette: &BTreeMap<String, PaletteEntry>,
     doc_type: Option<&str>,
     status: Option<&str>,
+    has_tag: &dyn Fn(&str) -> bool,
 ) -> Style {
     // (specificity, name, style) for every matching entry.
     let mut matched: Vec<(usize, &str, &Style)> = palette
         .iter()
         .filter_map(|(name, entry)| {
             entry
-                .specificity(doc_type, status)
+                .specificity(doc_type, status, has_tag)
                 .map(|spec| (spec, name.as_str(), &entry.style))
         })
         .collect();
@@ -249,7 +272,7 @@ mod tests {
         );
         // A blocked bug: icon from `bug` (B), bold from `blocked`, and fg from the
         // most specific (type+status) rule — magenta.
-        let style = resolve(&p, Some("bug"), Some("blocked"));
+        let style = resolve(&p, Some("bug"), Some("blocked"), &no_tags);
         assert_eq!(style.icon.as_deref(), Some("B"));
         assert_eq!(style.bold, Some(true));
         assert_eq!(style.fg_color.as_deref(), Some("magenta"));
@@ -260,7 +283,7 @@ mod tests {
         let p = palette(
             "[palette.base]\nmatchers = [ {} ]\n[palette.base.style]\nfg_color = \"gray\"\n",
         );
-        let style = resolve(&p, Some("feature"), Some("planned"));
+        let style = resolve(&p, Some("feature"), Some("planned"), &no_tags);
         assert_eq!(style.fg_color.as_deref(), Some("gray"));
     }
 
@@ -269,7 +292,25 @@ mod tests {
         let p = palette(
             "[palette.bug]\nmatchers = [ { type = \"bug\" } ]\n[palette.bug.style]\nicon = \"B\"\n",
         );
-        let style = resolve(&p, Some("feature"), Some("planned"));
+        let style = resolve(&p, Some("feature"), Some("planned"), &no_tags);
         assert!(style.icon.is_none());
+    }
+
+    #[test]
+    fn tag_matcher_colors_by_tag_key() {
+        let p = palette(
+            "[palette.area]\nmatchers = [ { tag = \"area\" } ]\n[palette.area.style]\nfg_color = \"cyan\"\n",
+        );
+        // A doc with `area:parsing` matches the `area` tag matcher by key.
+        let has = |t: &str| t == "area";
+        let style = resolve(&p, Some("feature"), Some("planned"), &has);
+        assert_eq!(style.fg_color.as_deref(), Some("cyan"));
+        // A doc without the tag is unstyled.
+        let style = resolve(&p, Some("feature"), Some("planned"), &no_tags);
+        assert!(style.fg_color.is_none());
+    }
+
+    fn no_tags(_: &str) -> bool {
+        false
     }
 }

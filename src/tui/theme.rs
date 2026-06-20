@@ -18,7 +18,9 @@ pub struct DocStyle {
 pub fn doc_style(prj: &Project, d: &Doc) -> DocStyle {
     let tname = d.id().and_then(|id| prj.pcfg.type_name_for_id(id));
     let status = d.status();
-    let resolved = palette::resolve(&prj.pcfg.palette, tname, status);
+    let resolved = palette::resolve(&prj.pcfg.palette, tname, status, &|t| {
+        d.frontmatter.has_tag(t)
+    });
 
     let icon = resolved
         .icon

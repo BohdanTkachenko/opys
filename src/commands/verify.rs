@@ -270,15 +270,49 @@ fn check_tags(m: &Frontmatter, fid: &str, errors: &mut Vec<String>) {
         errors.push(format!("{fid}: tags must be a non-empty list"));
         return;
     }
-    if let Some(Value::Sequence(seq)) = m.get("tags") {
-        for t in seq {
-            let display = tag_display(t);
-            if !KEBAB_RE.is_match(&display) {
-                errors.push(format!(
-                    "{fid}: tag '{display}' is not lowercase kebab-case"
-                ));
+    let Some(Value::Sequence(seq)) = m.get("tags") else {
+        return;
+    };
+    let mut keys: Vec<String> = Vec::new();
+    for t in seq {
+        let display = tag_display(t);
+        match validate_tag(&display) {
+            Ok(Some(key)) => {
+                if keys.contains(&key) {
+                    errors.push(format!("{fid}: tag key '{key}' is set more than once"));
+                } else {
+                    keys.push(key);
+                }
             }
+            Ok(None) => {}
+            Err(()) => errors.push(format!(
+                "{fid}: tag '{display}' must be lowercase kebab-case \
+                 (optionally colon-namespaced, or in key=value form)"
+            )),
         }
+    }
+}
+
+/// A colon-namespaced kebab segment: one or more lowercase kebab parts joined
+/// by `:` (`osc`, `area:parsing`).
+fn is_tag_segment(s: &str) -> bool {
+    !s.is_empty() && s.split(':').all(|p| KEBAB_RE.is_match(p))
+}
+
+/// Validate a tag's shape. Returns `Ok(Some(key))` for a `key=value` tag (so the
+/// caller can enforce key uniqueness), `Ok(None)` for a plain tag, or `Err` if
+/// the shape is invalid. Both plain tags and either side of a `key=value` pair
+/// are colon-namespaced kebab segments; a tag carries at most one `=`.
+fn validate_tag(s: &str) -> std::result::Result<Option<String>, ()> {
+    if let Some((key, value)) = s.split_once('=') {
+        if value.contains('=') || !is_tag_segment(key) || !is_tag_segment(value) {
+            return Err(());
+        }
+        Ok(Some(key.to_string()))
+    } else if is_tag_segment(s) {
+        Ok(None)
+    } else {
+        Err(())
     }
 }
 
