@@ -2,32 +2,36 @@
 
 **Status:** draft / under review · **Working crate name:** `mdrubric` *(TBD — `md*` name, see naming)*
 
-A standalone Rust crate that validates a **full markdown document** (YAML
-frontmatter + body) against a schema written in a compact, indentation-based
-DSL. The schema *looks like a skeleton of the document it validates*. `opys` is
-the first consumer, but the crate has no opys dependency and is independently
-useful (runbooks, ADRs, postmortems, release notes…).
+A standalone Rust crate that, from a single compact schema, can **validate**,
+**scaffold**, **extract a typed data object from**, **query**, and **edit
+in-place** a markdown document (YAML frontmatter + body). The schema *looks like
+a skeleton of the document it describes*. `opys` is the first consumer (for
+`kind = "structured"` section bodies), but the crate has no opys dependency and
+is independently useful (runbooks, ADRs, postmortems, release notes…).
 
 ---
 
-## 1. Goals / non-goals
+## 1. Capabilities
 
-**Goals**
+From one schema:
 
-- One textual schema describes a whole file: typed frontmatter + structured body.
-- The schema is readable as a stripped-down example of a conforming document.
-- A schema doubles as a **scaffold** template for new documents.
-- Precise, located errors for both a malformed *schema* and a non-conforming
-  *document*.
-- Pure Rust, MSRV 1.88, minimal dependencies.
+1. **Validate** — does a document conform? Located, descriptive errors.
+2. **Scaffold** — emit a conforming starter document.
+3. **Extract** — parse a conforming document into a typed **data object** (JSON),
+   keyed by the schema's capture **names**.
+4. **Query** — run jq-style selectors over that object (a section, a nested node,
+   a single list item).
+5. **Edit in-place** — given a capture name or query and a new value, splice that
+   one node in the source markdown, byte-accurately, leaving everything else
+   untouched. *(The "LLM updates a list item with one command, 100% accuracy"
+   use case — no hand-rolled `sed`, no full-file rewrite.)*
 
-**Non-goals**
+(3)–(5) build on two foundational features baked in from day one: **scope-unique
+capture names** and **source spans** on every node.
 
-- Not a general markdown renderer or transformer; validation + scaffolding only.
-- Not a programming language — no variables, conditionals, or expressions beyond
-  cardinality and regex matches.
-- Does **not** own opys's reserved-key / relation / ID logic. opys uses this crate
-  only for `kind = "structured"` section bodies (see §10).
+**Non-goals:** not a markdown renderer; not a programming language (only
+cardinality, regex labels, and jq queries); does not own opys's reserved-key /
+relation / ID logic.
 
 ---
 
@@ -35,31 +39,31 @@ useful (runbooks, ADRs, postmortems, release notes…).
 
 A schema is a skeletal markdown file: an optional `--- … ---` frontmatter block
 of typed keys, then a body skeleton of headings and typed (optionally nested)
-lists.
+lists. Any node may carry a `@name` (capture id) and a ` -- description`.
 
 ```
 ---
-title: string
-status: enum(planned, partial, implemented, wontfix)
-tags: [string]+              # non-empty list of strings
-owner?: string               # optional key
-spec?: /^https?:\/\//        # optional, must match this regex
-created: date
+title: string                        @title -- human title, also the H1
+status: enum(planned, partial, implemented, wontfix) @status -- lifecycle state
+owner?: string                       @owner
 ---
 
-## Test plan
-  - [ ]+                     # a checklist, >= 1 item
+## Test plan                         @test_plan
+  - [ ]+                             @cases -- one checkbox per behavior
 
-## Manual verification
-  ### Setup
-    -+                       # a bullet list, >= 1 item
-  ### Procedure
-    1.+                      # an ordered list, >= 1 item
-      -?                     # each step MAY carry a nested bullet list
+## Manual verification               @manual
+  ### Setup                          @setup -- preconditions for the run
+    -+                               @items
+  ### Procedure                      @procedure
+    1.+                              @steps -- ordered, reproducible steps
+      -?                             @notes -- optional note under a step
+  ### Expectations                   @expect
+    - [ ]+                           @checks
 ```
 
-The same text, with cardinality stripped and placeholders filled, is the
-scaffold an authoring tool emits for a new document (§9).
+The same text — cardinality stripped, placeholders filled — is the **scaffold**
+for a new document (§8). The `@names` define the shape of the **extracted data
+object** (§6) and the addressing for **queries and edits** (§7).
 
 ---
 
@@ -68,33 +72,35 @@ scaffold an authoring tool emits for a new document (§9).
 ### 3.1 Overall shape
 
 ```ebnf
-schema       = frontmatter? body
-frontmatter  = "---" NEWLINE fm-field* "---" NEWLINE
-body         = node*
+schema      = directive* frontmatter? body
+directive   = "%" key "=" value NEWLINE         # schema-level options (§5)
+frontmatter = "---" NEWLINE fm-field* "---" NEWLINE
+body        = node*
 ```
 
 ### 3.2 Frontmatter schema
 
 ```ebnf
-fm-field = key "?"? ":" SP fm-type NEWLINE
+fm-field = key "?"? ":" SP fm-type ann? NEWLINE
 fm-type  = "string" | "int" | "bool" | "date"
          | "enum(" ident ("," SP? ident)* ")"
-         | "[" fm-type "]"          # a list of T
-         | "/" regex "/"            # a string matching regex
+         | "[" fm-type "]"          # list of T
+         | "/" regex "/"            # string matching regex
+ann      = SP "@" name              # capture name (defaults to key)
+         | SP "--" SP text          # description
+         | SP "@" name SP "--" SP text
 ```
 
-- `key?` marks an **optional** key; otherwise required.
-- A `[T]` list may carry a cardinality suffix (`[string]+` = non-empty).
-- Frontmatter is **open by default** (unknown keys allowed); a schema-level
-  `strict` flag (API option) rejects undeclared keys.
+- `key?` ⇒ optional key; otherwise required.
+- Frontmatter is **closed by default** (unknown keys are errors); `%frontmatter=open` allows extras.
 
 ### 3.3 Body structure
 
-Each node is one line — `marker label? card?` — plus an optionally indented
-child block. Indentation (2 spaces per level, normalized) encodes nesting.
+Each node is one line — `marker label? card? ann?` — plus an optionally indented
+child block. Indentation (normalized) encodes nesting.
 
 ```ebnf
-node     = INDENT marker label? card? NEWLINE children?
+node     = INDENT marker label? card? ann? NEWLINE children?
 children = (node, indented one level deeper)+
 
 marker   = heading | bullet | ordered | checkbox | prose
@@ -102,237 +108,219 @@ heading  = "#"{1,6} SP text          # level = count of '#'
 bullet   = "-"
 ordered  = digits "."                # "1."
 checkbox = "- [ ]"
-prose    = ">"                        # a required non-empty paragraph
+prose    = ">"                        # a non-empty paragraph
 
 label    = '"' literal '"'            # item/heading text starts with literal
          | "/" regex "/"              # …or matches regex
 card     = "+" | "*" | "?" | "{" int ("," int?)? "}"
+ann      = SP "@" name | SP "--" SP text | SP "@" name SP "--" SP text
 ```
 
-**Marker meaning**
-
-| Schema line | Asserts in the document |
-|---|---|
-| `## Title` / `### Title` | a heading of that level with that title; its child block follows under it |
-| `## /.+/+` | one or more headings at that level (any title) — a *repeated subsection* |
-| `-` | a bullet (unordered) list |
-| `1.` | an ordered list |
-| `- [ ]` | a checklist (GFM task list) |
-| `> ` | a required non-empty paragraph |
-| trailing `"…"` / `/…/` | the item/heading text must start-with / match it |
-
-**Cardinality** applies to *item count* on lists and *presence* on
-headings/prose:
+**Cardinality** (item count on lists; presence on headings/prose):
 
 | Suffix | Meaning |
 |---|---|
 | (none) | required (a list ⇒ ≥1 item) |
-| `+` | one or more |
-| `*` | zero or more (i.e. optional list) |
-| `?` | optional (0 or 1) |
+| `+` / `*` / `?` | ≥1 / ≥0 / optional |
 | `{m}` `{m,}` `{m,n}` | explicit bounds |
 
-A child block under a **list** node constrains *each item* of that list (this is
-how nesting works — a list inside a list item, a labeled sub-bullet, etc.).
+`## /.+/+` = one or more headings at that level (repeated subsection). A child
+block under a **list** constrains *each item*.
+
+**Annotations** (`ann`): `@name` is a capture identifier (`[a-z][a-z0-9_]*`),
+**unique within its scope**; ` -- text` is a description.
 
 ---
 
-## 4. Semantics
+## 4. Resolved defaults (all overridable)
 
-### 4.1 Frontmatter
+| Behavior | Default | Override |
+|---|---|---|
+| **Ordering** | **strict** — body nodes must appear in declared order | `%ordered=false` (any order) |
+| **Strictness** | **error on mismatch / extras** | per-node `?`/`*`, or `%strict=false` (extras allowed) |
+| **Frontmatter** | **closed** — unknown keys error | `%frontmatter=open` |
+| **Markdown parser** | **established library** (see §9) | — |
 
-Parse the document's YAML frontmatter into a map. For each declared field:
-required-but-absent ⇒ error; present ⇒ type-check (`int`/`bool`/`date` parse,
-`enum` membership, `[T]` element types, `/regex/` match). Unknown keys are
-ignored unless `strict`.
-
-### 4.2 Body — tree-pattern matching
-
-1. Parse the document body into a **block tree** (headings by level, lists by
-   marker + indentation, list items, paragraphs).
-2. Walk the schema tree against the document tree. For each schema node, find the
-   matching document block(s); check cardinality; recurse into children.
-3. Each unmet **required** node yields one `Problem` with a breadcrumb path.
-
-**Ordering** — default is **order-independent presence**: declared subsections
-may appear in any order; all required ones must be present. An opt-in `ordered`
-flag (API/schema directive) enforces declared order.
-
-**Strictness** — default is **schema-as-minimum**: the document may contain extra
-prose, lists, or headings the schema doesn't mention. An opt-in `strict` flag
-flags unexpected blocks.
-
-**List cardinality** counts items; **nesting** recurses the child schema into
-each item's nested blocks. Optionals (`?`/`*`) use greedy matching with limited
-backtracking; because nodes are keyed by heading title and list style,
-ambiguity is low in practice.
-
-**Label match** — `"Setup:"` ⇒ the item/heading text **starts with** `Setup:`;
-`/…/ ` ⇒ regex match anywhere in the text.
+`%`-directives at the top of a schema set these per-schema; the host (opys / API)
+can also set them programmatically.
 
 ---
 
-## 5. Data model (Rust)
+## 5. Descriptions → richer everything
+
+A node's ` -- description` is used to:
+
+- **Enrich errors:** `Procedure › steps: expected ≥1 ordered item — "ordered,
+  reproducible steps"`.
+- **Power IDE integration** (future): hover text, completion docs for schema
+  authors and document authors.
+- **Document the schema** itself (it reads as annotated structure).
+
+Descriptions are optional and never affect matching.
+
+---
+
+## 6. The data model: validate → typed object
+
+Parsing a **conforming** document against the schema yields a JSON-like value,
+keyed by capture `@names`, ready for `serde_json` consumers and jq queries.
+
+- A named **heading** → an object of its named children.
+- A named **list** → an array (each item: an object of its named children, or
+  the item's text if it has none).
+- A named **scalar** (prose, frontmatter field, labeled bullet value) → a typed
+  value (string / int / bool / date / enum).
+- Unnamed nodes are validated but not captured.
+
+**Example** (schema from §2) →
+
+```json
+{
+  "title": "Tab title follows OSC",
+  "status": "implemented",
+  "manual": {
+    "setup":     { "items": ["external monitor at 150%"] },
+    "procedure": { "steps": ["Open a tab", "Run the command"] },
+    "expect":    { "checks": ["crisp glyphs", "no clipping"] }
+  }
+}
+```
+
+Internal types (sketch):
 
 ```rust
-pub struct Schema {
-    pub frontmatter: Vec<FieldSchema>,   // empty if no fence
-    pub body: Vec<Node>,
-    pub opts: SchemaOpts,                // ordered, strict, …
-}
-
-pub struct FieldSchema { pub key: String, pub optional: bool, pub ty: FieldType }
-pub enum FieldType { Str, Int, Bool, Date, Enum(Vec<String>), List(Box<FieldType>), Regex(Regex) }
+pub struct Schema { pub opts: SchemaOpts, pub frontmatter: Vec<FieldSchema>, pub body: Vec<Node> }
 
 pub enum Node {
-    Heading  { level: u8, title: Match, card: Card, children: Vec<Node> },
-    List     { style: ListStyle, item: Option<Match>, card: Card, children: Vec<Node> },
-    Prose    { text: Option<Match>, card: Card },
+    Heading { level: u8, title: Match, card: Card, name: Option<Name>, desc: Option<String>, children: Vec<Node> },
+    List    { style: ListStyle, item: Option<Match>, card: Card, name: Option<Name>, desc: Option<String>, children: Vec<Node> },
+    Prose   { text: Option<Match>, card: Card, name: Option<Name>, desc: Option<String> },
 }
 pub enum ListStyle { Bullet, Ordered, Checklist }
 pub enum Match { Literal(String), Regex(Regex) }
 pub enum Card  { Required, Optional, Star, Plus, Range(u32, Option<u32>) }
-```
 
-A separate, internal `Document` block-tree mirrors `Node` for the matcher.
+/// A captured value with its source span, for extraction AND editing.
+pub struct Captured { pub value: serde_json::Value, pub span: Span }
+```
 
 ---
 
-## 6. Public API (sketch)
+## 7. Query & edit (jq-style)
+
+Once a document is parsed to the JSON-like value **and** every captured node
+carries its source `Span`, two things fall out:
+
+- **Query:** evaluate a jq selector against the value (e.g. `.manual.procedure.steps[1]`).
+  We use an existing Rust jq engine (`jaq`) rather than inventing a query syntax.
+- **Edit in-place:** resolve a capture name or jq path → the node's `Span` in the
+  original source → splice a new value, re-rendering only that node. Everything
+  else (formatting, surrounding prose, other items) is byte-preserved.
+
+This requires the markdown parser to provide **source positions** (§9), which is
+a hard requirement on the parser choice.
+
+**Custom extraction templates (future, host-exposed):** because captures are
+named and queryable, a consumer can ship its own schemas purely to *extract*
+data — "give me `.manual.steps` from every doc" — without that schema being the
+validation schema. opys (and other consumers) can expose this so users define
+their own extraction templates per use case.
+
+---
+
+## 8. Scaffolding
+
+`Schema::scaffold()` walks the tree: frontmatter keys with placeholder values,
+headings verbatim, one placeholder item per required list, labels as literal
+prefixes, `?`/`*` nodes omitted. Descriptions may be emitted as guiding
+comments. The schema and the new-document template are one artifact.
+
+---
+
+## 9. Markdown parsing — decided: established library
+
+A real parser is required (nesting, lists, headings) **and it must expose source
+positions** for the in-place-edit feature (§7).
+
+- **Recommended: `comrak`** — CommonMark + GFM (task lists, tables), a real AST,
+  and a `sourcepos` extension giving line/col spans per node. Best fit for the
+  tree + spans we need.
+- **Alternative: `pulldown-cmark`** — fast, byte **offsets** via
+  `into_offset_iter`, but event-stream (we'd rebuild a tree).
+
+Decision: use a well-established library (per direction). Spec assumes **comrak**
+for its AST + sourcepos unless changed. Note: this pulls comrak (and `jaq` for
+queries) into the dependency tree of any consumer, including opys.
+
+---
+
+## 10. Public API (sketch)
 
 ```rust
-/// Parse DSL source into a schema (errors carry line:col).
 pub fn parse_schema(src: &str) -> Result<Schema, SchemaError>;
 
 impl Schema {
-    /// Validate a full markdown document; empty Vec == conforms.
-    pub fn validate(&self, markdown: &str) -> Vec<Problem>;
-    /// Emit a starter document conforming to this schema.
+    pub fn validate(&self, md: &str) -> Vec<Problem>;
     pub fn scaffold(&self) -> String;
+    /// Parse a conforming doc into the typed object (errors if non-conforming).
+    pub fn extract(&self, md: &str) -> Result<serde_json::Value, Vec<Problem>>;
+    /// jq selector over the extracted object.
+    pub fn query(&self, md: &str, jq: &str) -> Result<Vec<serde_json::Value>, QueryError>;
+    /// Replace the node addressed by a capture name or jq path; returns new source.
+    pub fn edit(&self, md: &str, target: &str, value: &str) -> Result<String, EditError>;
 }
 
-pub struct Problem { pub path: Vec<String>, pub message: String, pub span: Option<Span> }
-pub struct SchemaError { pub line: usize, pub col: usize, pub message: String }
+pub struct Problem    { pub path: Vec<String>, pub message: String, pub span: Option<Span> }
+pub struct SchemaError{ pub line: usize, pub col: usize, pub message: String }
 ```
 
 ---
 
-## 7. Errors
+## 11. opys integration (body-structure-only)
 
-Two surfaces, both located:
+opys keeps its own frontmatter/field validation and reserved-key/relation/ID
+logic; it uses this crate **only** for `kind = "structured"` section bodies.
 
-- **Schema parse** (`SchemaError`): `line 4:3: '1.' cannot nest under a checklist`.
-- **Document validation** (`Problem`, breadcrumb path):
-  - `Manual verification › Procedure: expected an ordered list with ≥1 item`
-  - `Manual verification › Setup › item 2: missing "Expect:" bullet`
-  - `frontmatter: 'status' must be one of: planned, partial, implemented, wontfix`
-
----
-
-## 8. Markdown parsing — the one real engineering decision
-
-Nesting/lists/headings need a real block parse (today's opys parsing is flat
-regex over lines).
-
-- **Recommended:** a small hand-rolled block parser (headings by `^#{1,6} `,
-  lists by marker + indent depth, paragraphs). No dependency, matches opys's
-  ethos, full control over spans for error reporting. ~200 LOC.
-- **Alternative:** depend on `pulldown-cmark` for a CommonMark AST. More robust
-  for edge cases, but a heavier dependency and a departure from hand-rolled
-  parsing.
-
-**Decision needed.** Spec assumes the hand-rolled parser unless changed.
-
----
-
-## 9. Scaffolding
-
-`Schema::scaffold()` walks the tree and emits a conforming skeleton: the
-frontmatter keys with placeholder values, headings verbatim, one placeholder
-item per required list, labels as literal prefixes; `?`/`*` nodes omitted. The
-schema and the new-document template are one artifact.
-
----
-
-## 10. opys integration (body-structure-only)
-
-Per decision: opys keeps its own frontmatter/field validation and reserved-key /
-relation / ID logic. It uses this crate **only** for `kind = "structured"`
-section bodies.
-
-- A `structured` section in `opys.toml` carries a schema string (the body
-  portion of the DSL — no frontmatter fence), e.g.
-
-  ```toml
-  [[types.feature.sections]]
-  heading = "Manual verification"
-  kind = "structured"
-  structure = '''
-  ### Setup
-    -+
-  ### Procedure
-    1.+
-  ### Expectations
-    - [ ]+
-  '''
-  ```
-
-- `opys verify` extracts the `## <heading>` section body and calls
-  `Schema::validate`; problems are prefixed with the doc id + heading.
-- `opys new` calls `Schema::scaffold()` for the section body.
-- The flat `[[parts]]` model is **dropped** in favour of this.
-
----
-
-## 11. Open decisions to confirm
-
-1. **Crate name** (see naming discussion).
-2. **Markdown parser**: hand-rolled (recommended) vs `pulldown-cmark`.
-3. **Default ordering**: order-independent presence (recommended) vs strict order.
-4. **Default strictness**: schema-as-minimum (recommended) vs reject-extras.
-5. **Frontmatter open vs closed** by default (recommended open; opys won't use it).
-
----
-
-## 12. Phasing
-
-1. Workspace restructure: opys becomes a Cargo workspace; add the crate member.
-2. Crate v0: frontmatter schema + flat body (headings + lists, no nesting) +
-   validate + errors + tests.
-3. Nesting + cardinality + labels + scaffolding.
-4. Wire opys `structured` sections to it; delete `[[parts]]`.
-5. Docs + (optional) standalone publish.
-
----
-
-## 13. Worked example
-
-**Schema**
-
-```
----
-title: string
-owner?: string
----
-## Steps
+```toml
+[[types.feature.sections]]
+heading = "Manual verification"
+kind = "structured"
+structure = '''
+### Setup
+  -+
+### Procedure
   1.+
-## Risks
-  -*
+'''
 ```
 
-**Conforming document**
+- `opys verify` extracts the section body and calls `validate`; problems prefixed
+  with doc id + heading.
+- `opys new` calls `scaffold()` for the section body.
+- The flat `[[parts]]` model is **dropped**.
+- Later, opys can expose `query`/`edit` (e.g. `opys edit FEAT-1 --in "Manual
+  verification" --set procedure.steps[1] "…"`) — the precise-edit use case.
 
-```markdown
 ---
-title: Migrate auth
----
-# Migrate auth
-## Steps
-1. Snapshot the DB
-2. Flip the flag
-## Risks
-- token cache may stale
-```
 
-**Result:** `[]` (conforms — `owner` optional, `Risks` may be empty, order of
-Steps/Risks fixed only if `ordered`).
+## 12. Open decisions
+
+1. **Crate name** — `md*` shortlist (rec: `mdrubric` / `mdstruct`).
+2. **Exact annotation syntax** — `@name` + ` -- description` proposed; confirm.
+3. **Query engine** — `jaq` (jq in Rust) proposed.
+4. **Markdown library** — `comrak` (AST + sourcepos) proposed; `pulldown-cmark` alt.
+
+(Parser-is-a-library, strict ordering, strict matching, closed frontmatter are
+**resolved** per §4.)
+
+---
+
+## 13. Phasing
+
+1. Workspace restructure: opys → Cargo workspace; add the crate member.
+2. **v0 — validate + scaffold:** frontmatter + body grammar, `@name`/`--desc`
+   parsed and carried, spans tracked, errors. Wire opys `structured` sections;
+   delete `[[parts]]`.
+3. **Extract:** schema → typed JSON object via capture names.
+4. **Query:** `jaq` selectors over the object.
+5. **Edit in-place:** name/path → span → byte-accurate splice; expose via opys.
+6. Docs + (optional) standalone publish + IDE integration groundwork.
