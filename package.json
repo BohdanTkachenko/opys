@@ -1,6 +1,6 @@
 {
   "name": "opys",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "File-based feature inventory + work items operated through the opys CLI.",
   "keywords": ["pi-package", "pi", "skills", "feature-inventory", "work-items", "opys"],
   "homepage": "https://github.com/BohdanTkachenko/opys",
