@@ -65,12 +65,12 @@ owner?: string
 
 ## @manual Manual verification
   ### @setup Setup                   -- preconditions for the run
-    - @items+
+    - +@items
   ### @procedure Procedure
-    1. @steps+                       -- ordered, reproducible steps
-      - @note?                       -- optional note under a step
+    1. +@steps                       -- ordered, reproducible steps
+      - ?@note                       -- optional note under a step
   ### @expect Expectations
-    - [ ] @checks+
+    - [ ] +@checks
 ```
 
 The same text — cardinality stripped, placeholders filled — is the **scaffold**
@@ -107,14 +107,15 @@ fm-type  = "string" | "int" | "bool" | "date"
 
 ### 3.3 Body structure
 
-Each node is one line — `marker @name? card? label? -- desc?` — plus an
-optionally indented child block. The `@name` alias comes **immediately after the
-marker**; a `card` suffix is **glued** (no space) to the marker-or-name; a space
-then begins the optional `label` (the heading title / item match); the
-description trails. Indentation (normalized) encodes nesting.
+Each node is one line — `marker card?@name? label? -- desc?` — plus an
+optionally indented child block. Right after the marker comes a **glued head**:
+an optional `card`, then an optional `@name` (no space between them — `+@docs`).
+A space then begins the optional `label` (heading title / item match); the
+description trails. Cardinality is always in the same column, with or without a
+name. Indentation (normalized) encodes nesting.
 
 ```ebnf
-node     = INDENT marker ("@" name)? card? (SP label)? (" -- " desc)? NEWLINE children?
+node     = INDENT marker (card? ("@" name)?) (SP label)? (" -- " desc)? NEWLINE children?
 children = (node, indented one level deeper)+
 
 marker   = heading | bullet | ordered | checkbox | prose
@@ -124,13 +125,16 @@ ordered  = digits "."                # "1."
 checkbox = "- [ ]"
 prose    = ">"                        # a non-empty paragraph
 
-card     = "+" | "*" | "?" | "{" int ("," int?)? "}"   # glued to marker/name
+card     = "+" | "*" | "?" | "{" int ("," int?)? "}"   # leads the head, after the marker
 
 label    = "/" regex "/"              # regex if it starts with '/'
          | text                       # …else a bare literal (text must start with it)
          | '"' literal '"'            # quotes OPTIONAL — only to escape a leading '/'
                                       #   or preserve exact whitespace
 ```
+
+So `## +@docs Docs:` = card `+`, name `docs`, literal label `Docs:`; `## + Docs:`
+is the same without a name; `## @docs Docs:` without the card.
 
 **Cardinality** (item count on lists; presence on headings/prose):
 
@@ -140,7 +144,7 @@ label    = "/" regex "/"              # regex if it starts with '/'
 | `+` / `*` / `?` | ≥1 / ≥0 / optional |
 | `{m}` `{m,}` `{m,n}` | explicit bounds |
 
-`## @entries+ /.+/` = one or more headings at that level (repeated subsection). A
+`## +@entries /.+/` = one or more headings at that level (repeated subsection). A
 child block under a **list** constrains *each item*.
 
 **Annotations**: `@name` (right after the marker) is a capture **alias**
