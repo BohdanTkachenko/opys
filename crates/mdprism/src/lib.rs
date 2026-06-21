@@ -17,6 +17,7 @@
 
 mod error;
 mod parse;
+mod render;
 mod schema;
 
 pub use error::{Problem, SchemaError};
@@ -187,5 +188,34 @@ mod tests {
     fn unterminated_frontmatter_errors() {
         let err = parse_schema("---\ntitle: string\n").unwrap_err();
         assert!(err.message.contains("unterminated frontmatter"));
+    }
+
+    #[test]
+    fn scaffold_emits_required_only() {
+        let s = parse(
+            "---\n\
+             title: string\n\
+             status: enum(planned, done)\n\
+             tags: [string]+\n\
+             owner?: string\n\
+             ---\n\
+             ## @manual Manual verification\n\
+            \x20 ### @setup Setup\n\
+            \x20   - +@items\n\
+             ## ?@refs References\n\
+            \x20 - *@links\n",
+        );
+        let out = s.scaffold();
+        assert!(out.contains("title: \n"), "{out}");
+        assert!(out.contains("status: planned\n"), "{out}"); // first enum value
+        assert!(out.contains("tags: []\n"), "{out}");
+        assert!(!out.contains("owner"), "optional key omitted: {out}");
+        assert!(out.contains("## Manual verification\n"), "{out}");
+        assert!(out.contains("### Setup\n"), "{out}");
+        assert!(out.contains("- \n") || out.contains("- "), "{out}");
+        assert!(
+            !out.contains("References"),
+            "optional heading omitted: {out}"
+        );
     }
 }
