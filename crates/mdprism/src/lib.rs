@@ -10,15 +10,16 @@
 //!
 //! ## Status
 //!
-//! v0 (this crate) implements the **schema parser** ([`parse_schema`]) and the
-//! [`Schema`] data model. Validation, extraction, rendering, scaffolding,
-//! querying, and editing are the next phases (they will pull in `comrak` for the
-//! document AST and `jaq` for queries).
+//! Implemented: the **schema parser** ([`parse_schema`]) + [`Schema`] data model,
+//! **`scaffold`** (starter document), and **`validate`** (body conformance, via
+//! comrak). Next phases: frontmatter typing, `extract` → typed JSON, data-driven
+//! `render`, `query` (jaq), and in-place `edit`.
 
 mod error;
 mod parse;
 mod render;
 mod schema;
+mod validate;
 
 pub use error::{Problem, SchemaError};
 pub use parse::parse_schema;
@@ -188,6 +189,57 @@ mod tests {
     fn unterminated_frontmatter_errors() {
         let err = parse_schema("---\ntitle: string\n").unwrap_err();
         assert!(err.message.contains("unterminated frontmatter"));
+    }
+
+    const SCHEMA: &str = "## @manual Manual verification\n\
+        \x20 ### @setup Setup\n\
+        \x20   - +@items\n\
+        \x20 ### @procedure Procedure\n\
+        \x20   1. +@steps\n\
+         ## @plan Test plan\n\
+        \x20 - [ ] +@cases\n";
+
+    #[test]
+    fn validate_accepts_a_conforming_document() {
+        let s = parse(SCHEMA);
+        let doc = "## Manual verification\n\
+            ### Setup\n\
+            - external monitor\n\n\
+            ### Procedure\n\
+            1. open a tab\n\
+            2. run it\n\n\
+            ## Test plan\n\
+            - [x] one\n\
+            - [ ] two\n";
+        let problems = s.validate(doc);
+        assert!(problems.is_empty(), "{problems:?}");
+    }
+
+    #[test]
+    fn validate_flags_missing_section_and_empty_list() {
+        let s = parse(SCHEMA);
+        // No "Test plan" section; Setup present but with no items.
+        let doc = "## Manual verification\n\
+            ### Setup\n\n\
+            ### Procedure\n\
+            1. open\n";
+        let problems = s.validate(doc);
+        let joined: Vec<String> = problems.iter().map(|p| p.to_string()).collect();
+        let all = joined.join("\n");
+        assert!(all.contains("plan"), "missing Test plan: {all}");
+        assert!(
+            all.contains("setup") && all.contains("at least one item"),
+            "empty Setup list: {all}"
+        );
+    }
+
+    #[test]
+    fn validate_respects_strict_ordering() {
+        // Schema wants Setup then Procedure; doc has them reversed.
+        let s = parse("## @m M\n  ### @setup Setup\n    > @x\n  ### @proc Procedure\n    > @y\n");
+        let reversed = "## M\n### Procedure\nbody\n\n### Setup\nbody\n";
+        let problems = s.validate(reversed);
+        assert!(!problems.is_empty(), "strict order should flag reversal");
     }
 
     #[test]
