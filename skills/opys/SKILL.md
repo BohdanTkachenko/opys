@@ -147,14 +147,13 @@ resets and is greppable, deleted when you finish.
 ## Workflow: authoring features (interview style)
 
 When drafting a feature file with a user, ask for edge cases — they become
-test-plan items. Then ask which behaviors warrant a human eye on a real
-build, and record a `structured` "Manual verification" item with the
-configured parts (the default config ships Setup / numbered Steps / Expect)
-while the details are fresh. Manual verification is *not* reserved for the
-unautomatable: a manual item may re-check behavior that automated tests also
-cover (a friendlier, end-to-end sanity pass). The item format is whatever the
-type's `[[parts]]` declare — `verify` requires every `required` part on each
-item.
+test-plan items. Then ask which behaviors warrant a human eye on a real build,
+and fill in the `structured` "Manual verification" section while the details are
+fresh (the default config ships a Setup / Procedure / Expectations shape).
+Manual verification is *not* reserved for the unautomatable: it may re-check
+behavior that automated tests also cover (a friendlier, end-to-end sanity pass).
+The shape is whatever the type's `structure` (an `mdprism` schema) declares —
+`verify` validates the section against it.
 
 ## Retrieval discipline
 
