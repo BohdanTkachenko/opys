@@ -23,7 +23,8 @@ its own `statuses`
 (plus `default_status` / `terminal_statuses`), `[fields.*]` (custom frontmatter
 fields, with optional regex `pattern`), and required `sections` (each a
 code-backed *kind*: prose/log/checklist/structured — the `structured` kind's
-item format is config-driven via `[[parts]]` — with optional config-driven
+content shape is config-driven via a `structure` (an `mdprism` schema, the
+`mdprism` workspace crate) — with optional config-driven
 `checks`), plus a list of
 conditional `[[rules]]` (`when {type?, status?}` + one assertion). **A document's
 type is its id prefix.** There is no hardcoded type set: the default config ships
@@ -106,9 +107,8 @@ Layering, roughly outermost-in:
 - `src/doc.rs` / `src/frontmatter.rs` / `src/body.rs` — the parse layer. `Doc` is
   the single document struct (`{path, frontmatter, body, title}`; type derived
   from the id prefix). `frontmatter` parses YAML with `serde_norway` and
-  re-serializes canonically; `body` extracts the title, checkbox items
-  (`checklist_items(body, heading)`), and structured-section items
-  (`structured_items(body, heading)`).
+  re-serializes canonically; `body` extracts the title, sections
+  (`section(body, heading)`), and checkbox items (`checklist_items(body, heading)`).
 - `src/refs.rs` — the uniform relation maps (`references`/`blocked_by`/`blocks`),
   ID→title: parse/serialize (sorted by item number), strikethrough tombstone
   helpers, `id_number`.
@@ -165,10 +165,10 @@ All status/section/link guards are *config*, enforced by one engine
   `[tests]` block.)
 - **Sections**: a type's `sections` each declare a `kind` (prose/log/checklist/
   structured), optional `checks`, and `required`. `verify` checks a required
-  section is present, runs each section's `checks`, and enforces a `structured`
-  section's configured `[[parts]]` on each item (required parts present, lead not
-  a checkbox); `new` scaffolds the required ones (a `structured` item gets each
-  part's bullet).
+  section is present, runs each section's `checks`, and validates a `structured`
+  section's content against its `structure` (an `mdprism` schema) via
+  `mdprism::Schema::validate`; `new` scaffolds the required ones (a `structured`
+  section from `mdprism::Schema::scaffold`).
 - **Frontmatter is closed**: only the reserved keys (`id`/`status`/`tags` +
   `references`/`blocked_by`/`blocks`) plus the doc type's declared `[fields.*]`
   are allowed; unknown keys fail `verify`. Declared fields are type-checked

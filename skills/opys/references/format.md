@@ -354,52 +354,47 @@ point `file` at the defining file and make `must_match` a definition pattern
 
 ## Structured sections
 
-A `structured` section is a list of items whose **format is configured**, not
-hardcoded. The section declares its item format with `[[…sections.parts]]`; each
-`PartSpec` is `{ label, form = "value" | "ordered", required }`. `verify` then
-requires every `required` part on every item, and `new` scaffolds an item with
-each part's bullet.
+A `structured` section's content shape is **configured**, not hardcoded: the
+section declares a `structure` — an [`mdprism`](../../../docs/structure-dsl-spec.md)
+schema (the body portion of the DSL). `verify` runs `mdprism` against the
+section's content; `new` scaffolds the section from the same schema.
 
 ```toml
 [[types.feature.sections]]
 heading = "Manual verification"
 kind = "structured"
-[[types.feature.sections.parts]]
-label = "Setup"
-required = true
-[[types.feature.sections.parts]]
-label = "Steps"
-form = "ordered"      # a "- Steps:" bullet followed by a numbered list
-required = true
-[[types.feature.sections.parts]]
-label = "Expect"
-required = true
+structure = '''
+### @setup Setup
+  - +@items
+### @procedure Procedure
+  1. +@steps
+### @expect Expectations
+  - +@checks
+'''
 ```
 
-On the page that renders as a column-0 `- <description>` item, then indented
-`- <Label>: <value>` bullets (a `value` part) and a `- <Label>:` bullet followed
-by a numbered list (an `ordered` part):
+That structure requires the page to look like:
 
 ```markdown
 ## Manual verification
-- Title legible at fractional scaling
-  - Setup: external monitor at 150% scaling
-  - Steps:
-    1. Open a tab
-    2. `printf '\033]2;Ünïcödé\007'`
-  - Expect: crisp glyphs, no clipping
+### Setup
+- external monitor at 150% scaling
+### Procedure
+1. Open a tab
+2. `printf '\033]2;Ünïcödé\007'`
+### Expectations
+- crisp glyphs, no clipping
 ```
 
-Rules and conventions:
+The schema is whatever a type needs — sub-sections, typed/nested lists,
+checklists, regex-constrained items, cardinality, capture aliases — see the DSL
+spec and [reference](../../../docs/mdprism-reference.md). The default config
+ships the manual-QA shape above; rename, restructure, or drop it per type.
 
-- Item leads are plain `- ` lines, **never checkboxes** (`verify` rejects a
-  checkbox lead — that is what `checklist` is for).
-- The default config ships the classic manual-QA shape (`Setup` / ordered
-  `Steps` / `Expect`), but the parts are yours: rename, add, drop, or make
-  optional per type. A part label must be non-empty, unique, and contain no `:`.
+Conventions:
+
 - Write for a competent operator who knows the project but not this case: spell
   out exact escape sequences, config values, and the precise defect to look for.
-  If a crisp `Expect` cannot be written, the case is under-specified.
 - Procedures longer than ~10 lines or shared across features move to a shared
   doc and are referenced.
 
