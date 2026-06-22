@@ -243,6 +243,31 @@ mod tests {
     }
 
     #[test]
+    fn extract_builds_the_capture_object() {
+        let s = parse(SCHEMA);
+        let doc = "## Manual verification\n\
+            ### Setup\n\
+            - external monitor\n\n\
+            ### Procedure\n\
+            1. open a tab\n\
+            2. run it\n\n\
+            ## Test plan\n\
+            - [x] one\n\
+            - [ ] two\n";
+        let v = s.extract(doc).expect("conforms");
+        assert_eq!(v["manual"]["setup"]["items"][0], "external monitor");
+        assert_eq!(v["manual"]["procedure"]["steps"][1], "run it");
+        assert_eq!(v["plan"]["cases"], serde_json::json!(["one", "two"]));
+    }
+
+    #[test]
+    fn extract_errors_on_nonconforming() {
+        let s = parse(SCHEMA);
+        let bad = "## Manual verification\n### Setup\n\n### Procedure\n1. x\n";
+        assert!(s.extract(bad).is_err());
+    }
+
+    #[test]
     fn scaffold_emits_required_only() {
         let s = parse(
             "---\n\
