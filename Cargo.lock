@@ -1770,6 +1770,7 @@ dependencies = [
  "assert_fs",
  "clap",
  "gix",
+ "mdprism",
  "notify-debouncer-full",
  "predicates",
  "ratatui",

@@ -29,9 +29,7 @@ must_match = '${{name}}'\n\
 scope = \"checked\"\n\
 message = \"test reference `${{ref}}` not found\"\n\
 [[types.feature.sections]]\nheading = \"Manual verification\"\nkind = \"structured\"\n\
-[[types.feature.sections.parts]]\nlabel = \"Setup\"\nrequired = true\n\
-[[types.feature.sections.parts]]\nlabel = \"Steps\"\nform = \"ordered\"\nrequired = true\n\
-[[types.feature.sections.parts]]\nlabel = \"Expect\"\nrequired = true\n\
+structure = '''\n### @setup Setup\n  - +@items\n### @procedure Procedure\n  1. +@steps\n### @expect Expectations\n  - +@checks\n'''\n\
 [[rules]]\nwhen = {{ type = \"feature\", status = \"wontfix\" }}\nrequire_field = \"wontfix_reason\"\n\
 [[rules]]\nwhen = {{ type = \"feature\", status = \"implemented\" }}\nrequire_checked_section = \"Test plan\"\n"
     )
@@ -192,23 +190,20 @@ fn new_writes_doc_and_no_index() {
 }
 
 #[test]
-fn new_scaffolds_structured_section_parts() {
+fn new_scaffolds_structured_section_from_mdprism() {
     let dir = project_with(
         "pad = 4\n\
 [types.feature]\nprefix = \"FEAT\"\nstatuses = [\"planned\"]\n\
 default_status = \"planned\"\n\
 [[types.feature.sections]]\nheading = \"Manual verification\"\nkind = \"structured\"\nrequired = true\n\
-[[types.feature.sections.parts]]\nlabel = \"Setup\"\nrequired = true\n\
-[[types.feature.sections.parts]]\nlabel = \"Steps\"\nform = \"ordered\"\nrequired = true\n\
-[[types.feature.sections.parts]]\nlabel = \"Expect\"\nrequired = true\n",
+structure = '''\n### @setup Setup\n  - +@items\n### @procedure Procedure\n  1. +@steps\n'''\n",
     );
     opys(&dir).args(["new", "--title", "X"]).assert().success();
     let body = std::fs::read_to_string(dir.child("opys/FEAT-0001.md").path()).unwrap();
     assert!(body.contains("## Manual verification"), "{body}");
-    assert!(body.contains("- First item"), "{body}");
-    assert!(body.contains("  - Setup: "), "{body}");
-    assert!(body.contains("  - Steps:\n    1. "), "{body}");
-    assert!(body.contains("  - Expect: "), "{body}");
+    // mdprism scaffold emits the structure's sub-headings and a placeholder item.
+    assert!(body.contains("### Setup"), "{body}");
+    assert!(body.contains("### Procedure"), "{body}");
 }
 
 #[test]
@@ -509,9 +504,10 @@ fn tag_keeps_at_least_one() {
 }
 
 #[test]
-fn verify_checks_structured_item_shape() {
+fn verify_checks_structured_section_against_mdprism() {
     let dir = project();
-    // An item missing every required part of the `structured` section.
+    // A "## Manual verification" present but missing the required sub-sections
+    // declared by the section's mdprism `structure`.
     dir.child("opys/features/FEAT-0001.md")
         .write_str(
             "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# F\n\n## Manual verification\n- Looks right\n",
@@ -521,14 +517,14 @@ fn verify_checks_structured_item_shape() {
         .arg("verify")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("item missing Setup"))
-        .stderr(predicate::str::contains("item missing numbered Steps"))
-        .stderr(predicate::str::contains("item missing Expect"));
+        .stderr(predicate::str::contains("Manual verification"))
+        .stderr(predicate::str::contains("setup"))
+        .stderr(predicate::str::contains("procedure"));
 
-    // A fully-formed item passes the structured check.
+    // A document matching the structure passes.
     dir.child("opys/features/FEAT-0001.md")
         .write_str(
-            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# F\n\n## Manual verification\n- Looks right\n  - Setup: a window\n  - Steps:\n    1. open it\n  - Expect: it renders\n",
+            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# F\n\n## Manual verification\n### Setup\n- a window\n\n### Procedure\n1. open it\n\n### Expectations\n- it renders\n",
         )
         .unwrap();
     opys(&dir).arg("verify").assert().success();
