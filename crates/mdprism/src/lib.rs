@@ -311,7 +311,10 @@ mod tests {
         let md = s.render(&data).expect("renders");
         // Re-validate the rendered output
         let problems = s.validate(&md);
-        assert!(problems.is_empty(), "rendered doc fails validate: {problems:?}\n---\n{md}");
+        assert!(
+            problems.is_empty(),
+            "rendered doc fails validate: {problems:?}\n---\n{md}"
+        );
     }
 
     #[test]
@@ -357,9 +360,14 @@ mod tests {
             - [x] one\n\
             - [ ] two\n";
         // Replace the first setup item.
-        let edited = s.edit(doc, "manual.setup.items.0", "projector").expect("edit succeeds");
+        let edited = s
+            .edit(doc, "manual.setup.items.0", "projector")
+            .expect("edit succeeds");
         assert!(edited.contains("- projector\n"), "item replaced: {edited}");
-        assert!(!edited.contains("external monitor"), "old text gone: {edited}");
+        assert!(
+            !edited.contains("external monitor"),
+            "old text gone: {edited}"
+        );
         // Rest of the document is untouched.
         assert!(edited.contains("open a tab"), "rest preserved: {edited}");
         // Re-validates.
@@ -378,9 +386,14 @@ mod tests {
             ## Test plan\n\
             - [x] old case\n\
             - [ ] second\n";
-        let edited = s.edit(doc, "plan.cases.0", "new case").expect("edit succeeds");
+        let edited = s
+            .edit(doc, "plan.cases.0", "new case")
+            .expect("edit succeeds");
         // The `[x]` prefix must be preserved.
-        assert!(edited.contains("- [x] new case\n"), "checkbox preserved: {edited}");
+        assert!(
+            edited.contains("- [x] new case\n"),
+            "checkbox preserved: {edited}"
+        );
         assert!(!edited.contains("old case"), "old text gone: {edited}");
     }
 

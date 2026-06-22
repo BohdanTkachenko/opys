@@ -29,8 +29,7 @@ impl Schema {
         let blocks = build_sp_blocks(root.children(), &ls);
 
         let path: Vec<&str> = target.split('.').collect();
-        let span = find_span(&path, &self.body, &blocks)
-            .ok_or(EditError::TargetNotFound)?;
+        let span = find_span(&path, &self.body, &blocks).ok_or(EditError::TargetNotFound)?;
 
         let abs_start = body_offset + span.start;
         let abs_end = body_offset + span.end;
@@ -88,10 +87,7 @@ enum FlatItem {
     Block { idx: usize },
 }
 
-fn build_sp_blocks<'a>(
-    nodes: impl Iterator<Item = &'a AstNode<'a>>,
-    ls: &[usize],
-) -> Vec<SpBlock> {
+fn build_sp_blocks<'a>(nodes: impl Iterator<Item = &'a AstNode<'a>>, ls: &[usize]) -> Vec<SpBlock> {
     let mut flat: Vec<FlatItem> = Vec::new();
     let mut store: Vec<Option<SpBlock>> = Vec::new();
 
@@ -108,13 +104,17 @@ fn build_sp_blocks<'a>(
                 let ordered = matches!(nl.list_type, ListType::Ordered);
                 let items = build_sp_items(node, ls);
                 let idx = store.len();
-                store.push(Some(SpBlock { kind: SpBlockKind::List { ordered, items } }));
+                store.push(Some(SpBlock {
+                    kind: SpBlockKind::List { ordered, items },
+                }));
                 flat.push(FlatItem::Block { idx });
             }
             NodeValue::Paragraph => {
                 if let Some(sp) = first_text_span(node, ls) {
                     let idx = store.len();
-                    store.push(Some(SpBlock { kind: SpBlockKind::Para { span: sp } }));
+                    store.push(Some(SpBlock {
+                        kind: SpBlockKind::Para { span: sp },
+                    }));
                     flat.push(FlatItem::Block { idx });
                 }
             }
@@ -143,7 +143,11 @@ fn sp_nest(
                 *pos += 1;
                 let children = sp_nest(flat, store, pos, level as usize);
                 out.push(SpBlock {
-                    kind: SpBlockKind::Section { level, title, children },
+                    kind: SpBlockKind::Section {
+                        level,
+                        title,
+                        children,
+                    },
                 });
             }
             FlatItem::Block { idx } => {
@@ -257,7 +261,10 @@ fn collect_text<'a>(node: &'a AstNode<'a>, out: &mut String) {
 fn split_checkbox(text: &str) -> (Option<bool>, String, usize) {
     if let Some(rest) = text.strip_prefix("[ ] ") {
         (Some(false), rest.to_string(), 4)
-    } else if let Some(rest) = text.strip_prefix("[x] ").or_else(|| text.strip_prefix("[X] ")) {
+    } else if let Some(rest) = text
+        .strip_prefix("[x] ")
+        .or_else(|| text.strip_prefix("[X] "))
+    {
         (Some(true), rest.to_string(), 4)
     } else {
         (None, text.to_string(), 0)
@@ -312,8 +319,16 @@ fn find_span(path: &[&str], schema: &[Node], blocks: &[SpBlock]) -> Option<Span>
 
         return match (snode, block) {
             (
-                Node::Heading { children: schema_ch, .. },
-                SpBlock { kind: SpBlockKind::Section { children: doc_ch, .. } },
+                Node::Heading {
+                    children: schema_ch,
+                    ..
+                },
+                SpBlock {
+                    kind:
+                        SpBlockKind::Section {
+                            children: doc_ch, ..
+                        },
+                },
             ) => {
                 if rest.is_empty() {
                     None // Can't edit a whole section heading (not yet supported)
@@ -324,7 +339,9 @@ fn find_span(path: &[&str], schema: &[Node], blocks: &[SpBlock]) -> Option<Span>
 
             (
                 Node::List { head, .. },
-                SpBlock { kind: SpBlockKind::List { items, .. } },
+                SpBlock {
+                    kind: SpBlockKind::List { items, .. },
+                },
             ) => {
                 if rest.is_empty() {
                     return None;
@@ -349,7 +366,9 @@ fn find_span(path: &[&str], schema: &[Node], blocks: &[SpBlock]) -> Option<Span>
 
             (
                 Node::Prose { .. },
-                SpBlock { kind: SpBlockKind::Para { span } },
+                SpBlock {
+                    kind: SpBlockKind::Para { span },
+                },
             ) => {
                 if rest.is_empty() {
                     Some(*span)
