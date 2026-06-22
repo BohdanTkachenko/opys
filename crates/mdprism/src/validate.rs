@@ -10,6 +10,7 @@ use crate::schema::*;
 use comrak::nodes::{AstNode, ListType, NodeValue};
 use comrak::{parse_document, Arena, Options};
 use regex::Regex;
+use serde_json::{Map, Value};
 
 impl Schema {
     /// Validate a markdown document's **body** against the schema. An empty
@@ -24,6 +25,24 @@ impl Schema {
         let mut path = Vec::new();
         match_nodes(&self.body, &doc, self.opts, &mut path, &mut problems);
         problems
+    }
+
+    /// Parse a **conforming** document into the typed data object, keyed by the
+    /// schema's capture aliases. Returns the validation problems if it does not
+    /// conform. (Frontmatter capture: future phase — body only for now.)
+    pub fn extract(&self, markdown: &str) -> Result<Value, Vec<Problem>> {
+        let problems = self.validate(markdown);
+        if !problems.is_empty() {
+            return Err(problems);
+        }
+        let body = strip_frontmatter(markdown);
+        let arena = Arena::new();
+        let root = parse_document(&arena, body, &Options::default());
+        let doc = build_blocks(root.children());
+
+        let mut obj = Map::new();
+        extract_into(&self.body, &doc, &mut obj);
+        Ok(Value::Object(obj))
     }
 }
 
@@ -368,4 +387,115 @@ fn problem(path: &[String], alias: String, message: String) -> Problem {
     let mut p = path.to_vec();
     p.push(alias);
     Problem { path: p, message }
+}
+
+// ---- extraction (capture aliases → JSON) ---------------------------------
+
+/// The alias a node captures under, or `None` if it isn't captured (an unnamed
+/// list/prose; a regex-titled heading without `@name`).
+fn capture_alias(node: &Node) -> Option<String> {
+    match node {
+        Node::Heading { head, title, .. } => head.name.clone().or_else(|| match title {
+            Match::Literal(t) => Some(slug(t)),
+            Match::Regex(_) => None,
+        }),
+        Node::List { head, .. } | Node::Prose { head, .. } => head.name.clone(),
+    }
+}
+
+/// A heading/range cardinality that yields an array rather than a single value.
+fn repeated(card: Card) -> bool {
+    matches!(card, Card::Plus | Card::Star | Card::Range(..))
+}
+
+fn extract_into(schema: &[Node], doc: &[DocBlock], obj: &mut Map<String, Value>) {
+    for node in schema {
+        let Some(key) = capture_alias(node) else {
+            continue;
+        };
+        let value = match node {
+            Node::Heading {
+                level,
+                title,
+                head,
+                children,
+            } => {
+                let secs: Vec<&DocBlock> = doc
+                    .iter()
+                    .filter(|b| is_section(b, *level, title))
+                    .collect();
+                let make = |sec: &DocBlock| {
+                    let mut m = Map::new();
+                    if let DocBlock::Section {
+                        children: sc,
+                        title: t,
+                        ..
+                    } = sec
+                    {
+                        if matches!(title, Match::Regex(_)) {
+                            m.insert("title".into(), Value::String(t.clone()));
+                        }
+                        extract_into(children, sc, &mut m);
+                    }
+                    Value::Object(m)
+                };
+                if repeated(head.card) {
+                    Value::Array(secs.iter().map(|s| make(s)).collect())
+                } else {
+                    secs.first().map(|s| make(s)).unwrap_or(Value::Null)
+                }
+            }
+            Node::List {
+                style,
+                item,
+                head,
+                children,
+            } => {
+                let items: &[DocItem] = match doc.iter().find(|b| is_list(b, *style)) {
+                    Some(DocBlock::List { items, .. }) => items,
+                    _ => &[],
+                };
+                let single = matches!(head.card, Card::Required | Card::Optional);
+                if single && children.is_empty() {
+                    // A single labeled bullet captures the text after its label.
+                    items
+                        .first()
+                        .map(|it| Value::String(after_label(item, &it.text)))
+                        .unwrap_or(Value::Null)
+                } else {
+                    Value::Array(
+                        items
+                            .iter()
+                            .map(|it| {
+                                if children.is_empty() {
+                                    Value::String(it.text.clone())
+                                } else {
+                                    let mut m = Map::new();
+                                    m.insert("text".into(), Value::String(it.text.clone()));
+                                    extract_into(children, &it.children, &mut m);
+                                    Value::Object(m)
+                                }
+                            })
+                            .collect(),
+                    )
+                }
+            }
+            Node::Prose { .. } => match doc.iter().find(|b| matches!(b, DocBlock::Para(_))) {
+                Some(DocBlock::Para(t)) => Value::String(t.clone()),
+                _ => Value::Null,
+            },
+        };
+        obj.insert(key, value);
+    }
+}
+
+/// The text after a literal label (`Docs: foo` with label `Docs:` → `foo`);
+/// otherwise the whole text.
+fn after_label(item: &Option<Match>, text: &str) -> String {
+    if let Some(Match::Literal(l)) = item {
+        if let Some(rest) = text.trim_start().strip_prefix(l.as_str()) {
+            return rest.trim().to_string();
+        }
+    }
+    text.to_string()
 }
