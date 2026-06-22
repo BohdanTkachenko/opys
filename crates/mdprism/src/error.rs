@@ -73,3 +73,12 @@ impl std::fmt::Display for ValidationErrors {
 }
 
 impl std::error::Error for ValidationErrors {}
+
+/// A failure while editing a document in-place via [`Schema::edit`].
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum EditError {
+    #[error("target path does not resolve to an editable node")]
+    TargetNotFound,
+    #[error("index {index} is out of range (list has {len} items)")]
+    IndexOutOfRange { index: usize, len: usize },
+}

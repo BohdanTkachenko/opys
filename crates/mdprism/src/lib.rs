@@ -15,6 +15,7 @@
 //! conformance), **`render`** (data → markdown), and **`query`** (jq via jaq).
 //! Next phase: in-place `edit` using comrak sourcepos.
 
+mod edit;
 mod error;
 mod parse;
 mod query;
@@ -22,7 +23,7 @@ mod render;
 mod schema;
 mod validate;
 
-pub use error::{Problem, QueryError, RenderError, SchemaError, ValidationErrors};
+pub use error::{EditError, Problem, QueryError, RenderError, SchemaError, ValidationErrors};
 pub use parse::parse_schema;
 pub use schema::{Card, FieldSchema, FieldType, Head, ListStyle, Match, Node, Schema, SchemaOpts};
 
@@ -341,5 +342,59 @@ mod tests {
             - [ ] two\n";
         let results = s.query(doc, ".plan.cases[]").expect("query succeeds");
         assert_eq!(results, vec!["one", "two"]);
+    }
+
+    #[test]
+    fn edit_replaces_list_item_text() {
+        let s = parse(SCHEMA);
+        let doc = "## Manual verification\n\
+            ### Setup\n\
+            - external monitor\n\n\
+            ### Procedure\n\
+            1. open a tab\n\
+            2. run it\n\n\
+            ## Test plan\n\
+            - [x] one\n\
+            - [ ] two\n";
+        // Replace the first setup item.
+        let edited = s.edit(doc, "manual.setup.items.0", "projector").expect("edit succeeds");
+        assert!(edited.contains("- projector\n"), "item replaced: {edited}");
+        assert!(!edited.contains("external monitor"), "old text gone: {edited}");
+        // Rest of the document is untouched.
+        assert!(edited.contains("open a tab"), "rest preserved: {edited}");
+        // Re-validates.
+        let problems = s.validate(&edited);
+        assert!(problems.is_empty(), "edited doc conforms: {problems:?}");
+    }
+
+    #[test]
+    fn edit_replaces_checklist_item_preserving_checkbox() {
+        let s = parse(SCHEMA);
+        let doc = "## Manual verification\n\
+            ### Setup\n\
+            - a\n\n\
+            ### Procedure\n\
+            1. step\n\n\
+            ## Test plan\n\
+            - [x] old case\n\
+            - [ ] second\n";
+        let edited = s.edit(doc, "plan.cases.0", "new case").expect("edit succeeds");
+        // The `[x]` prefix must be preserved.
+        assert!(edited.contains("- [x] new case\n"), "checkbox preserved: {edited}");
+        assert!(!edited.contains("old case"), "old text gone: {edited}");
+    }
+
+    #[test]
+    fn edit_returns_target_not_found_for_bad_path() {
+        let s = parse(SCHEMA);
+        let doc = "## Manual verification\n\
+            ### Setup\n\
+            - a\n\n\
+            ### Procedure\n\
+            1. b\n\n\
+            ## Test plan\n\
+            - [ ] c\n";
+        let err = s.edit(doc, "nonexistent.path", "x").unwrap_err();
+        assert!(matches!(err, EditError::TargetNotFound));
     }
 }
