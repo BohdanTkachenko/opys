@@ -75,22 +75,21 @@ must_match = '${name}'               # ${group} = the regex-escaped capture
 scope = "checked"                    # "all" (every line) | "checked" (checked items)
 message = "test reference `${ref}` not found"
 
-# A `structured` section: a list of items, each with the configured parts. The
-# parts below reproduce the classic manual-QA shape (Setup / Steps / Expect),
-# but the format is yours — add, rename, or drop parts per type.
+# A `structured` section: its content shape is an mdprism schema (the body
+# portion of the DSL — see docs/structure-dsl-spec.md). This reproduces the
+# classic manual-QA shape with Setup / Procedure / Expectations sub-sections;
+# the format is yours to change per type.
 [[types.feature.sections]]
 heading = "Manual verification"
 kind = "structured"
-[[types.feature.sections.parts]]
-label = "Setup"
-required = true
-[[types.feature.sections.parts]]
-label = "Steps"
-form = "ordered"                     # "value" (a `- Label: …` bullet) | "ordered" (a numbered list)
-required = true
-[[types.feature.sections.parts]]
-label = "Expect"
-required = true
+structure = '''
+### @setup Setup
+  - +@items
+### @procedure Procedure
+  1. +@steps
+### @expect Expectations
+  - +@checks
+'''
 
 # ----------------------------------- task ------------------------------------
 # Ephemeral implementation work. Deleted on `close`.

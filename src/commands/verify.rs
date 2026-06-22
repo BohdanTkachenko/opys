@@ -11,7 +11,7 @@ use crate::doc::Doc;
 use crate::error::Result;
 use crate::frontmatter::Frontmatter;
 use crate::project::{id_format_re, Project, KEBAB_RE};
-use crate::project_config::{CheckScope, PartForm, PartSpec, SectionCheck, SectionKind};
+use crate::project_config::{CheckScope, SectionCheck, SectionKind, SectionSpec};
 use crate::refs;
 use crate::rules;
 use crate::Ctx;
@@ -110,7 +110,7 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
         // Section-kind validators, by the type's section headings.
         for sec in &t.sections {
             if sec.kind == SectionKind::Structured {
-                check_structured(d, id, &sec.heading, &sec.parts, &mut errors);
+                check_structured(d, id, sec, &mut errors);
             }
             // Universal content checks, run regardless of kind.
             for chk in &sec.checks {
@@ -505,38 +505,23 @@ fn resolve_file(prj: &Project, rel: &str, roots: &[String]) -> Option<String> {
         .and_then(|p| std::fs::read_to_string(p).ok())
 }
 
-/// A `structured` section: every item must carry each `required` part (a value
-/// part present, or an ordered part with ≥1 numbered entry), and an item's lead
-/// line must not be a checkbox (that is what `checklist` is for).
-fn check_structured(
-    d: &Doc,
-    id: &str,
-    heading: &str,
-    parts: &[PartSpec],
-    errors: &mut Vec<String>,
-) {
-    for it in body::structured_items(&d.body, heading) {
-        let desc: String = it.desc.chars().take(50).collect();
-        for part in parts {
-            if part.required && !it.has_part(&part.label) {
-                let what = match part.form {
-                    PartForm::Ordered => format!("numbered {}", part.label),
-                    PartForm::Value => part.label.clone(),
-                };
-                errors.push(format!(
-                    "{id}: section '{heading}' item missing {what}: {desc}"
-                ));
-            }
-        }
-        let as_item = format!("- {}", it.desc);
-        if as_item.to_lowercase().starts_with("- [x] ")
-            || it.desc.starts_with("[ ]")
-            || it.desc.starts_with("[x]")
-        {
-            errors.push(format!(
-                "{id}: section '{heading}' items must not be checkboxes: {desc}"
-            ));
-        }
+/// A `structured` section: its content must conform to the section's `structure`
+/// (an mdprism schema). When the section is absent, the `required` check (not
+/// this one) is responsible; we only validate present sections.
+fn check_structured(d: &Doc, id: &str, sec: &SectionSpec, errors: &mut Vec<String>) {
+    let Some(src) = &sec.structure else {
+        return;
+    };
+    if !body::has_section(&d.body, &sec.heading) {
+        return;
+    }
+    // A malformed structure is already reported by config validation.
+    let Ok(schema) = mdprism::parse_schema(src) else {
+        return;
+    };
+    let content = body::section(&d.body, &sec.heading);
+    for p in schema.validate(&content) {
+        errors.push(format!("{id}: section '{}': {p}", sec.heading));
     }
 }
 

@@ -49,6 +49,7 @@ regex = "1"
 walkdir = "2"
 anyhow = "1"
 thiserror = "1"
+mdprism = { path = "crates/mdprism" }
 time = { version = "0.3", features = ["formatting", "parsing", "local-offset", "macros"] }
 
 # TUI stack (powers `opys tui`). crossterm is used via ratatui's re-export

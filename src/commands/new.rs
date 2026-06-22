@@ -5,7 +5,7 @@ use crate::doc::Doc;
 use crate::error::{usage, Result};
 use crate::frontmatter::Frontmatter;
 use crate::project::{self, Project};
-use crate::project_config::{DocType, PartForm, SectionKind};
+use crate::project_config::{DocType, SectionKind};
 use crate::Ctx;
 use crate::{refs, rules};
 
@@ -139,22 +139,25 @@ pub fn run(
 }
 
 /// Scaffold the body: the title heading plus each declared section, seeded per
-/// kind: a checklist gets a starter item; a structured section gets a starter
-/// item with each part's labelled bullet; others just the heading.
+/// kind: a checklist gets a starter item; a structured section is scaffolded
+/// from its mdprism `structure`; others just the heading.
 pub(crate) fn scaffold_body(title: &str, t: &DocType) -> String {
     let mut body = format!("# {title}\n");
     for sec in t.sections.iter().filter(|s| s.required) {
         body.push_str(&format!("\n## {}\n", sec.heading));
         match sec.kind {
             SectionKind::Checklist => body.push_str("- [ ] First item\n"),
+            // Scaffold the structured section from its mdprism schema.
             SectionKind::Structured => {
-                body.push_str("- First item\n");
-                for part in &sec.parts {
-                    match part.form {
-                        PartForm::Ordered => {
-                            body.push_str(&format!("  - {}:\n    1. \n", part.label))
-                        }
-                        PartForm::Value => body.push_str(&format!("  - {}: \n", part.label)),
+                if let Some(schema) = sec
+                    .structure
+                    .as_deref()
+                    .and_then(|s| mdprism::parse_schema(s).ok())
+                {
+                    let scaffolded = schema.scaffold();
+                    body.push_str(&scaffolded);
+                    if !scaffolded.ends_with('\n') {
+                        body.push('\n');
                     }
                 }
             }

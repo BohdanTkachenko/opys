@@ -1,7 +1,5 @@
-//! Parsing of the markdown body: title, sections, checklist items, and
-//! `structured` section items.
+//! Parsing of the markdown body: title, sections, and checklist items.
 
-use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -9,7 +7,6 @@ use regex::Regex;
 static TITLE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^# (.+)$").unwrap());
 static CHECKED_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^- \[x\] ").unwrap());
 static UNCHECKED_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^- \[ \] ").unwrap());
-static STEP_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+\.").unwrap());
 
 /// First `# Heading` line, or `""`.
 pub fn title(body: &str) -> String {
@@ -66,73 +63,6 @@ pub fn has_section(body: &str, header: &str) -> bool {
         .is_match(body)
 }
 
-/// One item of a `structured` section: its lead `- <desc>` line plus the named
-/// parts found under it. `values` holds `- <Label>: <value>` bullets; `ordered`
-/// holds `- <Label>:` bullets whose numbered list follows. The set of part
-/// labels comes from config — this parser is label-agnostic.
-#[derive(Debug, Clone)]
-pub struct StructuredItem {
-    pub desc: String,
-    pub values: BTreeMap<String, String>,
-    pub ordered: BTreeMap<String, Vec<String>>,
-}
-
-impl StructuredItem {
-    /// Whether the named part is present: a non-empty `value` part, or an
-    /// `ordered` part with at least one numbered entry.
-    pub fn has_part(&self, label: &str) -> bool {
-        self.values.contains_key(label) || self.ordered.get(label).is_some_and(|v| !v.is_empty())
-    }
-}
-
-/// Items under a `structured` `## <heading>`. A column-0 `- ` line starts an
-/// item; an indented `- <Label>: <value>` bullet is a value part, and an
-/// indented `- <Label>:` bullet followed by a numbered list is an ordered part.
-pub fn structured_items(body: &str, heading: &str) -> Vec<StructuredItem> {
-    let mut items: Vec<StructuredItem> = Vec::new();
-    // The ordered part currently collecting numbered lines (None after a value
-    // part or a new item).
-    let mut current: Option<String> = None;
-    for line in section(body, heading).lines() {
-        if let Some(rest) = line.strip_prefix("- ") {
-            items.push(StructuredItem {
-                desc: rest.trim().to_string(),
-                values: BTreeMap::new(),
-                ordered: BTreeMap::new(),
-            });
-            current = None;
-            continue;
-        }
-        let Some(cur) = items.last_mut() else {
-            continue;
-        };
-        let s = line.trim();
-        if let Some(bullet) = s.strip_prefix("- ") {
-            match bullet.split_once(':') {
-                // `- Label:` (empty value) opens an ordered part.
-                Some((label, value)) if value.trim().is_empty() => {
-                    let label = label.trim().to_string();
-                    cur.ordered.entry(label.clone()).or_default();
-                    current = Some(label);
-                }
-                // `- Label: value` is a value part.
-                Some((label, value)) => {
-                    cur.values
-                        .insert(label.trim().to_string(), value.trim().to_string());
-                    current = None;
-                }
-                None => current = None,
-            }
-        } else if STEP_RE.is_match(s) {
-            if let Some(label) = &current {
-                let step = STEP_RE.replace(s, "").trim_start().to_string();
-                cur.ordered.entry(label.clone()).or_default().push(step);
-            }
-        }
-    }
-    items
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,26 +81,5 @@ mod tests {
         assert!(items[0].checked);
         assert!(!items[1].checked);
         assert!(items[0].line.contains("tab::osc_title"));
-    }
-
-    #[test]
-    fn parses_structured_item() {
-        let items = structured_items(BODY, "Manual verification");
-        assert_eq!(items.len(), 1);
-        let it = &items[0];
-        assert_eq!(
-            it.values.get("Setup").map(String::as_str),
-            Some("external monitor at 150%")
-        );
-        assert_eq!(it.ordered.get("Steps").map(Vec::len), Some(2));
-        assert_eq!(it.ordered["Steps"][0], "Open a tab");
-        assert_eq!(
-            it.values.get("Expect").map(String::as_str),
-            Some("crisp glyphs")
-        );
-        // Convenience: required-part presence.
-        assert!(it.has_part("Setup"));
-        assert!(it.has_part("Steps"));
-        assert!(!it.has_part("Teardown"));
     }
 }
