@@ -3,25 +3,26 @@
 //! One compact schema (a textual DSL) defines a bidirectional mapping between a
 //! markdown document and a typed data object. From it you can **validate**,
 //! **extract** (parse → data), **render** (data → markdown), **scaffold**,
-//! **query**, and **edit in-place**.
+//! **query** (jq via jaq), and **edit in-place**.
 //!
 //! See `docs/structure-dsl-spec.md` for the language and `docs/mdprism-reference.md`
 //! for a worked example.
 //!
 //! ## Status
 //!
-//! Implemented: the **schema parser** ([`parse_schema`]) + [`Schema`] data model,
-//! **`scaffold`** (starter document), and **`validate`** (body conformance, via
-//! comrak). Next phases: frontmatter typing, `extract` → typed JSON, data-driven
-//! `render`, `query` (jaq), and in-place `edit`.
+//! Implemented: schema parser ([`parse_schema`]), [`Schema`] data model,
+//! **`scaffold`** (starter document), **`validate`** / **`extract`** (body
+//! conformance), **`render`** (data → markdown), and **`query`** (jq via jaq).
+//! Next phase: in-place `edit` using comrak sourcepos.
 
 mod error;
 mod parse;
+mod query;
 mod render;
 mod schema;
 mod validate;
 
-pub use error::{Problem, SchemaError};
+pub use error::{Problem, QueryError, RenderError, SchemaError, ValidationErrors};
 pub use parse::parse_schema;
 pub use schema::{Card, FieldSchema, FieldType, Head, ListStyle, Match, Node, Schema, SchemaOpts};
 
@@ -294,5 +295,51 @@ mod tests {
             !out.contains("References"),
             "optional heading omitted: {out}"
         );
+    }
+
+    #[test]
+    fn render_produces_conforming_document() {
+        let s = parse(SCHEMA);
+        let data = serde_json::json!({
+            "manual": {
+                "setup": { "items": ["external monitor", "test device"] },
+                "procedure": { "steps": ["open a tab", "run it"] }
+            },
+            "plan": { "cases": ["smoke", "edge case"] }
+        });
+        let md = s.render(&data).expect("renders");
+        // Re-validate the rendered output
+        let problems = s.validate(&md);
+        assert!(problems.is_empty(), "rendered doc fails validate: {problems:?}\n---\n{md}");
+    }
+
+    #[test]
+    fn render_errors_on_missing_required_field() {
+        let s = parse(SCHEMA);
+        // Missing "plan" (required section)
+        let data = serde_json::json!({
+            "manual": {
+                "setup": { "items": ["a"] },
+                "procedure": { "steps": ["b"] }
+            }
+        });
+        let err = s.render(&data).unwrap_err();
+        assert!(matches!(err, RenderError::MissingField(_)));
+    }
+
+    #[test]
+    fn query_extracts_and_filters() {
+        let s = parse(SCHEMA);
+        let doc = "## Manual verification\n\
+            ### Setup\n\
+            - external monitor\n\n\
+            ### Procedure\n\
+            1. open a tab\n\
+            2. run it\n\n\
+            ## Test plan\n\
+            - [x] one\n\
+            - [ ] two\n";
+        let results = s.query(doc, ".plan.cases[]").expect("query succeeds");
+        assert_eq!(results, vec!["one", "two"]);
     }
 }
