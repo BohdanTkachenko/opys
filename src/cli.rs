@@ -194,6 +194,14 @@ pub enum Command {
         force: bool,
     },
 
+    /// Resolve ID conflicts between branches: keep IDs that existed at the git
+    /// merge-base with main/master and renumber the ones added on this branch.
+    Renumber {
+        /// The git ref to treat as the base (defaults to merge-base with main/master).
+        #[arg(long)]
+        base: Option<String>,
+    },
+
     /// Strip struck-through (closed) references from every document.
     Cleanup,
 

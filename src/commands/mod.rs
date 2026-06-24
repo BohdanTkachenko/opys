@@ -12,6 +12,7 @@ pub mod import;
 pub mod init;
 pub mod list;
 pub mod new;
+pub mod renumber;
 pub mod retire;
 pub mod set_status;
 pub mod show;

@@ -146,6 +146,10 @@ pub fn run(cli: Cli) -> Result<i32> {
             commands::close::run(&ctx, &ids, force)?;
             Ok(0)
         }
+        Command::Renumber { base } => {
+            commands::renumber::run(&ctx, base.as_deref())?;
+            Ok(0)
+        }
         Command::Cleanup => {
             commands::cleanup::run(&ctx)?;
             Ok(0)
