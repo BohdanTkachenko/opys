@@ -40,6 +40,20 @@ pad = 4                              # zero-padding width for the numeric id par
 [layout]
 path = "{type}/{status}/{id}.md"
 
+# How document ids are mentioned in code, for `opys show <id> --refs` and the
+# warning `opys renumber` prints when a renumbered id is still referenced. Each
+# format renders an id with the placeholders {id} (the full PREFIX-NNNN),
+# {prefix}/{prefix_lower}, {num} (unpadded), and {padded} (zero-padded to `pad`);
+# `word = false` matches a substring instead of a whole word. With no formats
+# configured, only the canonical {id} is scanned.
+[file_refs]
+roots = ["src", "tests"]             # where to scan (project-root relative)
+formats = [
+    { template = "{id}" },               # FEAT-0001
+    { template = "{prefix}{num}" },       # FEAT1
+    { template = "{prefix_lower}_{num}" }, # feat_1
+]
+
 # ---------------------------------- feature ----------------------------------
 # Permanent description of product behavior. A feature removed from the product
 # becomes status "archived" (kept in the inventory), never deleted.

@@ -83,7 +83,13 @@ pub enum Command {
     },
 
     /// Print a document.
-    Show { id: String },
+    Show {
+        id: String,
+        /// After the document, list textual references to its id found in code
+        /// (scans `[file_refs].roots`, matching the configured id formats).
+        #[arg(long)]
+        refs: bool,
+    },
 
     /// Filtered listing.
     List {

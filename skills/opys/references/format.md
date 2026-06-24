@@ -135,6 +135,39 @@ field (shown as that field's value, blank where a document lacks it). Defaults t
 `["id", "title", "status", "tags"]`. `config validate` rejects a column that is
 neither a built-in nor a field declared on some type.
 
+### `[file_refs]` — code mentions of an id (optional)
+
+How a document id is written in **code** (comments, strings, identifiers), so
+`opys show <id> --refs` can list those mentions and `opys renumber` can warn when
+a renumbered id is still referenced. This is distinct from the `references`
+relation maps *between documents* — here the target is arbitrary source.
+
+```toml
+[file_refs]
+roots = ["src", "tests"]             # where to scan (project-root relative; default ["."])
+formats = [
+    { template = "{id}" },               # FEAT-0001  (the canonical id)
+    { template = "{prefix}{num}" },       # FEAT1
+    { template = "{prefix_lower}_{num}" }, # feat_1
+    # { template = "...", word = false },  # match a substring, not a whole word
+]
+```
+
+Each format's `template` is rendered for an id with the placeholders `{id}` (the
+full `PREFIX-NNNN`), `{prefix}` / `{prefix_lower}`, `{num}` (the number with no
+padding), and `{padded}` (zero-padded to `pad`). By default a match must fall on
+word boundaries; `word = false` matches a substring. With no `formats` configured
+only the canonical `{id}` is scanned. The inventory base, `.git`, `target`,
+`node_modules`, and hidden directories are always skipped. `config validate`
+rejects an unknown placeholder and a template with no number placeholder
+(`{id}`/`{num}`/`{padded}`), which could not distinguish two ids sharing a prefix.
+
+`opys show <id> --refs` prints the document, then a `--- file references ---`
+block listing every `path:line: text` hit. `opys renumber`, after renumbering,
+scans for the **old** ids (it rewrites documents, not code) and — if any remain —
+prints a warning with a suggested `sed -i` command per file, so a human or agent
+can fix references selectively.
+
 ## A complete feature file
 
 ````markdown

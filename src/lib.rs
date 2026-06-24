@@ -11,6 +11,7 @@ pub mod commands;
 pub mod config;
 pub mod doc;
 pub mod error;
+pub mod file_refs;
 pub mod frontmatter;
 pub mod links;
 pub mod mdprism;
@@ -80,8 +81,8 @@ pub fn run(cli: Cli) -> Result<i32> {
             commands::import::run(&ctx, &type_name, &file)?;
             Ok(0)
         }
-        Command::Show { id } => {
-            commands::show::run(&ctx, &id)?;
+        Command::Show { id, refs } => {
+            commands::show::run(&ctx, &id, refs)?;
             Ok(0)
         }
         Command::List {

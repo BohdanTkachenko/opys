@@ -10,7 +10,7 @@ use std::process::Command;
 use crate::commands::{maybe_sync, today};
 use crate::doc::Doc;
 use crate::error::Result;
-use crate::project;
+use crate::project::{self, Project};
 use crate::Ctx;
 
 pub fn run(ctx: &Ctx, base: Option<&str>) -> Result<()> {
@@ -100,7 +100,51 @@ pub fn run(ctx: &Ctx, base: Option<&str>) -> Result<()> {
 
     println!("renumber: {} document(s) renumbered", mapping.len());
     maybe_sync(ctx, &prj);
+
+    warn_file_references(&prj, &mapping);
     Ok(())
+}
+
+/// After a successful renumber, scan code for references to the *old* ids (which
+/// renumber did not rewrite — it only touches documents) and warn, with a `sed`
+/// suggestion per file so the user or an agent can fix them selectively.
+fn warn_file_references(prj: &Project, mapping: &HashMap<String, String>) {
+    let pad = prj.pcfg.pad;
+    let old_ids: Vec<&str> = mapping.keys().map(String::as_str).collect();
+    let hits = crate::file_refs::scan(prj, &old_ids);
+    if hits.is_empty() {
+        return;
+    }
+
+    eprintln!(
+        "\nwarning: {} file reference(s) still point at a renumbered id:",
+        hits.len()
+    );
+    // Preserve first-seen order while de-duplicating identical fix commands.
+    let mut fixes: Vec<String> = Vec::new();
+    for h in &hits {
+        let new_id = mapping.get(&h.id).map(String::as_str).unwrap_or(&h.id);
+        eprintln!(
+            "  {}:{}: {}  ({} → {})",
+            h.path.display(),
+            h.line,
+            h.text,
+            h.id,
+            new_id
+        );
+        if let Some(new_form) = crate::file_refs::render(&h.template, new_id, pad) {
+            let cmd = crate::file_refs::sed_fix(&h.path, &h.matched, &new_form, h.word);
+            if !fixes.contains(&cmd) {
+                fixes.push(cmd);
+            }
+        }
+    }
+    if !fixes.is_empty() {
+        eprintln!("\nsuggested fixes (review before running):");
+        for cmd in &fixes {
+            eprintln!("  {cmd}");
+        }
+    }
 }
 
 /// Groups of IDs that share the same numeric part (≥2 members, sorted).

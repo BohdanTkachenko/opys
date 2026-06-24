@@ -30,6 +30,9 @@ fn default_roots() -> Vec<String> {
 fn default_min() -> usize {
     1
 }
+fn default_true() -> bool {
+    true
+}
 fn default_layout_path() -> String {
     DEFAULT_LAYOUT_PATH.to_string()
 }
@@ -37,13 +40,22 @@ fn default_layout_path() -> String {
 /// Placeholder names in a layout template that aren't one of `type`/`status`/`id`.
 fn unknown_placeholders(template: &str) -> Vec<&str> {
     let known = ["type", "status", "id"];
+    placeholder_names(template)
+        .into_iter()
+        .filter(|name| !known.contains(name))
+        .collect()
+}
+
+/// Every distinct `{name}` placeholder in `template`, in order of first
+/// appearance.
+fn placeholder_names(template: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut rest = template;
     while let Some(open) = rest.find('{') {
         rest = &rest[open + 1..];
         if let Some(close) = rest.find('}') {
             let name = &rest[..close];
-            if !known.contains(&name) && !out.contains(&name) {
+            if !out.contains(&name) {
                 out.push(name);
             }
             rest = &rest[close + 1..];
@@ -315,6 +327,63 @@ impl Default for TuiConfig {
     }
 }
 
+/// `[file_refs]` — how document ids are mentioned in code, for `opys show <id>
+/// --refs` and the post-`renumber` reference warning. This is about textual
+/// mentions of an id (e.g. `FEAT-0123`) in source files, distinct from the
+/// `references` relation maps *between documents* (see [`crate::refs`]).
+#[derive(Debug, Clone, Deserialize)]
+pub struct FileRefs {
+    /// Directories to scan, project-root relative. Defaults to the whole project
+    /// (`["."]`). The inventory `base`, `.git`, `target`, `node_modules`, and
+    /// hidden directories are always skipped.
+    #[serde(default = "default_roots")]
+    pub roots: Vec<String>,
+    /// The textual forms an id may take in code. When empty, a single canonical
+    /// `{id}` word-boundary format is assumed (see [`FileRefs::effective_formats`]).
+    #[serde(default)]
+    pub formats: Vec<RefFormat>,
+}
+
+impl Default for FileRefs {
+    fn default() -> Self {
+        FileRefs {
+            roots: default_roots(),
+            formats: Vec::new(),
+        }
+    }
+}
+
+impl FileRefs {
+    /// The configured formats, or a single canonical `{id}` word-boundary format
+    /// when none are configured (so the feature works without any config).
+    pub fn effective_formats(&self) -> Vec<RefFormat> {
+        if self.formats.is_empty() {
+            vec![RefFormat {
+                template: "{id}".to_string(),
+                word: true,
+            }]
+        } else {
+            self.formats.clone()
+        }
+    }
+}
+
+/// One way a document id may appear in code. `template` is rendered for a given
+/// id with these placeholders: `{id}` (the full `PREFIX-NNNN`), `{prefix}` /
+/// `{prefix_lower}`, `{num}` (the unpadded number), and `{padded}` (zero-padded
+/// to `pad`). With `word` (the default) the match must fall on word boundaries;
+/// set `word = false` to match anywhere (substring).
+#[derive(Debug, Clone, Deserialize)]
+pub struct RefFormat {
+    pub template: String,
+    #[serde(default = "default_true")]
+    pub word: bool,
+}
+
+/// The placeholder names `{id}` / `{prefix}` / `{prefix_lower}` / `{num}` /
+/// `{padded}` that a [`RefFormat`] template may use.
+pub const REF_PLACEHOLDERS: [&str; 5] = ["id", "prefix", "prefix_lower", "num", "padded"];
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProjectConfig {
     /// Inventory base directory, relative to the project root (the dir holding
@@ -337,6 +406,10 @@ pub struct ProjectConfig {
     /// TUI list presentation. Ignored by the core engine; see [`TuiConfig`].
     #[serde(default)]
     pub tui: TuiConfig,
+    /// How document ids are mentioned in code, for `show --refs` and the
+    /// post-`renumber` reference warning. See [`FileRefs`].
+    #[serde(default)]
+    pub file_refs: FileRefs,
 }
 
 impl ProjectConfig {
@@ -506,7 +579,33 @@ impl ProjectConfig {
 
         self.validate_palette(&type_names, &mut errs);
         self.validate_tui(&mut errs);
+        self.validate_file_refs(&mut errs);
         errs
+    }
+
+    /// Validate `[file_refs].formats`: every placeholder must be known, and each
+    /// template must include a number placeholder (`{id}`/`{num}`/`{padded}`) so
+    /// two ids sharing a prefix can't render to the same text.
+    fn validate_file_refs(&self, errs: &mut Vec<String>) {
+        for (i, f) in self.file_refs.formats.iter().enumerate() {
+            for ph in placeholder_names(&f.template) {
+                if !REF_PLACEHOLDERS.contains(&ph) {
+                    errs.push(format!(
+                        "file_refs.formats[{i}]: unknown placeholder '{{{ph}}}' (use {})",
+                        REF_PLACEHOLDERS.join("/")
+                    ));
+                }
+            }
+            let numbered = ["{id}", "{num}", "{padded}"]
+                .iter()
+                .any(|p| f.template.contains(p));
+            if !numbered {
+                errs.push(format!(
+                    "file_refs.formats[{i}]: template '{}' must include a number placeholder ({{id}}, {{num}}, or {{padded}})",
+                    f.template
+                ));
+            }
+        }
     }
 
     /// Validate `[tui].columns`: each must be a built-in key or a custom field

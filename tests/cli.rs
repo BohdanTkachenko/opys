@@ -2437,3 +2437,97 @@ fn bulk_dedupes_repeated_ids() {
         .success()
         .stdout(predicate::str::contains("retired FEAT-0001"));
 }
+
+#[test]
+fn show_refs_lists_code_references_to_the_id() {
+    let dir = project();
+    opys(&dir)
+        .args(["new", "--title", "Login", "--tags", "auth"])
+        .assert()
+        .success();
+    // A code mention of the id, plus a near-miss that must NOT match (word
+    // boundary: FEAT-00010 is a different id).
+    dir.child("src/login.rs")
+        .write_str("// implements FEAT-0001\nlet other = \"FEAT-00010\";\n")
+        .unwrap();
+
+    opys(&dir)
+        .args(["show", "FEAT-0001", "--refs"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("file references"))
+        .stdout(predicate::str::contains("src/login.rs:1:"))
+        .stdout(predicate::str::contains("implements FEAT-0001"))
+        // The longer id on line 2 is not a reference to FEAT-0001.
+        .stdout(predicate::str::contains("src/login.rs:2:").not());
+}
+
+#[test]
+fn show_refs_reports_none_when_unreferenced() {
+    let dir = project();
+    opys(&dir)
+        .args(["new", "--title", "Login", "--tags", "auth"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["show", "FEAT-0001", "--refs"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("file references"))
+        .stdout(predicate::str::contains("(none)"));
+}
+
+#[test]
+fn show_refs_honors_configured_formats() {
+    // A format for the compact `feat_1` style (prefix lowercased, unpadded num).
+    let cfg = format!(
+        "{}\n[file_refs]\nroots = [\"src\"]\nformats = [{{ template = \"{{prefix_lower}}_{{num}}\" }}]\n",
+        default_cfg()
+    );
+    let dir = project_with(&cfg);
+    opys(&dir)
+        .args(["new", "--title", "Login", "--tags", "auth"])
+        .assert()
+        .success();
+    dir.child("src/handler.rs")
+        .write_str("// see feat_1 for the contract\n")
+        .unwrap();
+
+    opys(&dir)
+        .args(["show", "FEAT-0001", "--refs"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("src/handler.rs:1:"))
+        .stdout(predicate::str::contains("see feat_1"));
+}
+
+#[test]
+fn renumber_warns_about_file_references_with_sed_suggestion() {
+    let dir = project();
+    // Two documents sharing the numeric id 1 (a cross-branch collision). No git
+    // base is resolvable, so renumber keeps the first (FEAT-0001) and renumbers
+    // the rest (TASK-0001 → TASK-0002).
+    dir.child("opys/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [auth]\n---\n# Login\n")
+        .unwrap();
+    dir.child("opys/TASK-0001.md")
+        .write_str("---\nid: TASK-0001\nstatus: todo\ntags: []\n---\n# Do it\n")
+        .unwrap();
+    // A code reference to the id that will be renumbered.
+    dir.child("src/worker.rs")
+        .write_str("// part of TASK-0001\nrun(\"TASK-0001\");\n")
+        .unwrap();
+
+    opys(&dir)
+        .args(["--no-sync", "renumber"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("TASK-0001 → TASK-0002"))
+        .stderr(predicate::str::contains(
+            "file reference(s) still point at a renumbered id",
+        ))
+        .stderr(predicate::str::contains("src/worker.rs:1:"))
+        .stderr(predicate::str::contains(
+            "sed -i 's/\\bTASK-0001\\b/TASK-0002/g' src/worker.rs",
+        ));
+}

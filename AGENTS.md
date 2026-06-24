@@ -119,6 +119,11 @@ Layering, roughly outermost-in:
   `commands/sync.rs`, which `maybe_sync` calls.
 - `src/config.rs` — just the shared `FieldSpec` / `FieldType` / `TestRefCheck`
   the engine config reuses.
+- `src/file_refs.rs` — scan source files for *textual* mentions of an id
+  (`FEAT-0001`, `feat_1`, …) per the `[file_refs]` config (`render` a format
+  template for an id, search under `roots`). Powers `show --refs` and the
+  post-`renumber` reference warning (with `sed_fix` suggestions). Distinct from
+  `refs.rs` (relation maps between documents).
 
 ### Invariants enforced on disk (the point of the tool)
 
