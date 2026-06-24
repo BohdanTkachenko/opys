@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashSet};
 use crate::body;
 use crate::doc::Doc;
 use crate::error::Result;
-use crate::project_config::{CheckScope, ProjectConfig, SectionKind};
+use crate::project_config::{ProjectConfig, SectionKind};
 use crate::Ctx;
 
 /// One status row within a type: its name, count, and percent of the type total.
@@ -46,14 +46,12 @@ pub struct TagCount {
 }
 
 /// Coverage for one section heading (aggregated across every document that has
-/// it): how many items it holds and how many are uncovered. The meaning of
-/// "uncovered" depends on `kind` — for `checklist` it is unchecked items, for
-/// `manual` it is items without automated coverage.
+/// it): how many items it holds and how many are uncovered.
 pub struct SectionCoverage {
     pub heading: String,
-    /// The section kind that made this a coverage section. Currently always
-    /// `"checklist"` (a validated checklist — one carrying a `scope=checked`
-    /// check); kept as a column so other coverage kinds can be added later.
+    /// The section kind: `"checklist"`, `"structured"`, or `"log"`. For
+    /// checklists `uncovered` is the count of unchecked items; for all other
+    /// kinds it is always 0 (no notion of "unchecked").
     pub kind: &'static str,
     pub items: usize,
     pub uncovered: usize,
@@ -138,6 +136,20 @@ fn tag_stats(docs: &[&Doc]) -> (Vec<TagKeyStats>, Vec<TagCount>) {
     (tag_keys, plain_tags)
 }
 
+/// Sum the lengths of all top-level array fields in a JSON object, giving the
+/// total number of items extracted from a structured section.
+fn count_array_items(data: &serde_json::Value) -> usize {
+    match data {
+        serde_json::Value::Object(map) => map
+            .values()
+            .filter_map(|v| v.as_array())
+            .map(|arr| arr.len())
+            .sum(),
+        serde_json::Value::Array(arr) => arr.len(),
+        _ => 0,
+    }
+}
+
 /// Compute the stats report over `docs` (already filtered by the caller). Pure;
 /// does not read the filesystem or print.
 pub fn compute(pcfg: &ProjectConfig, docs: &[&Doc]) -> StatsReport {
@@ -173,8 +185,7 @@ pub fn compute(pcfg: &ProjectConfig, docs: &[&Doc]) -> StatsReport {
         });
     }
 
-    // Coverage across every type's validated checklists, aggregated per heading
-    // (the real section name from config) so nothing is hardcoded.
+    // Coverage across every type's sections, aggregated per heading+kind.
     // (heading, kind) -> (items, uncovered).
     let mut coverage: BTreeMap<(String, &'static str), (usize, usize)> = BTreeMap::new();
     for d in docs {
@@ -182,18 +193,45 @@ pub fn compute(pcfg: &ProjectConfig, docs: &[&Doc]) -> StatsReport {
             continue;
         };
         for sec in &pcfg.types[tname].sections {
-            // A "validated checklist" (one carrying a scope=checked check):
-            // unchecked items are uncovered. Other kinds don't report coverage.
-            if sec.kind == SectionKind::Checklist
-                && sec.checks.iter().any(|c| c.scope == CheckScope::Checked)
-            {
-                let items = body::checklist_items(&d.body, &sec.heading);
-                let unchecked = items.iter().filter(|i| !i.checked).count();
-                let e = coverage
-                    .entry((sec.heading.clone(), "checklist"))
-                    .or_default();
-                e.0 += items.len();
-                e.1 += unchecked;
+            match sec.kind {
+                SectionKind::Checklist => {
+                    let items = body::checklist_items(&d.body, &sec.heading);
+                    if items.is_empty() {
+                        continue;
+                    }
+                    let unchecked = items.iter().filter(|i| !i.checked).count();
+                    let e = coverage
+                        .entry((sec.heading.clone(), "checklist"))
+                        .or_default();
+                    e.0 += items.len();
+                    e.1 += unchecked;
+                }
+                SectionKind::Structured => {
+                    if !body::has_section(&d.body, &sec.heading) {
+                        continue;
+                    }
+                    let Some(src) = &sec.structure else { continue };
+                    let Ok(schema) = mdprism::parse_schema(src) else { continue };
+                    let content = body::section(&d.body, &sec.heading);
+                    if let Ok(data) = schema.extract(&content) {
+                        let count = count_array_items(&data);
+                        if count > 0 {
+                            let e = coverage
+                                .entry((sec.heading.clone(), "structured"))
+                                .or_default();
+                            e.0 += count;
+                        }
+                    }
+                }
+                SectionKind::Log => {
+                    let content = body::section(&d.body, &sec.heading);
+                    let count = content.lines().filter(|l| l.starts_with("- ")).count();
+                    if count > 0 {
+                        let e = coverage.entry((sec.heading.clone(), "log")).or_default();
+                        e.0 += count;
+                    }
+                }
+                SectionKind::Prose => {} // no countable structure
             }
         }
     }
@@ -251,10 +289,14 @@ pub fn run(ctx: &Ctx) -> Result<()> {
     if !r.coverage.is_empty() {
         println!("\ncoverage:");
         for c in &r.coverage {
-            println!(
-                "  {:<16} {:<10} {} uncovered / {} items",
-                c.heading, c.kind, c.uncovered, c.items
-            );
+            if c.kind == "checklist" {
+                println!(
+                    "  {:<16} {:<10} {} uncovered / {} items",
+                    c.heading, c.kind, c.uncovered, c.items
+                );
+            } else {
+                println!("  {:<16} {:<10} {} items", c.heading, c.kind, c.items);
+            }
         }
     }
     Ok(())
