@@ -129,7 +129,7 @@ fn find_conflicts(docs: &[Doc]) -> Vec<Vec<String>> {
 /// first to avoid partial-match issues when one ID is a prefix of another.
 fn apply_renames(text: &str, mapping: &HashMap<String, String>) -> String {
     let mut pairs: Vec<_> = mapping.iter().collect();
-    pairs.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    pairs.sort_by_key(|p| std::cmp::Reverse(p.0.len()));
     let mut out = text.to_string();
     for (old, new) in pairs {
         out = out.replace(old.as_str(), new.as_str());
