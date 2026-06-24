@@ -18,6 +18,10 @@ exists; otherwise ignore it.
   don't collide: `opys new --type <T>`, `set-status`, `tag`, `retire`, `block`,
   `close`. Body prose, `## Test plan`, and `## Tasks` edits are normal file
   edits. Run `opys verify` before finishing.
+- **IDs in code.** When a `PREFIX-NNNN` id is cited in code (comments, tests,
+  strings), `opys show <id> --refs` lists those mentions. If two branches
+  allocated the same number, `opys renumber` reconciles them — it rewrites
+  documents and warns (with `sed` suggestions) about any code references to fix.
 - **Never** put test results, dates, or completion claims in documents, or
   implementation logs in a permanent feature (those belong in a task/bug/chore).
 - Full guide: the `opys` skill — `SKILL.md`, `references/format.md`. Install the

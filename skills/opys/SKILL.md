@@ -68,7 +68,7 @@ its ID prefix.
 | `config init` / `config validate` | generate / check the universal `opys.toml` |
 | `new --type T --title … [--tags a,b] [--status S] [--features F1,F2] [--reason R] [--field k=v]` | create a doc of type `T` with the next ID (`--type` defaults to `feature`; auto-syncs) |
 | `import --type T FILE.jsonl` | bulk-create docs of type `T` from JSONL (sequential IDs, one sync, transactional) |
-| `show ID` / `list [--type T] [--tag T] [--status S] [--field k=v]… [--format table\|ids\|paths]` | retrieval; `--field` filters by any custom field (repeatable, ANDed) |
+| `show ID [--refs]` / `list [--type T] [--tag T] [--status S] [--field k=v]… [--format table\|ids\|paths]` | retrieval; `--field` filters by any custom field (repeatable, ANDed); `show --refs` appends code mentions of the id (per `[file_refs]`) |
 | `set-status IDS S [--reason R]` | guarded transition against the type's statuses + rules; a terminal status is reached only via `close`. `IDS` may be a comma-separated list to move several at once |
 | `tag IDS --add a,b --remove c` | tag maintenance; `IDS` may be a comma-separated list |
 | `block IDS --by BLOCKER` / `unblock IDS --by BLOCKER` | record/remove a blocker link (`blocked_by`/`blocks`); the blocked side may be a comma-separated list; blocking auto-sets `blocked` when the type has it |
@@ -85,8 +85,27 @@ ids the run is best-effort — each is attempted, failures are reported, and the
 command exits nonzero if any failed while the successful writes stand.
 | `verify` | full integrity check; nonzero exit on problems — wire into CI |
 | `sync` | reconcile references, linkify prose, relocate docs to their layout path |
+| `renumber [--base REF]` | resolve cross-branch ID collisions: keep IDs already present at the git merge-base with main/master, renumber the branch-added duplicates, retiring the old numbers. Warns about any code references to a renumbered ID with a `sed` fix per file |
 | `stats` | per-type status counts + percentages, and coverage gaps |
 | `agent-rules --tool <editor>` | generate a rules-based editor's instruction file from the canonical rule |
+
+## Code references to IDs
+
+IDs are the contract, so they're cited in code — comments, string literals,
+test names. The optional `[file_refs]` config in `opys.toml` declares the textual
+forms an ID may take (`FEAT-0001`, `FEAT1`, `feat_1`, …; each a `template` over
+`{id}`/`{prefix}`/`{prefix_lower}`/`{num}`/`{padded}`, with an optional `word`
+boundary toggle) and the `roots` to scan. Then:
+
+- `opys show ID --refs` lists every code mention of that ID (`path:line: text`) —
+  useful before retiring or renumbering.
+- `opys renumber` (used to reconcile IDs after two branches allocated the same
+  number) only rewrites *documents*; if a renumbered ID is still cited in code it
+  warns and prints a `sed -i 's/\bOLD\b/NEW/g' <file>` suggestion per file, so you
+  or the user can fix references selectively rather than blindly.
+
+See `references/format.md` (`[file_refs]`) for the full placeholder/validation
+rules.
 
 ## Workflow: bootstrapping a project
 
