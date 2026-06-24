@@ -26,9 +26,9 @@ pub fn run(ctx: &Ctx, base: Option<&str>) -> Result<()> {
     let (git_root, base_sha) = git_context(&prj.root, base);
     match &base_sha {
         Some(sha) => println!("renumber: base {}", &sha[..sha.len().min(12)]),
-        None => eprintln!(
-            "renumber: warning: no git base found — keeping first of each conflict group"
-        ),
+        None => {
+            eprintln!("renumber: warning: no git base found — keeping first of each conflict group")
+        }
     }
 
     // Build old→new mapping, allocating new IDs sequentially past the current max.
@@ -108,10 +108,7 @@ fn find_conflicts(docs: &[Doc]) -> Vec<Vec<String>> {
     let mut by_num: HashMap<u64, Vec<String>> = HashMap::new();
     for doc in docs {
         if let Some(id) = doc.id() {
-            if let Some(n) = id
-                .rsplit_once('-')
-                .and_then(|(_, n)| n.parse::<u64>().ok())
-            {
+            if let Some(n) = id.rsplit_once('-').and_then(|(_, n)| n.parse::<u64>().ok()) {
                 by_num.entry(n).or_default().push(id.to_string());
             }
         }
