@@ -1,7 +1,7 @@
 //! Query: run a jq filter over the data extracted from a markdown document.
 
-use crate::error::{QueryError, ValidationErrors};
-use crate::schema::Schema;
+use super::error::{QueryError, ValidationErrors};
+use super::schema::Schema;
 use jaq_core::data::JustLut;
 use jaq_core::load::{Arena, File, Loader};
 use jaq_core::{Ctx, Vars};

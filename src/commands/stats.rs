@@ -211,7 +211,7 @@ pub fn compute(pcfg: &ProjectConfig, docs: &[&Doc]) -> StatsReport {
                         continue;
                     }
                     let Some(src) = &sec.structure else { continue };
-                    let Ok(schema) = mdprism::parse_schema(src) else {
+                    let Ok(schema) = crate::mdprism::parse_schema(src) else {
                         continue;
                     };
                     let content = body::section(&d.body, &sec.heading);

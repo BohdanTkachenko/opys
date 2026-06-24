@@ -3,15 +3,6 @@
 # Maintain CHANGELOG.md from conventional commits and cut a GitHub release per tag.
 changelog_update = true
 git_release_enable = true
-# Release via GitHub only — never `cargo publish` to crates.io. opys depends on
-# the internal `mdprism` crate by path (both carry `publish = false`).
-publish = false
 # Single-crate repo: tag/release as `v{version}` (not `{crate}-v{version}`).
 git_tag_name = "v{{ version }}"
 git_release_name = "v{{ version }}"
-
-# mdprism is an internal implementation detail of opys — never released or
-# published (it also carries `publish = false` in its own manifest).
-[[package]]
-name = "mdprism"
-release = false

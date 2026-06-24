@@ -24,7 +24,7 @@ its own `statuses`
 fields, with optional regex `pattern`), and required `sections` (each a
 code-backed *kind*: prose/log/checklist/structured — the `structured` kind's
 content shape is config-driven via a `structure` (an `mdprism` schema, the
-`mdprism` workspace crate) — with optional config-driven
+inlined `mdprism` module, `src/mdprism/`) — with optional config-driven
 `checks`), plus a list of
 conditional `[[rules]]` (`when {type?, status?}` + one assertion). **A document's
 type is its id prefix.** There is no hardcoded type set: the default config ships

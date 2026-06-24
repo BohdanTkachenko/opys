@@ -1,15 +1,8 @@
-[workspace]
-members = ["crates/mdprism"]
-resolver = "2"
-
 [package]
 name = "opys"
 version = "0.9.0"
 edition = "2021"
 rust-version = "1.88"
-# Released via GitHub (tags + binaries), not crates.io: opys depends on the
-# internal `mdprism` crate by path, which is never published.
-publish = false
 description = "File-based feature inventory for human + AI codebases — one markdown file per feature, verified in CI"
 license = "Apache-2.0"
 repository = "https://github.com/BohdanTkachenko/opys"
@@ -52,8 +45,14 @@ regex = "1"
 walkdir = "2"
 anyhow = "1"
 thiserror = "1"
-mdprism = { path = "crates/mdprism" }
 time = { version = "0.3", features = ["formatting", "parsing", "local-offset", "macros"] }
+
+# Powers the inlined `mdprism` module (markdown ⇄ data codec): comrak parses
+# markdown (sourcepos for in-place edits), jaq runs the jq query engine.
+comrak = "0.52"
+jaq-core = "3.1.0"
+jaq-json = "2.0.1"
+jaq-std = "3.0.1"
 
 # TUI stack (powers `opys tui`). crossterm is used via ratatui's re-export
 # (`ratatui::crossterm`) to avoid version skew.

@@ -1,7 +1,7 @@
 //! Rendering: `scaffold` (schema → starter document) and `render` (data → document).
 
-use crate::error::RenderError;
-use crate::schema::*;
+use super::error::RenderError;
+use super::schema::*;
 use serde_json::Value;
 use std::fmt::Write;
 

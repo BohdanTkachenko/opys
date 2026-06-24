@@ -2,8 +2,8 @@
 //! a dot-separated alias path, leaving the rest of the document byte-for-byte
 //! identical.
 
-use crate::error::EditError;
-use crate::schema::*;
+use super::error::EditError;
+use super::schema::*;
 use comrak::nodes::{AstNode, ListType, NodeValue};
 use comrak::{parse_document, Arena, Options};
 

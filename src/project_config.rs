@@ -699,7 +699,7 @@ fn validate_structure(type_name: &str, sec: &SectionSpec, errs: &mut Vec<String>
     match &sec.structure {
         None => errs.push(format!("{tag}: a 'structured' section needs a 'structure'")),
         Some(src) => {
-            if let Err(e) = mdprism::parse_schema(src) {
+            if let Err(e) = crate::mdprism::parse_schema(src) {
                 errs.push(format!("{tag}: invalid structure ({e})"));
             }
         }

@@ -1,8 +1,8 @@
 //! Parser: DSL source → [`Schema`]. Line-oriented; indentation builds the body
 //! tree. See `docs/structure-dsl-spec.md` for the grammar.
 
-use crate::error::SchemaError;
-use crate::schema::*;
+use super::error::SchemaError;
+use super::schema::*;
 
 /// Parse a schema from DSL source.
 pub fn parse_schema(src: &str) -> Result<Schema, SchemaError> {

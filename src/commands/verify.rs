@@ -516,7 +516,7 @@ fn check_structured(d: &Doc, id: &str, sec: &SectionSpec, errors: &mut Vec<Strin
         return;
     }
     // A malformed structure is already reported by config validation.
-    let Ok(schema) = mdprism::parse_schema(src) else {
+    let Ok(schema) = crate::mdprism::parse_schema(src) else {
         return;
     };
     let content = body::section(&d.body, &sec.heading);

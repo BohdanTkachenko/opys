@@ -152,7 +152,7 @@ pub(crate) fn scaffold_body(title: &str, t: &DocType) -> String {
                 if let Some(schema) = sec
                     .structure
                     .as_deref()
-                    .and_then(|s| mdprism::parse_schema(s).ok())
+                    .and_then(|s| crate::mdprism::parse_schema(s).ok())
                 {
                     let scaffolded = schema.scaffold();
                     body.push_str(&scaffolded);

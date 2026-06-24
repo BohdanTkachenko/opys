@@ -5,8 +5,8 @@
 //! schema body. Frontmatter validation is a later phase; the frontmatter block
 //! is stripped before parsing.
 
-use crate::error::Problem;
-use crate::schema::*;
+use super::error::Problem;
+use super::schema::*;
 use comrak::nodes::{AstNode, ListType, NodeValue};
 use comrak::{parse_document, Arena, Options};
 use regex::Regex;

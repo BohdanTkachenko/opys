@@ -1665,19 +1665,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mdprism"
-version = "0.0.0"
-dependencies = [
- "comrak",
- "jaq-core",
- "jaq-json",
- "jaq-std",
- "regex",
- "serde_json",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "memchr"
 version = "2.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1856,8 +1843,11 @@ dependencies = [
  "assert_cmd",
  "assert_fs",
  "clap",
+ "comrak",
  "gix",
- "mdprism",
+ "jaq-core",
+ "jaq-json",
+ "jaq-std",
  "notify-debouncer-full",
  "predicates",
  "ratatui",
