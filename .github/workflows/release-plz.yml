@@ -4,12 +4,13 @@ name: Release-plz
 #   * release-pr  — opens/updates a "release" PR that bumps the crate version and
 #                   updates CHANGELOG.md. Merging it is the act of releasing.
 #   * release     — once that PR is merged (the version on `main` changed),
-#                   publishes the crate to crates.io and cuts a GitHub release.
+#                   tags it and cuts a GitHub release.
 #
-# Requires a `CARGO_REGISTRY_TOKEN` repository secret (crates.io API token) for
-# publishing. The default `GITHUB_TOKEN` covers the PR/tag/release steps; note
-# that PRs it opens do not trigger the CI workflow — swap in a PAT or GitHub App
-# token (as `GITHUB_TOKEN`) if you want CI to run on the release PR.
+# Releases go to GitHub only — `publish = false` in release-plz.toml means we
+# never `cargo publish` to crates.io, so no `CARGO_REGISTRY_TOKEN` is needed. The
+# default `GITHUB_TOKEN` covers the PR/tag/release steps; note that PRs it opens
+# do not trigger the CI workflow — swap in a PAT or GitHub App token (as
+# `GITHUB_TOKEN`) if you want CI to run on the release PR.
 
 on:
   push:
@@ -20,7 +21,7 @@ permissions:
   pull-requests: write
 
 jobs:
-  # Publish to crates.io + GitHub release when a release PR has been merged.
+  # Cut a GitHub release (tag + changelog) when a release PR has been merged.
   release:
     name: Release
     runs-on: ubuntu-latest
@@ -37,7 +38,6 @@ jobs:
           command: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   # Open/update the release PR (version bump + changelog), then sync the
   # packaging manifests onto its branch so they ship in lockstep.
@@ -61,7 +61,6 @@ jobs:
           command: release-pr
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - name: Sync packaging manifests on the release PR
         # Run whenever a release PR exists (created *or* updated): release-plz
         # force-pushes the release branch on every update, dropping any prior sync

@@ -3,6 +3,8 @@ name = "mdprism"
 version = "0.0.0"
 edition = "2021"
 rust-version = "1.88"
+# Internal workspace crate — an implementation detail of `opys`, not published.
+publish = false
 description = "Markdown ⇄ data, via a template: validate, extract, render, query, and edit markdown documents against a compact schema DSL"
 license = "Apache-2.0"
 repository = "https://github.com/BohdanTkachenko/opys"

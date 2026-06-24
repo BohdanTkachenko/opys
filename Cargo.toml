@@ -7,6 +7,9 @@ name = "opys"
 version = "0.9.0"
 edition = "2021"
 rust-version = "1.88"
+# Released via GitHub (tags + binaries), not crates.io: opys depends on the
+# internal `mdprism` crate by path, which is never published.
+publish = false
 description = "File-based feature inventory for human + AI codebases — one markdown file per feature, verified in CI"
 license = "Apache-2.0"
 repository = "https://github.com/BohdanTkachenko/opys"
