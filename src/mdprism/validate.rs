@@ -155,6 +155,10 @@ fn collect_text<'a>(node: &'a AstNode<'a>, out: &mut String) {
         match &c.data.borrow().value {
             NodeValue::Text(t) => out.push_str(t),
             NodeValue::Code(code) => out.push_str(&code.literal),
+            // Comrak parses HTML-like text (`<uuid>`, `<ctrl><shift>`) as raw
+            // inline HTML; its literal is the source text, which we must keep or
+            // the round-trip silently drops anything in angle brackets.
+            NodeValue::HtmlInline(html) => out.push_str(html),
             NodeValue::SoftBreak | NodeValue::LineBreak => out.push(' '),
             _ => collect_text(c, out),
         }

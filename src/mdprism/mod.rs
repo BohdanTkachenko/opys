@@ -331,6 +331,29 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_preserves_markdown_significant_text() {
+        // The codec must be a lossless fixpoint for text comrak would otherwise
+        // mangle. Two classes bit vikno's real docs (regression: 55/1214
+        // structured sections lost data):
+        //   - angle brackets: comrak parses `<uuid>` as raw inline HTML (dropped
+        //     unless extract keeps the HtmlInline literal);
+        //   - backslashes: comrak treats `\x` as an escape (dropped unless render
+        //     re-emits a literal `\` as `\\`).
+        let schema = parse("- +@items\n");
+        // Backslashes arrive verbatim via a code span (`printf '\033\\x'`);
+        // `<ctrl>` is bare, which comrak parses as raw inline HTML.
+        let md = "- run `printf '\\033\\\\x'` then press <ctrl>c\n";
+        let data1 = schema.extract(md).expect("extract");
+        let text = data1["items"][0].as_str().unwrap();
+        assert!(text.contains("<ctrl>c"), "angle-bracket text lost: {text}");
+        assert!(text.contains("\\033\\\\x"), "backslashes lost: {text}");
+        // The codec is a lossless fixpoint: render then re-extract is identical.
+        let rendered = schema.render(&data1).expect("render");
+        let data2 = schema.extract(&rendered).expect("re-extract");
+        assert_eq!(data1, data2);
+    }
+
+    #[test]
     fn edit_replaces_list_item_text() {
         let s = parse(SCHEMA);
         let doc = "## Manual verification\n\

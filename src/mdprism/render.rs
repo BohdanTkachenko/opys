@@ -159,21 +159,23 @@ fn render_node(
             let single = matches!(head.card, Card::Required | Card::Optional);
             if single && children.is_empty() {
                 // single labeled item → value is a String
-                let text = value.as_str().unwrap_or("");
+                let text = esc_inline(value.as_str().unwrap_or(""));
                 let _ = writeln!(out, "{pad}{marker}{label_prefix}{text}");
             } else {
                 match value {
                     Value::Array(arr) => {
                         for item_val in arr {
                             if children.is_empty() {
-                                let text = item_val.as_str().unwrap_or("");
+                                let text = esc_inline(item_val.as_str().unwrap_or(""));
                                 let _ = writeln!(out, "{pad}{marker}{label_prefix}{text}");
                             } else {
-                                let text = item_val
-                                    .get("text")
-                                    .and_then(Value::as_str)
-                                    .or_else(|| item_val.as_str())
-                                    .unwrap_or("");
+                                let text = esc_inline(
+                                    item_val
+                                        .get("text")
+                                        .and_then(Value::as_str)
+                                        .or_else(|| item_val.as_str())
+                                        .unwrap_or(""),
+                                );
                                 let _ = writeln!(out, "{pad}{marker}{label_prefix}{text}");
                                 render_nodes(children, item_val, out, list_indent + 2)?;
                             }
@@ -181,7 +183,8 @@ fn render_node(
                     }
                     Value::String(s) => {
                         // single value where array was expected — render as one item
-                        let _ = writeln!(out, "{pad}{marker}{label_prefix}{s}");
+                        let text = esc_inline(s);
+                        let _ = writeln!(out, "{pad}{marker}{label_prefix}{text}");
                     }
                     _ => {
                         return Err(RenderError::WrongType {
@@ -200,12 +203,22 @@ fn render_node(
                 }
                 return Ok(());
             }
-            let text = value.as_str().unwrap_or("");
+            let text = esc_inline(value.as_str().unwrap_or(""));
             let _ = writeln!(out, "{text}");
             out.push('\n');
         }
     }
     Ok(())
+}
+
+/// Escape captured text so that re-parsing it (extract) yields the identical
+/// string — the codec must satisfy `extract(render(x)) == x`. The critical case
+/// is the backslash: comrak treats `\x` as an escape and drops the backslash, so
+/// a literal `\` is emitted as `\\`. (Angle-bracket text like `<uuid>`, which
+/// comrak parses as raw inline HTML, round-trips via `HtmlInline` preservation on
+/// the extract side, so it needs no escaping here.)
+fn esc_inline(s: &str) -> String {
+    s.replace('\\', "\\\\")
 }
 
 /// The literal title to use for a heading: use the schema literal, or fall
