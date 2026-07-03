@@ -98,6 +98,11 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
 
         check_timestamps(m, id, &mut errors);
         check_references(m, id, &doc_ids, &mut errors);
+        for snip in crate::links::nested_links(&d.body) {
+            errors.push(format!(
+                "{id}: nested markdown link in body (fix by hand, keeping the innermost link): {snip}"
+            ));
+        }
         check_custom_fields(
             &t.fields,
             &reserved,

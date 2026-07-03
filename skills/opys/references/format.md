@@ -243,7 +243,12 @@ The `references` map is **auto-maintained** by opys — it links a document to t
 others it relates to and is kept bidirectional and title-fresh on every write.
 You do not hand-edit it; a closed document leaves a struck-through (`~~title~~`)
 tombstone here. Bare `PREFIX-NNNN` ID mentions
-in body prose are rewritten into markdown links on sync.
+in body prose are rewritten into markdown links on sync; text already inside
+markdown link syntax (label or destination, including labels that themselves
+contain `[…]`) is never re-linkified, and an existing link whose label starts
+with a live ID has its title and path refreshed. A nested markdown link (a
+complete link inside another link's label — invalid markdown, typically the
+footprint of a bad edit) fails verify.
 
 ### Custom-field type mapping
 

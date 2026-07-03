@@ -1116,6 +1116,74 @@ fn body_refs_are_linkified_idempotently() {
 }
 
 #[test]
+fn verify_flags_nested_markdown_links() {
+    let dir = project();
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str(
+            "---\nid: FEAT-0001\nstatus: planned\ntags: [osc]\n---\n\n# Corrupted\n\n\
+             See [[FEAT-0002 — [Light] mode](FEAT-0002.md) — [Light] mode](FEAT-0002.md).\n",
+        )
+        .unwrap();
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "FEAT-0001: nested markdown link in body",
+        ));
+}
+
+#[test]
+fn linkify_is_idempotent_for_bracketed_titles() {
+    // Regression: a linkified label containing `[…]` used to be re-matched on
+    // every sync, nesting the link one level deeper each time.
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args([
+            "new",
+            "--title",
+            "[Light] / [Dark] dual-variant support",
+            "--tags",
+            "core",
+        ])
+        .assert()
+        .success();
+    opys(&dir)
+        .args([
+            "new",
+            "--type",
+            "task",
+            "--title",
+            "Work",
+            "--features",
+            "FEAT-0001",
+        ])
+        .assert()
+        .success();
+
+    let wpath = dir.child("opys/work-items/TASK-0002.md");
+    let mut text = std::fs::read_to_string(wpath.path()).unwrap();
+    text.push_str("\nSee FEAT-0001 for the variants.\n");
+    std::fs::write(wpath.path(), text).unwrap();
+
+    opys(&dir).arg("sync").assert().success();
+    let once = std::fs::read_to_string(wpath.path()).unwrap();
+    assert!(
+        once.contains(
+            "[FEAT-0001 — [Light] / [Dark] dual-variant support](../features/FEAT-0001.md)"
+        ),
+        "linkify failed: {once}"
+    );
+    assert!(!once.contains("[["), "nested link after first sync: {once}");
+
+    opys(&dir).arg("sync").assert().success();
+    let twice = std::fs::read_to_string(wpath.path()).unwrap();
+    assert_eq!(once, twice, "linkify is not idempotent");
+}
+
+#[test]
 fn work_item_close_requires_all_tasks_checked() {
     let dir = project();
     enable_work_items(&dir);

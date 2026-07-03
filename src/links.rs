@@ -11,18 +11,15 @@ use regex::{Captures, Regex};
 use crate::doc::Doc;
 use crate::refs;
 
-/// Build the bare-ID/markdown-link matcher whose prefix alternation comes from
-/// the live configured type prefixes, so new types are linkified automatically.
+/// Build the bare-ID matcher whose prefix alternation comes from the live
+/// configured type prefixes, so new types are linkified automatically.
 pub fn ref_re(prefixes: &[String]) -> Regex {
     let alt = prefixes
         .iter()
         .map(|p| regex::escape(p))
         .collect::<Vec<_>>()
         .join("|");
-    Regex::new(&format!(
-        r"\[(?P<lid>(?:{alt})-[0-9]+)[^\]]*\]\([^)]*\)|\b(?P<bid>(?:{alt})-[0-9]+)\b"
-    ))
-    .unwrap()
+    Regex::new(&format!(r"\b(?:{alt})-[0-9]+\b")).unwrap()
 }
 
 /// Reconcile every doc's `references` map: make links bidirectional between
@@ -185,8 +182,9 @@ pub fn build_index(docs: &[Doc]) -> HashMap<String, (String, PathBuf)> {
 
 /// Rewrite bare `FEAT-XXXX`/`WI-XXXX` mentions (and refresh existing opys
 /// links) in body prose into `[ID — Title](relpath)`. Idempotent; references
-/// inside fenced code blocks or inline code spans are left untouched, and a
-/// mention whose target is absent from `index` is left as-is.
+/// inside fenced code blocks, inline code spans, or existing markdown link
+/// syntax (label or destination) are left untouched, and a mention whose
+/// target is absent from `index` is left as-is.
 pub fn linkify(
     body: &str,
     current_dir: &Path,
@@ -226,26 +224,174 @@ pub fn linkify(
     out
 }
 
+/// Linkify one prose segment (no code spans/fences). Existing markdown links
+/// are parsed with bracket-depth counting — labels may themselves contain
+/// `[…]` — and their interior is never re-matched, so a link is never nested
+/// inside another. A link whose label starts with a live ID is refreshed to
+/// the current title and path; every other link passes through verbatim.
 fn linkify_prose(
     seg: &str,
     current_dir: &Path,
     index: &HashMap<String, (String, PathBuf)>,
     re: &Regex,
 ) -> String {
+    let mut out = String::new();
+    let mut pos = 0;
+    while let Some(off) = seg[pos..].find('[') {
+        let start = pos + off;
+        match parse_link(seg, start) {
+            Some((label, end)) => {
+                out.push_str(&replace_bare(&seg[pos..start], current_dir, index, re));
+                let is_image = seg[..start].ends_with('!');
+                let refreshed = if is_image {
+                    None
+                } else {
+                    re.find(label)
+                        .filter(|m| m.start() == 0)
+                        .and_then(|m| index.get(m.as_str()).map(|t| (m.as_str(), t)))
+                        .map(|(id, (title, path))| {
+                            format!("[{id} — {title}]({})", relpath(current_dir, path))
+                        })
+                };
+                match refreshed {
+                    Some(link) => out.push_str(&link),
+                    None => out.push_str(&seg[start..end]),
+                }
+                pos = end;
+            }
+            None => {
+                // A `[` that opens no link (e.g. a checkbox `[ ]`) is prose.
+                out.push_str(&replace_bare(&seg[pos..start], current_dir, index, re));
+                out.push('[');
+                pos = start + 1;
+            }
+        }
+    }
+    out.push_str(&replace_bare(&seg[pos..], current_dir, index, re));
+    out
+}
+
+/// Parse a markdown link `[label](dest)` starting at `start` (a `[`). Returns
+/// the label and the index one past the closing `)`. Brackets in the label and
+/// parens in the destination are matched by depth, so bracketed titles round-trip.
+fn parse_link(s: &str, start: usize) -> Option<(&str, usize)> {
+    let rest = &s[start..];
+    let mut depth = 0usize;
+    let mut label_end = None;
+    for (i, ch) in rest.char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    label_end = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let label_end = label_end?;
+    let after = &rest[label_end + 1..];
+    if !after.starts_with('(') {
+        return None;
+    }
+    let mut pdepth = 0usize;
+    for (i, ch) in after.char_indices() {
+        match ch {
+            '(' => pdepth += 1,
+            ')' => {
+                pdepth -= 1;
+                if pdepth == 0 {
+                    return Some((&rest[1..label_end], start + label_end + 1 + i + 1));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Replace bare ID mentions in link-free prose with fresh markdown links.
+fn replace_bare(
+    seg: &str,
+    current_dir: &Path,
+    index: &HashMap<String, (String, PathBuf)>,
+    re: &Regex,
+) -> String {
     re.replace_all(seg, |c: &Captures| {
-        let id = c
-            .name("lid")
-            .or_else(|| c.name("bid"))
-            .map(|m| m.as_str())
-            .unwrap_or_default();
+        let id = &c[0];
         match index.get(id) {
             Some((title, path)) => {
                 format!("[{id} — {title}]({})", relpath(current_dir, path))
             }
-            None => c.get(0).map(|m| m.as_str()).unwrap_or_default().to_string(),
+            None => id.to_string(),
         }
     })
     .into_owned()
+}
+
+/// Scan a body for nested markdown links — a complete `[…](…)` inside another
+/// link's label. That is invalid markdown and, in an opys inventory, the
+/// footprint of linkify corruption; `verify` flags each occurrence. Fenced code
+/// blocks and inline code spans are skipped, like in [`linkify`]. Returns one
+/// truncated snippet per offending link.
+pub fn nested_links(body: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut in_fence = false;
+    for line in body.split('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        for (j, seg) in line.split('`').enumerate() {
+            if j % 2 == 1 {
+                continue; // inline code span
+            }
+            let mut pos = 0;
+            while let Some(off) = seg[pos..].find('[') {
+                let start = pos + off;
+                match parse_link(seg, start) {
+                    Some((label, end)) => {
+                        if contains_link(label) {
+                            found.push(snippet(&seg[start..end]));
+                        }
+                        pos = end;
+                    }
+                    None => pos = start + 1,
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Whether `s` contains a complete markdown link anywhere.
+fn contains_link(s: &str) -> bool {
+    let mut pos = 0;
+    while let Some(off) = s[pos..].find('[') {
+        let start = pos + off;
+        if parse_link(s, start).is_some() {
+            return true;
+        }
+        pos = start + 1;
+    }
+    false
+}
+
+/// First characters of `s`, with an ellipsis when truncated.
+fn snippet(s: &str) -> String {
+    const MAX: usize = 60;
+    if s.chars().count() <= MAX {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(MAX).collect();
+        format!("{cut}…")
+    }
 }
 
 /// Relative path from a directory to a target file, using `/` separators.
@@ -307,6 +453,76 @@ mod tests {
             linkify(body, dir, &idx(), &ref_re(&["FEAT".to_string()])),
             body
         );
+    }
+
+    #[test]
+    fn bracketed_link_labels_are_not_relinkified() {
+        // Regression: a label containing `[…]` (e.g. a title like
+        // "[Light] / [Dark] dual-variant support") used to be re-matched by
+        // the bare-ID branch, nesting the link deeper on every sync.
+        let dir = Path::new("/p/work-items");
+        let re = ref_re(&["FEAT".to_string()]);
+        let mut m = HashMap::new();
+        m.insert(
+            "FEAT-0315".to_string(),
+            (
+                "[Light] / [Dark] dual-variant support".to_string(),
+                PathBuf::from("/p/features/FEAT-0315.md"),
+            ),
+        );
+        let once = linkify("See FEAT-0315.", dir, &m, &re);
+        assert_eq!(
+            once,
+            "See [FEAT-0315 — [Light] / [Dark] dual-variant support](../features/FEAT-0315.md)."
+        );
+        let twice = linkify(&once, dir, &m, &re);
+        assert_eq!(twice, once);
+    }
+
+    #[test]
+    fn refreshes_stale_link_title_and_path() {
+        let dir = Path::new("/p/work-items");
+        let re = ref_re(&["FEAT".to_string()]);
+        let stale = "See [FEAT-0001 — Old name](old/FEAT-0001.md).";
+        assert_eq!(
+            linkify(stale, dir, &idx(), &re),
+            "See [FEAT-0001 — Auth login](../features/FEAT-0001.md)."
+        );
+    }
+
+    #[test]
+    fn ids_inside_foreign_link_syntax_stay_untouched() {
+        let dir = Path::new("/p/work-items");
+        let re = ref_re(&["FEAT".to_string()]);
+        let body = "See [notes on FEAT-0001](notes.md) and ![FEAT-0001 shot](FEAT-0001.png).";
+        assert_eq!(linkify(body, dir, &idx(), &re), body);
+    }
+
+    #[test]
+    fn checkbox_lines_still_linkify() {
+        let dir = Path::new("/p/work-items");
+        let re = ref_re(&["FEAT".to_string()]);
+        assert_eq!(
+            linkify("- [ ] Cover FEAT-0001", dir, &idx(), &re),
+            "- [ ] Cover [FEAT-0001 — Auth login](../features/FEAT-0001.md)"
+        );
+    }
+
+    #[test]
+    fn nested_links_are_detected() {
+        let body = "Ok [FEAT-0001 — Auth login](../features/FEAT-0001.md) here.\n\
+                    Bad [[FEAT-0315 — [Light] mode](FEAT-0315.md) — extra](FEAT-0315.md) there.";
+        let found = nested_links(body);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].starts_with("[[FEAT-0315"), "snippet: {}", found[0]);
+    }
+
+    #[test]
+    fn nested_links_skip_code_and_bracketed_labels() {
+        let body = "`[[a](b)](c)` inline code\n\
+                    ```\n[[a](b)](c)\n```\n\
+                    [FEAT-0315 — [Light] / [Dark] support](FEAT-0315.md) plain brackets";
+        assert!(nested_links(body).is_empty());
     }
 
     #[test]
