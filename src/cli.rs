@@ -177,8 +177,13 @@ pub enum Command {
     /// Reconcile references, linkify prose, and relocate docs to their layout path (after hand edits).
     Sync,
 
-    /// Per-type status breakdown (counts + percentages) and coverage stats.
-    Stats,
+    /// Render the configured `[[stats]]` sections. Styled for a terminal;
+    /// plain markdown when piped (or with `--plain` / `NO_COLOR`).
+    Stats {
+        /// Emit raw markdown instead of styled terminal output.
+        #[arg(long)]
+        plain: bool,
+    },
 
     /// Reconstruct a document's lifecycle from git history: the status timeline
     /// across commits, following the file across relocations (e.g. into

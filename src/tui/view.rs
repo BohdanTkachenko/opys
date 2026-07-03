@@ -246,70 +246,34 @@ fn render_filter(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_stats(frame: &mut Frame, app: &App, area: Rect) {
     let docs = app.visible_docs();
-    let report = stats::compute(&app.prj.pcfg, &docs);
-
-    let mut lines: Vec<Line> = Vec::new();
     let scope = if app.filter.is_active() {
         format!("filtered: {}", app.filter.summary())
     } else {
         "all documents".to_string()
     };
+
+    let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
-        format!("documents: {}  ({scope})", report.total),
+        format!("documents: {}  ({scope})", docs.len()),
         Style::default().add_modifier(Modifier::BOLD),
     )));
+    lines.push(Line::from(""));
 
-    for ts in &report.per_type {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            format!("{}: {}", ts.name, ts.total),
-            Style::default().add_modifier(Modifier::BOLD),
-        )));
-        for sc in &ts.by_status {
-            let color = theme::status_color_for(Some(&sc.status));
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(format!("{:<16}", sc.status), Style::default().fg(color)),
-                Span::raw(format!("{:>4}  {:>3}%", sc.count, sc.pct)),
-            ]));
-        }
-    }
-
-    if !report.tag_keys.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "tags by key",
-            Style::default().add_modifier(Modifier::BOLD),
-        )));
-        for tk in &report.tag_keys {
-            lines.push(Line::from(format!("  {} ({} docs)", tk.key, tk.docs)));
-            for v in &tk.by_value {
-                lines.push(Line::from(format!("    {:<16}{:>4}", v.value, v.count)));
-            }
-        }
-    }
-    if !report.plain_tags.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "tags",
-            Style::default().add_modifier(Modifier::BOLD),
-        )));
-        for tc in &report.plain_tags {
-            lines.push(Line::from(format!("  {:<16}{:>4}", tc.tag, tc.count)));
-        }
-    }
-
-    if !report.coverage.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "coverage",
-            Style::default().add_modifier(Modifier::BOLD),
-        )));
-        for c in &report.coverage {
-            lines.push(Line::from(format!(
-                "  {:<16} {:<10} {} uncovered / {} items",
-                c.heading, c.kind, c.uncovered, c.items
+    // Stats are configured `[[stats]]` sections rendered via mdprism templates;
+    // show the rendered text (bolding markdown headings for a little structure).
+    let body = match stats::render_all(&app.prj.pcfg, &docs) {
+        Ok(text) => text,
+        Err(problem) => problem,
+    };
+    for raw in body.lines() {
+        if let Some(rest) = raw.strip_prefix('#') {
+            let title = rest.trim_start_matches('#').trim();
+            lines.push(Line::from(Span::styled(
+                title.to_string(),
+                Style::default().add_modifier(Modifier::BOLD),
             )));
+        } else {
+            lines.push(Line::from(raw.to_string()));
         }
     }
 

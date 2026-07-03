@@ -135,8 +135,8 @@ pub fn run(cli: Cli) -> Result<i32> {
             commands::tags::run(&ctx, keys)?;
             Ok(0)
         }
-        Command::Stats => {
-            commands::stats::run(&ctx)?;
+        Command::Stats { plain } => {
+            commands::stats::run(&ctx, plain)?;
             Ok(0)
         }
         #[cfg(feature = "history")]

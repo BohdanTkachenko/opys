@@ -85,7 +85,7 @@ opys list --status planned
 opys list --tag area                        # exact tag, or any tag with key `area`
 opys set-status FEAT-0001 implemented       # rejected unless a test item is checked
 opys verify                                 # integrity check; nonzero exit on problems
-opys stats                                  # status counts + tag breakdown
+opys stats                                  # configurable [[stats]] sections (default: status/coverage/tags)
 opys tags                                   # distinct tags (--keys for just keys)
 
 # Ephemeral work, linked to a feature (default types: task/bug/chore):
@@ -119,7 +119,7 @@ by hand.
 | `close` / `cleanup` | finish document(s) of a type with a terminal status; strip struck refs |
 | `verify` | full integrity check — wire into CI |
 | `sync` | reconcile references, linkify prose, relocate docs to their layout path (for hand edits) |
-| `stats` | per-type status counts + percentages, coverage gaps |
+| `stats` | render configured `[[stats]]` sections (each a SQL query over the corpus, shown as a table; default: status counts, coverage, tags) |
 | `agent-rules --tool <editor>` | generate a rules-based editor's instruction file from the canonical rule |
 
 A feature file looks like (the `references` map is auto-maintained — a work

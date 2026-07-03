@@ -199,6 +199,50 @@ require_checked_section = "Test plan"
 [[rules]]
 when = { status = "blocked" }
 require_any = [{ field = "blocked_reason" }, { link = "blocked_by" }]
+
+# ---------------------------------- stats ------------------------------------
+# `opys stats` renders these sections (and the TUI stats screen shows the same
+# text). Each stat is a single SQL query over an in-memory relational view of the
+# corpus; its result set is rendered as a markdown table headed by `name`. The
+# tables (all rebuilt on every run, read-only):
+#   docs(id, num, type, status, title, created, updated)
+#   tags(doc_id, tag, key, value)    -- one row per tag; value NULL for a plain tag
+#   sections(doc_id, heading, kind, items, unchecked)   -- countable sections only
+#   fields(doc_id, key, value)       -- one row per declared field (per element for lists)
+# Any SQL GlueSQL supports works (GROUP BY, subqueries, CASE, JOIN, …). Edit freely.
+# Add an optional `template` to render each result row through it (`{column}`
+# placeholders) instead of a table — handy for single-row summaries. Omit it for
+# the default table (these three are naturally tabular, so they use tables).
+
+[[stats]]
+name = "Status by type"
+sql = '''
+SELECT type, status, COUNT(*) AS count,
+       ROUND(100.0 * COUNT(*) /
+             (SELECT COUNT(*) FROM docs d2 WHERE d2.type = d1.type)) AS pct
+FROM docs d1
+GROUP BY type, status
+ORDER BY type, status
+'''
+
+[[stats]]
+name = "Tags by key"
+sql = '''
+SELECT key, value, COUNT(DISTINCT doc_id) AS docs
+FROM tags
+WHERE value IS NOT NULL
+GROUP BY key, value
+ORDER BY key, value
+'''
+
+[[stats]]
+name = "Section coverage"
+sql = '''
+SELECT heading, kind, SUM(items) AS items, SUM(unchecked) AS uncovered
+FROM sections
+GROUP BY heading, kind
+ORDER BY heading
+'''
 "##;
 
 #[cfg(test)]
@@ -209,5 +253,16 @@ mod tests {
     fn default_opys_config_is_valid_toml() {
         toml::from_str::<toml::Value>(super::DEFAULT_OPYS_CONFIG)
             .expect("DEFAULT_OPYS_CONFIG must be valid TOML");
+    }
+
+    /// The default config must also pass self-validation — in particular every
+    /// shipped `[[stats]]` query must compile as jq and every template must
+    /// parse as an mdprism schema.
+    #[test]
+    fn default_opys_config_validates() {
+        let cfg: crate::project_config::ProjectConfig =
+            toml::from_str(super::DEFAULT_OPYS_CONFIG).expect("parses as ProjectConfig");
+        let problems = cfg.validate();
+        assert!(problems.is_empty(), "default config problems: {problems:?}");
     }
 }

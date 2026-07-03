@@ -168,6 +168,90 @@ scans for the **old** ids (it rewrites documents, not code) and — if any remai
 prints a warning with a suggested `sed -i` command per file, so a human or agent
 can fix references selectively.
 
+### `[[stats]]` — custom stats sections (optional)
+
+`opys stats` (and the TUI stats screen) render the configured `[[stats]]`
+sections. There is no hardcoded report: each section is a single **`sql`** query
+run against an in-memory, throwaway relational view of the corpus; its result
+set is rendered as a markdown table headed by `name`. The engine is
+[GlueSQL](https://github.com/gluesql/gluesql) (a pure-Rust, in-memory SQL
+engine). The default config ships three (status-by-type, tags, coverage);
+replace or extend them freely.
+
+On a terminal, `opys stats` renders that markdown styled (headed sections,
+aligned/bordered tables, emphasis). When output is piped or redirected — or with
+`--plain`, or when `NO_COLOR` is set — it emits raw markdown instead, so it stays
+clean for grepping or feeding another tool.
+
+```toml
+[[stats]]
+name = "Status by type"              # the table heading
+sql = '''
+SELECT type, status, COUNT(*) AS count,
+       ROUND(100.0 * COUNT(*) /
+             (SELECT COUNT(*) FROM docs d2 WHERE d2.type = d1.type)) AS pct
+FROM docs d1
+GROUP BY type, status
+ORDER BY type, status
+'''
+```
+
+The query runs over four tables, all rebuilt on every run from the live corpus
+(read-only — a stat may not mutate them):
+
+| Table | Columns |
+|---|---|
+| `docs` | `id, num, type, status, title, created, updated` (one row per document) |
+| `tags` | `doc_id, tag, key, value` (one row per tag; `value` is `NULL` for a plain tag; `tag` is the raw form) |
+| `sections` | `doc_id, heading, kind, items, unchecked` (only *countable* sections that are present — checklist/log/structured item counts; `unchecked` is checklist-only) |
+| `fields` | `doc_id, key, value` (one row per declared custom field; one row per element for a list field) |
+
+Any SQL GlueSQL supports works (`GROUP BY`, subqueries, `CASE`, `JOIN`, …). The
+`SELECT` column labels become the table's column headers. `config validate` runs
+each query against an empty corpus (catching parse errors and unknown
+tables/columns that resolve without rows), and `verify` runs them against the
+live corpus — a query that fails to parse or execute, or that is not a `SELECT`,
+fails CI.
+
+**Custom formatting with `template`.** A markdown table suits many-row results
+(`Tags by key`), but not a single-row summary. Add an optional **`template`** and
+each result row is rendered through it instead — `{column}` is replaced by that
+row's value for that column (`{{`/`}}` for literal braces), and the rendered rows
+are joined under the `## name` heading. So SQL stays the execution layer while you
+own the presentation:
+
+```toml
+[[stats]]
+name = "Ptyxis parity"
+sql = "SELECT implemented, features, ROUND(100.0*implemented/features) AS pct FROM (…)"
+template = "Implemented: {implemented} / {features} ({pct}%)"   # one row → one line
+
+[[stats]]
+name = "By status"
+sql = "SELECT status, COUNT(*) AS c FROM docs GROUP BY status ORDER BY status"
+template = "- {status}: {c}"                                    # many rows → a bullet list
+```
+
+A `template` may be multi-line (a single-row stat can render several lines). Every
+`{placeholder}` must name a column the query selects — checked at `config
+validate`/`verify` time against the query's columns (so it's caught even when the
+corpus is empty), alongside malformed braces. Omit `template` to get the default
+table.
+
+**Performance note.** GlueSQL is a simple executor (no indexes or query planner).
+`JOIN … ON` and `GROUP BY` are fine, but two patterns run as O(rows × corpus)
+nested loops and get very slow on large inventories:
+
+- `x IN (SELECT …)` / `x NOT IN (SELECT …)` — re-runs the subquery per outer row.
+  Rewrite as a `JOIN` (for `IN`) or a `LEFT JOIN … WHERE joined.key IS NULL`
+  anti-join (for `NOT IN`).
+- `FROM (SELECT …)` derived tables — re-evaluated repeatedly.
+
+Prefer a single `JOIN` pass with **conditional aggregation** —
+`SUM(CASE WHEN … THEN … ELSE 0 END)` — and compute ratios inline from those
+aggregates rather than wrapping the query in an outer `SELECT`. In practice this
+turns a multi-second stat into a sub-100ms one.
+
 ## A complete feature file
 
 ````markdown
@@ -289,10 +373,10 @@ opys list --field tag-list=osc --format ids     # list-membership match
 
 `opys tags` enumerates the distinct tags in the inventory (sorted, one per line);
 `opys tags --keys` collapses the `key:value` / `key=value` forms to their keys,
-pairing with `list --tag <key>`. `opys stats` reports a per-type status
-breakdown, per-section coverage (one row per validated checklist, labeled by its
-real heading), and a tag breakdown: keyed tags grouped by key with a per-value
-count, and plain tags counted per document.
+pairing with `list --tag <key>`. `opys stats` renders the project's configured
+`[[stats]]` sections (see [`[[stats]]`](#stats--custom-stats-sections-optional));
+the default config ships a per-type status breakdown, per-section coverage, and a
+tag breakdown, but the report is fully configurable.
 
 ## Blockers
 
@@ -436,8 +520,9 @@ Conventions:
 - Procedures longer than ~10 lines or shared across features move to a shared
   doc and are referenced.
 
-(`structured` sections do not contribute to `opys stats` coverage — only
-`checklist` sections do.)
+(The default coverage stat counts every present section with countable items —
+`checklist`, `log`, and `structured` — but only `checklist` sections report an
+`uncovered` count, since only they have unchecked items.)
 
 ## Bulk creation and migration
 

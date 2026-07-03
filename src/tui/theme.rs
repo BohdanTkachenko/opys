@@ -95,12 +95,6 @@ fn default_icon(t: Option<&str>) -> &'static str {
     }
 }
 
-/// The default color for a status name. Exposed for the stats screen, which has
-/// no per-document palette context and just colors status labels.
-pub fn status_color_for(status: Option<&str>) -> Color {
-    default_status_color(status)
-}
-
 /// A default color per common status name. Unknown statuses are neutral gray.
 fn default_status_color(s: Option<&str>) -> Color {
     match s {

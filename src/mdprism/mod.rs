@@ -2,8 +2,8 @@
 //!
 //! One compact schema (a textual DSL) defines a bidirectional mapping between a
 //! markdown document and a typed data object. From it you can **validate**,
-//! **extract** (parse → data), **render** (data → markdown), **scaffold**,
-//! **query** (jq via jaq), and **edit in-place**.
+//! **extract** (parse → data), **render** (data → markdown), **scaffold**, and
+//! **edit in-place**.
 //!
 //! See `docs/structure-dsl-spec.md` for the language and `docs/mdprism-reference.md`
 //! for a worked example.
@@ -12,18 +12,17 @@
 //!
 //! Implemented: schema parser ([`parse_schema`]), [`Schema`] data model,
 //! **`scaffold`** (starter document), **`validate`** / **`extract`** (body
-//! conformance), **`render`** (data → markdown), and **`query`** (jq via jaq).
-//! Next phase: in-place `edit` using comrak sourcepos.
+//! conformance), **`render`** (data → markdown), and in-place **`edit`**. The
+//! jq-based `query` selector was dropped once corpus stats moved to SQL.
 
 mod edit;
 mod error;
 mod parse;
-mod query;
 mod render;
 mod schema;
 mod validate;
 
-pub use error::{EditError, Problem, QueryError, RenderError, SchemaError, ValidationErrors};
+pub use error::{EditError, Problem, RenderError, SchemaError};
 pub use parse::parse_schema;
 pub use schema::{Card, FieldSchema, FieldType, Head, ListStyle, Match, Node, Schema, SchemaOpts};
 
@@ -329,22 +328,6 @@ mod tests {
         });
         let err = s.render(&data).unwrap_err();
         assert!(matches!(err, RenderError::MissingField(_)));
-    }
-
-    #[test]
-    fn query_extracts_and_filters() {
-        let s = parse(SCHEMA);
-        let doc = "## Manual verification\n\
-            ### Setup\n\
-            - external monitor\n\n\
-            ### Procedure\n\
-            1. open a tab\n\
-            2. run it\n\n\
-            ## Test plan\n\
-            - [x] one\n\
-            - [ ] two\n";
-        let results = s.query(doc, ".plan.cases[]").expect("query succeeds");
-        assert_eq!(results, vec!["one", "two"]);
     }
 
     #[test]

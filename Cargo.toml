@@ -2,7 +2,8 @@
 name = "opys"
 version = "0.10.1"
 edition = "2021"
-rust-version = "1.88"
+# 1.85 is the floor: gluesql's core is edition 2024, which requires rustc ≥ 1.85.
+rust-version = "1.85"
 description = "File-based feature inventory for human + AI codebases — one markdown file per feature, verified in CI"
 license = "Apache-2.0"
 repository = "https://github.com/BohdanTkachenko/opys"
@@ -48,16 +49,26 @@ thiserror = "1"
 time = { version = "0.3", features = ["formatting", "parsing", "local-offset", "macros"] }
 
 # Powers the inlined `mdprism` module (markdown ⇄ data codec): comrak parses
-# markdown (sourcepos for in-place edits), jaq runs the jq query engine.
+# markdown (sourcepos for in-place edits).
 comrak = "0.52"
-jaq-core = "3.1.0"
-jaq-json = "2.0.1"
-jaq-std = "3.0.1"
 
 # TUI stack (powers `opys tui`). crossterm is used via ratatui's re-export
 # (`ratatui::crossterm`) to avoid version skew.
 ratatui = "0.29"
 notify-debouncer-full = "0.3"
+
+# `opys stats` runs each configured `[[stats]]` SQL query over an in-memory
+# relational view of the corpus. GlueSQL is a pure-Rust engine (no C dep); only
+# the in-memory storage backend is pulled in. futures gives us block_on since
+# GlueSQL's API is async and opys is synchronous.
+gluesql = { version = "0.19.0", default-features = false, features = [
+    "gluesql_memory_storage",
+] }
+futures = "0.3"
+
+# Renders `opys stats` markdown (headings, emphasis, aligned tables) for a
+# terminal; pure Rust, reuses crossterm.
+termimad = "0.34"
 
 # Optional: only compiled in with `--features history`.
 gix = { version = "0.84", default-features = false, features = [

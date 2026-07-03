@@ -31,9 +31,45 @@ message = \"test reference `${{ref}}` not found\"\n\
 [[types.feature.sections]]\nheading = \"Manual verification\"\nkind = \"structured\"\n\
 structure = '''\n### @setup Setup\n  - +@items\n### @procedure Procedure\n  1. +@steps\n### @expect Expectations\n  - +@checks\n'''\n\
 [[rules]]\nwhen = {{ type = \"feature\", status = \"wontfix\" }}\nrequire_field = \"wontfix_reason\"\n\
-[[rules]]\nwhen = {{ type = \"feature\", status = \"implemented\" }}\nrequire_checked_section = \"Test plan\"\n"
+[[rules]]\nwhen = {{ type = \"feature\", status = \"implemented\" }}\nrequire_checked_section = \"Test plan\"\n{STATS_BLOCK}"
     )
 }
+
+/// The standard `[[stats]]` sections (status-by-type, tags, coverage), mirroring
+/// the shipped default config. Appended to every `opys_cfg` project so the
+/// `stats` command has sections to render. Each is a SQL query over the corpus
+/// view (tables `docs`, `tags`, `sections`, `fields`).
+const STATS_BLOCK: &str = r#"
+[[stats]]
+name = "Status by type"
+sql = '''
+SELECT type, status, COUNT(*) AS count,
+       ROUND(100.0 * COUNT(*) /
+             (SELECT COUNT(*) FROM docs d2 WHERE d2.type = d1.type)) AS pct
+FROM docs d1
+GROUP BY type, status
+ORDER BY type, status
+'''
+
+[[stats]]
+name = "Tags by key"
+sql = '''
+SELECT key, value, COUNT(DISTINCT doc_id) AS docs
+FROM tags
+WHERE value IS NOT NULL
+GROUP BY key, value
+ORDER BY key, value
+'''
+
+[[stats]]
+name = "Section coverage"
+sql = '''
+SELECT heading, kind, SUM(items) AS items, SUM(unchecked) AS uncovered
+FROM sections
+GROUP BY heading, kind
+ORDER BY heading
+'''
+"#;
 
 /// The default feature-only config (plus the `ptyxis_ref` custom field used
 /// across tests).
@@ -879,12 +915,12 @@ fn stats_reports_per_status_percentages() {
         .arg("stats")
         .assert()
         .success()
-        .stdout(predicate::str::contains("documents: 3"))
-        .stdout(predicate::str::contains("feature: 3"))
-        // planned 2/3 ≈ 67%, implemented 1/3 ≈ 33%
-        .stdout(predicate::str::contains("planned"))
-        .stdout(predicate::str::contains("67%"))
-        .stdout(predicate::str::contains("parity").not());
+        .stdout(predicate::str::contains("## Status by type"))
+        // A markdown table; planned 2/3 ≈ 67%, implemented 1/3 ≈ 33%.
+        .stdout(predicate::str::contains("| feature | planned | 2 | 67 |"))
+        .stdout(predicate::str::contains(
+            "| feature | implemented | 1 | 33 |",
+        ));
 }
 
 #[test]
@@ -906,18 +942,20 @@ fn stats_reports_coverage_by_real_section_heading() {
         .arg("stats")
         .assert()
         .success()
-        .stdout(predicate::str::contains("coverage:"))
-        // Real heading + kind, not "test-plan items".
-        .stdout(predicate::str::is_match(r"Test plan\s+checklist\s+2 uncovered / 4 items").unwrap())
+        .stdout(predicate::str::contains("## Section coverage"))
+        // Real heading + kind, aggregated across both features (4 items, 2 uncovered).
+        .stdout(predicate::str::contains(
+            "| Test plan | checklist | 4 | 2 |",
+        ))
         .stdout(predicate::str::contains("test-plan items").not());
 }
 
 #[test]
-fn stats_groups_keyed_tags_and_counts_plain_tags() {
+fn stats_groups_keyed_tags() {
     let dir = project();
     // Two docs share the `area` key with different values; one repeats a key
-    // with two values (counts once for the key, twice across values). `priority`
-    // uses the `=` form. `osc` is a plain tag on two docs.
+    // with two values (counts once for the key, distinct per value). `priority`
+    // uses the `=` form. `osc` is a plain tag (excluded — it has no value).
     let docs = [
         ("0001", "[area:parsing, area:rendering, priority=high, osc]"),
         ("0002", "[area:parsing, osc]"),
@@ -934,14 +972,147 @@ fn stats_groups_keyed_tags_and_counts_plain_tags() {
         .arg("stats")
         .assert()
         .success()
-        // `area` appears on 2 docs (FEAT-0001 counts once despite two values).
-        .stdout(predicate::str::contains("area (2 docs)"))
-        .stdout(predicate::str::is_match(r"parsing\s+2").unwrap())
-        .stdout(predicate::str::is_match(r"rendering\s+1").unwrap())
-        // `priority` via the `=` form, grouped by key.
-        .stdout(predicate::str::contains("priority (2 docs)"))
-        // Plain tag counted across docs.
-        .stdout(predicate::str::is_match(r"osc\s+2").unwrap());
+        .stdout(predicate::str::contains("## Tags by key"))
+        // `area/parsing` on 2 docs (COUNT DISTINCT doc_id), `area/rendering` on 1.
+        .stdout(predicate::str::contains("| area | parsing | 2 |"))
+        .stdout(predicate::str::contains("| area | rendering | 1 |"))
+        // `priority` via the `=` form, keyed.
+        .stdout(predicate::str::contains("| priority | high | 1 |"))
+        // Plain tag `osc` has no value, so the keyed tally omits it.
+        .stdout(predicate::str::contains("osc").not());
+}
+
+/// A minimal project-defined `[[stats]]` section renders its SQL as a table.
+#[test]
+fn stats_renders_a_custom_section() {
+    let cfg = "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
+statuses = [\"planned\"]\ndefault_status = \"planned\"\n\
+[[stats]]\nname = \"Totals\"\n\
+sql = '''SELECT COUNT(*) AS docs FROM docs'''\n";
+    let dir = project_with(cfg);
+    for n in ["0001", "0002"] {
+        dir.child(format!("opys/features/FEAT-{n}.md"))
+            .write_str(&format!("---\nid: FEAT-{n}\nstatus: planned\n---\n\n# F\n"))
+            .unwrap();
+    }
+    opys(&dir)
+        .arg("stats")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("## Totals"))
+        .stdout(predicate::str::contains("| docs |"))
+        .stdout(predicate::str::contains("| 2 |"));
+}
+
+/// A stat with a `template` renders each result row through it instead of a
+/// table (`{column}` substitution), for single-row summaries and custom lists.
+#[test]
+fn stats_renders_a_row_template() {
+    let cfg = "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
+statuses = [\"planned\",\"implemented\"]\ndefault_status = \"planned\"\n\
+[[stats]]\nname = \"By status\"\n\
+sql = '''SELECT status, COUNT(*) AS c FROM docs GROUP BY status ORDER BY status'''\n\
+template = '''- {status}: {c}'''\n";
+    let dir = project_with(cfg);
+    for (n, status) in [
+        ("0001", "planned"),
+        ("0002", "planned"),
+        ("0003", "implemented"),
+    ] {
+        dir.child(format!("opys/features/FEAT-{n}.md"))
+            .write_str(&format!(
+                "---\nid: FEAT-{n}\nstatus: {status}\n---\n\n# F\n"
+            ))
+            .unwrap();
+    }
+    opys(&dir)
+        .arg("stats")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("## By status"))
+        // Templated rows, not a markdown table.
+        .stdout(predicate::str::contains("- implemented: 1"))
+        .stdout(predicate::str::contains("- planned: 2"))
+        .stdout(predicate::str::contains("| status |").not());
+}
+
+/// `verify`/`config validate` reject a `template` referencing an unknown column
+/// (checked against the query's columns, so it fails even with zero rows).
+#[test]
+fn verify_flags_a_template_unknown_column() {
+    let cfg = "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
+statuses = [\"planned\"]\ndefault_status = \"planned\"\n\
+[[stats]]\nname = \"BadTmpl\"\n\
+sql = '''SELECT COUNT(*) AS n FROM docs'''\n\
+template = '''{n} docs, {nope} missing'''\n";
+    let dir = project_with(cfg);
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("stats 'BadTmpl'"))
+        .stderr(predicate::str::contains("unknown column '{nope}'"));
+}
+
+/// `verify` reports a stat whose `sql` does not parse/execute.
+#[test]
+fn verify_flags_a_broken_stats_query() {
+    let cfg = "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
+statuses = [\"planned\"]\ndefault_status = \"planned\"\n\
+[[stats]]\nname = \"Bad\"\nsql = '''SELECT FROM WHERE'''\n";
+    let dir = project_with(cfg);
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("stats 'Bad'"))
+        .stderr(predicate::str::contains("query failed"));
+}
+
+/// `verify` reports a stat whose `sql` references an unknown column. GlueSQL
+/// only resolves the column when there are rows to evaluate, so this surfaces
+/// against the real (populated) corpus rather than the empty config-time check.
+#[test]
+fn verify_flags_a_stats_query_with_unknown_column() {
+    let cfg = "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
+statuses = [\"planned\"]\ndefault_status = \"planned\"\n\
+[[stats]]\nname = \"BadCol\"\nsql = '''SELECT nope FROM docs'''\n";
+    let dir = project_with(cfg);
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# F\n")
+        .unwrap();
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("stats 'BadCol'"))
+        .stderr(predicate::str::contains("query failed"));
+}
+
+/// A stat whose `sql` is not a SELECT is rejected — stats are read-only views.
+#[test]
+fn verify_flags_a_non_select_stat() {
+    let cfg = "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
+statuses = [\"planned\"]\ndefault_status = \"planned\"\n\
+[[stats]]\nname = \"Mutate\"\nsql = '''DELETE FROM docs'''\n";
+    let dir = project_with(cfg);
+    for n in ["0001", "0002"] {
+        dir.child(format!("opys/features/FEAT-{n}.md"))
+            .write_str(&format!("---\nid: FEAT-{n}\nstatus: planned\n---\n\n# F\n"))
+            .unwrap();
+    }
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("stats 'Mutate'"))
+        .stderr(predicate::str::contains("must end in a SELECT"));
 }
 
 #[test]

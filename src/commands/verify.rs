@@ -140,6 +140,10 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
     // by the engine against `prj.pcfg`.
     check_rules(&prj, &docs, &doc_ids, &mut errors);
 
+    // Each configured `[[stats]]` section must run cleanly against the real
+    // corpus (its SQL parses and executes against the corpus view).
+    check_stats(&prj, &docs, &mut errors);
+
     if errors.is_empty() {
         println!("verify: OK ({} documents)", docs.len());
         Ok(0)
@@ -149,6 +153,31 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
             eprintln!("  {e}");
         }
         Ok(1)
+    }
+}
+
+/// Run each configured `[[stats]]` SQL query against the live corpus, reporting
+/// any failure (a query that fails to parse or execute against the corpus view)
+/// as a content problem.
+fn check_stats(prj: &Project, docs: &[Doc], errors: &mut Vec<String>) {
+    if prj.pcfg.stats.is_empty() {
+        return;
+    }
+    let refs: Vec<&Doc> = docs.iter().collect();
+    let corpus = crate::commands::stats::corpus_json(&prj.pcfg, &refs);
+    // Build the corpus DB once and run every stat against it (collect all
+    // problems — verify reports them together).
+    let mut db = match crate::commands::stats::build_db(&corpus) {
+        Ok(db) => db,
+        Err(e) => {
+            errors.push(format!("stats: {e}"));
+            return;
+        }
+    };
+    for spec in &prj.pcfg.stats {
+        if let Err(problem) = crate::commands::stats::render_stat_on(&mut db, spec) {
+            errors.push(problem);
+        }
     }
 }
 

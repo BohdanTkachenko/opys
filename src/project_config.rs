@@ -384,6 +384,20 @@ pub struct RefFormat {
 /// `{padded}` that a [`RefFormat`] template may use.
 pub const REF_PLACEHOLDERS: [&str; 5] = ["id", "prefix", "prefix_lower", "num", "padded"];
 
+/// One custom stats section for `opys stats`. `sql` is a single SQL query run
+/// against an in-memory relational view of the corpus (tables `docs`, `tags`,
+/// `sections`, `fields` — see [`crate::commands::stats`]). Without `template`
+/// the result set renders as a markdown table headed by `name`; with `template`,
+/// each result row is rendered through it (`{column}` placeholders, `{{`/`}}` for
+/// literal braces) and the rendered rows are joined under the `name` heading.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StatSpec {
+    pub name: String,
+    pub sql: String,
+    #[serde(default)]
+    pub template: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProjectConfig {
     /// Inventory base directory, relative to the project root (the dir holding
@@ -398,6 +412,11 @@ pub struct ProjectConfig {
     pub types: BTreeMap<String, DocType>,
     #[serde(default)]
     pub rules: Vec<Rule>,
+    /// Custom stats sections rendered by `opys stats` (and the TUI stats
+    /// screen). Each is a single `sql` query over the corpus view, rendered as
+    /// a markdown table.
+    #[serde(default)]
+    pub stats: Vec<StatSpec>,
     /// Presentation rules for the TUI. Ignored by the core engine; parsed and
     /// validated here so `config validate` catches mistakes regardless of the
     /// `tui` feature. See [`crate::palette`].
@@ -580,7 +599,20 @@ impl ProjectConfig {
         self.validate_palette(&type_names, &mut errs);
         self.validate_tui(&mut errs);
         self.validate_file_refs(&mut errs);
+        self.validate_stats(&mut errs);
         errs
+    }
+
+    /// Validate `[[stats]]`: each `sql` must run against the corpus schema. We
+    /// execute it over an empty corpus, which surfaces parse errors and unknown
+    /// columns/tables at config time (a valid query just returns no rows).
+    fn validate_stats(&self, errs: &mut Vec<String>) {
+        let empty = serde_json::json!([]);
+        for s in &self.stats {
+            if let Err(e) = crate::commands::stats::render_stat(s, &empty) {
+                errs.push(e);
+            }
+        }
     }
 
     /// Validate `[file_refs].formats`: every placeholder must be known, and each

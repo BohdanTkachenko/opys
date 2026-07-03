@@ -26,10 +26,12 @@ typed data object (think *serde, for documents*). From it:
    variables (the data) and produce a conforming file.
 4. **Scaffold** — `render` specialized to placeholder/default values: a starter
    document.
-5. **Query** — jq-style selectors over the extracted object (a section, a nested
-   node, a single list item).
+5. **Query** — *(dropped)* originally a jq-style selector over the extracted
+   object. Removed once opys moved corpus stats to SQL and jq had no remaining
+   consumer; document-level navigation, if reintroduced, would go through capture
+   aliases/paths (see Edit) rather than a bundled jq engine.
 6. **Edit in-place** — `render` specialized to *one* node: resolve a capture name
-   or query → its source span → splice the new value, byte-accurately, leaving
+   or path → its source span → splice the new value, byte-accurately, leaving
    everything else untouched. *(The "LLM updates a list item with one command,
    100% accuracy" case — no hand-rolled `sed`, no full-file rewrite.)*
 
@@ -41,8 +43,8 @@ foundational features baked in from day one: **scope-unique capture names** and
 
 **Non-goals:** not a *general* markdown renderer (no markdown→HTML, no arbitrary
 CommonMark transforms — it only renders *its own schema* from data); not a
-programming language (only cardinality, regex labels, and jq queries); does not
-own opys's reserved-key / relation / ID logic.
+programming language (only cardinality and regex labels); does not own opys's
+reserved-key / relation / ID logic.
 
 ---
 
@@ -299,25 +301,30 @@ pub struct Captured { pub value: serde_json::Value, pub span: Span }
 
 ---
 
-## 7. Query & edit (jq-style)
+## 7. Edit in-place (by alias / path)
+
+> **Note.** An earlier draft paired this with a jq-based **query** selector
+> (`.manual.procedure.steps[1]`). That was dropped: once opys moved corpus stats
+> to SQL, the bundled jq engine (`jaq`) had no remaining consumer and was removed
+> to keep the dependency tree lean. `edit` never depended on jq — it resolves
+> targets by capture alias/path, described below. If document-level *querying* is
+> reintroduced, it should reuse that same alias/path addressing.
 
 Once a document is parsed to the JSON-like value **and** every captured node
-carries its source `Span`, two things fall out:
+carries its source `Span`:
 
-- **Query:** evaluate a jq selector against the value (e.g. `.manual.procedure.steps[1]`).
-  We use an existing Rust jq engine (`jaq`) rather than inventing a query syntax.
-- **Edit in-place:** resolve a capture name or jq path → the node's `Span` in the
-  original source → splice a new value, re-rendering only that node. Everything
-  else (formatting, surrounding prose, other items) is byte-preserved.
+- **Edit in-place:** resolve a capture name or dotted path → the node's `Span` in
+  the original source → splice a new value, re-rendering only that node.
+  Everything else (formatting, surrounding prose, other items) is byte-preserved.
 
 This requires the markdown parser to provide **source positions** (§9), which is
 a hard requirement on the parser choice.
 
-**Addressing by alias.** Beyond jq paths, `edit`/`query` accept a bare alias
-(`steps`) when it is unique across the schema, resolving to the full path
-internally; ambiguous aliases require the dotted path (`manual.procedure.steps`).
-The crate maintains a name→node index for this. So consumers get short, stable
-handles that survive heading renames — the whole point of aliases.
+**Addressing by alias.** `edit` accepts a bare alias (`steps`) when it is unique
+across the schema, resolving to the full path internally; ambiguous aliases
+require the dotted path (`manual.procedure.steps`). The crate maintains a
+name→node index for this. So consumers get short, stable handles that survive
+heading renames — the whole point of aliases.
 
 **Custom extraction templates (future, host-exposed):** because captures are
 named and queryable, a consumer can ship its own schemas purely to *extract*
@@ -366,9 +373,8 @@ impl Schema {
     pub fn render(&self, data: &serde_json::Value) -> Result<String, RenderError>;
     /// Render with placeholder/default values — a starter document.
     pub fn scaffold(&self) -> String;
-    /// jq selector over the extracted object.
-    pub fn query(&self, md: &str, jq: &str) -> Result<Vec<serde_json::Value>, QueryError>;
-    /// Replace the node addressed by a capture name or jq path; returns new source.
+    // NOTE: `query` (a jq selector over the extracted object) was dropped — see §7.
+    /// Replace the node addressed by a capture name or dotted path; returns new source.
     pub fn edit(&self, md: &str, target: &str, value: &str) -> Result<String, EditError>;
 }
 
