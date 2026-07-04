@@ -456,7 +456,7 @@ fn push_child_rows(
 
 /// Convert any `IntoParamLiteral` into a `ParamLiteral` (ergonomic shorthand;
 /// `Option<T>` maps `None` → SQL NULL).
-trait IntoParam {
+pub(crate) trait IntoParam {
     fn into_param(self) -> ParamLiteral;
 }
 impl<T: gluesql::core::translate::IntoParamLiteral> IntoParam for T {

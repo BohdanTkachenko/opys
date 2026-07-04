@@ -62,7 +62,11 @@ pub(crate) struct RelRow {
 
 pub(crate) struct FmRow {
     pub key: String,
-    pub value_yaml: String,
+    /// The whole value as bare canonical YAML — the fidelity source of truth.
+    /// `None` marks a query-only *element* row (one per scalar element of a
+    /// sequence value, so `--field key=value` can match lists in SQL);
+    /// reconstruction ignores those.
+    pub value_yaml: Option<String>,
     pub value: Option<String>,
     pub kind: &'static str,
 }
@@ -144,7 +148,7 @@ pub(crate) fn decompose(pcfg: &ProjectConfig, doc: &Doc) -> Result<DocRows> {
                     });
                 }
             }
-            _ => out.fm_fields.push(fm_row(key, v)?),
+            _ => out.fm_fields.extend(fm_rows(key, v)?),
         }
     }
 
@@ -157,9 +161,10 @@ pub(crate) fn decompose(pcfg: &ProjectConfig, doc: &Doc) -> Result<DocRows> {
     Ok(out)
 }
 
-/// The `fm_fields` row for a key: bare canonical YAML as the fidelity source,
-/// plus a scalar stringification for querying (NULL for composite values).
-fn fm_row(key: &str, v: &Yaml) -> Result<FmRow> {
+/// The `fm_fields` rows for a key: one fidelity row (bare canonical YAML +
+/// scalar stringification for querying), plus one query-only element row per
+/// scalar element of a sequence value (`--field key=value` list matching).
+fn fm_rows(key: &str, v: &Yaml) -> Result<Vec<FmRow>> {
     let value_yaml = serde_norway::to_string(v)
         .map_err(|e| OpysError::Store(format!("cannot serialize field '{key}': {e}")))?;
     let (value, kind) = match v {
@@ -172,12 +177,32 @@ fn fm_row(key: &str, v: &Yaml) -> Result<FmRow> {
         Yaml::Mapping(_) => (None, "map"),
         Yaml::Tagged(_) => (None, "tagged"),
     };
-    Ok(FmRow {
+    let mut out = vec![FmRow {
         key: key.to_string(),
-        value_yaml,
+        value_yaml: Some(value_yaml),
         value,
         kind,
-    })
+    }];
+    if let Yaml::Sequence(seq) = v {
+        for item in seq {
+            // scalar_str semantics: composite elements contribute no match.
+            let elem = match item {
+                Yaml::String(s) => Some(s.clone()),
+                Yaml::Bool(b) => Some(b.to_string()),
+                Yaml::Number(n) => Some(n.to_string()),
+                _ => None,
+            };
+            if let Some(elem) = elem {
+                out.push(FmRow {
+                    key: key.to_string(),
+                    value_yaml: None,
+                    value: Some(elem),
+                    kind: "elem",
+                });
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn relation_field(key: &str) -> Option<&'static str> {

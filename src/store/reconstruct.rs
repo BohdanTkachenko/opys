@@ -112,8 +112,15 @@ impl Store {
             ));
         }
 
+        // Element rows (value_yaml NULL) are query-only; only fidelity rows
+        // participate in reconstruction.
+        let not_elem = if filter.is_empty() {
+            " WHERE value_yaml IS NOT NULL"
+        } else {
+            " AND value_yaml IS NOT NULL"
+        };
         let (_, rows) = self.select(
-            &format!("SELECT dkey, key, value_yaml FROM fm_fields{filter} ORDER BY dkey"),
+            &format!("SELECT dkey, key, value_yaml FROM fm_fields{filter}{not_elem} ORDER BY dkey"),
             params,
         )?;
         for r in rows {

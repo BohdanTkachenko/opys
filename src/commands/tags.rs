@@ -2,31 +2,25 @@
 //! their keys with `--keys`). Plain, sorted, one per line — easy to scan or
 //! pipe into `opys list --tag`.
 
-use std::collections::BTreeSet;
-
-use crate::commands::tag_key;
 use crate::error::Result;
+use crate::store::{g_str, Store};
 use crate::Ctx;
 
 /// Print every distinct tag (or, with `keys_only`, every distinct tag key) in
 /// the inventory, sorted alphabetically, one per line.
 pub fn run(ctx: &Ctx, keys_only: bool) -> Result<()> {
     let prj = ctx.open()?;
-    let (docs, _) = prj.load_docs();
-
-    let mut tags: BTreeSet<String> = BTreeSet::new();
-    for d in &docs {
-        for t in d.frontmatter.tags().unwrap_or_default() {
-            if keys_only {
-                tags.insert(tag_key(&t).to_string());
-            } else {
-                tags.insert(t);
-            }
+    let (mut store, _) = Store::open(&prj)?;
+    let sql = if keys_only {
+        "SELECT DISTINCT key FROM tags ORDER BY key"
+    } else {
+        "SELECT DISTINCT tag FROM tags ORDER BY tag"
+    };
+    let (_, rows) = store.select(sql, vec![])?;
+    for r in rows {
+        if let Some(t) = g_str(&r[0]) {
+            println!("{t}");
         }
-    }
-
-    for t in &tags {
-        println!("{t}");
     }
     Ok(())
 }
