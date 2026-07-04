@@ -1185,6 +1185,34 @@ require_field = \"wontfix_reason\"\n";
         .assert(predicate::str::contains("status: planned"));
 }
 
+/// `query --write` allows only INSERT/UPDATE/DELETE: schema-level statements
+/// (CREATE/DROP/ALTER TABLE) are rejected on the plan before anything runs, so
+/// they can't reshape the authoritative tables the store and flush depend on.
+/// A compound `UPDATE …; DROP TABLE docs` is rejected whole — no partial write.
+#[test]
+fn query_write_rejects_non_dml_statements() {
+    let dir = project();
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# A\n")
+        .unwrap();
+    for bad in [
+        "CREATE TABLE evil (x INTEGER)",
+        "DROP TABLE docs",
+        "ALTER TABLE docs ADD COLUMN evil INTEGER",
+        "UPDATE docs SET status = 'planned'; DROP TABLE docs",
+        "SELECT 1",
+    ] {
+        opys(&dir)
+            .args(["query", "--write", bad])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("allows only INSERT/UPDATE/DELETE"));
+    }
+    // The file was never touched.
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::str::contains("status: planned"));
+}
+
 /// `verify`/`config validate` reject a `template` referencing an unknown column
 /// (checked against the query's columns, so it fails even with zero rows).
 #[test]

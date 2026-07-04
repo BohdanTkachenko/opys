@@ -3,9 +3,10 @@
 //! `fields`/`sections` mirror the `[[stats]]` corpus-table shapes so users
 //! learn one vocabulary; they are rebuilt from scratch here (never written by
 //! commands), immediately before any user SQL runs. User SQL executes against
-//! the LIVE store, so it is statement-guarded: every planned statement must be
-//! a `Query` (SELECT) — a `DELETE …; SELECT 1` compound is rejected before
-//! anything executes, not after.
+//! the LIVE store, so it is statement-guarded on the plan: read SQL must be all
+//! `Query` (SELECT) and `--write` SQL all DML (INSERT/UPDATE/DELETE) — a mixed
+//! compound (`DELETE …; SELECT 1`, `UPDATE …; DROP TABLE docs`) is rejected
+//! before anything executes, not after.
 
 use futures::executor::block_on;
 use gluesql::core::ast::Statement;
@@ -117,11 +118,35 @@ impl Store {
     /// store, returning a one-line summary of the row counts. The caller is
     /// responsible for gating on `verify` and flushing — this only mutates the
     /// in-memory store. `Err` carries a human-readable problem.
+    ///
+    /// Every statement must be a DML mutation — checked on the *plan*, before
+    /// anything executes, so a compound like `INSERT …; DROP TABLE docs` is
+    /// rejected outright. This keeps schema-level statements (CREATE/DROP/ALTER
+    /// TABLE, indexes) off the authoritative tables the store and flush depend
+    /// on; the verify gate alone can't catch them (an empty or reshaped table
+    /// has no verify problems).
     pub fn run_user_write(&mut self, sql: &str) -> std::result::Result<String, String> {
-        let payloads =
-            block_on(self.glue.execute(sql)).map_err(|e| format!("statement failed ({e})"))?;
-        if payloads.is_empty() {
+        let stmts = block_on(self.glue.plan(sql)).map_err(|e| format!("statement failed ({e})"))?;
+        if stmts.is_empty() {
             return Err("no statements to run".to_string());
+        }
+        for s in &stmts {
+            if !matches!(
+                s,
+                Statement::Insert { .. } | Statement::Update { .. } | Statement::Delete { .. }
+            ) {
+                return Err(format!(
+                    "query --write allows only INSERT/UPDATE/DELETE (got {})",
+                    stmt_kind(s)
+                ));
+            }
+        }
+        let mut payloads = Vec::with_capacity(stmts.len());
+        for s in &stmts {
+            payloads.push(
+                block_on(self.glue.execute_stmt(s))
+                    .map_err(|e| format!("statement failed ({e})"))?,
+            );
         }
         let parts: Vec<String> = payloads
             .iter()
@@ -148,6 +173,7 @@ fn stmt_kind(s: &Statement) -> &'static str {
         Statement::AlterTable { .. } => "ALTER TABLE",
         Statement::CreateIndex { .. } => "CREATE INDEX",
         Statement::DropIndex { .. } => "DROP INDEX",
-        _ => "a non-SELECT statement",
+        Statement::Query(_) => "SELECT",
+        _ => "an unsupported statement",
     }
 }

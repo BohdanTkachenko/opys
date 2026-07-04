@@ -185,9 +185,9 @@ pub enum Command {
         plain: bool,
     },
 
-    /// Run a read-only SQL query over the inventory (SELECT only) and print
-    /// the result table. Styled for a terminal; plain markdown when piped
-    /// (or with `--plain` / `NO_COLOR`).
+    /// Run a SQL query over the inventory and print the result table. Read-only
+    /// (SELECT) by default; `--write` allows INSERT/UPDATE/DELETE. Styled for a
+    /// terminal; plain markdown when piped (or with `--plain` / `NO_COLOR`).
     ///
     /// Tables: docs(id, num, type, status, title, created, updated, body,
     /// path), tags(doc_id, seq, tag, key, value), relations(doc_id, field,
