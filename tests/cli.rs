@@ -3034,3 +3034,79 @@ statuses = [\"planned\"]\ndefault_status = \"planned\"\n";
     dir.child("opys/features/FEAT-0002.md")
         .assert(predicate::path::exists());
 }
+
+/// `query --write` INSERT into docs auto-allocates the next id, defaults the
+/// status, stamps timestamps, and scaffolds the type's required sections so the
+/// new doc passes verify.
+#[test]
+fn query_write_insert_allocates_id_and_scaffolds() {
+    let cfg = "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
+statuses = [\"planned\"]\ndefault_status = \"planned\"\n\
+[[types.feature.sections]]\nheading = \"Test plan\"\nkind = \"checklist\"\nrequired = true\n";
+    let dir = project_with(cfg);
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# One\n\n## Test plan\n- [ ] a\n")
+        .unwrap();
+    opys(&dir)
+        .args([
+            "query",
+            "--write",
+            "INSERT INTO docs (type, title) VALUES ('feature', 'Auto')",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("inserted"));
+    dir.child("opys/features/FEAT-0002.md")
+        .assert(predicate::str::contains("id: FEAT-0002"));
+    dir.child("opys/features/FEAT-0002.md")
+        .assert(predicate::str::contains("## Test plan"));
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// Multiple inserts in one statement get distinct sequential ids.
+#[test]
+fn query_write_insert_allocates_distinct_ids() {
+    let cfg = "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
+statuses = [\"planned\"]\ndefault_status = \"planned\"\n";
+    let dir = project_with(cfg);
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# One\n")
+        .unwrap();
+    opys(&dir)
+        .args([
+            "query",
+            "--write",
+            "INSERT INTO docs (type, title) VALUES ('feature', 'A'), ('feature', 'B')",
+        ])
+        .assert()
+        .success();
+    dir.child("opys/features/FEAT-0002.md")
+        .assert(predicate::path::exists());
+    dir.child("opys/features/FEAT-0003.md")
+        .assert(predicate::path::exists());
+}
+
+/// An INSERT with an unknown type is refused with no files changed.
+#[test]
+fn query_write_insert_rejects_unknown_type() {
+    let cfg = "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
+statuses = [\"planned\"]\ndefault_status = \"planned\"\n";
+    let dir = project_with(cfg);
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# One\n")
+        .unwrap();
+    opys(&dir)
+        .args([
+            "query",
+            "--write",
+            "INSERT INTO docs (type, title) VALUES ('nope', 'X')",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("needs a known type"));
+    dir.child("opys/features/FEAT-0002.md")
+        .assert(predicate::path::missing());
+}
