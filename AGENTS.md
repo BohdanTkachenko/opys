@@ -61,6 +61,12 @@ cargo test --all
 cargo build --all-targets                   # also built on MSRV 1.88 — don't use newer std APIs
 ```
 
+The MSRV (`rust-version` in `Cargo.toml`) is set by the dependency tree's floor,
+not just our own code — reproduce the CI floor build locally with **`msrv`** (a
+devShell command that runs `cargo build --all-targets` under a pinned Rust
+toolchain via `rust-overlay`), so a dependency raising the minimum is caught here
+rather than on the first push.
+
 Run a single test:
 
 ```sh

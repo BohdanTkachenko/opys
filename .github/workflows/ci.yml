@@ -32,11 +32,11 @@ jobs:
         run: scripts/sync-versions.sh --check
 
   msrv:
-    name: Build (MSRV 1.85)
+    name: Build (MSRV 1.88)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.88.0
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --all-targets

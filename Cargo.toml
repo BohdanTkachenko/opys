@@ -2,8 +2,10 @@
 name = "opys"
 version = "0.10.1"
 edition = "2021"
-# 1.85 is the floor: gluesql's core is edition 2024, which requires rustc ≥ 1.85.
-rust-version = "1.85"
+# 1.88 is the real floor: while gluesql's core only needs edition 2024 (≥ 1.85),
+# other deps in the tree (time, ratatui's `instability`, `darling`) require 1.88.
+# Verify locally with `msrv` (a pinned-toolchain build; see flake.nix).
+rust-version = "1.88"
 description = "File-based feature inventory for human + AI codebases — one markdown file per feature, verified in CI"
 license = "Apache-2.0"
 repository = "https://github.com/BohdanTkachenko/opys"

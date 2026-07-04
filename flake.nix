@@ -4,9 +4,14 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    # Provides pinned Rust toolchains so `msrv` can reproduce the CI floor build.
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, rust-overlay }:
     let
       # Cargo.toml's [package].version is the single source of truth for the
       # version (scripts/sync-versions.sh fans it out to the other manifests);
@@ -62,9 +67,23 @@
     in
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ rust-overlay.overlays.default ];
+        };
 
         opys = mkOpys pkgs;
+
+        # The pinned MSRV toolchain — Cargo.toml's rust-version (kept as x.y)
+        # normalized to x.y.0. `msrv` runs the exact CI floor build locally so a
+        # dependency raising the minimum is caught here, not on the first push.
+        msrvToolchain = pkgs.rust-bin.stable."${cargoToml.package.rust-version}.0".minimal;
+        msrv = pkgs.writeShellScriptBin "msrv" ''
+          export PATH="${msrvToolchain}/bin:$PATH"
+          export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-target/msrv}"
+          echo "MSRV check with $(rustc --version)"
+          exec cargo build --all-targets "$@"
+        '';
 
         devPackages = with pkgs; [
           cargo
@@ -97,7 +116,7 @@
 
         packages.dev-profile = pkgs.buildEnv {
           name = "opys-dev-profile";
-          paths = devPackages ++ [ refresh ];
+          paths = devPackages ++ [ refresh msrv ];
         };
 
         apps.default = flake-utils.lib.mkApp { drv = opys; };
@@ -108,7 +127,7 @@
         };
 
         devShells.default = pkgs.mkShell {
-          packages = devPackages ++ [ refresh sync-versions ];
+          packages = devPackages ++ [ refresh sync-versions msrv ];
 
           shellHook = ''
             refresh
