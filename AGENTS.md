@@ -97,13 +97,26 @@ Layering, roughly outermost-in:
   the applicable `[[rules]]` (plus the type-level `requires_link` shorthand) and
   returns one problem per failed assertion. Called at every write point and by
   `verify`.
+- `src/store/` — **the internal working representation.** Per CLI invocation the
+  corpus is loaded and decomposed into an in-memory GlueSQL database
+  (`Store::open`); commands run SQL over it (plus reconstructed `Doc`s for the
+  Rust-side invariants — rules, linkify, mdprism); `flush` writes changed docs
+  back (create/rename/relocate/delete + retired-ledger rewrite). Markdown files
+  remain the durable storage. Authoritative tables `docs`/`tags`/`relations`/
+  `fm_fields`/`retired` (every frontmatter key has exactly one home; arbitrary
+  YAML round-trips through `fm_fields.value_yaml` — the invariant is
+  `reconstruct(decompose(doc)).to_text() == doc.to_text()`); derived
+  `fields`/`sections` (the `[[stats]]`/`opys query` contract) are rebuilt by
+  `refresh_projections`. ID allocation is one SQL `MAX` across docs/relations/
+  retired. Internal SQL uses `$n` parameters and JOINs only — never
+  `IN (subquery)`/FROM-subqueries/`UNION` (GlueSQL executes/​rejects those
+  badly). `commands/query.rs` exposes plan-guarded (SELECT-only) user SQL.
 - `src/project.rs` — `Project` ties the on-disk layout to `pcfg`. `Project::open`
   requires `<base>/opys.toml`. Owns generic discovery (`load_docs`: scan the base
-  recursively for ID-named files, parse into `Doc`), the canonical-path helper
-  (`doc_path`) and `save_doc` (write + relocate to the canonical layout path), ID
-  allocation (`max_doc_id`/`next_id_for` over one global sequence), the retired-ID
-  ledger (`<base>/_retired.txt`), `find`/`find_mut`, and the shared regexes
-  (`id_format_re`, `KEBAB_RE`, `parse_field`).
+  recursively for ID-named files, parse into `Doc`; used by `Store::open`, the
+  TUI, and `history`), the canonical-path helper (`doc_path`), and — for the
+  still-file-based TUI/history paths — `save_doc`, `next_id_for`/`max_doc_id`,
+  and `find`. Mutating commands go through the store, not `save_doc`.
 - `src/doc.rs` / `src/frontmatter.rs` / `src/body.rs` — the parse layer. `Doc` is
   the single document struct (`{path, frontmatter, body, title}`; type derived
   from the id prefix). `frontmatter` parses YAML with `serde_norway` and
@@ -184,14 +197,14 @@ All status/section/link guards are *config*, enforced by one engine
 ### Auto-sync — no generated artifacts
 
 opys generates no view files (no `INDEX.md`); slice the inventory live with
-`opys list`. Mutating commands (`new`, `set-status`, `tag`, `retire`, `block`,
-`close`, `cleanup`) call `maybe_sync` → `commands/sync::run` automatically unless
-`--no-sync` is passed. That pass reconciles relations, linkifies prose, and
-**relocates each document to its canonical layout path** (`save_doc` → `fs::rename`
-when a status change or `[layout]` edit moved it, e.g. into `_archived/`); it
-refuses to run if any document fails to parse (run `verify` first). `opys sync`
-runs the same pass after hand edits (and deletes any stale `INDEX.md` left by
-older versions).
+`opys list` or `opys query`. Mutating commands (`new`, `set-status`, `tag`,
+`retire`, `block`, `close`, `cleanup`) call `maybe_sync` → `commands/sync::run`
+automatically unless `--no-sync` is passed. That pass reconciles relations,
+linkifies prose, and **relocates each document to its canonical layout path**
+(the store's `flush` renames a file when a status change or `[layout]` edit moved
+it, e.g. into `_archived/`); it refuses to run if any document fails to parse
+(run `verify` first). `opys sync` runs the same pass after hand edits (and
+deletes any stale `INDEX.md` left by older versions).
 
 ### Frontmatter serialization
 
