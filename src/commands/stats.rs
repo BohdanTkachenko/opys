@@ -487,7 +487,7 @@ pub fn render_all(pcfg: &ProjectConfig, docs: &[&Doc]) -> std::result::Result<St
 
 pub fn run(ctx: &Ctx, plain: bool) -> Result<()> {
     let prj = ctx.open()?;
-    let (docs, _) = prj.load_docs();
+    let (docs, _) = ctx.backend.load_docs(&prj);
     let doc_refs: Vec<&Doc> = docs.iter().collect();
     let out = render_all(&prj.pcfg, &doc_refs).map_err(usage)?;
     if out.is_empty() {

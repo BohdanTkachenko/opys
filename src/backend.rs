@@ -23,4 +23,9 @@ pub trait Backend {
     /// Persist the store's net changes: write changed documents, delete removed
     /// ones, relocate moved ones, and rewrite the retired-id ledger.
     fn flush(&self, prj: &Project, store: Store) -> Result<()>;
+
+    /// Read and parse every durable document (raw, without building a store),
+    /// returning parsed docs + non-fatal parse errors. Used by read-only passes
+    /// (stats, history) and the TUI board.
+    fn load_docs(&self, prj: &Project) -> (Vec<crate::doc::Doc>, Vec<String>);
 }

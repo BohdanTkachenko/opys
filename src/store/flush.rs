@@ -9,12 +9,12 @@
 //! `_retired.md` is (re)written iff an id was reserved this run, and any legacy
 //! `_retired.txt` is migrated to it.
 //!
-//! [`apply_plan`] is the local-filesystem executor, kept here so the pure plan
-//! and its one in-tree consumer stay together; a backend for another medium
+//! The `opys-backend-markdown-local` crate holds the local-filesystem executor
+//! (`apply_plan`) and the load-side walk/parse; a backend for another medium
 //! would execute the same plan differently.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::error::Result;
 use crate::project::Project;
@@ -105,54 +105,5 @@ impl Store {
             }
         }
         Ok(plan)
-    }
-
-    /// Compute and apply the flush plan against the local filesystem. Consumes
-    /// the store.
-    pub fn flush(self, prj: &Project) -> Result<()> {
-        let plan = self.flush_plan(prj)?;
-        apply_plan(&plan, &prj.base)
-    }
-}
-
-/// Execute a [`FlushPlan`] against the local filesystem: deletes → renames →
-/// writes → ledger, pruning emptied document directories (never the base).
-pub fn apply_plan(plan: &FlushPlan, base: &Path) -> Result<()> {
-    for p in &plan.deletes {
-        if p.exists() {
-            std::fs::remove_file(p)?;
-        }
-        prune_empty_dir(p.parent(), base);
-    }
-    for (from, to) in &plan.renames {
-        if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        if from.exists() {
-            std::fs::rename(from, to)?;
-            prune_empty_dir(from.parent(), base);
-        }
-    }
-    for (target, text) in &plan.writes {
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(target, text)?;
-    }
-    if let Some((path, text)) = &plan.retired_write {
-        std::fs::write(path, text)?;
-    }
-    if let Some(legacy) = &plan.legacy_remove {
-        std::fs::remove_file(legacy)?;
-    }
-    Ok(())
-}
-
-/// Best-effort removal of an emptied document directory (never the base).
-fn prune_empty_dir(dir: Option<&Path>, base: &Path) {
-    if let Some(dir) = dir {
-        if dir != base && dir.starts_with(base) {
-            let _ = std::fs::remove_dir(dir); // no-op unless empty
-        }
     }
 }

@@ -32,6 +32,7 @@ use crate::project_config::ProjectConfig;
 #[allow(unused_imports)] // used by command ports as they land
 pub(crate) use decompose::split_tag;
 pub(crate) use decompose::{decompose, id_num};
+pub use flush::FlushPlan;
 pub(crate) use model::Baseline;
 
 /// The in-memory corpus database for one CLI invocation.
@@ -129,30 +130,6 @@ impl Store {
         store.retired_loaded = rows.len();
         store.insert_batch("retired", 4, rows)?;
         Ok((store, loaded.errors))
-    }
-
-    /// Load the corpus from the local filesystem: read and parse every document
-    /// and the retired ledger, then [`build`](Store::build) the working store.
-    pub fn open(prj: &Project) -> Result<(Store, Vec<String>)> {
-        let (docs, errors) = prj.load_docs();
-        let docs: Vec<(Doc, Option<String>)> = docs
-            .into_iter()
-            .map(|d| {
-                let m = mtime_rfc3339(&d.path);
-                (d, m)
-            })
-            .collect();
-        let retired = crate::retired::read(&prj.base);
-        let retired_legacy = crate::retired::legacy_path(&prj.base).exists();
-        Store::build(
-            prj,
-            LoadedCorpus {
-                docs,
-                errors,
-                retired,
-                retired_legacy,
-            },
-        )
     }
 
     // ------------------------------------------------------------------
@@ -581,17 +558,6 @@ fn path_str(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-/// A file's modification time as an RFC3339 datetime (second precision), or
-/// `None` if unreadable. Captured at load for sync's timestamp backfill.
-fn mtime_rfc3339(path: &Path) -> Option<String> {
-    use time::format_description::well_known::Rfc3339;
-    use time::OffsetDateTime;
-    let mt = std::fs::metadata(path).ok()?.modified().ok()?;
-    let dt = OffsetDateTime::from(mt);
-    let dt = dt.replace_nanosecond(0).unwrap_or(dt);
-    dt.format(&Rfc3339).ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -629,13 +595,34 @@ terminal_statuses = ["done"]
         (dir, prj)
     }
 
+    /// Build a store from in-memory-parsed docs (no document fs) — the store's
+    /// data logic under test; real load/flush fs lives in the backend crate.
+    fn store_of(prj: &Project, docs: &[(&str, &str)]) -> (Store, Vec<String>) {
+        let parsed: Vec<(Doc, Option<String>)> = docs
+            .iter()
+            .map(|(rel, text)| (Doc::parse(prj.base.join(rel), text).expect("parse"), None))
+            .collect();
+        let retired = crate::retired::read(&prj.base);
+        let retired_legacy = crate::retired::legacy_path(&prj.base).exists();
+        Store::build(
+            prj,
+            LoadedCorpus {
+                docs: parsed,
+                errors: Vec::new(),
+                retired,
+                retired_legacy,
+            },
+        )
+        .expect("build")
+    }
+
     /// Every GlueSQL construct the store (and the future sync engine) relies
     /// on, probed in one place so a gluesql upgrade failing any of them is
     /// caught here, not in a command.
     #[test]
     fn glue_probes() {
         let (_t, prj) = project_with(&[]);
-        let (mut s, errs) = Store::open(&prj).unwrap();
+        let (mut s, errs) = store_of(&prj, &[]);
         assert!(errs.is_empty());
 
         // MAX over an empty table is NULL → scalar() → None.
@@ -757,10 +744,13 @@ terminal_statuses = ["done"]
              "---\nid: FEAT-0007\nstatus: planned\npriority: \"5\"\narea: [ui, core]\n---\n\n# Seven\n"),
         ];
         let (_t, prj) = project_with(docs);
-        let (mut s, errs) = Store::open(&prj).unwrap();
+        let (mut s, errs) = store_of(&prj, docs);
         assert!(errs.is_empty(), "parse errors: {errs:?}");
 
-        let (orig, _) = prj.load_docs();
+        let orig: Vec<Doc> = docs
+            .iter()
+            .map(|(rel, text)| Doc::parse(prj.base.join(rel), text).unwrap())
+            .collect();
         let rebuilt = s.all_docs().unwrap();
         assert_eq!(orig.len(), rebuilt.len());
         for (o, (_, r)) in orig.iter().zip(&rebuilt) {
@@ -772,93 +762,6 @@ terminal_statuses = ["done"]
             );
             assert_eq!(o.path, r.path);
         }
-    }
-
-    /// Flush right after open must not modify a single byte on disk.
-    #[test]
-    fn open_then_flush_is_a_noop() {
-        // Note the second file is deliberately NON-canonical (odd key order,
-        // quoted plain scalar): flush must leave it untouched because the doc
-        // did not logically change.
-        let docs: &[(&str, &str)] = &[
-            (
-                "FEAT-0001.md",
-                "---\nid: FEAT-0001\nstatus: planned\n---\n\n# A\n",
-            ),
-            (
-                "FEAT-0002.md",
-                "---\nstatus: planned\nid: \"FEAT-0002\"\n---\n# B\n",
-            ),
-        ];
-        let (_t, prj) = project_with(docs);
-        let before: Vec<String> = docs
-            .iter()
-            .map(|(rel, _)| std::fs::read_to_string(prj.base.join(rel)).unwrap())
-            .collect();
-        let (s, _) = Store::open(&prj).unwrap();
-        s.flush(&prj).unwrap();
-        for ((rel, _), b) in docs.iter().zip(&before) {
-            let after = std::fs::read_to_string(prj.base.join(rel)).unwrap();
-            assert_eq!(*b, after, "{rel} changed on a no-op flush");
-        }
-    }
-
-    /// put_doc + set_canonical_path relocates on flush; delete_doc removes the
-    /// file; retire_id rewrites the ledger sorted by number.
-    #[test]
-    fn flush_applies_writes_renames_deletes_and_ledger() {
-        let docs: &[(&str, &str)] = &[
-            (
-                "FEAT-0001.md",
-                "---\nid: FEAT-0001\nstatus: planned\n---\n\n# A\n",
-            ),
-            (
-                "FEAT-0002.md",
-                "---\nid: FEAT-0002\nstatus: planned\n---\n\n# B\n",
-            ),
-            (
-                "FEAT-0003.md",
-                "---\nid: FEAT-0003\nstatus: planned\n---\n\n# C\n",
-            ),
-        ];
-        let (_t, prj) = project_with(docs);
-        std::fs::write(
-            prj.base.join("_retired.txt"),
-            "FEAT-0009  # retired 2026-01-01: old\n",
-        )
-        .unwrap();
-        let (mut s, _) = Store::open(&prj).unwrap();
-
-        // Archive FEAT-0001 → moves into _archived/.
-        let k1 = s.dkey_of("FEAT-0001").unwrap();
-        let mut d1 = s.doc(k1).unwrap();
-        d1.frontmatter.set_str("status", "archived");
-        s.put_doc(&prj.pcfg, Some(k1), &d1).unwrap();
-        s.set_canonical_path(&prj.pcfg, k1).unwrap();
-
-        // Delete FEAT-0002 outright; retire FEAT-0003 (delete + ledger).
-        let k2 = s.dkey_of("FEAT-0002").unwrap();
-        s.delete_doc(k2).unwrap();
-        let k3 = s.dkey_of("FEAT-0003").unwrap();
-        s.retire_id("FEAT-0003", "C").unwrap();
-        s.delete_doc(k3).unwrap();
-
-        s.flush(&prj).unwrap();
-
-        assert!(!prj.base.join("FEAT-0001.md").exists());
-        let archived = prj.base.join("_archived/FEAT-0001.md");
-        assert!(archived.exists(), "archived doc not relocated");
-        assert!(std::fs::read_to_string(&archived)
-            .unwrap()
-            .contains("status: archived"));
-        assert!(!prj.base.join("FEAT-0002.md").exists());
-        assert!(!prj.base.join("FEAT-0003.md").exists());
-        // The legacy plaintext ledger was migrated to `_retired.md`, keeping
-        // both the newly retired id (with its title) and the pre-seeded one.
-        assert!(!prj.base.join("_retired.txt").exists());
-        let ledger = std::fs::read_to_string(prj.base.join("_retired.md")).unwrap();
-        assert!(ledger.contains("FEAT-0003: C"), "ledger = {ledger}");
-        assert!(ledger.contains("FEAT-0009"), "ledger = {ledger}");
     }
 
     /// `updated` always bumps; `created` backfills only when the key is absent
@@ -876,7 +779,7 @@ terminal_statuses = ["done"]
             ),
         ];
         let (_t, prj) = project_with(docs);
-        let (mut s, _) = Store::open(&prj).unwrap();
+        let (mut s, _) = store_of(&prj, docs);
 
         let k1 = s.dkey_of("FEAT-0001").unwrap();
         s.touch(k1, "2026-03-03T00:00:00Z").unwrap();
@@ -914,7 +817,7 @@ terminal_statuses = ["done"]
         )];
         let (_t, prj) = project_with(docs);
         std::fs::write(prj.base.join("_retired.txt"), "FEAT-0012  # retired\n").unwrap();
-        let (mut s, _) = Store::open(&prj).unwrap();
+        let (mut s, _) = store_of(&prj, docs);
         assert_eq!(s.next_id_for("FEAT", 4).unwrap(), "FEAT-0013");
     }
 
@@ -927,7 +830,7 @@ terminal_statuses = ["done"]
             "---\nid: FEAT-0001\nstatus: planned\n---\n\n# A\n",
         )];
         let (_t, prj) = project_with(docs);
-        let (mut s, _) = Store::open(&prj).unwrap();
+        let (mut s, _) = store_of(&prj, docs);
 
         for bad in [
             "DELETE FROM docs",

@@ -80,7 +80,9 @@ The repo is a Cargo **workspace** of four crates: **`opys`** (the core library,
 at the repo root — the model, config, rules, SQL store, and command
 implementations, plus the [`Backend`] storage trait); **`opys-backend-markdown-local`**
 (the default `Backend` impl: one markdown file per document on the local
-filesystem, delegating to the core store's load/flush); **`opys-tui`** (the
+filesystem — it owns all corpus filesystem I/O, walking and parsing documents
+on load and executing the store's `FlushPlan` on flush, so the core crate does
+no document filesystem access); **`opys-tui`** (the
 `opys tui` terminal UI); and **`opys-bin`** (the thin `opys` binary). The binary
 (`opys-bin/src/main.rs`) parses `Cli` (clap derive, `src/cli.rs`), injects the
 `MarkdownLocal` backend, and calls `opys::run`, which maps the exit code; it

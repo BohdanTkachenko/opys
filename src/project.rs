@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use regex::Regex;
-use walkdir::WalkDir;
 
 use crate::doc::Doc;
 use crate::error::{usage, OpysError, Result};
@@ -64,28 +63,6 @@ impl Project {
         Ok(Project { base, root, pcfg })
     }
 
-    /// Generic discovery: load every document anywhere under the inventory base
-    /// as one global inventory, returning parsed docs (sorted by path) and
-    /// parse-error messages. The scan is recursive (the layout template may nest
-    /// docs under `{type}`/`{status}` segments in any order) and only considers
-    /// ID-named files, so a configurable layout never misses a doc and stray
-    /// markdown (READMEs, notes) is ignored. A doc's type is its id prefix.
-    pub fn load_docs(&self) -> (Vec<Doc>, Vec<String>) {
-        let mut docs = Vec::new();
-        let mut errors = Vec::new();
-        for p in md_files(&self.base) {
-            match std::fs::read_to_string(&p) {
-                Ok(text) => match Doc::parse(p, &text) {
-                    Ok(d) => docs.push(d),
-                    Err(msg) => errors.push(msg),
-                },
-                Err(e) => errors.push(format!("{}: {e}", p.display())),
-            }
-        }
-        docs.sort_by(|a, b| a.path.cmp(&b.path));
-        (docs, errors)
-    }
-
     /// The canonical on-disk path for a document with the given id and status,
     /// per the configured `layout` (see [`ProjectConfig::doc_relpath`]).
     pub fn doc_path(&self, id: &str, status: &str) -> PathBuf {
@@ -128,7 +105,10 @@ impl Project {
 
     /// IDs that have been retired and may never be reused.
     pub fn retired_ids(&self) -> HashSet<String> {
-        read_id_ledger(&self.base.join("_retired.txt"))
+        crate::retired::read(&self.base)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
     }
 
     /// Find a document by ID, or a not-found error.
@@ -137,74 +117,6 @@ impl Project {
             .find(|d| d.id() == Some(id))
             .ok_or_else(|| OpysError::NotFound { id: id.to_string() })
     }
-}
-
-/// Persist a document to disk in canonical form, relocating the file to its
-/// canonical [`Project::doc_path`] first if its id/status now imply a different
-/// path (e.g. a status change moved it into a `_archived/` segment). Empty
-/// source directories left behind are pruned. This is the single write entry for
-/// mutating commands — it auto-migrates any mislocated file on the next write.
-pub fn save_doc(prj: &Project, d: &mut Doc) -> Result<()> {
-    let target = match (d.id(), d.status()) {
-        (Some(id), Some(status)) => Some(prj.doc_path(id, status)),
-        _ => None,
-    };
-    if let Some(target) = target {
-        if target != d.path {
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let old = std::mem::replace(&mut d.path, target.clone());
-            if old.exists() {
-                std::fs::rename(&old, &target)?;
-                prune_empty_dir(old.parent(), &prj.base);
-            }
-        }
-    }
-    std::fs::write(&d.path, d.to_text()).map_err(OpysError::from)
-}
-
-/// Best-effort removal of an emptied document directory (never the base itself).
-fn prune_empty_dir(dir: Option<&Path>, base: &Path) {
-    if let Some(dir) = dir {
-        if dir != base && dir.starts_with(base) {
-            let _ = std::fs::remove_dir(dir); // no-op unless empty
-        }
-    }
-}
-
-/// Document files anywhere under the inventory base: filenames shaped like an id
-/// (`PREFIX-NNNN.md`), sorted by path. This excludes generated/auxiliary files
-/// (`INDEX.md`, `_retired.txt`) and any non-document markdown a user drops in.
-fn md_files(dir: &Path) -> Vec<PathBuf> {
-    let mut paths: Vec<PathBuf> = WalkDir::new(dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .map(|e| e.into_path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| DOC_FILENAME_RE.is_match(n))
-        })
-        .collect();
-    paths.sort();
-    paths
-}
-
-/// Parse a sorted-by-number ID ledger (`_retired.txt`), returning the IDs.
-fn read_id_ledger(path: &Path) -> HashSet<String> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return HashSet::new();
-    };
-    let mut out = HashSet::new();
-    for line in text.lines() {
-        let line = line.split('#').next().unwrap_or("");
-        if let Some(first) = line.split_whitespace().next() {
-            out.insert(first.to_string());
-        }
-    }
-    out
 }
 
 /// The numeric part of a `PREFIX-NNNN` id, if it parses; `None` for malformed
@@ -220,12 +132,6 @@ pub fn id_format_re(prefix: &str, pad: usize) -> Regex {
 
 pub static KEBAB_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-z0-9]+(-[a-z0-9]+)*$").unwrap());
-
-/// A document filename: an id (`PREFIX-NNNN`) followed by `.md`. Discovery only
-/// treats files matching this as documents, so the recursive base scan ignores
-/// `INDEX.md`, `_retired.txt`, READMEs, and other stray markdown.
-static DOC_FILENAME_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[A-Z][A-Z0-9]*-[0-9]+\.md$").unwrap());
 
 /// Parse a `key=value` custom-field assignment, coercing the value through
 /// YAML (so `n=3` is an int, `t=[a, b]` a list, `s=foo` a string).

@@ -31,7 +31,7 @@ struct Rev {
 
 pub fn run(ctx: &Ctx, id: &str) -> Result<()> {
     let prj = ctx.open()?;
-    let (docs, _) = prj.load_docs();
+    let (docs, _) = ctx.backend.load_docs(&prj);
     let doc = prj.find(&docs, id)?;
 
     // The document's filename is its ID and is stable across relocations; that

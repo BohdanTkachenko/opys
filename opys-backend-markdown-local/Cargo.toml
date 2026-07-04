@@ -9,3 +9,9 @@ repository = "https://github.com/BohdanTkachenko/opys"
 
 [dependencies]
 opys = { path = ".." }
+walkdir = "2"
+regex = "1"
+time = { version = "0.3", features = ["formatting"] }
+
+[dev-dependencies]
+tempfile = "3"

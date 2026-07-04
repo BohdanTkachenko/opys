@@ -3,13 +3,14 @@
 //! timestamps, run the rules engine, then write/relocate via `save_doc` — so the
 //! same on-disk invariants hold. The caller runs `sync_quiet` afterward.
 
+use opys::backend::Backend;
 use std::collections::HashSet;
 
 use opys::body;
 use opys::commands::touch;
 use opys::doc::Doc;
 use opys::error::{usage, Result};
-use opys::project::{self, Project};
+use opys::project::Project;
 use opys::rules;
 
 /// Validate and persist `doc` (an edited existing doc or a freshly scaffolded
@@ -32,7 +33,7 @@ pub fn save_edited_doc(prj: &Project, doc: &mut Doc) -> Result<()> {
     doc.title = body::title(&doc.body);
     touch(&mut doc.frontmatter);
 
-    let (docs, _) = prj.load_docs();
+    let (docs, _) = opys_backend_markdown_local::MarkdownLocal.load_docs(prj);
     let doc_ids: HashSet<String> = docs
         .iter()
         .filter_map(|d| d.id())
@@ -51,5 +52,5 @@ pub fn save_edited_doc(prj: &Project, doc: &mut Doc) -> Result<()> {
     if !problems.is_empty() {
         return Err(usage(problems.join("; ")));
     }
-    project::save_doc(prj, doc)
+    opys_backend_markdown_local::save_doc(prj, doc)
 }
