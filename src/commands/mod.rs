@@ -195,7 +195,7 @@ pub fn maybe_sync(ctx: &Ctx, prj: &Project) {
     if ctx.no_sync {
         return;
     }
-    if sync::run(prj).is_err() {
+    if sync::run(prj, ctx.backend.as_ref()).is_err() {
         eprintln!("note: skipped sync (run `opys verify` to find the problem)");
     }
 }
@@ -208,7 +208,7 @@ pub fn sync_quiet(ctx: &Ctx, prj: &Project) -> Result<usize> {
     if ctx.no_sync {
         return Ok(0);
     }
-    sync::run(prj)
+    sync::run(prj, ctx.backend.as_ref())
 }
 
 #[cfg(test)]

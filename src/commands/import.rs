@@ -17,12 +17,11 @@ use crate::error::{usage, Result};
 use crate::frontmatter::Frontmatter;
 use crate::project::Project;
 use crate::project_config::{DocType, ProjectConfig};
-use crate::store::Store;
 use crate::{rules, Ctx};
 
 pub fn run(ctx: &Ctx, type_name: &str, file: &str) -> Result<()> {
     let prj = ctx.open()?;
-    let (mut store, _) = Store::open(&prj)?;
+    let (mut store, _) = ctx.load(&prj)?;
     let pcfg = &prj.pcfg;
     let ft = pcfg.types.get(type_name).ok_or_else(|| {
         let mut names: Vec<&str> = pcfg.types.keys().map(String::as_str).collect();
@@ -76,7 +75,7 @@ pub fn run(ctx: &Ctx, type_name: &str, file: &str) -> Result<()> {
         "imported {} {type_name} document(s): {first}..{last}",
         built.len()
     );
-    store.flush(&prj)?;
+    ctx.flush(&prj, store)?;
     maybe_sync(ctx, &prj);
     Ok(())
 }

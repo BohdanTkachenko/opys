@@ -33,7 +33,7 @@ pub fn run(ctx: &Ctx, sql: &str, plain: bool, write: bool) -> Result<()> {
     }
 
     // Unparsable docs are warnings — query the parsable subset (list parity).
-    let (mut store, errors) = Store::open(&prj)?;
+    let (mut store, errors) = ctx.load(&prj)?;
     for e in &errors {
         eprintln!("warning: {e}");
     }
@@ -63,7 +63,7 @@ pub fn run(ctx: &Ctx, sql: &str, plain: bool, write: bool) -> Result<()> {
                 new.len()
             )));
         }
-        store.flush(&prj)?;
+        ctx.flush(&prj, store)?;
         println!("query: {summary} (verified, written)");
         return Ok(());
     }

@@ -11,12 +11,11 @@ use crate::commands::maybe_sync;
 use crate::doc::Doc;
 use crate::error::Result;
 use crate::project::Project;
-use crate::store::Store;
 use crate::Ctx;
 
 pub fn run(ctx: &Ctx, base: Option<&str>) -> Result<()> {
     let prj = ctx.open()?;
-    let (mut store, _) = Store::open(&prj)?;
+    let (mut store, _) = ctx.load(&prj)?;
     let docs: Vec<(i64, Doc)> = store.all_docs()?;
 
     let just_docs: Vec<&Doc> = docs.iter().map(|(_, d)| d).collect();
@@ -91,7 +90,7 @@ pub fn run(ctx: &Ctx, base: Option<&str>) -> Result<()> {
         let title = store.title_of(new_id)?.unwrap_or_default();
         store.retire_id(old_id, &title)?;
     }
-    store.flush(&prj)?;
+    ctx.flush(&prj, store)?;
 
     println!("renumber: {} document(s) renumbered", mapping.len());
     maybe_sync(ctx, &prj);

@@ -10,7 +10,7 @@ use gluesql::prelude::ParamLiteral;
 use crate::cli::ListFormat;
 use crate::commands::parse_field_filters;
 use crate::error::Result;
-use crate::store::{g_i64, g_str, IntoParam, Store};
+use crate::store::{g_i64, g_str, IntoParam};
 use crate::Ctx;
 
 pub fn run(
@@ -23,7 +23,7 @@ pub fn run(
 ) -> Result<()> {
     let prj = ctx.open()?;
     let filters = parse_field_filters(field)?;
-    let (mut store, _) = Store::open(&prj)?;
+    let (mut store, _) = ctx.load(&prj)?;
 
     // Build the one SELECT: joins for tag/field filters, predicates for
     // type/status. Values always as parameters.

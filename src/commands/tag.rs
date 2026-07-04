@@ -50,13 +50,13 @@ pub fn core(
 pub fn run(ctx: &Ctx, ids: &str, add: Option<&str>, remove: Option<&str>) -> Result<()> {
     let prj = ctx.open()?;
     let ids = expand_ids(ids)?;
-    let (mut store, _) = Store::open(&prj)?;
+    let (mut store, _) = ctx.load(&prj)?;
     let res = for_each_id(&ids, |id| {
         let tags = core(&prj, &mut store, id, add, remove)?;
         println!("{id} tags: {}", tags.join(", "));
         Ok(())
     });
-    store.flush(&prj)?;
+    ctx.flush(&prj, store)?;
     maybe_sync(ctx, &prj);
     res
 }

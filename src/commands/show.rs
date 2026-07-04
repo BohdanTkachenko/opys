@@ -6,12 +6,12 @@ use std::io::Write;
 
 use crate::error::Result;
 use crate::file_refs;
-use crate::store::{g_str, IntoParam, Store};
+use crate::store::{g_str, IntoParam};
 use crate::Ctx;
 
 pub fn run(ctx: &Ctx, id: &str, refs: bool) -> Result<()> {
     let prj = ctx.open()?;
-    let (mut store, _) = Store::open(&prj)?;
+    let (mut store, _) = ctx.load(&prj)?;
     let dkey = store.dkey_of(id)?;
     let relpath = store
         .scalar(

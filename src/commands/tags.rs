@@ -3,14 +3,14 @@
 //! pipe into `opys list --tag`.
 
 use crate::error::Result;
-use crate::store::{g_str, Store};
+use crate::store::g_str;
 use crate::Ctx;
 
 /// Print every distinct tag (or, with `keys_only`, every distinct tag key) in
 /// the inventory, sorted alphabetically, one per line.
 pub fn run(ctx: &Ctx, keys_only: bool) -> Result<()> {
     let prj = ctx.open()?;
-    let (mut store, _) = Store::open(&prj)?;
+    let (mut store, _) = ctx.load(&prj)?;
     let sql = if keys_only {
         "SELECT DISTINCT key FROM tags ORDER BY key"
     } else {

@@ -20,7 +20,7 @@ fn retire_one(prj: &Project, store: &mut Store, id: &str) -> Result<()> {
 pub fn run(ctx: &Ctx, ids: &str, reason: &str) -> Result<()> {
     let prj = ctx.open()?;
     let ids = expand_ids(ids)?;
-    let (mut store, _) = Store::open(&prj)?;
+    let (mut store, _) = ctx.load(&prj)?;
     let res = for_each_id(&ids, |id| {
         retire_one(&prj, &mut store, id)?;
         if reason.is_empty() {
@@ -30,7 +30,7 @@ pub fn run(ctx: &Ctx, ids: &str, reason: &str) -> Result<()> {
         }
         Ok(())
     });
-    store.flush(&prj)?;
+    ctx.flush(&prj, store)?;
     maybe_sync(ctx, &prj);
     res
 }

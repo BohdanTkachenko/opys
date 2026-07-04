@@ -5,6 +5,7 @@
 //! The binary is a thin wrapper around [`run`]. The modules are public so the
 //! crate can be used as a library.
 
+pub mod backend;
 pub mod body;
 pub mod cli;
 pub mod commands;
@@ -31,15 +32,27 @@ pub use project::Project;
 
 use cli::{Cli, Command};
 
-/// Shared invocation context: where the inventory lives and global flags.
+/// Shared invocation context: where the inventory lives, global flags, and the
+/// storage backend the commands load/flush through.
 pub struct Ctx {
     pub root: String,
     pub no_sync: bool,
+    pub backend: Box<dyn backend::Backend>,
 }
 
 impl Ctx {
     pub fn open(&self) -> Result<Project> {
         Project::open(&self.root)
+    }
+
+    /// Load the corpus into a working store via the injected backend.
+    pub fn load(&self, prj: &Project) -> Result<(store::Store, Vec<String>)> {
+        self.backend.load(prj)
+    }
+
+    /// Flush the store's changes via the injected backend.
+    pub fn flush(&self, prj: &Project, store: store::Store) -> Result<()> {
+        self.backend.flush(prj, store)
     }
 }
 
@@ -52,6 +65,7 @@ pub fn run(cli: Cli) -> Result<i32> {
     let ctx = Ctx {
         root: cli.root,
         no_sync: cli.no_sync,
+        backend: Box::new(backend::MarkdownLocal),
     };
     match cli.command {
         Command::Init => {
@@ -179,6 +193,7 @@ pub fn run(cli: Cli) -> Result<i32> {
                 Some(root) => Ctx {
                     root,
                     no_sync: ctx.no_sync,
+                    backend: Box::new(backend::MarkdownLocal),
                 },
                 None => ctx,
             };

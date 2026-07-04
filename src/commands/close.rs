@@ -89,13 +89,13 @@ pub fn core(prj: &Project, store: &mut Store, id: &str, force: bool) -> Result<(
 pub fn run(ctx: &Ctx, ids: &str, force: bool) -> Result<()> {
     let prj = ctx.open()?;
     let ids = expand_ids(ids)?;
-    let (mut store, _) = Store::open(&prj)?;
+    let (mut store, _) = ctx.load(&prj)?;
     let res = for_each_id(&ids, |id| {
         core(&prj, &mut store, id, force)?;
         println!("closed {id} (deleted; references struck through)");
         Ok(())
     });
-    store.flush(&prj)?;
+    ctx.flush(&prj, store)?;
     maybe_sync(ctx, &prj);
     res
 }

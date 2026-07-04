@@ -1,4 +1,5 @@
 //! The TUI application state (the TEA model) and the input reducer.
+use crate::backend::Backend;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -421,7 +422,7 @@ impl App {
                     form.mark_saved();
                 }
                 // Persist the relation/linkify/relocate pass, then refresh.
-                let _ = crate::commands::sync::run(&self.prj);
+                let _ = crate::commands::sync::run(&self.prj, &crate::backend::MarkdownLocal);
                 self.edit = None;
                 self.mode = Mode::Browse;
                 self.reload();
@@ -459,13 +460,15 @@ impl App {
     }
 
     fn do_close(&mut self, id: &str) {
-        let result = crate::store::Store::open(&self.prj).and_then(|(mut store, _)| {
-            crate::commands::close::core(&self.prj, &mut store, id, false)?;
-            store.flush(&self.prj)
-        });
+        let result = crate::backend::MarkdownLocal
+            .load(&self.prj)
+            .and_then(|(mut store, _)| {
+                crate::commands::close::core(&self.prj, &mut store, id, false)?;
+                crate::backend::MarkdownLocal.flush(&self.prj, store)
+            });
         match result {
             Ok(()) => {
-                let _ = crate::commands::sync::run(&self.prj);
+                let _ = crate::commands::sync::run(&self.prj, &crate::backend::MarkdownLocal);
                 self.reload();
                 self.status = Some(format!("closed {id}"));
             }

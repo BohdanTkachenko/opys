@@ -101,6 +101,7 @@ default_status = \"planned\"\ntags_required = false\n";
         let ctx = Ctx {
             root: dir.path().to_string_lossy().into_owned(),
             no_sync: true,
+            backend: Box::new(crate::backend::MarkdownLocal),
         };
         let mut app = App::new(&ctx).unwrap();
         let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();

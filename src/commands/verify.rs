@@ -21,7 +21,7 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
     // Read the corpus through the store; unparsable files surface as errors
     // exactly as `load_docs` reported them, and the reconstructed docs are
     // byte-identical to the parsed ones (the store round-trip is a fixpoint).
-    let (mut store, parse_errors) = crate::store::Store::open(&prj)?;
+    let (mut store, parse_errors) = ctx.load(&prj)?;
     let docs: Vec<Doc> = store.all_docs()?.into_iter().map(|(_, d)| d).collect();
     let errors = collect_problems(&prj, &docs, parse_errors);
 

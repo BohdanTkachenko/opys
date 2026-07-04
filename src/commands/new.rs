@@ -121,12 +121,12 @@ pub fn run(
     fields: &[String],
 ) -> Result<()> {
     let prj = ctx.open()?;
-    let (mut store, _) = Store::open(&prj)?;
+    let (mut store, _) = ctx.load(&prj)?;
     let doc = core(
         &prj, &mut store, type_name, title, tags, status, features, reason, fields,
     )?;
     println!("{}", doc.path.display());
-    store.flush(&prj)?;
+    ctx.flush(&prj, store)?;
     maybe_sync(ctx, &prj);
     Ok(())
 }

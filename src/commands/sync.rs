@@ -18,20 +18,20 @@ use crate::Ctx;
 /// The `opys sync` command entry: open the project and run the full pass.
 pub fn run_command(ctx: &Ctx) -> Result<()> {
     let prj = ctx.open()?;
-    let n = run(&prj)?;
+    let n = run(&prj, ctx.backend.as_ref())?;
     println!("synced {n} document(s)");
     Ok(())
 }
 
 /// Load the corpus, run the sync pass, and flush. Returns the document count.
 /// Errors (without writing) if any document fails to parse.
-pub fn run(prj: &Project) -> Result<usize> {
-    let (mut store, errs) = Store::open(prj)?;
+pub fn run(prj: &Project, backend: &dyn crate::backend::Backend) -> Result<usize> {
+    let (mut store, errs) = backend.load(prj)?;
     if !errs.is_empty() {
         return Err(usage("fix parse errors first (run verify)"));
     }
     let n = pass(prj, &mut store)?;
-    store.flush(prj)?;
+    backend.flush(prj, store)?;
     Ok(n)
 }
 

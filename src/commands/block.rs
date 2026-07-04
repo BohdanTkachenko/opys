@@ -51,13 +51,13 @@ pub fn block_core(prj: &Project, store: &mut Store, id: &str, by: &str) -> Resul
 pub fn block(ctx: &Ctx, ids: &str, by: &str) -> Result<()> {
     let prj = ctx.open()?;
     let ids = expand_ids(ids)?;
-    let (mut store, _) = Store::open(&prj)?;
+    let (mut store, _) = ctx.load(&prj)?;
     let res = for_each_id(&ids, |id| {
         block_core(&prj, &mut store, id, by)?;
         println!("{id} blocked by {by}");
         Ok(())
     });
-    store.flush(&prj)?;
+    ctx.flush(&prj, store)?;
     maybe_sync(ctx, &prj);
     res
 }
@@ -107,13 +107,13 @@ pub fn unblock_core(prj: &Project, store: &mut Store, id: &str, by: &str) -> Res
 pub fn unblock(ctx: &Ctx, ids: &str, by: &str) -> Result<()> {
     let prj = ctx.open()?;
     let ids = expand_ids(ids)?;
-    let (mut store, _) = Store::open(&prj)?;
+    let (mut store, _) = ctx.load(&prj)?;
     let res = for_each_id(&ids, |id| {
         unblock_core(&prj, &mut store, id, by)?;
         println!("{id} no longer blocked by {by}");
         Ok(())
     });
-    store.flush(&prj)?;
+    ctx.flush(&prj, store)?;
     maybe_sync(ctx, &prj);
     res
 }
