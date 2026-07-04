@@ -33,6 +33,7 @@ use crate::project_config::ProjectConfig;
 pub(crate) use decompose::split_tag;
 pub(crate) use decompose::{decompose, id_num};
 pub use flush::{renumber_line, retire_line};
+pub(crate) use model::Baseline;
 
 /// The in-memory corpus database for one CLI invocation.
 pub struct Store {

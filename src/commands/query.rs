@@ -41,26 +41,18 @@ pub fn run(ctx: &Ctx, sql: &str, plain: bool, write: bool) -> Result<()> {
 
     if write {
         let baseline = store.baseline()?;
-        // The gate is "introduce no NEW verify problem", not "pass verify" — a
-        // corpus routinely carries transient issues (e.g. a test ref not yet
-        // written), and a bulk edit shouldn't be blocked by pre-existing ones.
-        // So snapshot the problems before the write and compare.
-        let before: std::collections::HashSet<String> = {
-            let docs = docs_of(&mut store)?;
-            verify::collect_problems(&prj, &docs, errors.clone())
-                .into_iter()
-                .collect()
-        };
+        // Three seams: (1) apply the user's intent as raw DML, (2) the model
+        // pass reconciles the raw tables into a consistent model (cascades +
+        // sync), (3) the validator gates the result. Only edits that make
+        // verify *worse* are refused, so pre-existing issues never block a
+        // write. A future typed data model would replace seam 3 alone.
+        let before = verify_problems(&prj, &mut store, &errors)?;
 
         let summary = store.run_user_write(&sql).map_err(usage)?;
-        store.cascade_removals(&prj.pcfg, &baseline, &super::today())?;
-        materialize_inserts(&prj, &mut store)?;
-        if !ctx.no_sync {
-            crate::commands::sync::pass(&prj, &mut store)?;
-        }
+        reconcile_model(&prj, &mut store, &baseline, !ctx.no_sync)?;
 
-        let after = verify::collect_problems(&prj, &docs_of(&mut store)?, errors);
-        let new: Vec<String> = after.into_iter().filter(|p| !before.contains(p)).collect();
+        let after = verify_problems(&prj, &mut store, &errors)?;
+        let new: Vec<String> = after.difference(&before).cloned().collect();
         if !new.is_empty() {
             eprintln!("refusing to write — the edit would introduce verify problems:");
             for p in &new {
@@ -176,4 +168,44 @@ fn materialize_inserts(prj: &crate::project::Project, store: &mut Store) -> Resu
         store.put_doc(pcfg, None, &doc)?;
     }
     Ok(())
+}
+
+/// The reactive model pass: bring the raw tables — freshly mutated by the user's
+/// DML — to a consistent model by materializing the lifecycle cascades a raw
+/// column edit can't express, then running the normal sync reconcile/linkify/
+/// relocate. It reacts to STATE deltas, never to the SQL text (shape-parsing is
+/// unreliable). Deliberately separate from validation (see [`verify_problems`])
+/// so a future typed data model can replace the validator without touching
+/// these cascades.
+fn reconcile_model(
+    prj: &crate::project::Project,
+    store: &mut Store,
+    baseline: &crate::store::Baseline,
+    run_sync: bool,
+) -> Result<()> {
+    // Removals: strike inbound references + reserve ids for docs the edit dropped.
+    store.cascade_removals(&prj.pcfg, baseline, &super::today())?;
+    // Inserts: turn raw `INSERT INTO docs` rows into allocated, scaffolded docs.
+    materialize_inserts(prj, store)?;
+    if run_sync {
+        crate::commands::sync::pass(prj, store)?;
+    }
+    Ok(())
+}
+
+/// The validation seam: the current corpus's verify problems as a set. The
+/// write gate compares this before vs. after the model pass and refuses any
+/// edit that introduces a NEW problem — pre-existing issues never block an edit.
+/// A future typed data model would replace THIS function, leaving the model pass
+/// (see [`reconcile_model`]) untouched.
+fn verify_problems(
+    prj: &crate::project::Project,
+    store: &mut Store,
+    errors: &[String],
+) -> Result<std::collections::HashSet<String>> {
+    Ok(
+        verify::collect_problems(prj, &docs_of(store)?, errors.to_vec())
+            .into_iter()
+            .collect(),
+    )
 }
