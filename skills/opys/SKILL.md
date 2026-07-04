@@ -72,7 +72,7 @@ its ID prefix.
 | `set-status IDS S [--reason R]` | guarded transition against the type's statuses + rules; a terminal status is reached only via `close`. `IDS` may be a comma-separated list to move several at once |
 | `tag IDS --add a,b --remove c` | tag maintenance; `IDS` may be a comma-separated list |
 | `block IDS --by BLOCKER` / `unblock IDS --by BLOCKER` | record/remove a blocker link (`blocked_by`/`blocks`); the blocked side may be a comma-separated list; blocking auto-sets `blocked` when the type has it |
-| `retire IDS --reason R` | delete file(s), log each ID to `_retired.txt` so it is never reallocated |
+| `retire IDS --reason R` | delete file(s), log each ID (with its title) to `_retired.md` so it is never reallocated |
 | `close IDS [--force]` / `cleanup` | finish doc(s) whose type has a terminal status (strike its refs everywhere); strip struck refs |
 
 Every mutating command above takes **one or more ids** for bulk operations.

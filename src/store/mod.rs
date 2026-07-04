@@ -32,7 +32,6 @@ use crate::project_config::ProjectConfig;
 #[allow(unused_imports)] // used by command ports as they land
 pub(crate) use decompose::split_tag;
 pub(crate) use decompose::{decompose, id_num};
-pub use flush::{renumber_line, retire_line};
 pub(crate) use model::Baseline;
 
 /// The in-memory corpus database for one CLI invocation.
@@ -42,8 +41,11 @@ pub struct Store {
     base: PathBuf,
     /// Load snapshot `(dkey, absolute path)` — deletion detection at flush.
     loaded: Vec<(i64, PathBuf)>,
-    /// Ledger row count at load; flush rewrites `_retired.txt` iff it grew.
+    /// Ledger row count at load; flush rewrites the ledger iff it grew.
     retired_loaded: usize,
+    /// Whether a legacy plaintext `_retired.txt` was present at load, so flush
+    /// migrates it to `_retired.md` even when no id was reserved this run.
+    retired_legacy: bool,
     next_dkey: i64,
     next_rkey: i64,
 }
@@ -61,6 +63,7 @@ impl Store {
             base: prj.base.clone(),
             loaded: Vec::new(),
             retired_loaded: 0,
+            retired_legacy: false,
             next_dkey: 1,
             next_rkey: 1,
         };
@@ -98,34 +101,22 @@ impl Store {
         store.insert_batch("relations", 9, rel_rows)?;
         store.insert_batch("fm_fields", 6, fm_rows)?;
 
-        // The retired ledger, one row per non-empty line, order preserved.
-        let ledger = prj.base.join("_retired.txt");
-        if let Ok(text) = std::fs::read_to_string(&ledger) {
-            let mut rows = Vec::new();
-            for line in text.lines() {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                let id = line
-                    .split('#')
-                    .next()
-                    .unwrap_or("")
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("")
-                    .to_string();
-                let rkey = store.next_rkey;
-                store.next_rkey += 1;
-                rows.push(vec![
-                    rkey.into_param(),
-                    id.clone().into_param(),
-                    id_num(&id).into_param(),
-                    line.to_string().into_param(),
-                ]);
-            }
-            store.retired_loaded = rows.len();
-            store.insert_batch("retired", 4, rows)?;
+        // The retired-id ledger (see `crate::retired`): reserved id -> title.
+        let entries = crate::retired::read(&prj.base);
+        store.retired_legacy = crate::retired::legacy_path(&prj.base).exists();
+        let mut rows = Vec::with_capacity(entries.len());
+        for (id, title) in &entries {
+            let rkey = store.next_rkey;
+            store.next_rkey += 1;
+            rows.push(vec![
+                rkey.into_param(),
+                id.clone().into_param(),
+                id_num(id).into_param(),
+                title.clone().into_param(),
+            ]);
         }
+        store.retired_loaded = rows.len();
+        store.insert_batch("retired", 4, rows)?;
         Ok((store, errors))
     }
 
@@ -383,8 +374,8 @@ impl Store {
         Ok(())
     }
 
-    /// Record a retired id (ledger line verbatim); flush rewrites the ledger.
-    pub fn retire_id(&mut self, id: &str, line: &str) -> Result<()> {
+    /// Reserve a retired id with its last-known `title`; flush writes the ledger.
+    pub fn retire_id(&mut self, id: &str, title: &str) -> Result<()> {
         let rkey = self.next_rkey;
         self.next_rkey += 1;
         self.exec(
@@ -393,7 +384,7 @@ impl Store {
                 rkey.into_param(),
                 id.into_param(),
                 id_num(id).into_param(),
-                line.into_param(),
+                title.into_param(),
             ],
         )?;
         Ok(())
@@ -637,7 +628,7 @@ terminal_statuses = ["done"]
             .unwrap();
         assert_eq!(v.as_ref().and_then(g_i64), Some(2));
         s.exec(
-            "UPDATE retired SET line = $1 WHERE id = $2",
+            "UPDATE retired SET title = $1 WHERE id = $2",
             vec!["x".into_param(), "FEAT-0002".into_param()],
         )
         .unwrap();
@@ -814,8 +805,7 @@ terminal_statuses = ["done"]
         let k2 = s.dkey_of("FEAT-0002").unwrap();
         s.delete_doc(k2).unwrap();
         let k3 = s.dkey_of("FEAT-0003").unwrap();
-        s.retire_id("FEAT-0003", "FEAT-0003  # retired 2026-02-02: gone")
-            .unwrap();
+        s.retire_id("FEAT-0003", "C").unwrap();
         s.delete_doc(k3).unwrap();
 
         s.flush(&prj).unwrap();
@@ -828,11 +818,12 @@ terminal_statuses = ["done"]
             .contains("status: archived"));
         assert!(!prj.base.join("FEAT-0002.md").exists());
         assert!(!prj.base.join("FEAT-0003.md").exists());
-        let ledger = std::fs::read_to_string(prj.base.join("_retired.txt")).unwrap();
-        assert_eq!(
-            ledger,
-            "FEAT-0003  # retired 2026-02-02: gone\nFEAT-0009  # retired 2026-01-01: old\n"
-        );
+        // The legacy plaintext ledger was migrated to `_retired.md`, keeping
+        // both the newly retired id (with its title) and the pre-seeded one.
+        assert!(!prj.base.join("_retired.txt").exists());
+        let ledger = std::fs::read_to_string(prj.base.join("_retired.md")).unwrap();
+        assert!(ledger.contains("FEAT-0003: C"), "ledger = {ledger}");
+        assert!(ledger.contains("FEAT-0009"), "ledger = {ledger}");
     }
 
     /// `updated` always bumps; `created` backfills only when the key is absent

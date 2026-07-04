@@ -15,7 +15,7 @@ documents:
     FEAT-0002.md
     _archived/          # e.g. status_dirs = { archived = "_archived" }
       FEAT-0003.md
-    _retired.txt        # append-only log of deleted IDs (never reused), sorted
+    _retired.md         # frontmatter map: reserved IDs -> title (never reused)
 ```
 
 Each document is one markdown file named after its ID (`FEAT-0001.md`,

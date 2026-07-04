@@ -7,11 +7,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::commands::{maybe_sync, today};
+use crate::commands::maybe_sync;
 use crate::doc::Doc;
 use crate::error::Result;
 use crate::project::Project;
-use crate::store::{renumber_line, Store};
+use crate::store::Store;
 use crate::Ctx;
 
 pub fn run(ctx: &Ctx, base: Option<&str>) -> Result<()> {
@@ -87,8 +87,9 @@ pub fn run(ctx: &Ctx, base: Option<&str>) -> Result<()> {
     }
 
     // Retire old IDs so they are never reallocated.
-    for old_id in mapping.keys() {
-        store.retire_id(old_id, &renumber_line(old_id, &today()))?;
+    for (old_id, new_id) in &mapping {
+        let title = store.title_of(new_id)?.unwrap_or_default();
+        store.retire_id(old_id, &title)?;
     }
     store.flush(&prj)?;
 

@@ -193,7 +193,7 @@ pub enum Command {
     /// path), tags(doc_id, seq, tag, key, value), relations(doc_id, field,
     /// seq, ref_id, ref_num, raw_value, title, struck), fields(doc_id, key,
     /// value), sections(doc_id, heading, kind, items, unchecked),
-    /// retired(id, num, line).
+    /// retired(id, num, title).
     Query {
         /// The SQL to run (`-` reads it from stdin). A SELECT by default;
         /// INSERT/UPDATE/DELETE require `--write`.

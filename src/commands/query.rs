@@ -184,7 +184,7 @@ fn reconcile_model(
     run_sync: bool,
 ) -> Result<()> {
     // Removals: strike inbound references + reserve ids for docs the edit dropped.
-    store.cascade_removals(&prj.pcfg, baseline, &super::today())?;
+    store.cascade_removals(&prj.pcfg, baseline)?;
     // Inserts: turn raw `INSERT INTO docs` rows into allocated, scaffolded docs.
     materialize_inserts(prj, store)?;
     if run_sync {

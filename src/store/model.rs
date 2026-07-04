@@ -14,7 +14,7 @@ use crate::error::Result;
 use crate::project_config::ProjectConfig;
 use crate::refs;
 
-use super::{g_i64, g_str, retire_line, IntoParam, Store};
+use super::{g_i64, g_str, IntoParam, Store};
 
 /// A load-time snapshot of `id -> (dkey, title)` for every live document, taken
 /// before a `--write` runs so the model pass can diff against it afterwards.
@@ -41,14 +41,8 @@ impl Store {
     /// `baseline` but no longer in `docs`, purge any child rows a raw `DELETE
     /// FROM docs` left behind, reserve the id against reuse, and strike every
     /// inbound reference to it into a tombstone. Runs before the sync pass, the
-    /// verify gate, and flush. `now` is today's date (passed in to keep the
-    /// store layer below `commands`).
-    pub fn cascade_removals(
-        &mut self,
-        pcfg: &ProjectConfig,
-        baseline: &Baseline,
-        now: &str,
-    ) -> Result<()> {
+    /// verify gate, and flush.
+    pub fn cascade_removals(&mut self, pcfg: &ProjectConfig, baseline: &Baseline) -> Result<()> {
         let present = self.doc_ids()?;
         let removed: Vec<&(String, i64, String)> = baseline
             .iter()
@@ -68,15 +62,15 @@ impl Store {
 
         // 2. Reserve the id and strike inbound references to a tombstone.
         for (id, _, title) in &removed {
-            self.reserve_id(id, now)?;
+            self.reserve_id(id, title)?;
             self.strike_inbound(pcfg, id, &refs::strike(title))?;
         }
         Ok(())
     }
 
-    /// Record `id` in the used-id ledger so its number is never reused, unless
-    /// it is already reserved.
-    fn reserve_id(&mut self, id: &str, now: &str) -> Result<()> {
+    /// Reserve `id` (with its last-known `title`) in the used-id ledger so its
+    /// number is never reused, unless it is already reserved.
+    fn reserve_id(&mut self, id: &str, title: &str) -> Result<()> {
         let already = self
             .scalar(
                 "SELECT 1 FROM retired WHERE id = $1 LIMIT 1",
@@ -86,7 +80,7 @@ impl Store {
         if already {
             return Ok(());
         }
-        self.retire_id(id, &retire_line(id, now, "removed via query"))
+        self.retire_id(id, title)
     }
 
     /// Strike every live document's reference to `id` (in any relation map) into

@@ -5,8 +5,9 @@
 //! from the text rendered at load — so a hand-written non-canonical file is
 //! only canonicalized when it logically changes (today's sync semantics).
 //! Ordering is deletes → renames → writes, so a rename never lands on a path a
-//! delete is about to vacate. Finally `_retired.txt` is rewritten (sorted by
-//! number, verbatim lines) iff retire entries were added this run.
+//! delete is about to vacate. Finally `_retired.md` is (re)written (reserved
+//! id -> title, sorted by number) iff an id was reserved this run, and any
+//! legacy `_retired.txt` is migrated to it.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -68,24 +69,38 @@ impl Store {
             }
         }
 
-        // 4. Retired ledger: rewrite sorted by number iff entries were added.
-        let (_, retired) =
-            self.select("SELECT rkey, num, line FROM retired ORDER BY rkey", vec![])?;
-        if retired.len() > self.retired_loaded {
-            let mut entries: Vec<(u64, String)> = retired
+        // 4. Retired ledger (`crate::retired`): write `_retired.md` (reserved
+        //    id -> title, sorted by number) when an id was reserved this run or
+        //    a legacy plaintext `_retired.txt` needs migrating, then drop the
+        //    legacy file.
+        let (_, retired) = self.select(
+            "SELECT rkey, id, num, title FROM retired ORDER BY rkey",
+            vec![],
+        )?;
+        let grew = retired.len() > self.retired_loaded;
+        let legacy = crate::retired::legacy_path(&prj.base);
+        let legacy_exists = legacy.exists();
+        if grew || legacy_exists {
+            let mut entries: Vec<(u64, (String, String))> = retired
                 .iter()
                 .map(|r| {
-                    let num = g_i64(&r[1]).map(|n| n as u64).unwrap_or(u64::MAX);
-                    (num, g_str(&r[2]).unwrap_or_default())
+                    let num = g_i64(&r[2]).map(|n| n as u64).unwrap_or(u64::MAX);
+                    let id = g_str(&r[1]).unwrap_or_default();
+                    let title = g_str(&r[3]).unwrap_or_default();
+                    (num, (id, title))
                 })
                 .collect();
             entries.sort_by_key(|e| e.0); // stable: ties keep rkey order
-            let mut out = String::new();
-            for (_, line) in entries {
-                out.push_str(&line);
-                out.push('\n');
+            let pairs: Vec<(String, String)> = entries.into_iter().map(|e| e.1).collect();
+            if !pairs.is_empty() {
+                std::fs::write(
+                    crate::retired::path(&prj.base),
+                    crate::retired::serialize(&pairs),
+                )?;
             }
-            std::fs::write(prj.base.join("_retired.txt"), out)?;
+            if legacy_exists {
+                std::fs::remove_file(&legacy)?;
+            }
         }
         Ok(())
     }
@@ -98,16 +113,4 @@ fn prune_empty_dir(dir: Option<&Path>, base: &Path) {
             let _ = std::fs::remove_dir(dir); // no-op unless empty
         }
     }
-}
-
-/// Compose a retire ledger line (`ID  # retired DATE: reason`).
-#[allow(dead_code)] // used by the retire port as it lands
-pub fn retire_line(id: &str, date: &str, reason: &str) -> String {
-    format!("{id}  # retired {date}: {reason}")
-}
-
-/// Compose a renumber ledger line (`ID  # renumbered DATE`).
-#[allow(dead_code)] // used by the renumber port as it lands
-pub fn renumber_line(id: &str, date: &str) -> String {
-    format!("{id}  # renumbered {date}")
 }

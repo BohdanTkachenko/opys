@@ -155,7 +155,7 @@ All status/section/link guards are *config*, enforced by one engine
 - **IDs**: each type has a `prefix` (validated `^[A-Z][A-Z0-9]*$`, unique across
   types); ids are drawn from a *single global, monotonically increasing
   sequence* — never reused, never duplicated across prefixes. `max_doc_id` takes
-  the max over every live doc, the retired ledger (`<base>/_retired.txt`), *and*
+  the max over every live doc, the retired ledger (`<base>/_retired.md`), *and*
   every relation map (`refs::all_relation_ids`, struck or not), so a closed doc's
   tombstone still reserves its number; `next_id_for(prefix, …)` is one past it.
   `retire` appends to the (sorted) ledger; `verify` rejects reuse *and* any two

@@ -331,8 +331,8 @@ fn retire_deletes_and_reserves_id() {
         .success();
     dir.child("opys/features/FEAT-0001.md")
         .assert(predicate::path::missing());
-    dir.child("opys/_retired.txt")
-        .assert(predicate::str::contains("FEAT-0001"));
+    dir.child("opys/_retired.md")
+        .assert(predicate::str::contains("FEAT-0001: X"));
 
     opys(&dir)
         .args(["new", "--title", "Y", "--tags", "a"])
@@ -359,7 +359,7 @@ fn retired_ledger_is_sorted_by_number() {
         .args(["retire", "FEAT-0001", "--reason", "x"])
         .assert()
         .success();
-    let text = std::fs::read_to_string(dir.child("opys/_retired.txt").path()).unwrap();
+    let text = std::fs::read_to_string(dir.child("opys/_retired.md").path()).unwrap();
     let p1 = text.find("FEAT-0001").unwrap();
     let p3 = text.find("FEAT-0003").unwrap();
     assert!(p1 < p3, "retired ledger not sorted: {text:?}");
@@ -2976,7 +2976,7 @@ statuses = [\"planned\", \"implemented\"]\ndefault_status = \"planned\"\n";
         .assert(predicate::path::missing());
     dir.child("opys/features/FEAT-0002.md")
         .assert(predicate::str::contains("FEAT-0001: ~~One~~"));
-    dir.child("opys/_retired.txt")
+    dir.child("opys/_retired.md")
         .assert(predicate::str::contains("FEAT-0001"));
     opys(&dir).arg("verify").assert().success();
 }
@@ -3002,7 +3002,7 @@ statuses = [\"planned\"]\ndefault_status = \"planned\"\n";
         .success();
     dir.child("opys/features/FEAT-0001.md")
         .assert(predicate::path::missing());
-    dir.child("opys/_retired.txt")
+    dir.child("opys/_retired.md")
         .assert(predicate::str::contains("FEAT-0001"));
 }
 
@@ -3109,4 +3109,29 @@ statuses = [\"planned\"]\ndefault_status = \"planned\"\n";
         .stderr(predicate::str::contains("needs a known type"));
     dir.child("opys/features/FEAT-0002.md")
         .assert(predicate::path::missing());
+}
+
+/// A pre-0.12 plaintext `_retired.txt` is migrated to `_retired.md` on the next
+/// write (here a no-op `sync`), and the reserved id survives the migration.
+#[test]
+fn retired_ledger_migrates_from_legacy_txt() {
+    let dir = project();
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# One\n")
+        .unwrap();
+    dir.child("opys/_retired.txt")
+        .write_str("FEAT-0007  # retired 2026-01-01: old\n")
+        .unwrap();
+    opys(&dir).arg("sync").assert().success();
+    // The legacy file is gone; the markdown ledger holds the reserved id.
+    dir.child("opys/_retired.txt")
+        .assert(predicate::path::missing());
+    dir.child("opys/_retired.md")
+        .assert(predicate::str::contains("FEAT-0007"));
+    // Still reserved and queryable after migration.
+    opys(&dir)
+        .args(["query", "SELECT id FROM retired WHERE id = 'FEAT-0007'"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0007"));
 }

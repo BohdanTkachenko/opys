@@ -21,7 +21,7 @@ CREATE TABLE relations (\
   dkey INTEGER, doc_id TEXT, field TEXT, seq INTEGER, ref_id TEXT, ref_num INTEGER, \
   raw_value TEXT, title TEXT, struck BOOLEAN);
 CREATE TABLE fm_fields (dkey INTEGER, doc_id TEXT, key TEXT, value_yaml TEXT, value TEXT, kind TEXT);
-CREATE TABLE retired (rkey INTEGER, id TEXT, num INTEGER, line TEXT);
+CREATE TABLE retired (rkey INTEGER, id TEXT, num INTEGER, title TEXT);
 CREATE TABLE fields (doc_id TEXT, key TEXT, value TEXT);
 CREATE TABLE sections (doc_id TEXT, heading TEXT, kind TEXT, items INTEGER, unchecked INTEGER);
 ";
