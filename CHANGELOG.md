@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0](https://github.com/BohdanTkachenko/opys/compare/v0.10.1...v0.11.0) - 2026-07-04
+
+### Added
+
+- *(query)* read-only `opys query "SELECT …"` over the corpus store
+- *(store)* in-memory SQL corpus store — load, decompose, reconstruct, flush
+- replace hardcoded stats with config-driven SQL `[[stats]]`
+
+### Fixed
+
+- *(msrv)* correct floor to 1.88 and make it locally verifiable
+- *(mdprism)* make the markdown⇄structure round-trip lossless
+
+### Other
+
+- document the store & `opys query`; remove corpus spike
+- *(renumber,verify)* port to the store; drop dead project helpers
+- *(sync)* run the auto-sync pass over the store
+- *(relations)* port block/unblock/close/cleanup to the store
+- *(mutators)* port new/import/set-status/tag/retire to the store
+- *(reads)* port list/tags/show to the SQL corpus store
+
 ## [0.10.1](https://github.com/BohdanTkachenko/opys/compare/v0.10.0...v0.10.1) - 2026-07-03
 
 ### Fixed

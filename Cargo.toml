@@ -1,6 +1,6 @@
 [package]
 name = "opys"
-version = "0.10.1"
+version = "0.11.0"
 edition = "2021"
 # 1.88 is the real floor: while gluesql's core only needs edition 2024 (≥ 1.85),
 # other deps in the tree (time, ratatui's `instability`, `darling`) require 1.88.
