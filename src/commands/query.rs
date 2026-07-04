@@ -40,6 +40,7 @@ pub fn run(ctx: &Ctx, sql: &str, plain: bool, write: bool) -> Result<()> {
     store.refresh_projections(&prj.pcfg)?;
 
     if write {
+        let baseline = store.baseline()?;
         // The gate is "introduce no NEW verify problem", not "pass verify" — a
         // corpus routinely carries transient issues (e.g. a test ref not yet
         // written), and a bulk edit shouldn't be blocked by pre-existing ones.
@@ -52,6 +53,7 @@ pub fn run(ctx: &Ctx, sql: &str, plain: bool, write: bool) -> Result<()> {
         };
 
         let summary = store.run_user_write(&sql).map_err(usage)?;
+        store.cascade_removals(&prj.pcfg, &baseline, &super::today())?;
         if !ctx.no_sync {
             crate::commands::sync::pass(&prj, &mut store)?;
         }

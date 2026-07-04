@@ -13,6 +13,7 @@
 
 mod decompose;
 mod flush;
+mod model;
 pub(crate) mod projection;
 mod reconstruct;
 mod schema;

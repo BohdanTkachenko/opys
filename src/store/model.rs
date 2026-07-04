@@ -1,0 +1,120 @@
+//! The reactive model pass: after user `--write` DML mutates the raw tables,
+//! react to the resulting *state delta* and materialize lifecycle cascades
+//! before the corpus is validated and flushed. The pass reads STATE, never the
+//! SQL text — so it is independent of how an edit was expressed (parsing SQL
+//! shapes is unreliable; a document either exists afterwards or it doesn't).
+//!
+//! Today the one cascade is **removal**: a `DELETE` that drops a `docs` row is
+//! treated as a lifecycle close — the id is reserved against reuse and every
+//! inbound reference to it is struck into a `~~title~~` tombstone, so no live
+//! reference is left dangling. The model pass and the validator (the `verify`
+//! gate in `commands/query.rs`) are deliberately separate seams.
+
+use crate::error::Result;
+use crate::project_config::ProjectConfig;
+use crate::refs;
+
+use super::{g_i64, g_str, retire_line, IntoParam, Store};
+
+/// A load-time snapshot of `id -> (dkey, title)` for every live document, taken
+/// before a `--write` runs so the model pass can diff against it afterwards.
+pub type Baseline = Vec<(String, i64, String)>;
+
+impl Store {
+    /// Snapshot `id -> (dkey, title)` for every live document. Captured before
+    /// user DML so [`Store::cascade_removals`] can find what the edit removed
+    /// (and recover a removed doc's last-known title for its tombstone).
+    pub fn baseline(&mut self) -> Result<Baseline> {
+        let (_, rows) = self.select("SELECT dkey, id, title FROM docs", vec![])?;
+        Ok(rows
+            .iter()
+            .filter_map(|r| {
+                let dkey = g_i64(&r[0])?;
+                let id = g_str(&r[1])?;
+                let title = g_str(&r[2]).unwrap_or_default();
+                Some((id, dkey, title))
+            })
+            .collect())
+    }
+
+    /// React to a `--write` that removed documents: for each id present in
+    /// `baseline` but no longer in `docs`, purge any child rows a raw `DELETE
+    /// FROM docs` left behind, reserve the id against reuse, and strike every
+    /// inbound reference to it into a tombstone. Runs before the sync pass, the
+    /// verify gate, and flush. `now` is today's date (passed in to keep the
+    /// store layer below `commands`).
+    pub fn cascade_removals(
+        &mut self,
+        pcfg: &ProjectConfig,
+        baseline: &Baseline,
+        now: &str,
+    ) -> Result<()> {
+        let present = self.doc_ids()?;
+        let removed: Vec<&(String, i64, String)> = baseline
+            .iter()
+            .filter(|(id, _, _)| !present.contains(id))
+            .collect();
+        if removed.is_empty() {
+            return Ok(());
+        }
+
+        // 1. Purge orphaned child rows: a raw `DELETE FROM docs WHERE …` only
+        //    removes the `docs` row, leaving this doc's tags/relations/fm_fields
+        //    behind. Clear them first so a removed doc's own outbound relations
+        //    can't masquerade as a live referrer in the inbound query below.
+        for (_, dkey, _) in &removed {
+            self.delete_doc(*dkey)?;
+        }
+
+        // 2. Reserve the id and strike inbound references to a tombstone.
+        for (id, _, title) in &removed {
+            self.reserve_id(id, now)?;
+            self.strike_inbound(pcfg, id, &refs::strike(title))?;
+        }
+        Ok(())
+    }
+
+    /// Record `id` in the used-id ledger so its number is never reused, unless
+    /// it is already reserved.
+    fn reserve_id(&mut self, id: &str, now: &str) -> Result<()> {
+        let already = self
+            .scalar(
+                "SELECT 1 FROM retired WHERE id = $1 LIMIT 1",
+                vec![id.into_param()],
+            )?
+            .is_some();
+        if already {
+            return Ok(());
+        }
+        self.retire_id(id, &retire_line(id, now, "removed via query"))
+    }
+
+    /// Strike every live document's reference to `id` (in any relation map) into
+    /// the `struck` tombstone value. Only existing entries are struck — a doc
+    /// that never referenced `id` has nothing dangling and is left untouched.
+    fn strike_inbound(&mut self, pcfg: &ProjectConfig, id: &str, struck: &str) -> Result<()> {
+        let (_, rows) = self.select(
+            "SELECT DISTINCT dkey FROM relations WHERE ref_id = $1",
+            vec![id.into_param()],
+        )?;
+        let dkeys: Vec<i64> = rows.iter().filter_map(|r| g_i64(&r[0])).collect();
+        for k in dkeys {
+            let mut doc = self.doc(k)?;
+            let mut changed = false;
+            for field in refs::RELATION_FIELDS {
+                let mut entries = refs::parse_in(&doc.frontmatter, field);
+                if let Some(e) = entries.iter_mut().find(|(i, _)| i == id) {
+                    if e.1 != struck {
+                        e.1 = struck.to_string();
+                        refs::set_in(&mut doc.frontmatter, field, &entries);
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                self.put_doc(pcfg, Some(k), &doc)?;
+            }
+        }
+        Ok(())
+    }
+}

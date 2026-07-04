@@ -2945,3 +2945,92 @@ fn renumber_warns_about_file_references_with_sed_suggestion() {
             "sed -i 's/\\bTASK-0001\\b/TASK-0002/g' src/worker.rs",
         ));
 }
+
+/// `query --write` DELETE of a referenced doc is a lifecycle removal: the file
+/// is deleted, every inbound reference is struck to a `~~title~~` tombstone (so
+/// nothing dangles and verify stays clean), and the id is reserved forever.
+#[test]
+fn query_write_delete_strikes_inbound_ref_and_reserves_id() {
+    let cfg = "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
+statuses = [\"planned\", \"implemented\"]\ndefault_status = \"planned\"\n";
+    let dir = project_with(cfg);
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [x]\n---\n\n# One\n")
+        .unwrap();
+    dir.child("opys/features/FEAT-0002.md")
+        .write_str(
+            "---\nid: FEAT-0002\nstatus: planned\ntags: [x]\nreferences:\n  FEAT-0001: One\n---\n\n# Two\n",
+        )
+        .unwrap();
+    opys(&dir)
+        .args([
+            "query",
+            "--write",
+            "DELETE FROM docs WHERE id = 'FEAT-0001'",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 deleted"));
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::path::missing());
+    dir.child("opys/features/FEAT-0002.md")
+        .assert(predicate::str::contains("FEAT-0001: ~~One~~"));
+    dir.child("opys/_retired.txt")
+        .assert(predicate::str::contains("FEAT-0001"));
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// A DELETE of an *unreferenced* doc still reserves its id — striking inbound
+/// refs alone wouldn't reserve a number nobody points at.
+#[test]
+fn query_write_delete_unreferenced_reserves_id() {
+    let cfg = "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
+statuses = [\"planned\"]\ndefault_status = \"planned\"\n";
+    let dir = project_with(cfg);
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [x]\n---\n\n# One\n")
+        .unwrap();
+    opys(&dir)
+        .args([
+            "query",
+            "--write",
+            "DELETE FROM docs WHERE id = 'FEAT-0001'",
+        ])
+        .assert()
+        .success();
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::path::missing());
+    dir.child("opys/_retired.txt")
+        .assert(predicate::str::contains("FEAT-0001"));
+}
+
+/// A reserved id is never handed back out: after deleting FEAT-0001, `new`
+/// allocates FEAT-0002, not the freed number.
+#[test]
+fn query_write_delete_reserves_id_against_new_reuse() {
+    let cfg = "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
+statuses = [\"planned\"]\ndefault_status = \"planned\"\n";
+    let dir = project_with(cfg);
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [x]\n---\n\n# One\n")
+        .unwrap();
+    opys(&dir)
+        .args([
+            "query",
+            "--write",
+            "DELETE FROM docs WHERE id = 'FEAT-0001'",
+        ])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["new", "--title", "Two", "--tags", "x"])
+        .assert()
+        .success();
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::path::missing());
+    dir.child("opys/features/FEAT-0002.md")
+        .assert(predicate::path::exists());
+}
