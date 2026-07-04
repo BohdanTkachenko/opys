@@ -1126,6 +1126,65 @@ fn query_reads_sql_from_stdin() {
         .stdout(predicate::str::contains("| FEAT-0001 |"));
 }
 
+/// `query --write` applies edit SQL when the result still passes verify.
+#[test]
+fn query_write_applies_valid_edits() {
+    let cfg = "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
+statuses = [\"planned\", \"implemented\"]\ndefault_status = \"planned\"\n";
+    let dir = project_with(cfg);
+    for n in ["0001", "0002", "0003"] {
+        dir.child(format!("opys/features/FEAT-{n}.md"))
+            .write_str(&format!(
+                "---\nid: FEAT-{n}\nstatus: planned\ntags: [x]\n---\n\n# F{n}\n"
+            ))
+            .unwrap();
+    }
+    opys(&dir)
+        .args([
+            "query",
+            "--write",
+            "UPDATE docs SET status = 'implemented' WHERE status = 'planned'",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("3 updated"));
+    for n in ["0001", "0002", "0003"] {
+        dir.child(format!("opys/features/FEAT-{n}.md"))
+            .assert(predicate::str::contains("status: implemented"));
+    }
+}
+
+/// `query --write` refuses to write (and touches no files) when the result
+/// would fail verify — the rules engine still gates SQL edits.
+#[test]
+fn query_write_gated_by_verify() {
+    // wontfix requires a reason field (a [[rules]] guard).
+    let cfg = "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
+statuses = [\"planned\", \"wontfix\"]\ndefault_status = \"planned\"\n\
+[types.feature.fields.wontfix_reason]\ntype = \"string\"\n\
+[[rules]]\nwhen = {{ type = \"feature\", status = \"wontfix\" }}\n\
+require_field = \"wontfix_reason\"\n";
+    let dir = project_with(&cfg.replace("{{", "{").replace("}}", "}"));
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# A\n")
+        .unwrap();
+    opys(&dir)
+        .args([
+            "query",
+            "--write",
+            "UPDATE docs SET status = 'wontfix' WHERE id = 'FEAT-0001'",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("refusing to write"))
+        .stderr(predicate::str::contains("wontfix_reason"));
+    // The file is untouched — the store mutation was never flushed.
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::str::contains("status: planned"));
+}
+
 /// `verify`/`config validate` reject a `template` referencing an unknown column
 /// (checked against the query's columns, so it fails even with zero rows).
 #[test]

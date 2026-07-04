@@ -87,7 +87,7 @@ command exits nonzero if any failed while the successful writes stand.
 | `sync` | reconcile references, linkify prose, relocate docs to their layout path |
 | `renumber [--base REF]` | resolve cross-branch ID collisions: keep IDs already present at the git merge-base with main/master, renumber the branch-added duplicates, retiring the old numbers. Warns about any code references to a renumbered ID with a `sed` fix per file |
 | `stats` | render configured `[[stats]]` sections (default: status counts, coverage, tags; each a SQL query over the corpus, shown as a table) |
-| `query "SELECT …"` | run a read-only SQL query over the inventory (tables: `docs`, `tags`, `relations`, `fields`, `sections`, `retired`; `-` reads the SQL from stdin) — for slices `list` can't express (joins, aggregates) |
+| `query "SELECT …"` | run a SQL query over the inventory (tables: `docs`, `tags`, `relations`, `fields`, `sections`, `retired`; `-` reads the SQL from stdin) — for slices `list` can't express (joins, aggregates). `--write` allows INSERT/UPDATE/DELETE for bulk edits (write the *authoritative* columns — `docs.status`/`body`/`created`/`updated`, `tags.tag`, `relations.raw_value`, `fm_fields.value_yaml`; derived columns like `docs.title` or `tags.key`/`value` are recomputed), applied only if the edit introduces no new `verify` problem — else nothing is written |
 | `agent-rules --tool <editor>` | generate a rules-based editor's instruction file from the canonical rule |
 
 ## Code references to IDs

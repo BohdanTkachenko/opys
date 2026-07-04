@@ -195,11 +195,19 @@ pub enum Command {
     /// value), sections(doc_id, heading, kind, items, unchecked),
     /// retired(id, num, line).
     Query {
-        /// The SQL SELECT to run (`-` reads it from stdin).
+        /// The SQL to run (`-` reads it from stdin). A SELECT by default;
+        /// INSERT/UPDATE/DELETE require `--write`.
         sql: String,
         /// Emit raw markdown instead of styled terminal output.
         #[arg(long)]
         plain: bool,
+        /// Allow edit statements (INSERT/UPDATE/DELETE). Applied only if the
+        /// edit introduces no new `verify` problem — otherwise nothing is
+        /// written. Write the authoritative columns (`docs.status`/`body`/
+        /// `created`/`updated`, `tags.tag`, `relations.raw_value`,
+        /// `fm_fields.value_yaml`); derived ones are recomputed.
+        #[arg(long)]
+        write: bool,
     },
 
     /// Reconstruct a document's lifecycle from git history: the status timeline

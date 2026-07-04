@@ -116,7 +116,10 @@ Layering, roughly outermost-in:
   `refresh_projections`. ID allocation is one SQL `MAX` across docs/relations/
   retired. Internal SQL uses `$n` parameters and JOINs only — never
   `IN (subquery)`/FROM-subqueries/`UNION` (GlueSQL executes/​rejects those
-  badly). `commands/query.rs` exposes plan-guarded (SELECT-only) user SQL.
+  badly). `commands/query.rs` exposes user SQL: read-only (plan-guarded to
+  SELECT) by default, or `--write` edit statements that are applied only if the
+  post-write corpus still passes `verify::collect_problems` (else nothing is
+  flushed — the store mutation stays in memory).
 - `src/project.rs` — `Project` ties the on-disk layout to `pcfg`. `Project::open`
   requires `<base>/opys.toml`. Owns generic discovery (`load_docs`: scan the base
   recursively for ID-named files, parse into `Doc`; used by `Store::open`, the

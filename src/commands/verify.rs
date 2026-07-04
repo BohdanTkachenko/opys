@@ -21,8 +21,28 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
     // Read the corpus through the store; unparsable files surface as errors
     // exactly as `load_docs` reported them, and the reconstructed docs are
     // byte-identical to the parsed ones (the store round-trip is a fixpoint).
-    let (mut store, mut errors) = crate::store::Store::open(&prj)?;
+    let (mut store, parse_errors) = crate::store::Store::open(&prj)?;
     let docs: Vec<Doc> = store.all_docs()?.into_iter().map(|(_, d)| d).collect();
+    let errors = collect_problems(&prj, &docs, parse_errors);
+
+    if errors.is_empty() {
+        println!("verify: OK ({} documents)", docs.len());
+        Ok(0)
+    } else {
+        eprintln!("verify: {} problem(s)", errors.len());
+        for e in &errors {
+            eprintln!("  {e}");
+        }
+        Ok(1)
+    }
+}
+
+/// Run every integrity check over `docs`, appending to the parse errors already
+/// collected at load. Shared by the `verify` command and the `opys query
+/// --write` gate (a write is only flushed if this returns empty). Never returns
+/// an `OpysError` — content problems are data, not failures.
+pub fn collect_problems(prj: &Project, docs: &[Doc], parse_errors: Vec<String>) -> Vec<String> {
+    let mut errors = parse_errors;
     let pcfg = &prj.pcfg;
 
     // Validate opys.toml itself, and the field specs of each type.
@@ -48,7 +68,7 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
 
     let mut seen: HashMap<String, String> = HashMap::new();
 
-    for d in &docs {
+    for d in docs {
         let m = &d.frontmatter;
         let where_ = d.path.display().to_string();
 
@@ -128,7 +148,7 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
                     id,
                     &sec.heading,
                     chk,
-                    &prj,
+                    prj,
                     &mut corpus_cache,
                     &mut errors,
                 );
@@ -137,27 +157,18 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
     }
 
     // The ID sequence is global: no two live docs may share a numeric part.
-    check_unique_numbers(&docs, &mut errors);
+    check_unique_numbers(docs, &mut errors);
 
     // The status-conditional guards (wontfix⇒reason, implemented⇒checked test
     // plan, blocked⇒reason/link, required links, required sections) are enforced
     // by the engine against `prj.pcfg`.
-    check_rules(&prj, &docs, &doc_ids, &mut errors);
+    check_rules(prj, docs, &doc_ids, &mut errors);
 
     // Each configured `[[stats]]` section must run cleanly against the real
     // corpus (its SQL parses and executes against the corpus view).
-    check_stats(&prj, &docs, &mut errors);
+    check_stats(prj, docs, &mut errors);
 
-    if errors.is_empty() {
-        println!("verify: OK ({} documents)", docs.len());
-        Ok(0)
-    } else {
-        eprintln!("verify: {} problem(s)", errors.len());
-        for e in &errors {
-            eprintln!("  {e}");
-        }
-        Ok(1)
-    }
+    errors
 }
 
 /// Run each configured `[[stats]]` SQL query against the live corpus, reporting

@@ -112,6 +112,29 @@ impl Store {
             other => Err(format!("query produced no result set ({other:?})")),
         }
     }
+
+    /// Execute user-supplied write SQL (INSERT/UPDATE/DELETE) against the live
+    /// store, returning a one-line summary of the row counts. The caller is
+    /// responsible for gating on `verify` and flushing — this only mutates the
+    /// in-memory store. `Err` carries a human-readable problem.
+    pub fn run_user_write(&mut self, sql: &str) -> std::result::Result<String, String> {
+        let payloads =
+            block_on(self.glue.execute(sql)).map_err(|e| format!("statement failed ({e})"))?;
+        if payloads.is_empty() {
+            return Err("no statements to run".to_string());
+        }
+        let parts: Vec<String> = payloads
+            .iter()
+            .map(|p| match p {
+                Payload::Insert(n) => format!("{n} inserted"),
+                Payload::Update(n) => format!("{n} updated"),
+                Payload::Delete(n) => format!("{n} deleted"),
+                Payload::Select { rows, .. } => format!("{} selected", rows.len()),
+                _ => "ok".to_string(),
+            })
+            .collect();
+        Ok(parts.join(", "))
+    }
 }
 
 /// A human-readable name for a rejected statement kind.
