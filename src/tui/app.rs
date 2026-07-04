@@ -459,7 +459,11 @@ impl App {
     }
 
     fn do_close(&mut self, id: &str) {
-        match crate::commands::close::core(&self.prj, id, false) {
+        let result = crate::store::Store::open(&self.prj).and_then(|(mut store, _)| {
+            crate::commands::close::core(&self.prj, &mut store, id, false)?;
+            store.flush(&self.prj)
+        });
+        match result {
             Ok(()) => {
                 let _ = crate::commands::sync::run(&self.prj);
                 self.reload();

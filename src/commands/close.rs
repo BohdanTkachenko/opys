@@ -7,14 +7,15 @@ use crate::body;
 use crate::commands::{expand_ids, for_each_id, maybe_sync};
 use crate::error::{usage, Result};
 use crate::frontmatter::Frontmatter;
-use crate::project::{self, Project};
+use crate::project::Project;
 use crate::project_config::SectionKind;
+use crate::store::{g_i64, IntoParam, Store};
 use crate::{refs, Ctx};
 
-/// Close `id`: delete its file and strike every reference to it. Does not print
-/// or sync — the shared core for the CLI wrapper and the TUI. Striking other
+/// Close `id`: delete its file and strike every reference to it. Does not flush/
+/// print/sync — the shared core for the CLI wrapper and the TUI. Striking other
 /// docs' relation maps is housekeeping, so it does not bump their `updated`.
-pub fn core(prj: &Project, id: &str, force: bool) -> Result<()> {
+pub fn core(prj: &Project, store: &mut Store, id: &str, force: bool) -> Result<()> {
     let tname = prj
         .pcfg
         .type_name_for_id(id)
@@ -27,11 +28,8 @@ pub fn core(prj: &Project, id: &str, force: bool) -> Result<()> {
         )));
     }
 
-    let (mut docs, _) = prj.load_docs();
-    let idx = docs
-        .iter()
-        .position(|d| d.id() == Some(id))
-        .ok_or_else(|| crate::error::OpysError::NotFound { id: id.to_string() })?;
+    let dkey = store.dkey_of(id)?;
+    let closing = store.doc(dkey)?;
 
     // Don't close with unfinished work unless forced: any required checklist
     // section must be fully checked.
@@ -41,7 +39,7 @@ pub fn core(prj: &Project, id: &str, force: bool) -> Result<()> {
             .iter()
             .filter(|s| s.required && s.kind == SectionKind::Checklist)
         {
-            if body::checklist_items(&docs[idx].body, &sec.heading)
+            if body::checklist_items(&closing.body, &sec.heading)
                 .iter()
                 .any(|i| !i.checked)
             {
@@ -53,37 +51,51 @@ pub fn core(prj: &Project, id: &str, force: bool) -> Result<()> {
         }
     }
 
-    let path = docs[idx].path.clone();
-    let struck = refs::strike(&docs[idx].title);
+    let struck = refs::strike(&closing.title);
     // Targets this doc references should carry a struck `references` tombstone
     // even if their reverse link is not yet present.
-    let ref_targets: HashSet<String> = refs::parse(&docs[idx].frontmatter)
+    let ref_targets: HashSet<String> = refs::parse(&closing.frontmatter)
         .into_iter()
         .map(|(tid, _)| tid)
         .collect();
 
-    for (i, d) in docs.iter_mut().enumerate() {
-        if i == idx {
-            continue;
-        }
-        let add_ref = ref_targets.contains(d.id().unwrap_or(""));
-        if strike_everywhere(&mut d.frontmatter, id, &struck, add_ref) {
-            project::save_doc(prj, d)?;
+    // The docs to update: everything that references the closing doc (any
+    // field), plus every live target it references (for the reverse tombstone).
+    let (_, rows) = store.select(
+        "SELECT DISTINCT dkey FROM relations WHERE ref_id = $1 AND dkey <> $2",
+        vec![id.into_param(), dkey.into_param()],
+    )?;
+    let mut affected: Vec<i64> = rows.iter().filter_map(|r| g_i64(&r[0])).collect();
+    for tid in &ref_targets {
+        if let Some(k) = store.dkey_opt(tid)? {
+            if k != dkey && !affected.contains(&k) {
+                affected.push(k);
+            }
         }
     }
 
-    std::fs::remove_file(&path)?;
+    for k in affected {
+        let mut doc = store.doc(k)?;
+        let add_ref = ref_targets.contains(doc.id().unwrap_or(""));
+        if strike_everywhere(&mut doc.frontmatter, id, &struck, add_ref) {
+            store.put_doc(&prj.pcfg, Some(k), &doc)?;
+        }
+    }
+
+    store.delete_doc(dkey)?;
     Ok(())
 }
 
 pub fn run(ctx: &Ctx, ids: &str, force: bool) -> Result<()> {
     let prj = ctx.open()?;
     let ids = expand_ids(ids)?;
+    let (mut store, _) = Store::open(&prj)?;
     let res = for_each_id(&ids, |id| {
-        core(&prj, id, force)?;
+        core(&prj, &mut store, id, force)?;
         println!("closed {id} (deleted; references struck through)");
         Ok(())
     });
+    store.flush(&prj)?;
     maybe_sync(ctx, &prj);
     res
 }

@@ -5,18 +5,20 @@
 use crate::commands::maybe_sync;
 use crate::error::Result;
 use crate::frontmatter::Frontmatter;
-use crate::{project, refs, Ctx};
+use crate::store::Store;
+use crate::{refs, Ctx};
 
 pub fn run(ctx: &Ctx) -> Result<()> {
     let prj = ctx.open()?;
+    let (mut store, _) = Store::open(&prj)?;
     let mut changed = 0usize;
-    let (mut docs, _) = prj.load_docs();
-    for d in docs.iter_mut() {
-        if strip_struck(&mut d.frontmatter) {
-            project::save_doc(&prj, d)?;
+    for (dkey, mut doc) in store.all_docs()? {
+        if strip_struck(&mut doc.frontmatter) {
+            store.put_doc(&prj.pcfg, Some(dkey), &doc)?;
             changed += 1;
         }
     }
+    store.flush(&prj)?;
     println!("cleanup: removed struck references from {changed} doc(s)");
     maybe_sync(ctx, &prj);
     Ok(())

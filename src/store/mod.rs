@@ -206,16 +206,35 @@ impl Store {
     // ------------------------------------------------------------------
 
     /// The row key for an id — first match in load (path) order, mirroring
-    /// `Project::find` on a corpus with duplicate ids.
+    /// `Project::find` on a corpus with duplicate ids. `None` if absent.
+    pub fn dkey_opt(&mut self, id: &str) -> Result<Option<i64>> {
+        Ok(self
+            .scalar(
+                "SELECT dkey FROM docs WHERE id = $1 ORDER BY dkey LIMIT 1",
+                vec![id.into_param()],
+            )?
+            .as_ref()
+            .and_then(g_i64))
+    }
+
+    /// The row key for an id, or a not-found error.
     pub fn dkey_of(&mut self, id: &str) -> Result<i64> {
-        let v = self.scalar(
-            "SELECT dkey FROM docs WHERE id = $1 ORDER BY dkey LIMIT 1",
-            vec![id.into_param()],
-        )?;
-        match v.as_ref().and_then(g_i64) {
-            Some(k) => Ok(k),
-            None => Err(OpysError::NotFound { id: id.to_string() }),
-        }
+        self.dkey_opt(id)?
+            .ok_or_else(|| OpysError::NotFound { id: id.to_string() })
+    }
+
+    /// Whether the doc with `id` (first in load order) has an entry for
+    /// `target` in relation `field`. `false` if the id is absent.
+    pub fn has_relation(&mut self, id: &str, field: &str, target: &str) -> Result<bool> {
+        let Some(dkey) = self.dkey_opt(id)? else {
+            return Ok(false);
+        };
+        Ok(self
+            .scalar(
+                "SELECT 1 FROM relations WHERE dkey = $1 AND field = $2 AND ref_id = $3 LIMIT 1",
+                vec![dkey.into_param(), field.into_param(), target.into_param()],
+            )?
+            .is_some())
     }
 
     /// Insert (`dkey = None`) or replace (`Some`) a document's rows. The doc's
