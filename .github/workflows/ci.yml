@@ -21,13 +21,13 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --all
       - name: Clippy (history feature)
-        run: cargo clippy --all-targets --features history -- -D warnings
+        run: cargo clippy --all-targets -p opys -p opys-bin --features history -- -D warnings
       - name: Test (history feature)
-        run: cargo test --all --features history
+        run: cargo test -p opys -p opys-bin --features history
       - name: Packaging manifest versions in sync
         run: scripts/sync-versions.sh --check
 
@@ -39,4 +39,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.88.0
       - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: cargo build --all-targets
+        run: cargo build --workspace --all-targets

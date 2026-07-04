@@ -3,7 +3,7 @@
 
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
-use crate::doc::Doc;
+use opys::doc::Doc;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SortKey {

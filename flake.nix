@@ -82,7 +82,7 @@
           export PATH="${msrvToolchain}/bin:$PATH"
           export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-target/msrv}"
           echo "MSRV check with $(rustc --version)"
-          exec cargo build --all-targets "$@"
+          exec cargo build --workspace --all-targets "$@"
         '';
 
         devPackages = with pkgs; [

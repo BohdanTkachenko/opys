@@ -24,7 +24,6 @@ pub mod retired;
 pub mod rules;
 pub mod store;
 pub mod templates;
-pub mod tui;
 
 pub use error::{OpysError, Result};
 pub use frontmatter::Frontmatter;
@@ -61,11 +60,11 @@ impl Ctx {
 /// `verify` returns `1` when it finds problems (the CI-gate contract); all
 /// other commands return `0` on success and surface failures as
 /// [`OpysError`], which the binary maps to exit code `2`.
-pub fn run(cli: Cli) -> Result<i32> {
+pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
     let ctx = Ctx {
         root: cli.root,
         no_sync: cli.no_sync,
-        backend: Box::new(backend::MarkdownLocal),
+        backend,
     };
     match cli.command {
         Command::Init => {
@@ -187,17 +186,10 @@ pub fn run(cli: Cli) -> Result<i32> {
             commands::agent_rules::run(&ctx, tool, stdout)?;
             Ok(0)
         }
-        Command::Tui { dir } => {
-            // A positional directory overrides the global `--root`.
-            let ctx = match dir {
-                Some(root) => Ctx {
-                    root,
-                    no_sync: ctx.no_sync,
-                    backend: Box::new(backend::MarkdownLocal),
-                },
-                None => ctx,
-            };
-            tui::run(&ctx)
-        }
+        // The TUI is launched by the binary (opys-tui crate); it intercepts this
+        // command before calling run(), so this arm is unreachable in practice.
+        Command::Tui { .. } => Err(crate::error::usage(
+            "the tui is launched by the opys binary, not opys::run",
+        )),
     }
 }

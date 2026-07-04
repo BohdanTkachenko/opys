@@ -10,10 +10,10 @@ use std::time::SystemTime;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_norway::Value;
 
-use crate::body;
-use crate::config::FieldType;
-use crate::doc::Doc;
-use crate::project::Project;
+use opys::body;
+use opys::config::FieldType;
+use opys::doc::Doc;
+use opys::project::Project;
 
 use super::textarea::TextArea;
 
@@ -433,7 +433,7 @@ impl EditForm {
     }
 
     pub fn relations_summary(&self) -> Vec<(String, Vec<(String, String)>)> {
-        use crate::refs;
+        use opys::refs;
         refs::RELATION_FIELDS
             .iter()
             .map(|f| (f.to_string(), refs::parse_in(&self.doc.frontmatter, f)))

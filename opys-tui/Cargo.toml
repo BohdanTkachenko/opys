@@ -1,0 +1,19 @@
+[package]
+name = "opys-tui"
+version = "0.11.0"
+edition = "2021"
+rust-version = "1.88"
+description = "Interactive terminal UI for opys"
+license = "Apache-2.0"
+repository = "https://github.com/BohdanTkachenko/opys"
+
+[dependencies]
+opys = { path = ".." }
+opys-backend-markdown-local = { path = "../opys-backend-markdown-local" }
+ratatui = "0.29"
+serde_norway = "0.9"
+time = { version = "0.3", features = ["formatting", "parsing", "local-offset", "macros"] }
+notify-debouncer-full = "0.3"
+
+[dev-dependencies]
+tempfile = "3"

@@ -56,14 +56,14 @@ The CI that gates merges (`.github/workflows/ci.yml`) runs exactly:
 
 ```sh
 cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings   # warnings are errors
+cargo clippy --workspace --all-targets -- -D warnings   # warnings are errors
 cargo test --all
-cargo build --all-targets                   # also built on MSRV 1.88 — don't use newer std APIs
+cargo build --workspace --all-targets       # also built on MSRV 1.88 — don't use newer std APIs
 ```
 
 The MSRV (`rust-version` in `Cargo.toml`) is set by the dependency tree's floor,
 not just our own code — reproduce the CI floor build locally with **`msrv`** (a
-devShell command that runs `cargo build --all-targets` under a pinned Rust
+devShell command that runs `cargo build --workspace --all-targets` under a pinned Rust
 toolchain via `rust-overlay`), so a dependency raising the minimum is caught here
 rather than on the first push.
 
@@ -76,9 +76,17 @@ cargo test --lib frontmatter::                                  # unit tests in 
 
 ## Architecture
 
-The binary (`src/main.rs`) is a thin wrapper: it parses `Cli` (clap derive,
-`src/cli.rs`) and calls `opys::run`, which maps the exit code. Everything is
-exposed as a library (`src/lib.rs`) so the crate is usable as a dependency.
+The repo is a Cargo **workspace** of four crates: **`opys`** (the core library,
+at the repo root — the model, config, rules, SQL store, and command
+implementations, plus the [`Backend`] storage trait); **`opys-backend-markdown-local`**
+(the default `Backend` impl: one markdown file per document on the local
+filesystem, delegating to the core store's load/flush); **`opys-tui`** (the
+`opys tui` terminal UI); and **`opys-bin`** (the thin `opys` binary). The binary
+(`opys-bin/src/main.rs`) parses `Cli` (clap derive, `src/cli.rs`), injects the
+`MarkdownLocal` backend, and calls `opys::run`, which maps the exit code; it
+intercepts the `tui` command and hands it to `opys-tui`. Commands never touch
+the storage medium directly — they load/flush through the injected
+`Box<dyn Backend>` on `Ctx`, so the medium is swappable.
 
 **Exit-code contract (important):** `verify` returns `1` when it finds content
 problems; every other command returns `0` on success. Real failures (bad

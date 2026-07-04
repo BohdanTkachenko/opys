@@ -2428,16 +2428,11 @@ name = "opys"
 version = "0.11.0"
 dependencies = [
  "anyhow",
- "assert_cmd",
- "assert_fs",
  "clap",
  "comrak",
  "futures",
  "gix",
  "gluesql",
- "notify-debouncer-full",
- "predicates",
- "ratatui",
  "regex",
  "serde",
  "serde_json",
@@ -2448,6 +2443,40 @@ dependencies = [
  "time",
  "toml 0.8.23",
  "walkdir",
+]
+
+[[package]]
+name = "opys-backend-markdown-local"
+version = "0.11.0"
+dependencies = [
+ "opys",
+]
+
+[[package]]
+name = "opys-bin"
+version = "0.11.0"
+dependencies = [
+ "assert_cmd",
+ "assert_fs",
+ "clap",
+ "opys",
+ "opys-backend-markdown-local",
+ "opys-tui",
+ "predicates",
+ "tempfile",
+]
+
+[[package]]
+name = "opys-tui"
+version = "0.11.0"
+dependencies = [
+ "notify-debouncer-full",
+ "opys",
+ "opys-backend-markdown-local",
+ "ratatui",
+ "serde_norway",
+ "tempfile",
+ "time",
 ]
 
 [[package]]

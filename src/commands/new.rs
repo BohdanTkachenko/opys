@@ -134,7 +134,7 @@ pub fn run(
 /// Scaffold the body: the title heading plus each declared section, seeded per
 /// kind: a checklist gets a starter item; a structured section is scaffolded
 /// from its mdprism `structure`; others just the heading.
-pub(crate) fn scaffold_body(title: &str, t: &DocType) -> String {
+pub fn scaffold_body(title: &str, t: &DocType) -> String {
     let mut body = format!("# {title}\n");
     for sec in t.sections.iter().filter(|s| s.required) {
         body.push_str(&format!("\n## {}\n", sec.heading));

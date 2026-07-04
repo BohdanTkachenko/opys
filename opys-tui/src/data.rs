@@ -1,8 +1,8 @@
 //! The board: the loaded documents plus reload semantics (last-good on a total
 //! parse failure, so a mid-write race never blanks the screen).
 
-use crate::doc::Doc;
-use crate::project::Project;
+use opys::doc::Doc;
+use opys::project::Project;
 
 use super::sort::{sort_docs, SortState};
 

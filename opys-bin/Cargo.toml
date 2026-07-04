@@ -1,0 +1,28 @@
+[package]
+name = "opys-bin"
+version = "0.11.0"
+edition = "2021"
+rust-version = "1.88"
+description = "The opys command-line binary"
+license = "Apache-2.0"
+repository = "https://github.com/BohdanTkachenko/opys"
+
+[features]
+default = []
+history = ["opys/history"]
+
+[[bin]]
+name = "opys"
+path = "src/main.rs"
+
+[dependencies]
+opys = { path = ".." }
+opys-tui = { path = "../opys-tui" }
+opys-backend-markdown-local = { path = "../opys-backend-markdown-local" }
+clap = { version = "4", features = ["derive", "env"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+assert_fs = "1"
+tempfile = "3"

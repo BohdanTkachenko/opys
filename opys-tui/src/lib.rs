@@ -2,7 +2,7 @@
 //! updates as documents change on disk.
 //!
 //! This is a thin frontend over the library: every read goes through
-//! [`Project::load_docs`](crate::project::Project::load_docs) and (in later
+//! [`Project::load_docs`](opys::project::Project::load_docs) and (in later
 //! phases) every write through the existing command cores, so on-disk
 //! invariants hold exactly as in the CLI. Compiled only with the `tui` feature.
 
@@ -22,8 +22,8 @@ use std::sync::mpsc;
 
 use ratatui::crossterm::event::{Event as CtEvent, KeyEventKind};
 
-use crate::error::{OpysError, Result};
-use crate::Ctx;
+use opys::error::{OpysError, Result};
+use opys::Ctx;
 
 use app::App;
 use event::Event;
@@ -101,7 +101,7 @@ default_status = \"planned\"\ntags_required = false\n";
         let ctx = Ctx {
             root: dir.path().to_string_lossy().into_owned(),
             no_sync: true,
-            backend: Box::new(crate::backend::MarkdownLocal),
+            backend: Box::new(opys_backend_markdown_local::MarkdownLocal),
         };
         let mut app = App::new(&ctx).unwrap();
         let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();

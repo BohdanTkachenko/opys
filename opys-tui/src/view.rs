@@ -9,10 +9,10 @@ use ratatui::Frame;
 
 use serde_norway::Value;
 
-use crate::commands::stats;
-use crate::doc::Doc;
-use crate::frontmatter::Frontmatter;
-use crate::project::Project;
+use opys::commands::stats;
+use opys::doc::Doc;
+use opys::frontmatter::Frontmatter;
+use opys::project::Project;
 
 use super::app::{App, Mode, PreviewLayout};
 use super::filter::{self, FilterField};

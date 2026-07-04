@@ -24,18 +24,3 @@ pub trait Backend {
     /// ones, relocate moved ones, and rewrite the retired-id ledger.
     fn flush(&self, prj: &Project, store: Store) -> Result<()>;
 }
-
-/// The markdown + local-filesystem backend: one markdown file per document,
-/// discovered and written under the inventory base.
-#[derive(Default)]
-pub struct MarkdownLocal;
-
-impl Backend for MarkdownLocal {
-    fn load(&self, prj: &Project) -> Result<(Store, Vec<String>)> {
-        Store::open(prj)
-    }
-
-    fn flush(&self, prj: &Project, store: Store) -> Result<()> {
-        store.flush(prj)
-    }
-}

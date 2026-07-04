@@ -1,8 +1,8 @@
 //! The board filter — the same dimensions as `opys list` (type / status / tag)
 //! plus a free-text query over id and title. Applied live as the user edits it.
 
-use crate::doc::Doc;
-use crate::project::Project;
+use opys::doc::Doc;
+use opys::project::Project;
 
 #[derive(Default)]
 pub struct FilterState {

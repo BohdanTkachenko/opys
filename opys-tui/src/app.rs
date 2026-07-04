@@ -1,14 +1,14 @@
 //! The TUI application state (the TEA model) and the input reducer.
-use crate::backend::Backend;
+use opys::backend::Backend;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::commands::new::scaffold_body;
-use crate::doc::Doc;
-use crate::error::Result;
-use crate::frontmatter::Frontmatter;
-use crate::project::Project;
-use crate::Ctx;
+use opys::commands::new::scaffold_body;
+use opys::doc::Doc;
+use opys::error::Result;
+use opys::frontmatter::Frontmatter;
+use opys::project::Project;
+use opys::Ctx;
 
 use super::data::Board;
 use super::filter::{self, FilterField, FilterState};
@@ -422,7 +422,10 @@ impl App {
                     form.mark_saved();
                 }
                 // Persist the relation/linkify/relocate pass, then refresh.
-                let _ = crate::commands::sync::run(&self.prj, &crate::backend::MarkdownLocal);
+                let _ = opys::commands::sync::run(
+                    &self.prj,
+                    &opys_backend_markdown_local::MarkdownLocal,
+                );
                 self.edit = None;
                 self.mode = Mode::Browse;
                 self.reload();
@@ -460,15 +463,18 @@ impl App {
     }
 
     fn do_close(&mut self, id: &str) {
-        let result = crate::backend::MarkdownLocal
+        let result = opys_backend_markdown_local::MarkdownLocal
             .load(&self.prj)
             .and_then(|(mut store, _)| {
-                crate::commands::close::core(&self.prj, &mut store, id, false)?;
-                crate::backend::MarkdownLocal.flush(&self.prj, store)
+                opys::commands::close::core(&self.prj, &mut store, id, false)?;
+                opys_backend_markdown_local::MarkdownLocal.flush(&self.prj, store)
             });
         match result {
             Ok(()) => {
-                let _ = crate::commands::sync::run(&self.prj, &crate::backend::MarkdownLocal);
+                let _ = opys::commands::sync::run(
+                    &self.prj,
+                    &opys_backend_markdown_local::MarkdownLocal,
+                );
                 self.reload();
                 self.status = Some(format!("closed {id}"));
             }

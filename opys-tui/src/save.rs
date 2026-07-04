@@ -5,12 +5,12 @@
 
 use std::collections::HashSet;
 
-use crate::body;
-use crate::commands::touch;
-use crate::doc::Doc;
-use crate::error::{usage, Result};
-use crate::project::{self, Project};
-use crate::rules;
+use opys::body;
+use opys::commands::touch;
+use opys::doc::Doc;
+use opys::error::{usage, Result};
+use opys::project::{self, Project};
+use opys::rules;
 
 /// Validate and persist `doc` (an edited existing doc or a freshly scaffolded
 /// new one). Returns a usage error carrying the engine's problems when the

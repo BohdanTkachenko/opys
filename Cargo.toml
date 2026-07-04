@@ -1,10 +1,17 @@
+[workspace]
+members = [
+    "opys-backend-markdown-local",
+    "opys-tui",
+    "opys-bin",
+]
+resolver = "2"
+
 [package]
 name = "opys"
 version = "0.11.0"
 edition = "2021"
 # 1.88 is the real floor: while gluesql's core only needs edition 2024 (≥ 1.85),
-# other deps in the tree (time, ratatui's `instability`, `darling`) require 1.88.
-# Verify locally with `msrv` (a pinned-toolchain build; see flake.nix).
+# other deps in the tree (time, darling) require 1.88. Verify with `msrv`.
 rust-version = "1.88"
 description = "File-based feature inventory for human + AI codebases — one markdown file per feature, verified in CI"
 license = "Apache-2.0"
@@ -13,7 +20,6 @@ readme = "README.md"
 keywords = ["feature-inventory", "traceability", "cli", "markdown", "ci"]
 categories = ["command-line-utilities", "development-tools"]
 # skills/ is shipped: src/templates.rs embeds skills/opys/agent-rule.md.
-# The multi-agent packaging manifests are not part of the crate.
 exclude = [
     ".github/",
     ".claude-plugin/",
@@ -34,10 +40,6 @@ history = ["dep:gix"]
 name = "opys"
 path = "src/lib.rs"
 
-[[bin]]
-name = "opys"
-path = "src/main.rs"
-
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
@@ -54,22 +56,16 @@ time = { version = "0.3", features = ["formatting", "parsing", "local-offset", "
 # markdown (sourcepos for in-place edits).
 comrak = "0.52"
 
-# TUI stack (powers `opys tui`). crossterm is used via ratatui's re-export
-# (`ratatui::crossterm`) to avoid version skew.
-ratatui = "0.29"
-notify-debouncer-full = "0.3"
-
-# `opys stats` runs each configured `[[stats]]` SQL query over an in-memory
-# relational view of the corpus. GlueSQL is a pure-Rust engine (no C dep); only
-# the in-memory storage backend is pulled in. futures gives us block_on since
-# GlueSQL's API is async and opys is synchronous.
+# `opys stats` / `opys query` run SQL over an in-memory relational view of the
+# corpus. GlueSQL is a pure-Rust engine (no C dep); only the in-memory storage
+# backend is pulled in. futures gives block_on since GlueSQL's API is async.
 gluesql = { version = "0.19.0", default-features = false, features = [
     "gluesql_memory_storage",
 ] }
 futures = "0.3"
 
 # Renders `opys stats` markdown (headings, emphasis, aligned tables) for a
-# terminal; pure Rust, reuses crossterm.
+# terminal; pure Rust.
 termimad = "0.34"
 
 # Optional: only compiled in with `--features history`.
@@ -78,7 +74,4 @@ gix = { version = "0.84", default-features = false, features = [
 ], optional = true }
 
 [dev-dependencies]
-assert_cmd = "2"
-predicates = "3"
-assert_fs = "1"
 tempfile = "3"
