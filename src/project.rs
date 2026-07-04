@@ -137,12 +137,6 @@ impl Project {
             .find(|d| d.id() == Some(id))
             .ok_or_else(|| OpysError::NotFound { id: id.to_string() })
     }
-
-    pub fn find_mut<'a>(&self, docs: &'a mut [Doc], id: &str) -> Result<&'a mut Doc> {
-        docs.iter_mut()
-            .find(|d| d.id() == Some(id))
-            .ok_or_else(|| OpysError::NotFound { id: id.to_string() })
-    }
 }
 
 /// Persist a document to disk in canonical form, relocating the file to its
@@ -211,34 +205,6 @@ fn read_id_ledger(path: &Path) -> HashSet<String> {
         }
     }
     out
-}
-
-/// Append an entry to an ID ledger, keeping the file sorted by item number.
-pub fn write_id_ledger_entry(path: &Path, id: &str, line: &str) -> Result<()> {
-    let mut entries: Vec<(u64, String)> = Vec::new();
-    if let Ok(text) = std::fs::read_to_string(path) {
-        for l in text.lines() {
-            if l.trim().is_empty() {
-                continue;
-            }
-            let eid = l
-                .split('#')
-                .next()
-                .unwrap_or("")
-                .split_whitespace()
-                .next()
-                .unwrap_or("");
-            entries.push((refs::id_number(eid), l.to_string()));
-        }
-    }
-    entries.push((refs::id_number(id), line.to_string()));
-    entries.sort_by_key(|e| e.0);
-    let mut out = String::new();
-    for (_, l) in entries {
-        out.push_str(&l);
-        out.push('\n');
-    }
-    std::fs::write(path, out).map_err(OpysError::from)
 }
 
 /// The numeric part of a `PREFIX-NNNN` id, if it parses; `None` for malformed

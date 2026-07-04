@@ -10,14 +10,17 @@ use std::process::Command;
 use crate::commands::{maybe_sync, today};
 use crate::doc::Doc;
 use crate::error::Result;
-use crate::project::{self, Project};
+use crate::project::Project;
+use crate::store::{renumber_line, Store};
 use crate::Ctx;
 
 pub fn run(ctx: &Ctx, base: Option<&str>) -> Result<()> {
     let prj = ctx.open()?;
-    let (docs, _) = prj.load_docs();
+    let (mut store, _) = Store::open(&prj)?;
+    let docs: Vec<(i64, Doc)> = store.all_docs()?;
 
-    let conflicts = find_conflicts(&docs);
+    let just_docs: Vec<&Doc> = docs.iter().map(|(_, d)| d).collect();
+    let conflicts = find_conflicts(&just_docs);
     if conflicts.is_empty() {
         println!("renumber: no conflicting IDs found");
         return Ok(());
@@ -32,8 +35,7 @@ pub fn run(ctx: &Ctx, base: Option<&str>) -> Result<()> {
     }
 
     // Build old→new mapping, allocating new IDs sequentially past the current max.
-    let max = prj.max_doc_id(&docs);
-    let mut counter = max + 1;
+    let mut counter = store.max_doc_num()? + 1;
     let mut mapping: HashMap<String, String> = HashMap::new();
 
     for group in &conflicts {
@@ -43,8 +45,8 @@ pub fn run(ctx: &Ctx, base: Option<&str>) -> Result<()> {
         for id in group {
             let at_base = docs
                 .iter()
-                .find(|d| d.id() == Some(id.as_str()))
-                .is_some_and(|d| exists_at_base(&git_root, &base_sha, d));
+                .find(|(_, d)| d.id() == Some(id.as_str()))
+                .is_some_and(|(_, d)| exists_at_base(&git_root, &base_sha, d));
             if at_base {
                 keep.push(id.as_str());
             } else {
@@ -69,34 +71,26 @@ pub fn run(ctx: &Ctx, base: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    // Text-level substitution across every doc file, then rename files whose
-    // own ID changed.
-    for doc in &docs {
-        let text = std::fs::read_to_string(&doc.path)?;
+    // Text-level substitution across every doc (frontmatter AND body — an id may
+    // appear in a custom field, a relation value, or prose): reconstruct the
+    // full text, apply_renames, reparse, and write back through the store. A doc
+    // whose own id changed gets a new canonical path (flush renames it).
+    for (dkey, doc) in &docs {
+        let text = doc.to_text();
         let new_text = apply_renames(&text, &mapping);
         if new_text == text {
             continue;
         }
-        let old_id = doc.id().unwrap_or("");
-        if let Some(new_id) = mapping.get(old_id) {
-            let status = doc.status().unwrap_or("");
-            let new_path = prj.doc_path(new_id, status);
-            if let Some(parent) = new_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::write(&new_path, &new_text)?;
-            std::fs::remove_file(&doc.path)?;
-        } else {
-            std::fs::write(&doc.path, &new_text)?;
-        }
+        let new_doc = Doc::parse(doc.path.clone(), &new_text).map_err(crate::error::usage)?;
+        store.put_doc(&prj.pcfg, Some(*dkey), &new_doc)?;
+        store.set_canonical_path(&prj.pcfg, *dkey)?;
     }
 
     // Retire old IDs so they are never reallocated.
-    let rp = prj.base.join("_retired.txt");
     for old_id in mapping.keys() {
-        let line = format!("{old_id}  # renumbered {}", today());
-        project::write_id_ledger_entry(&rp, old_id, &line)?;
+        store.retire_id(old_id, &renumber_line(old_id, &today()))?;
     }
+    store.flush(&prj)?;
 
     println!("renumber: {} document(s) renumbered", mapping.len());
     maybe_sync(ctx, &prj);
@@ -148,7 +142,7 @@ fn warn_file_references(prj: &Project, mapping: &HashMap<String, String>) {
 }
 
 /// Groups of IDs that share the same numeric part (≥2 members, sorted).
-fn find_conflicts(docs: &[Doc]) -> Vec<Vec<String>> {
+fn find_conflicts(docs: &[&Doc]) -> Vec<Vec<String>> {
     let mut by_num: HashMap<u64, Vec<String>> = HashMap::new();
     for doc in docs {
         if let Some(id) = doc.id() {

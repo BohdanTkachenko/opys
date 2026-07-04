@@ -18,7 +18,11 @@ use crate::Ctx;
 
 pub fn run(ctx: &Ctx) -> Result<i32> {
     let prj = ctx.open()?;
-    let (docs, mut errors) = prj.load_docs();
+    // Read the corpus through the store; unparsable files surface as errors
+    // exactly as `load_docs` reported them, and the reconstructed docs are
+    // byte-identical to the parsed ones (the store round-trip is a fixpoint).
+    let (mut store, mut errors) = crate::store::Store::open(&prj)?;
+    let docs: Vec<Doc> = store.all_docs()?.into_iter().map(|(_, d)| d).collect();
     let pcfg = &prj.pcfg;
 
     // Validate opys.toml itself, and the field specs of each type.
