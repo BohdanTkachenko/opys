@@ -350,6 +350,16 @@ impl Store {
         Ok(())
     }
 
+    /// Overwrite `docs.path` directly (the relative form; flush performs the
+    /// rename). Callers that already know the target path use this to avoid the
+    /// read in [`Self::set_canonical_path`].
+    pub fn set_path(&mut self, dkey: i64, relpath: &str) -> Result<()> {
+        self.exec(
+            "UPDATE docs SET path = $1 WHERE dkey = $2",
+            vec![relpath.into_param(), dkey.into_param()],
+        )
+    }
+
     /// Point `docs.path` at the canonical layout path for the doc's id/status
     /// (no-op when either is missing, matching `save_doc`). Flush performs the
     /// actual rename.
