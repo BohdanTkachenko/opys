@@ -345,7 +345,12 @@ fn payload_kind(p: &Payload) -> &'static str {
 /// A markdown table (with an `## name` heading) for a stat's result set. An
 /// empty result renders as a note rather than a malformed (header-only) table.
 pub(crate) fn render_table(name: &str, labels: &[String], rows: &[Vec<String>]) -> String {
-    let mut out = format!("## {name}\n\n");
+    format!("## {name}\n\n{}", table_body(labels, rows))
+}
+
+/// The bare markdown table (no heading) — shared with `opys query`.
+pub(crate) fn table_body(labels: &[String], rows: &[Vec<String>]) -> String {
+    let mut out = String::new();
     if labels.is_empty() || rows.is_empty() {
         out.push_str("_(no rows)_\n");
         return out;
@@ -360,6 +365,18 @@ pub(crate) fn render_table(name: &str, labels: &[String], rows: &[Vec<String>]) 
         out.push_str(&format!("| {} |\n", cells.join(" | ")));
     }
     out
+}
+
+/// Print rendered markdown: styled for a terminal, raw when piped, `plain`,
+/// or `NO_COLOR` — shared by `stats` and `query`.
+pub(crate) fn print_markdown(out: &str, plain: bool) {
+    let styled =
+        !plain && std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    if styled {
+        termimad::MadSkin::default().print_text(out);
+    } else {
+        println!("{out}");
+    }
 }
 
 /// Expand a stat `template`: substitute `{column}` with `resolve(column)`,
@@ -476,14 +493,6 @@ pub fn run(ctx: &Ctx, plain: bool) -> Result<()> {
     if out.is_empty() {
         return Ok(());
     }
-    // Style the markdown for a terminal; stay plain when piped, when `--plain`,
-    // or when NO_COLOR is set — so piping/redirecting yields clean markdown.
-    let styled =
-        !plain && std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
-    if styled {
-        termimad::MadSkin::default().print_text(&out);
-    } else {
-        println!("{out}");
-    }
+    print_markdown(&out, plain);
     Ok(())
 }

@@ -140,6 +140,10 @@ pub fn run(cli: Cli) -> Result<i32> {
             commands::stats::run(&ctx, plain)?;
             Ok(0)
         }
+        Command::Query { sql, plain } => {
+            commands::query::run(&ctx, &sql, plain)?;
+            Ok(0)
+        }
         #[cfg(feature = "history")]
         Command::History { id } => {
             commands::history::run(&ctx, &id)?;

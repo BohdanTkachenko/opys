@@ -185,6 +185,23 @@ pub enum Command {
         plain: bool,
     },
 
+    /// Run a read-only SQL query over the inventory (SELECT only) and print
+    /// the result table. Styled for a terminal; plain markdown when piped
+    /// (or with `--plain` / `NO_COLOR`).
+    ///
+    /// Tables: docs(id, num, type, status, title, created, updated, body,
+    /// path), tags(doc_id, seq, tag, key, value), relations(doc_id, field,
+    /// seq, ref_id, ref_num, raw_value, title, struck), fields(doc_id, key,
+    /// value), sections(doc_id, heading, kind, items, unchecked),
+    /// retired(id, num, line).
+    Query {
+        /// The SQL SELECT to run (`-` reads it from stdin).
+        sql: String,
+        /// Emit raw markdown instead of styled terminal output.
+        #[arg(long)]
+        plain: bool,
+    },
+
     /// Reconstruct a document's lifecycle from git history: the status timeline
     /// across commits, following the file across relocations (e.g. into
     /// `_archived/`). Reads the repository in-process and decodes each revision

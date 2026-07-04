@@ -1038,6 +1038,94 @@ template = '''- {status}: {c}'''\n";
         .stdout(predicate::str::contains("| status |").not());
 }
 
+// --- opys query -------------------------------------------------------------
+
+/// `opys query` runs a SELECT over the live corpus store and prints a table.
+#[test]
+fn query_selects_over_the_corpus() {
+    let dir = project();
+    for (n, status, tags) in [
+        ("0001", "planned", "[osc, area:parsing]"),
+        ("0002", "implemented", "[ui]"),
+        ("0003", "planned", "[osc]"),
+    ] {
+        dir.child(format!("opys/features/FEAT-{n}.md"))
+            .write_str(&format!(
+                "---\nid: FEAT-{n}\nstatus: {status}\ntags: {tags}\n---\n\n# F{n}\n\n\
+                 ## Test plan\n- [x] a `m::t`\n- [ ] b\n"
+            ))
+            .unwrap();
+    }
+    opys(&dir)
+        .args([
+            "query",
+            "SELECT status, COUNT(*) AS n FROM docs GROUP BY status ORDER BY status",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("| status | n |"))
+        .stdout(predicate::str::contains("| implemented | 1 |"))
+        .stdout(predicate::str::contains("| planned | 2 |"));
+    // Joins across tables work; tags are split into key/value.
+    opys(&dir)
+        .args([
+            "query",
+            "SELECT d.id FROM docs d JOIN tags t ON t.doc_id = d.id \
+             WHERE t.tag = 'osc' ORDER BY d.id",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("| FEAT-0001 |"))
+        .stdout(predicate::str::contains("| FEAT-0003 |"));
+    // The derived sections projection is queryable.
+    opys(&dir)
+        .args([
+            "query",
+            "SELECT SUM(items) AS items, SUM(unchecked) AS open FROM sections \
+             WHERE heading = 'Test plan'",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("| 6 | 3 |"));
+}
+
+/// `opys query` rejects anything that is not a SELECT — before executing, so a
+/// `DELETE …; SELECT 1` compound cannot mutate the store either. Exit code 2
+/// (a usage error), never 1 (reserved for verify).
+#[test]
+fn query_rejects_non_select_statements() {
+    let dir = project();
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# A\n")
+        .unwrap();
+    for bad in [
+        "DELETE FROM docs",
+        "DROP TABLE docs",
+        "UPDATE docs SET status = 'x'",
+        "DELETE FROM docs; SELECT 1",
+    ] {
+        opys(&dir).args(["query", bad]).assert().code(2);
+    }
+    // And the files were never touched.
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::str::contains("status: planned"));
+}
+
+/// `-` reads the SQL from stdin (composes with heredocs/pipes).
+#[test]
+fn query_reads_sql_from_stdin() {
+    let dir = project();
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# A\n")
+        .unwrap();
+    opys(&dir)
+        .args(["query", "-"])
+        .write_stdin("SELECT id FROM docs")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("| FEAT-0001 |"));
+}
+
 /// `verify`/`config validate` reject a `template` referencing an unknown column
 /// (checked against the query's columns, so it fails even with zero rows).
 #[test]
