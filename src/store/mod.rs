@@ -31,6 +31,7 @@ use crate::project_config::ProjectConfig;
 #[allow(unused_imports)] // used by command ports as they land
 pub(crate) use decompose::split_tag;
 pub(crate) use decompose::{decompose, id_num};
+pub use flush::{renumber_line, retire_line};
 
 /// The in-memory corpus database for one CLI invocation.
 pub struct Store {
@@ -365,6 +366,24 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    /// The set of live document ids (the resolution universe for
+    /// `rules::evaluate` and reference targets).
+    pub fn doc_ids(&mut self) -> Result<std::collections::HashSet<String>> {
+        let (_, rows) = self.select("SELECT id FROM docs WHERE id IS NOT NULL", vec![])?;
+        Ok(rows.into_iter().filter_map(|r| g_str(&r[0])).collect())
+    }
+
+    /// The title of the doc with `id` (first in load order), or `None`.
+    pub fn title_of(&mut self, id: &str) -> Result<Option<String>> {
+        Ok(self
+            .scalar(
+                "SELECT title FROM docs WHERE id = $1 ORDER BY dkey LIMIT 1",
+                vec![id.into_param()],
+            )?
+            .as_ref()
+            .and_then(g_str))
     }
 
     /// Highest numeric id across live docs, every relation-map entry (struck or

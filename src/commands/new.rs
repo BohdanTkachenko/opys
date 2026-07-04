@@ -1,19 +1,20 @@
-use std::collections::HashSet;
-
 use crate::commands::{maybe_sync, split_csv, touch};
 use crate::doc::Doc;
 use crate::error::{usage, Result};
 use crate::frontmatter::Frontmatter;
 use crate::project::{self, Project};
 use crate::project_config::{DocType, SectionKind};
+use crate::store::Store;
 use crate::Ctx;
 use crate::{refs, rules};
 
-/// Build, validate, and write a new document; returns the created [`Doc`]. Does
-/// not print or sync — the shared core for the CLI wrapper and the TUI.
+/// Build, validate, and insert a new document into the store; returns the
+/// created [`Doc`] (its `path` is the canonical layout path). Does not
+/// flush/print/sync.
 #[allow(clippy::too_many_arguments)]
 pub fn core(
     prj: &Project,
+    store: &mut Store,
     type_name: &str,
     title: &str,
     tags: &str,
@@ -32,8 +33,7 @@ pub fn core(
         ))
     })?;
 
-    let (docs, _) = prj.load_docs();
-    let id = prj.next_id_for(&t.prefix, &docs);
+    let id = store.next_id_for(&t.prefix, pcfg.pad)?;
 
     // Resolve status: empty → the type's default. Reject unknown / terminal.
     let status = if status.is_empty() {
@@ -68,11 +68,10 @@ pub fn core(
     // References (e.g. linked features), resolved against the live inventory.
     let mut references = Vec::new();
     for rid in split_csv(features) {
-        let target = docs
-            .iter()
-            .find(|d| d.id() == Some(rid.as_str()))
+        let title = store
+            .title_of(&rid)?
             .ok_or_else(|| usage(format!("{rid} does not exist")))?;
-        references.push((rid.clone(), target.title.clone()));
+        references.push((rid.clone(), title));
     }
     if !references.is_empty() {
         refs::set(&mut fm, &references);
@@ -91,11 +90,7 @@ pub fn core(
     let body = scaffold_body(title, t);
 
     // Enforce the engine at write time, exactly as verify does.
-    let doc_ids: HashSet<String> = docs
-        .iter()
-        .filter_map(|d| d.id())
-        .map(str::to_string)
-        .collect();
+    let doc_ids = store.doc_ids()?;
     let problems = rules::evaluate(pcfg, type_name, status, &fm, &body, &doc_ids);
     if !problems.is_empty() {
         return Err(usage(format!(
@@ -104,17 +99,13 @@ pub fn core(
         )));
     }
 
-    let path = prj.doc_path(&id, status);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let doc = Doc {
-        path,
+        path: prj.doc_path(&id, status),
         frontmatter: fm,
         body,
         title: title.to_string(),
     };
-    std::fs::write(&doc.path, doc.to_text())?;
+    store.put_doc(pcfg, None, &doc)?;
     Ok(doc)
 }
 
@@ -129,11 +120,13 @@ pub fn run(
     reason: Option<&str>,
     fields: &[String],
 ) -> Result<()> {
-    let prj = Project::open(&ctx.root)?;
+    let prj = ctx.open()?;
+    let (mut store, _) = Store::open(&prj)?;
     let doc = core(
-        &prj, type_name, title, tags, status, features, reason, fields,
+        &prj, &mut store, type_name, title, tags, status, features, reason, fields,
     )?;
     println!("{}", doc.path.display());
+    store.flush(&prj)?;
     maybe_sync(ctx, &prj);
     Ok(())
 }

@@ -1,15 +1,26 @@
-use std::collections::HashSet;
+//! `opys set-status` — a guarded status transition through the corpus store.
+//!
+//! The mutation pattern shared by every scalar mutator: reconstruct the doc,
+//! apply the change with the existing frontmatter/`touch` helpers, validate
+//! (rules engine) on that transient clone, and only then write it back via
+//! `Store::put_doc` (which re-decomposes into the tables). Guards run before
+//! any write, so a failed id leaves the store untouched.
 
 use crate::commands::{expand_ids, for_each_id, maybe_sync, touch};
-use crate::doc::Doc;
 use crate::error::{usage, Result};
-use crate::project::{self, Project};
+use crate::project::Project;
 use crate::rules;
+use crate::store::Store;
 use crate::Ctx;
 
-/// Compute and write a status transition; returns the saved [`Doc`]. Does not
-/// print or sync — the shared core for the CLI wrapper and the TUI.
-pub fn core(prj: &Project, id: &str, status: &str, reason: Option<&str>) -> Result<Doc> {
+/// Apply a status transition to the store. Does not flush/print/sync.
+pub fn core(
+    prj: &Project,
+    store: &mut Store,
+    id: &str,
+    status: &str,
+    reason: Option<&str>,
+) -> Result<()> {
     let pcfg = &prj.pcfg;
     let tname = pcfg
         .type_name_for_id(id)
@@ -29,23 +40,17 @@ pub fn core(prj: &Project, id: &str, status: &str, reason: Option<&str>) -> Resu
         )));
     }
 
-    let (mut docs, _) = prj.load_docs();
-    let doc_ids: HashSet<String> = docs
-        .iter()
-        .filter_map(|d| d.id())
-        .map(str::to_string)
-        .collect();
-    let d = prj.find_mut(&mut docs, id)?;
+    let dkey = store.dkey_of(id)?;
+    let doc_ids = store.doc_ids()?;
+    let mut doc = store.doc(dkey)?;
 
-    // `--reason` sets the conventional `<status>_reason` field.
     if let Some(r) = reason {
-        d.frontmatter.set_str(&format!("{status}_reason"), r);
+        doc.frontmatter.set_str(&format!("{status}_reason"), r);
     }
-    d.frontmatter.set_str("status", status);
-    touch(&mut d.frontmatter);
+    doc.frontmatter.set_str("status", status);
+    touch(&mut doc.frontmatter);
 
-    // Enforce the engine at write time, exactly as verify does.
-    let problems = rules::evaluate(pcfg, &tname, status, &d.frontmatter, &d.body, &doc_ids);
+    let problems = rules::evaluate(pcfg, &tname, status, &doc.frontmatter, &doc.body, &doc_ids);
     if !problems.is_empty() {
         return Err(usage(format!(
             "cannot set {id} to {status}: {}",
@@ -53,22 +58,21 @@ pub fn core(prj: &Project, id: &str, status: &str, reason: Option<&str>) -> Resu
         )));
     }
 
-    project::save_doc(prj, d)?;
-    let idx = docs
-        .iter()
-        .position(|x| x.id() == Some(id))
-        .expect("doc just saved is present");
-    Ok(docs.swap_remove(idx))
+    store.put_doc(pcfg, Some(dkey), &doc)?;
+    store.set_canonical_path(pcfg, dkey)?;
+    Ok(())
 }
 
 pub fn run(ctx: &Ctx, ids: &str, status: &str, reason: Option<&str>) -> Result<()> {
     let prj = ctx.open()?;
     let ids = expand_ids(ids)?;
+    let (mut store, _) = Store::open(&prj)?;
     let res = for_each_id(&ids, |id| {
-        core(&prj, id, status, reason)?;
+        core(&prj, &mut store, id, status, reason)?;
         println!("{id} -> {status}");
         Ok(())
     });
+    store.flush(&prj)?;
     maybe_sync(ctx, &prj);
     res
 }

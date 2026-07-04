@@ -13,15 +13,16 @@ use serde_norway::Value;
 
 use crate::commands::maybe_sync;
 use crate::doc::Doc;
-use crate::error::{usage, OpysError, Result};
+use crate::error::{usage, Result};
 use crate::frontmatter::Frontmatter;
 use crate::project::Project;
 use crate::project_config::{DocType, ProjectConfig};
+use crate::store::Store;
 use crate::{rules, Ctx};
 
 pub fn run(ctx: &Ctx, type_name: &str, file: &str) -> Result<()> {
-    let prj = Project::open(&ctx.root)?;
-    let (docs, _) = prj.load_docs();
+    let prj = ctx.open()?;
+    let (mut store, _) = Store::open(&prj)?;
     let pcfg = &prj.pcfg;
     let ft = pcfg.types.get(type_name).ok_or_else(|| {
         let mut names: Vec<&str> = pcfg.types.keys().map(String::as_str).collect();
@@ -31,18 +32,15 @@ pub fn run(ctx: &Ctx, type_name: &str, file: &str) -> Result<()> {
             names.join(", ")
         ))
     })?;
-    let doc_ids: HashSet<String> = docs
-        .iter()
-        .filter_map(|d| d.id())
-        .map(str::to_string)
-        .collect();
+    let doc_ids: HashSet<String> = store.doc_ids()?;
 
     let text = std::fs::read_to_string(file)
         .map_err(|e| usage(format!("cannot read import file {file:?}: {e}")))?;
 
     // Allocate IDs sequentially from the current global max, building every
-    // document in memory and collecting *all* rejections before touching disk.
-    let mut next = prj.max_doc_id(&docs);
+    // document in memory and collecting *all* rejections before touching the
+    // store (so a rejected batch leaves it — and thus disk — untouched).
+    let mut next = store.max_doc_num()?;
     let mut built: Vec<Doc> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
 
@@ -70,10 +68,7 @@ pub fn run(ctx: &Ctx, type_name: &str, file: &str) -> Result<()> {
     }
 
     for d in &built {
-        if let Some(parent) = d.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&d.path, d.to_text()).map_err(OpysError::from)?;
+        store.put_doc(pcfg, None, d)?;
     }
     let first = built.first().and_then(Doc::id).unwrap_or("");
     let last = built.last().and_then(Doc::id).unwrap_or("");
@@ -81,6 +76,7 @@ pub fn run(ctx: &Ctx, type_name: &str, file: &str) -> Result<()> {
         "imported {} {type_name} document(s): {first}..{last}",
         built.len()
     );
+    store.flush(&prj)?;
     maybe_sync(ctx, &prj);
     Ok(())
 }
