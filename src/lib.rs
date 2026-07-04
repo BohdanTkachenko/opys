@@ -20,6 +20,7 @@ pub mod project;
 pub mod project_config;
 pub mod refs;
 pub mod rules;
+pub mod store;
 pub mod templates;
 pub mod tui;
 

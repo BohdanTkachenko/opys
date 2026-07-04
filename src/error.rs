@@ -18,6 +18,12 @@ pub enum OpysError {
     #[error("{0}")]
     Usage(String),
 
+    /// A failure inside the in-memory SQL store (a malformed internal
+    /// statement, an impossible decode). Always a bug, never user error —
+    /// the message is prefixed so tests can never accidentally match it.
+    #[error("internal store error: {0}")]
+    Store(String),
+
     #[error("{path}: {source}")]
     Toml {
         path: PathBuf,

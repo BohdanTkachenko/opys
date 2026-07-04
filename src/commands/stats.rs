@@ -42,14 +42,14 @@ fn count_array_items(data: &Value) -> usize {
 
 /// A YAML frontmatter value converted to JSON (best-effort; unrepresentable
 /// values become `null`).
-fn yaml_to_json(v: &serde_norway::Value) -> Value {
+pub(crate) fn yaml_to_json(v: &serde_norway::Value) -> Value {
     serde_json::to_value(v).unwrap_or(Value::Null)
 }
 
 /// The projected JSON for a non-structured section present in `d`, or `None`
 /// when the section is absent/empty. Mirrors the countable-item logic behind
 /// coverage stats. Structured sections are handled by `structured_section_json`.
-fn section_json(d: &Doc, kind: SectionKind, heading: &str) -> Option<Value> {
+pub(crate) fn section_json(d: &Doc, kind: SectionKind, heading: &str) -> Option<Value> {
     match kind {
         SectionKind::Checklist => {
             let items = body::checklist_items(&d.body, heading);
@@ -73,7 +73,11 @@ fn section_json(d: &Doc, kind: SectionKind, heading: &str) -> Option<Value> {
 
 /// Countable JSON for a `structured` section: parse its schema, extract the
 /// section body, and count the extracted array items.
-fn structured_section_json(d: &Doc, structure: Option<&str>, heading: &str) -> Option<Value> {
+pub(crate) fn structured_section_json(
+    d: &Doc,
+    structure: Option<&str>,
+    heading: &str,
+) -> Option<Value> {
     if !body::has_section(&d.body, heading) {
         return None;
     }
@@ -147,7 +151,7 @@ fn opt_lit(v: Option<&str>) -> String {
 
 /// Stringify a scalar JSON value for a `fields`/text column (objects/arrays are
 /// compacted to JSON text; that shape is rare for frontmatter scalars).
-fn json_scalar(v: &Value) -> String {
+pub(crate) fn json_scalar(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         Value::Null => String::new(),
@@ -256,7 +260,7 @@ fn materialize(corpus: &Value) -> String {
 }
 
 /// Render one GlueSQL value as a markdown-table cell string.
-fn cell(v: &GlueValue) -> String {
+pub(crate) fn cell(v: &GlueValue) -> String {
     match v {
         GlueValue::Str(s) => s.clone(),
         GlueValue::Bool(b) => b.to_string(),
@@ -340,7 +344,7 @@ fn payload_kind(p: &Payload) -> &'static str {
 
 /// A markdown table (with an `## name` heading) for a stat's result set. An
 /// empty result renders as a note rather than a malformed (header-only) table.
-fn render_table(name: &str, labels: &[String], rows: &[Vec<String>]) -> String {
+pub(crate) fn render_table(name: &str, labels: &[String], rows: &[Vec<String>]) -> String {
     let mut out = format!("## {name}\n\n");
     if labels.is_empty() || rows.is_empty() {
         out.push_str("_(no rows)_\n");
