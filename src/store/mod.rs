@@ -50,12 +50,27 @@ pub struct Store {
     next_rkey: i64,
 }
 
+/// An already-read, already-parsed corpus snapshot — the input to
+/// [`Store::build`]. The storage backend produces this from the durable medium
+/// (reading and parsing documents and the retired ledger); `build` turns it
+/// into the working store with no filesystem access.
+pub struct LoadedCorpus {
+    /// Each parsed document paired with its original mtime (rfc3339), used to
+    /// backfill missing timestamps during sync.
+    pub docs: Vec<(Doc, Option<String>)>,
+    /// Non-fatal parse errors (unparsable files were skipped).
+    pub errors: Vec<String>,
+    /// The retired-id ledger as `(id, title)` pairs.
+    pub retired: Vec<(String, String)>,
+    /// Whether a legacy `_retired.txt` was present (triggers migration on flush).
+    pub retired_legacy: bool,
+}
+
 impl Store {
-    /// Load every document and the retired ledger, decompose, and materialize
-    /// the corpus tables. Returns the store plus parse-error messages (exactly
-    /// [`Project::load_docs`]'s error semantics — unparsable files are skipped,
-    /// not fatal).
-    pub fn open(prj: &Project) -> Result<(Store, Vec<String>)> {
+    /// Build the working store from an already-read, already-parsed
+    /// [`LoadedCorpus`] — the medium-agnostic half of loading (no filesystem
+    /// access). The storage backend reads the medium and calls this.
+    pub fn build(prj: &Project, loaded: LoadedCorpus) -> Result<(Store, Vec<String>)> {
         let mut glue = Glue::new(MemoryStorage::default());
         block_on(glue.execute(schema::DDL)).map_err(store_err)?;
         let mut store = Store {
@@ -63,17 +78,16 @@ impl Store {
             base: prj.base.clone(),
             loaded: Vec::new(),
             retired_loaded: 0,
-            retired_legacy: false,
+            retired_legacy: loaded.retired_legacy,
             next_dkey: 1,
             next_rkey: 1,
         };
 
-        let (docs, errors) = prj.load_docs();
         let mut doc_rows: Vec<Vec<ParamLiteral>> = Vec::new();
         let mut tag_rows: Vec<Vec<ParamLiteral>> = Vec::new();
         let mut rel_rows: Vec<Vec<ParamLiteral>> = Vec::new();
         let mut fm_rows: Vec<Vec<ParamLiteral>> = Vec::new();
-        for doc in &docs {
+        for (doc, mtime) in &loaded.docs {
             let dkey = store.next_dkey;
             store.next_dkey += 1;
             let relpath = store.relpath_of(&doc.path)?;
@@ -91,7 +105,7 @@ impl Store {
                 relpath.clone().into_param(),
                 relpath.clone().into_param(), // orig_path
                 doc.to_text().into_param(),   // orig_text
-                mtime_rfc3339(&doc.path).into_param(),
+                mtime.clone().into_param(),
             ]);
             push_child_rows(dkey, &rows, &mut tag_rows, &mut rel_rows, &mut fm_rows);
             store.loaded.push((dkey, doc.path.clone()));
@@ -101,11 +115,8 @@ impl Store {
         store.insert_batch("relations", 9, rel_rows)?;
         store.insert_batch("fm_fields", 6, fm_rows)?;
 
-        // The retired-id ledger (see `crate::retired`): reserved id -> title.
-        let entries = crate::retired::read(&prj.base);
-        store.retired_legacy = crate::retired::legacy_path(&prj.base).exists();
-        let mut rows = Vec::with_capacity(entries.len());
-        for (id, title) in &entries {
+        let mut rows = Vec::with_capacity(loaded.retired.len());
+        for (id, title) in &loaded.retired {
             let rkey = store.next_rkey;
             store.next_rkey += 1;
             rows.push(vec![
@@ -117,7 +128,31 @@ impl Store {
         }
         store.retired_loaded = rows.len();
         store.insert_batch("retired", 4, rows)?;
-        Ok((store, errors))
+        Ok((store, loaded.errors))
+    }
+
+    /// Load the corpus from the local filesystem: read and parse every document
+    /// and the retired ledger, then [`build`](Store::build) the working store.
+    pub fn open(prj: &Project) -> Result<(Store, Vec<String>)> {
+        let (docs, errors) = prj.load_docs();
+        let docs: Vec<(Doc, Option<String>)> = docs
+            .into_iter()
+            .map(|d| {
+                let m = mtime_rfc3339(&d.path);
+                (d, m)
+            })
+            .collect();
+        let retired = crate::retired::read(&prj.base);
+        let retired_legacy = crate::retired::legacy_path(&prj.base).exists();
+        Store::build(
+            prj,
+            LoadedCorpus {
+                docs,
+                errors,
+                retired,
+                retired_legacy,
+            },
+        )
     }
 
     // ------------------------------------------------------------------
