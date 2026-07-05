@@ -7,6 +7,7 @@ use regex::Regex;
 static TITLE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^# (.+)$").unwrap());
 static CHECKED_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^- \[x\] ").unwrap());
 static UNCHECKED_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^- \[ \] ").unwrap());
+static SECTION_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^## +(.*?)\s*$").unwrap());
 
 /// First `# Heading` line, or `""`.
 pub fn title(body: &str) -> String {
@@ -61,6 +62,27 @@ pub fn has_section(body: &str, header: &str) -> bool {
     Regex::new(&format!(r"(?m)^## {}\s*$", regex::escape(header)))
         .unwrap()
         .is_match(body)
+}
+
+/// Split the body into `## ` sections in document order as `(heading, content)`
+/// pairs — `content` is the text under each heading up to the next `## `. The
+/// first pair has an empty heading and holds the preamble (title + intro) before
+/// the first `## `. Follows [`section`]'s `## `-delimited convention.
+pub fn sections(body: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut content_start = 0;
+    let mut heading = String::new();
+    for m in SECTION_RE.captures_iter(body) {
+        let whole = m.get(0).unwrap();
+        out.push((
+            std::mem::take(&mut heading),
+            body[content_start..whole.start()].to_string(),
+        ));
+        heading = m[1].trim().to_string();
+        content_start = whole.end();
+    }
+    out.push((heading, body[content_start..].to_string()));
+    out
 }
 
 #[cfg(test)]

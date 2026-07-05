@@ -3135,3 +3135,33 @@ fn retired_ledger_migrates_from_legacy_txt() {
         .success()
         .stdout(predicate::str::contains("FEAT-0007"));
 }
+
+/// The `blocks` projection decomposes each body into one row per `##` section
+/// (plus the preamble), for querying into document bodies.
+#[test]
+fn query_blocks_exposes_body_sections() {
+    let dir = project();
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str(
+            "---\nid: FEAT-0001\nstatus: planned\n---\n\n# Login\n\nIntro.\n\n## Notes\nBeware the edge case.\n",
+        )
+        .unwrap();
+    // Sections are addressable by heading; retrieval + single-line content match.
+    opys(&dir)
+        .args([
+            "query",
+            "SELECT doc_id FROM blocks WHERE heading = 'Notes' AND text LIKE '%edge%'",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0001"));
+    // The preamble is seq 0 with an empty heading.
+    opys(&dir)
+        .args([
+            "query",
+            "SELECT text FROM blocks WHERE doc_id = 'FEAT-0001' AND seq = 0",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# Login"));
+}

@@ -22,20 +22,40 @@ use crate::project_config::{ProjectConfig, SectionKind};
 use super::{IntoParam, Store};
 
 impl Store {
-    /// Rebuild the derived `fields`/`sections` tables from the current
-    /// authoritative state (same shapes and value coercions as the `[[stats]]`
-    /// corpus tables).
+    /// Rebuild the derived `fields`/`sections`/`blocks` tables from the current
+    /// authoritative state. `fields`/`sections` mirror the `[[stats]]` corpus
+    /// shapes; `blocks` decomposes each body into one row per `##` section
+    /// (+ preamble) for querying into bodies.
     pub fn refresh_projections(&mut self, pcfg: &ProjectConfig) -> Result<()> {
         self.exec("DELETE FROM fields", vec![])?;
         self.exec("DELETE FROM sections", vec![])?;
+        self.exec("DELETE FROM blocks", vec![])?;
 
         let docs = self.all_docs()?;
         let mut field_rows = Vec::new();
         let mut section_rows = Vec::new();
+        let mut block_rows = Vec::new();
         for (_, d) in &docs {
             let Some(id) = d.id().map(str::to_string) else {
                 continue;
             };
+            // Body decomposition: one row per `##` section (+ any preamble), for
+            // querying into document bodies. Independent of the doc's type.
+            let secs: Vec<(String, String)> = crate::body::sections(&d.body)
+                .into_iter()
+                .filter_map(|(h, t)| {
+                    let t = t.trim().to_string();
+                    (!(h.is_empty() && t.is_empty())).then_some((h, t))
+                })
+                .collect();
+            for (seq, (heading, text)) in secs.into_iter().enumerate() {
+                block_rows.push(vec![
+                    id.clone().into_param(),
+                    (seq as i64).into_param(),
+                    heading.into_param(),
+                    text.into_param(),
+                ]);
+            }
             let Some(tname) = pcfg.type_name_for_id(&id) else {
                 continue;
             };
@@ -79,6 +99,7 @@ impl Store {
         }
         self.insert_batch("fields", 3, field_rows)?;
         self.insert_batch("sections", 5, section_rows)?;
+        self.insert_batch("blocks", 4, block_rows)?;
         Ok(())
     }
 

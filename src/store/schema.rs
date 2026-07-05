@@ -6,7 +6,7 @@
 //!   `retired`) hold full document fidelity: every frontmatter key has exactly
 //!   one home (see `decompose`), and the original file text/path/mtime are
 //!   retained so `flush` can diff instead of rewriting.
-//! - **Derived** tables (`fields`, `sections`) are the stable projection user
+//! - **Derived** tables (`fields`, `sections`, `blocks`) are the stable projection user
 //!   SQL queries (same shapes as the `[[stats]]` contract); they are rebuilt
 //!   from scratch by `refresh_projections` and never written by commands.
 
@@ -24,4 +24,5 @@ CREATE TABLE fm_fields (dkey INTEGER, doc_id TEXT, key TEXT, value_yaml TEXT, va
 CREATE TABLE retired (rkey INTEGER, id TEXT, num INTEGER, title TEXT);
 CREATE TABLE fields (doc_id TEXT, key TEXT, value TEXT);
 CREATE TABLE sections (doc_id TEXT, heading TEXT, kind TEXT, items INTEGER, unchecked INTEGER);
+CREATE TABLE blocks (doc_id TEXT, seq INTEGER, heading TEXT, text TEXT);
 ";
