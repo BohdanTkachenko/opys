@@ -41,6 +41,7 @@ pub fn run(ctx: &Ctx, sql: &str, plain: bool, write: bool) -> Result<()> {
 
     if write {
         let baseline = store.baseline()?;
+        let before_blocks = block_texts(&mut store)?;
         // Three seams: (1) apply the user's intent as raw DML, (2) the model
         // pass reconciles the raw tables into a consistent model (cascades +
         // sync), (3) the validator gates the result. Only edits that make
@@ -49,6 +50,7 @@ pub fn run(ctx: &Ctx, sql: &str, plain: bool, write: bool) -> Result<()> {
         let before = verify_problems(&prj, &mut store, &errors)?;
 
         let summary = store.run_user_write(&sql).map_err(usage)?;
+        apply_block_edits(&prj, &mut store, &before_blocks)?;
         reconcile_model(&prj, &mut store, &baseline, !ctx.no_sync)?;
 
         let after = verify_problems(&prj, &mut store, &errors)?;
@@ -208,4 +210,57 @@ fn verify_problems(
             .into_iter()
             .collect(),
     )
+}
+
+/// Snapshot the `blocks` projection's section texts (`(doc_id, seq) -> text`),
+/// taken before user DML so [`apply_block_edits`] can find which sections were
+/// edited.
+fn block_texts(store: &mut Store) -> Result<std::collections::HashMap<(String, i64), String>> {
+    let (_, rows) = store.select("SELECT doc_id, seq, text FROM blocks", vec![])?;
+    let mut map = std::collections::HashMap::new();
+    for r in &rows {
+        if let (Some(id), Some(seq)) = (crate::store::g_str(&r[0]), crate::store::g_i64(&r[1])) {
+            map.insert((id, seq), crate::store::g_str(&r[2]).unwrap_or_default());
+        }
+    }
+    Ok(map)
+}
+
+/// Apply `UPDATE blocks SET text = …` edits back to the authoritative body: for
+/// every section whose text changed vs. `before`, splice the new content into
+/// the doc's body (byte-accurately, via `body::section_spans`) and bump its
+/// `updated`. Other `blocks` columns (heading/seq) and INSERT/DELETE on `blocks`
+/// are no-ops — the body is edited through `text` only.
+fn apply_block_edits(
+    prj: &crate::project::Project,
+    store: &mut Store,
+    before: &std::collections::HashMap<(String, i64), String>,
+) -> Result<()> {
+    let (_, rows) = store.select("SELECT doc_id, seq, text FROM blocks", vec![])?;
+    let mut by_doc: std::collections::BTreeMap<String, Vec<(usize, String)>> =
+        std::collections::BTreeMap::new();
+    for r in &rows {
+        let (Some(id), Some(seq)) = (crate::store::g_str(&r[0]), crate::store::g_i64(&r[1])) else {
+            continue;
+        };
+        let text = crate::store::g_str(&r[2]).unwrap_or_default();
+        if before.get(&(id.clone(), seq)).is_some_and(|t| *t != text) {
+            by_doc.entry(id).or_default().push((seq as usize, text));
+        }
+    }
+    if by_doc.is_empty() {
+        return Ok(());
+    }
+    for (doc_id, edits) in by_doc {
+        let Some(dkey) = store.dkey_opt(&doc_id)? else {
+            continue;
+        };
+        let mut doc = store.doc(dkey)?;
+        let spans = crate::body::section_spans(&doc.body);
+        doc.body = crate::body::apply_section_edits(&doc.body, &spans, &edits);
+        doc.title = crate::body::title(&doc.body);
+        super::touch(&mut doc.frontmatter);
+        store.put_doc(&prj.pcfg, Some(dkey), &doc)?;
+    }
+    Ok(())
 }

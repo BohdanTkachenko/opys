@@ -8,7 +8,9 @@
 //!   retained so `flush` can diff instead of rewriting.
 //! - **Derived** tables (`fields`, `sections`, `blocks`) are the stable projection user
 //!   SQL queries (same shapes as the `[[stats]]` contract); they are rebuilt
-//!   from scratch by `refresh_projections` and never written by commands.
+//!   from scratch by `refresh_projections`. They are read-only, except that
+//!   `blocks.text` is an edit surface: `query --write` splices a changed section
+//!   back into the authoritative body (see `commands::query`).
 
 /// All CREATE TABLE statements, executed once at [`super::Store::open`].
 pub(crate) const DDL: &str = "\

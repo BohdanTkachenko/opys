@@ -206,7 +206,7 @@ pub enum Command {
         /// edit introduces no new `verify` problem — otherwise nothing is
         /// written. Write the authoritative columns (`docs.status`/`body`/
         /// `created`/`updated`, `tags.tag`, `relations.raw_value`,
-        /// `fm_fields.value_yaml`); derived ones are recomputed.
+        /// `fm_fields.value_yaml`); derived ones are recomputed. Setting `blocks.text` splices a `##` section back into the body.
         #[arg(long)]
         write: bool,
     },

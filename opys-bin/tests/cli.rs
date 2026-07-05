@@ -3165,3 +3165,28 @@ fn query_blocks_exposes_body_sections() {
         .success()
         .stdout(predicate::str::contains("# Login"));
 }
+
+/// `UPDATE blocks SET text` splices a section's content back into the body
+/// byte-accurately (sibling sections untouched), gated by verify.
+#[test]
+fn query_write_blocks_splices_section_into_body() {
+    let cfg = "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
+statuses = [\"planned\"]\ndefault_status = \"planned\"\n";
+    let dir = project_with(cfg);
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# Login\n\n## Notes\nold note.\n\n## More\nkeep me.\n")
+        .unwrap();
+    opys(&dir)
+        .args([
+            "query",
+            "--write",
+            "UPDATE blocks SET text = 'new note.' WHERE doc_id = 'FEAT-0001' AND heading = 'Notes'",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("updated"));
+    let f = dir.child("opys/features/FEAT-0001.md");
+    f.assert(predicate::str::contains("## Notes\nnew note."));
+    f.assert(predicate::str::contains("## More\nkeep me."));
+}
