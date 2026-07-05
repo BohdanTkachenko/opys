@@ -202,6 +202,11 @@ pub enum Command {
         /// Emit raw markdown instead of styled terminal output.
         #[arg(long)]
         plain: bool,
+        /// Bind a value read from stdin to `$1` in the SQL — for large or
+        /// multi-line values (e.g. a section body) without SQL-escaping;
+        /// trailing whitespace is trimmed. Incompatible with `sql = -`.
+        #[arg(long)]
+        stdin: bool,
         /// Allow edit statements (INSERT/UPDATE/DELETE). Applied only if the
         /// edit introduces no new `verify` problem — otherwise nothing is
         /// written. Write the authoritative columns (`docs.status`/`body`/

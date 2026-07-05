@@ -3190,3 +3190,30 @@ statuses = [\"planned\"]\ndefault_status = \"planned\"\n";
     f.assert(predicate::str::contains("## Notes\nnew note."));
     f.assert(predicate::str::contains("## More\nkeep me."));
 }
+
+/// `query --write --stdin` binds stdin to `$1`, so multi-line content with
+/// quotes/percent signs needs no SQL escaping.
+#[test]
+fn query_write_binds_stdin_to_param() {
+    let cfg = "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
+statuses = [\"planned\"]\ndefault_status = \"planned\"\n";
+    let dir = project_with(cfg);
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# T\n\n## Notes\nold.\n")
+        .unwrap();
+    opys(&dir)
+        .args([
+            "query",
+            "--write",
+            "--stdin",
+            "UPDATE blocks SET text = $1 WHERE doc_id = 'FEAT-0001' AND heading = 'Notes'",
+        ])
+        .write_stdin("first line\nline with 'quotes' and 50% off")
+        .assert()
+        .success();
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::str::contains(
+            "## Notes\nfirst line\nline with 'quotes' and 50% off",
+        ));
+}

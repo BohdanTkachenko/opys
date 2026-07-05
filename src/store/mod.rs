@@ -839,7 +839,7 @@ terminal_statuses = ["done"]
             "UPDATE docs SET status = 'x'",
             "DELETE FROM docs; SELECT 1",
         ] {
-            let err = s.run_user_query(bad).unwrap_err();
+            let err = s.run_user_query(bad, &[]).unwrap_err();
             assert!(
                 err.contains("must be a SELECT") || err.contains("query failed"),
                 "{bad}: {err}"
@@ -850,7 +850,7 @@ terminal_statuses = ["done"]
         assert_eq!(n.as_ref().and_then(g_i64), Some(1));
 
         let (labels, rows) = s
-            .run_user_query("SELECT id, status FROM docs ORDER BY id")
+            .run_user_query("SELECT id, status FROM docs ORDER BY id", &[])
             .unwrap();
         assert_eq!(labels, vec!["id", "status"]);
         assert_eq!(

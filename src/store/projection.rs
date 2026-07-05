@@ -110,8 +110,11 @@ impl Store {
     pub fn run_user_query(
         &mut self,
         sql: &str,
+        params: &[String],
     ) -> std::result::Result<(Vec<String>, Vec<Vec<String>>), String> {
-        let stmts = block_on(self.glue.plan(sql)).map_err(|e| format!("query failed ({e})"))?;
+        let bound: Vec<_> = params.iter().map(|p| p.clone().into_param()).collect();
+        let stmts = block_on(self.glue.plan_with_params(sql, bound))
+            .map_err(|e| format!("query failed ({e})"))?;
         if stmts.is_empty() {
             return Err("query produced no result set".to_string());
         }
@@ -146,8 +149,14 @@ impl Store {
     /// TABLE, indexes) off the authoritative tables the store and flush depend
     /// on; the verify gate alone can't catch them (an empty or reshaped table
     /// has no verify problems).
-    pub fn run_user_write(&mut self, sql: &str) -> std::result::Result<String, String> {
-        let stmts = block_on(self.glue.plan(sql)).map_err(|e| format!("statement failed ({e})"))?;
+    pub fn run_user_write(
+        &mut self,
+        sql: &str,
+        params: &[String],
+    ) -> std::result::Result<String, String> {
+        let bound: Vec<_> = params.iter().map(|p| p.clone().into_param()).collect();
+        let stmts = block_on(self.glue.plan_with_params(sql, bound))
+            .map_err(|e| format!("statement failed ({e})"))?;
         if stmts.is_empty() {
             return Err("no statements to run".to_string());
         }

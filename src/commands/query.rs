@@ -19,9 +19,10 @@ use crate::Ctx;
 
 use super::stats;
 
-pub fn run(ctx: &Ctx, sql: &str, plain: bool, write: bool) -> Result<()> {
+pub fn run(ctx: &Ctx, sql: &str, plain: bool, write: bool, stdin_value: bool) -> Result<()> {
     let prj = ctx.open()?;
-    let sql = if sql == "-" {
+    let sql_from_stdin = sql == "-";
+    let sql = if sql_from_stdin {
         let mut buf = String::new();
         std::io::stdin().read_to_string(&mut buf)?;
         buf
@@ -31,6 +32,20 @@ pub fn run(ctx: &Ctx, sql: &str, plain: bool, write: bool) -> Result<()> {
     if sql.trim().is_empty() {
         return Err(usage("query: empty SQL"));
     }
+    // `--stdin` binds stdin to `$1` in the SQL (large/multi-line values without
+    // SQL-escaping); it can't also read the SQL itself from stdin.
+    let params: Vec<String> = if stdin_value {
+        if sql_from_stdin {
+            return Err(usage(
+                "query: --stdin cannot combine with reading the SQL from stdin (-)",
+            ));
+        }
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf)?;
+        vec![buf.trim_end().to_string()]
+    } else {
+        Vec::new()
+    };
 
     // Unparsable docs are warnings — query the parsable subset (list parity).
     let (mut store, errors) = ctx.load(&prj)?;
@@ -49,7 +64,7 @@ pub fn run(ctx: &Ctx, sql: &str, plain: bool, write: bool) -> Result<()> {
         // write. A future typed data model would replace seam 3 alone.
         let before = verify_problems(&prj, &mut store, &errors)?;
 
-        let summary = store.run_user_write(&sql).map_err(usage)?;
+        let summary = store.run_user_write(&sql, &params).map_err(usage)?;
         apply_block_edits(&prj, &mut store, &before_blocks)?;
         reconcile_model(&prj, &mut store, &baseline, !ctx.no_sync)?;
 
@@ -70,7 +85,7 @@ pub fn run(ctx: &Ctx, sql: &str, plain: bool, write: bool) -> Result<()> {
         return Ok(());
     }
 
-    let (labels, rows) = store.run_user_query(&sql).map_err(usage)?;
+    let (labels, rows) = store.run_user_query(&sql, &params).map_err(usage)?;
     stats::print_markdown(&stats::table_body(&labels, &rows), plain);
     Ok(())
 }
