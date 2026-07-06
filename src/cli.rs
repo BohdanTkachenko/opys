@@ -252,7 +252,8 @@ pub enum Command {
     Config(ConfigCommand),
 
     /// Launch the interactive terminal UI: a live board over the inventory that
-    /// updates as documents change on disk.
+    /// updates as documents change on disk. (Requires a `--features tui` build.)
+    #[cfg(feature = "tui")]
     Tui {
         /// Project directory to open (where to search upward for opys.toml).
         /// Overrides `--root`; defaults to the current directory.

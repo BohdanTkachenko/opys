@@ -3,15 +3,15 @@
 //! timestamps, run the rules engine, then write/relocate via `save_doc` — so the
 //! same on-disk invariants hold. The caller runs `sync_quiet` afterward.
 
-use opys::backend::Backend;
+use opys_core::backend::Backend;
 use std::collections::HashSet;
 
-use opys::body;
-use opys::commands::touch;
-use opys::doc::Doc;
-use opys::error::{usage, Result};
-use opys::project::Project;
-use opys::rules;
+use opys_core::body;
+use opys_core::commands::touch;
+use opys_core::doc::Doc;
+use opys_core::error::{usage, Result};
+use opys_core::project::Project;
+use opys_core::rules;
 
 /// Validate and persist `doc` (an edited existing doc or a freshly scaffolded
 /// new one). Returns a usage error carrying the engine's problems when the

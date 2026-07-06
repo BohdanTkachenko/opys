@@ -3,15 +3,13 @@ name = "opys-tui"
 version = "0.11.0"
 edition = "2021"
 rust-version = "1.88"
-# Internal to the workspace (GitHub-only distribution); not published to crates.io.
-publish = false
 description = "Interactive terminal UI for opys"
 license = "Apache-2.0"
 repository = "https://github.com/BohdanTkachenko/opys"
 
 [dependencies]
-opys = { path = ".." }
-opys-backend-markdown-local = { path = "../opys-backend-markdown-local" }
+opys-core = { path = "..", version = "0.11.0" }
+opys-backend-markdown-local = { path = "../opys-backend-markdown-local", version = "0.11.0" }
 ratatui = "0.29"
 serde_norway = "0.9"
 time = { version = "0.3", features = ["formatting", "parsing", "local-offset", "macros"] }

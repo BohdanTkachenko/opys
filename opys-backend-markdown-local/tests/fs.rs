@@ -1,9 +1,9 @@
 //! Filesystem behavior of the markdown-local backend: load → mutate → flush,
 //! verifying real files are written, relocated, deleted, and the ledger migrated.
 
-use opys::backend::Backend;
-use opys::project::Project;
 use opys_backend_markdown_local::MarkdownLocal;
+use opys_core::backend::Backend;
+use opys_core::project::Project;
 
 const CFG: &str = r#"
 pad = 4

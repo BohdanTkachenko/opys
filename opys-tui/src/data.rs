@@ -1,9 +1,9 @@
 //! The board: the loaded documents plus reload semantics (last-good on a total
 //! parse failure, so a mid-write race never blanks the screen).
 
-use opys::backend::Backend;
-use opys::doc::Doc;
-use opys::project::Project;
+use opys_core::backend::Backend;
+use opys_core::doc::Doc;
+use opys_core::project::Project;
 
 use super::sort::{sort_docs, SortState};
 

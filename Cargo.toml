@@ -2,23 +2,23 @@
 members = [
     "opys-backend-markdown-local",
     "opys-tui",
-    "opys-bin",
+    "opys",
 ]
 resolver = "2"
 
 [package]
-name = "opys"
+name = "opys-core"
 version = "0.11.0"
 edition = "2021"
 # 1.88 is the real floor: while gluesql's core only needs edition 2024 (≥ 1.85),
 # other deps in the tree (time, darling) require 1.88. Verify with `msrv`.
 rust-version = "1.88"
-description = "File-based feature inventory for human + AI codebases — one markdown file per feature, verified in CI"
+description = "Core library for opys — a file-based inventory of typed markdown documents with a verify gate and SQL query layer"
 license = "Apache-2.0"
 repository = "https://github.com/BohdanTkachenko/opys"
 readme = "README.md"
-keywords = ["feature-inventory", "traceability", "cli", "markdown", "ci"]
-categories = ["command-line-utilities", "development-tools"]
+keywords = ["feature-inventory", "traceability", "markdown", "sql", "ci"]
+categories = ["development-tools"]
 # skills/ is shipped: src/templates.rs embeds skills/opys/agent-rule.md.
 exclude = [
     ".github/",
@@ -35,9 +35,12 @@ default = []
 # In-process git history for `opys history <id>`, via gix. Off by default so the
 # standard build (and the MSRV check) never depends on gix or any git library.
 history = ["dep:gix"]
+# Gate the `tui` subcommand (the enum variant + dispatch); the actual UI lives in
+# the opys-tui crate, wired in by the binary's matching `tui` feature.
+tui = []
 
 [lib]
-name = "opys"
+name = "opys_core"
 path = "src/lib.rs"
 
 [dependencies]
@@ -51,24 +54,12 @@ walkdir = "2"
 anyhow = "1"
 thiserror = "1"
 time = { version = "0.3", features = ["formatting", "parsing", "local-offset", "macros"] }
-
-# Powers the inlined `mdprism` module (markdown ⇄ data codec): comrak parses
-# markdown (sourcepos for in-place edits).
 comrak = "0.52"
-
-# `opys stats` / `opys query` run SQL over an in-memory relational view of the
-# corpus. GlueSQL is a pure-Rust engine (no C dep); only the in-memory storage
-# backend is pulled in. futures gives block_on since GlueSQL's API is async.
 gluesql = { version = "0.19.0", default-features = false, features = [
     "gluesql_memory_storage",
 ] }
 futures = "0.3"
-
-# Renders `opys stats` markdown (headings, emphasis, aligned tables) for a
-# terminal; pure Rust.
 termimad = "0.34"
-
-# Optional: only compiled in with `--features history`.
 gix = { version = "0.84", default-features = false, features = [
     "sha1",
 ], optional = true }

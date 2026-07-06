@@ -2427,6 +2427,31 @@ dependencies = [
 name = "opys"
 version = "0.11.0"
 dependencies = [
+ "assert_cmd",
+ "assert_fs",
+ "clap",
+ "opys-backend-markdown-local",
+ "opys-core",
+ "opys-tui",
+ "predicates",
+ "tempfile",
+]
+
+[[package]]
+name = "opys-backend-markdown-local"
+version = "0.11.0"
+dependencies = [
+ "opys-core",
+ "regex",
+ "tempfile",
+ "time",
+ "walkdir",
+]
+
+[[package]]
+name = "opys-core"
+version = "0.11.0"
+dependencies = [
  "anyhow",
  "clap",
  "comrak",
@@ -2446,37 +2471,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "opys-backend-markdown-local"
-version = "0.11.0"
-dependencies = [
- "opys",
- "regex",
- "tempfile",
- "time",
- "walkdir",
-]
-
-[[package]]
-name = "opys-bin"
-version = "0.11.0"
-dependencies = [
- "assert_cmd",
- "assert_fs",
- "clap",
- "opys",
- "opys-backend-markdown-local",
- "opys-tui",
- "predicates",
- "tempfile",
-]
-
-[[package]]
 name = "opys-tui"
 version = "0.11.0"
 dependencies = [
  "notify-debouncer-full",
- "opys",
  "opys-backend-markdown-local",
+ "opys-core",
  "ratatui",
  "serde_norway",
  "tempfile",

@@ -9,10 +9,10 @@ use ratatui::Frame;
 
 use serde_norway::Value;
 
-use opys::commands::stats;
-use opys::doc::Doc;
-use opys::frontmatter::Frontmatter;
-use opys::project::Project;
+use opys_core::commands::stats;
+use opys_core::doc::Doc;
+use opys_core::frontmatter::Frontmatter;
+use opys_core::project::Project;
 
 use super::app::{App, Mode, PreviewLayout};
 use super::filter::{self, FilterField};

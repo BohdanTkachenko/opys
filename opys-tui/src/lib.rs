@@ -2,7 +2,7 @@
 //! updates as documents change on disk.
 //!
 //! This is a thin frontend over the library: every read goes through
-//! [`Project::load_docs`](opys::project::Project::load_docs) and (in later
+//! [`Project::load_docs`](opys_core::project::Project::load_docs) and (in later
 //! phases) every write through the existing command cores, so on-disk
 //! invariants hold exactly as in the CLI. Compiled only with the `tui` feature.
 
@@ -22,8 +22,8 @@ use std::sync::mpsc;
 
 use ratatui::crossterm::event::{Event as CtEvent, KeyEventKind};
 
-use opys::error::{OpysError, Result};
-use opys::Ctx;
+use opys_core::error::{OpysError, Result};
+use opys_core::Ctx;
 
 use app::App;
 use event::Event;

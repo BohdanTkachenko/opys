@@ -193,6 +193,7 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
         }
         // The TUI is launched by the binary (opys-tui crate); it intercepts this
         // command before calling run(), so this arm is unreachable in practice.
+        #[cfg(feature = "tui")]
         Command::Tui { .. } => Err(crate::error::usage(
             "the tui is launched by the opys binary, not opys::run",
         )),

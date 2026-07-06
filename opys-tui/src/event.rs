@@ -9,7 +9,7 @@ use notify_debouncer_full::notify::{RecursiveMode, Watcher};
 use notify_debouncer_full::{new_debouncer, DebounceEventResult};
 use ratatui::crossterm::event;
 
-use opys::error::{usage, Result};
+use opys_core::error::{usage, Result};
 
 /// A unit of work for the main loop: a terminal input event, or a debounced
 /// signal that documents on disk changed and the board should reload.

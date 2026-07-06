@@ -1,13 +1,13 @@
 //! Per-document styling. The configurable `[palette]` (resolved in
-//! [`opys::palette`]) wins; where it sets nothing, a sensible default applies —
+//! [`opys_core::palette`]) wins; where it sets nothing, a sensible default applies —
 //! an icon per type and a color per status — so a project with no palette still
 //! gets a legible, colorful board.
 
 use ratatui::style::{Color, Modifier, Style};
 
-use opys::doc::Doc;
-use opys::palette::{self, ColorSpec, NamedColor};
-use opys::project::Project;
+use opys_core::doc::Doc;
+use opys_core::palette::{self, ColorSpec, NamedColor};
+use opys_core::project::Project;
 
 /// The resolved presentation of a document row.
 pub struct DocStyle {
