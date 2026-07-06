@@ -8,7 +8,7 @@ license = "Apache-2.0"
 repository = "https://github.com/BohdanTkachenko/opys"
 
 [dependencies]
-opys-core = { path = "..", version = "0.11.0" }
+opys-engine = { path = "..", version = "0.11.0" }
 walkdir = "2"
 regex = "1"
 time = { version = "0.3", features = ["formatting"] }

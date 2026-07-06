@@ -12,17 +12,17 @@ categories = ["command-line-utilities", "development-tools"]
 
 [features]
 default = []
-history = ["opys-core/history"]
+history = ["opys-engine/history"]
 # The interactive terminal UI — off by default so the common (agent/CLI) build
 # pulls in no ratatui/crossterm/notify. Build with `--features tui` for humans.
-tui = ["dep:opys-tui", "opys-core/tui"]
+tui = ["dep:opys-tui", "opys-engine/tui"]
 
 [[bin]]
 name = "opys"
 path = "src/main.rs"
 
 [dependencies]
-opys-core = { path = "..", version = "0.11.0" }
+opys-engine = { path = "..", version = "0.11.0" }
 opys-backend-markdown-local = { path = "../opys-backend-markdown-local", version = "0.11.0" }
 opys-tui = { path = "../opys-tui", version = "0.11.0", optional = true }
 clap = { version = "4", features = ["derive", "env"] }

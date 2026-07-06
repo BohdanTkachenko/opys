@@ -2,8 +2,8 @@
 //! verifying real files are written, relocated, deleted, and the ledger migrated.
 
 use opys_backend_markdown_local::MarkdownLocal;
-use opys_core::backend::Backend;
-use opys_core::project::Project;
+use opys_engine::backend::Backend;
+use opys_engine::project::Project;
 
 const CFG: &str = r#"
 pad = 4

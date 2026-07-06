@@ -1,6 +1,6 @@
 //! The markdown + local-filesystem backend for opys: one markdown file per
 //! document, discovered and written under the inventory base. This is the
-//! default (and, today, only) [`opys_core::backend::Backend`] implementation. It owns
+//! default (and, today, only) [`opys_engine::backend::Backend`] implementation. It owns
 //! all corpus filesystem I/O — walking and parsing documents on load, and
 //! executing the store's medium-agnostic [`FlushPlan`] on flush — so the core
 //! `opys` crate performs no document filesystem access.
@@ -11,11 +11,11 @@ use std::sync::LazyLock;
 use regex::Regex;
 use walkdir::WalkDir;
 
-use opys_core::backend::Backend;
-use opys_core::doc::Doc;
-use opys_core::error::{OpysError, Result};
-use opys_core::project::Project;
-use opys_core::store::{FlushPlan, LoadedCorpus, Store};
+use opys_engine::backend::Backend;
+use opys_engine::doc::Doc;
+use opys_engine::error::{OpysError, Result};
+use opys_engine::project::Project;
+use opys_engine::store::{FlushPlan, LoadedCorpus, Store};
 
 /// The markdown + local-filesystem backend.
 #[derive(Default)]
@@ -31,8 +31,8 @@ impl Backend for MarkdownLocal {
                 (d, mtime)
             })
             .collect();
-        let retired = opys_core::retired::read(&prj.base);
-        let retired_legacy = opys_core::retired::legacy_path(&prj.base).exists();
+        let retired = opys_engine::retired::read(&prj.base);
+        let retired_legacy = opys_engine::retired::legacy_path(&prj.base).exists();
         Store::build(
             prj,
             LoadedCorpus {

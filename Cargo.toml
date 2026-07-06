@@ -11,7 +11,7 @@ resolver = "2"
 version = "0.11.0"
 
 [package]
-name = "opys-core"
+name = "opys-engine"
 version.workspace = true
 edition = "2021"
 # 1.88 is the real floor: while gluesql's core only needs edition 2024 (≥ 1.85),
@@ -44,7 +44,7 @@ history = ["dep:gix"]
 tui = []
 
 [lib]
-name = "opys_core"
+name = "opys_engine"
 path = "src/lib.rs"
 
 [dependencies]

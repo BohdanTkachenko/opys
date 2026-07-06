@@ -10,10 +10,10 @@ use std::time::SystemTime;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_norway::Value;
 
-use opys_core::body;
-use opys_core::config::FieldType;
-use opys_core::doc::Doc;
-use opys_core::project::Project;
+use opys_engine::body;
+use opys_engine::config::FieldType;
+use opys_engine::doc::Doc;
+use opys_engine::project::Project;
 
 use super::textarea::TextArea;
 
@@ -433,7 +433,7 @@ impl EditForm {
     }
 
     pub fn relations_summary(&self) -> Vec<(String, Vec<(String, String)>)> {
-        use opys_core::refs;
+        use opys_engine::refs;
         refs::RELATION_FIELDS
             .iter()
             .map(|f| (f.to_string(), refs::parse_in(&self.doc.frontmatter, f)))

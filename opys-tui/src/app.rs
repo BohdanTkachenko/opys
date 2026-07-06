@@ -1,14 +1,14 @@
 //! The TUI application state (the TEA model) and the input reducer.
-use opys_core::backend::Backend;
+use opys_engine::backend::Backend;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use opys_core::commands::new::scaffold_body;
-use opys_core::doc::Doc;
-use opys_core::error::Result;
-use opys_core::frontmatter::Frontmatter;
-use opys_core::project::Project;
-use opys_core::Ctx;
+use opys_engine::commands::new::scaffold_body;
+use opys_engine::doc::Doc;
+use opys_engine::error::Result;
+use opys_engine::frontmatter::Frontmatter;
+use opys_engine::project::Project;
+use opys_engine::Ctx;
 
 use super::data::Board;
 use super::filter::{self, FilterField, FilterState};
@@ -422,7 +422,7 @@ impl App {
                     form.mark_saved();
                 }
                 // Persist the relation/linkify/relocate pass, then refresh.
-                let _ = opys_core::commands::sync::run(
+                let _ = opys_engine::commands::sync::run(
                     &self.prj,
                     &opys_backend_markdown_local::MarkdownLocal,
                 );
@@ -466,12 +466,12 @@ impl App {
         let result = opys_backend_markdown_local::MarkdownLocal
             .load(&self.prj)
             .and_then(|(mut store, _)| {
-                opys_core::commands::close::core(&self.prj, &mut store, id, false)?;
+                opys_engine::commands::close::core(&self.prj, &mut store, id, false)?;
                 opys_backend_markdown_local::MarkdownLocal.flush(&self.prj, store)
             });
         match result {
             Ok(()) => {
-                let _ = opys_core::commands::sync::run(
+                let _ = opys_engine::commands::sync::run(
                     &self.prj,
                     &opys_backend_markdown_local::MarkdownLocal,
                 );

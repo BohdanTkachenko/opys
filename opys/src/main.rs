@@ -1,12 +1,12 @@
 use clap::Parser;
 
 use opys_backend_markdown_local::MarkdownLocal;
-use opys_core::cli::Cli;
+use opys_engine::cli::Cli;
 
 #[cfg(feature = "tui")]
-use opys_core::cli::Command;
+use opys_engine::cli::Command;
 #[cfg(feature = "tui")]
-use opys_core::Ctx;
+use opys_engine::Ctx;
 
 fn main() {
     let Cli {
@@ -16,7 +16,7 @@ fn main() {
     } = Cli::parse();
 
     // The TUI lives in its own crate; intercept it here so the core library
-    // stays UI-free. Everything else goes through opys_core::run with the injected
+    // stays UI-free. Everything else goes through opys_engine::run with the injected
     // markdown-local backend.
     let result = match command {
         #[cfg(feature = "tui")]
@@ -28,7 +28,7 @@ fn main() {
             };
             opys_tui::run(&ctx)
         }
-        command => opys_core::run(
+        command => opys_engine::run(
             Cli {
                 root,
                 no_sync,

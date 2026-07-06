@@ -3,7 +3,7 @@
 
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
-use opys_core::doc::Doc;
+use opys_engine::doc::Doc;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SortKey {

@@ -8,7 +8,7 @@ license = "Apache-2.0"
 repository = "https://github.com/BohdanTkachenko/opys"
 
 [dependencies]
-opys-core = { path = "..", version = "0.11.0" }
+opys-engine = { path = "..", version = "0.11.0" }
 opys-backend-markdown-local = { path = "../opys-backend-markdown-local", version = "0.11.0" }
 ratatui = "0.29"
 serde_norway = "0.9"

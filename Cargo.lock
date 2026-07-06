@@ -2431,7 +2431,7 @@ dependencies = [
  "assert_fs",
  "clap",
  "opys-backend-markdown-local",
- "opys-core",
+ "opys-engine",
  "opys-tui",
  "predicates",
  "tempfile",
@@ -2441,7 +2441,7 @@ dependencies = [
 name = "opys-backend-markdown-local"
 version = "0.11.0"
 dependencies = [
- "opys-core",
+ "opys-engine",
  "regex",
  "tempfile",
  "time",
@@ -2449,7 +2449,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "opys-core"
+name = "opys-engine"
 version = "0.11.0"
 dependencies = [
  "anyhow",
@@ -2476,7 +2476,7 @@ version = "0.11.0"
 dependencies = [
  "notify-debouncer-full",
  "opys-backend-markdown-local",
- "opys-core",
+ "opys-engine",
  "ratatui",
  "serde_norway",
  "tempfile",

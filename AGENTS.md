@@ -78,9 +78,9 @@ cargo test --lib frontmatter::                                  # unit tests in 
 
 ## Architecture
 
-The repo is a Cargo **workspace** of four crates: **`opys-core`** (the core
+The repo is a Cargo **workspace** of four crates: **`opys-engine`** (the core
 library, at the repo root — the model, config, rules, SQL store, and command
-implementations, plus the [`Backend`] storage trait; lib name `opys_core`);
+implementations, plus the [`Backend`] storage trait; lib name `opys_engine`);
 **`opys-backend-markdown-local`** (the default `Backend` impl: one markdown file
 per document on the local filesystem — it owns all corpus filesystem I/O,
 walking and parsing documents on load and executing the store's `FlushPlan` on
@@ -88,7 +88,7 @@ flush, so the core crate does no document filesystem access); **`opys-tui`** (th
 `opys tui` terminal UI); and **`opys`** (the binary — this is what
 `cargo install opys` yields). The binary (`opys/src/main.rs`) parses `Cli` (clap
 derive, `src/cli.rs`), injects the `MarkdownLocal` backend, and calls
-`opys_core::run`, which maps the exit code. The **TUI is an opt-in `tui`
+`opys_engine::run`, which maps the exit code. The **TUI is an opt-in `tui`
 feature** (off by default): the `Command::Tui` variant, its dispatch, and the
 `opys-tui` dependency are all gated, so the default (agent/CLI) build pulls in no
 ratatui/notify; only a `--features tui` build intercepts the `tui` command and
