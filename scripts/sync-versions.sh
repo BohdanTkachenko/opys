@@ -27,13 +27,13 @@ fi
 # Source of truth: the version inside [package] of Cargo.toml.
 crate_version=$(awk -F' *= *' '
   /^\[/        { section = $0 }
-  section == "[package]" && $1 == "version" {
+  section == "[workspace.package]" && $1 == "version" {
     gsub(/"/, "", $2); print $2; exit
   }
 ' "$root/Cargo.toml")
 
 if [[ -z "$crate_version" ]]; then
-  echo "could not read [package].version from Cargo.toml" >&2
+  echo "could not read [workspace.package].version from Cargo.toml" >&2
   exit 2
 fi
 

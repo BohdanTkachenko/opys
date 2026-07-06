@@ -6,9 +6,13 @@ members = [
 ]
 resolver = "2"
 
+# All four crates share one version and release together.
+[workspace.package]
+version = "0.11.0"
+
 [package]
 name = "opys-core"
-version = "0.11.0"
+version.workspace = true
 edition = "2021"
 # 1.88 is the real floor: while gluesql's core only needs edition 2024 (≥ 1.85),
 # other deps in the tree (time, darling) require 1.88. Verify with `msrv`.
