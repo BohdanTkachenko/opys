@@ -268,3 +268,13 @@ There are deliberately no committed per-editor copies — `opys agent-rules --to
 which is embedded in the binary via `templates::AGENT_RULE` (`include_str!`) and
 also referenced by the Gemini/opencode manifests and read by the pi extension.
 Edit the rule in one place; everything else derives from it.
+
+## Feature inventory (dogfooding)
+
+This repo tracks its own features with opys: the inventory lives under
+`inventory/` (configured in `opys.toml` at the root; `opys/` was taken by the
+binary crate). To find documents: `rg` by tag/status or `opys list`, then read
+only the relevant files. To create or change documents, use the CLI (`new
+--type`, `set-status`, `tag`, `retire`, `block`, `close`); body prose edits are
+normal file edits — run `opys verify` before finishing. Known code-review
+findings are filed as `bug`/`chore` docs linked to their feature.
