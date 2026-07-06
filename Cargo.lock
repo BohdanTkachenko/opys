@@ -2425,7 +2425,7 @@ dependencies = [
 
 [[package]]
 name = "opys"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "assert_cmd",
  "assert_fs",
@@ -2439,7 +2439,7 @@ dependencies = [
 
 [[package]]
 name = "opys-backend-markdown-local"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "opys-engine",
  "regex",
@@ -2450,7 +2450,7 @@ dependencies = [
 
 [[package]]
 name = "opys-engine"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2472,7 +2472,7 @@ dependencies = [
 
 [[package]]
 name = "opys-tui"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "notify-debouncer-full",
  "opys-backend-markdown-local",

@@ -8,7 +8,7 @@ resolver = "2"
 
 # All four crates share one version and release together.
 [workspace.package]
-version = "0.11.0"
+version = "0.12.0"
 
 [package]
 name = "opys-engine"
