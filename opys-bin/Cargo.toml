@@ -3,6 +3,8 @@ name = "opys-bin"
 version = "0.11.0"
 edition = "2021"
 rust-version = "1.88"
+# Internal to the workspace (GitHub-only distribution); not published to crates.io.
+publish = false
 description = "The opys command-line binary"
 license = "Apache-2.0"
 repository = "https://github.com/BohdanTkachenko/opys"
