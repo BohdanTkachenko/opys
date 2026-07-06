@@ -6,7 +6,6 @@ rust-version = "1.88"
 description = "File-based inventory of typed markdown documents (a git-native, AI-friendly issue tracker) — the opys CLI"
 license = "Apache-2.0"
 repository = "https://github.com/BohdanTkachenko/opys"
-readme = "README.md"
 keywords = ["feature-inventory", "traceability", "cli", "markdown", "ci"]
 categories = ["command-line-utilities", "development-tools"]
 
