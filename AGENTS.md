@@ -122,8 +122,10 @@ Layering, roughly outermost-in:
   `fm_fields`/`retired` (every frontmatter key has exactly one home; arbitrary
   YAML round-trips through `fm_fields.value_yaml` — the invariant is
   `reconstruct(decompose(doc)).to_text() == doc.to_text()`); derived
-  `fields`/`sections` (the `[[stats]]`/`opys query` contract) are rebuilt by
-  `refresh_projections`. ID allocation is one SQL `MAX` across docs/relations/
+  `fields`/`sections`/`blocks` (the `[[stats]]`/`opys query` contract) are
+  rebuilt by `refresh_projections`; `blocks(doc_id, seq, heading, text)` decomposes
+  each body into its `##` sections and is the one *writable* projection —
+  `query --write` splices an edited `blocks.text` back into the authoritative body. ID allocation is one SQL `MAX` across docs/relations/
   retired. Internal SQL uses `$n` parameters and JOINs only — never
   `IN (subquery)`/FROM-subqueries/`UNION` (GlueSQL executes/​rejects those
   badly). `commands/query.rs` exposes user SQL: read-only (plan-guarded to
@@ -140,7 +142,9 @@ Layering, roughly outermost-in:
   the single document struct (`{path, frontmatter, body, title}`; type derived
   from the id prefix). `frontmatter` parses YAML with `serde_norway` and
   re-serializes canonically; `body` extracts the title, sections
-  (`section(body, heading)`), and checkbox items (`checklist_items(body, heading)`).
+  (`section`/`sections`/`section_spans`), and checkbox items (`checklist_items`),
+  and `apply_section_edits` splices new content into a section byte-accurately
+  (the writable `blocks.text` path).
 - `src/refs.rs` — the uniform relation maps (`references`/`blocked_by`/`blocks`),
   ID→title: parse/serialize (sorted by item number), strikethrough tombstone
   helpers, `id_number`.

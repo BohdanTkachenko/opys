@@ -120,7 +120,7 @@ by hand.
 | `verify` | full integrity check — wire into CI |
 | `sync` | reconcile references, linkify prose, relocate docs to their layout path (for hand edits) |
 | `stats` | render configured `[[stats]]` sections (each a SQL query over the corpus, shown as a table; default: status counts, coverage, tags) |
-| `query "SELECT …"` | run a SQL query over the inventory (`-` reads it from stdin) and print the result table; `--write` allows INSERT/UPDATE/DELETE, applied only if the edit introduces no new `verify` problem (else nothing is written) |
+| `query "SELECT …"` | run a SQL query over the inventory (`-` reads it from stdin; `--stdin` binds stdin to `$1` for escape-free values) and print the result table; `--write` allows INSERT/UPDATE/DELETE, applied only if the edit introduces no new `verify` problem (else nothing is written). The `blocks` table decomposes bodies into `##` sections — `UPDATE blocks SET text = …` edits a section in place |
 | `agent-rules --tool <editor>` | generate a rules-based editor's instruction file from the canonical rule |
 
 A feature file looks like (the `references` map is auto-maintained — a work
