@@ -58,6 +58,8 @@ The CI that gates merges (`.github/workflows/ci.yml`) runs exactly:
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings   # warnings are errors
 cargo test --all
+cargo clippy --workspace --all-targets --all-features -- -D warnings   # tui + history
+cargo test --all --all-features
 cargo build --workspace --all-targets       # also built on MSRV 1.88 — don't use newer std APIs
 ```
 
@@ -76,18 +78,22 @@ cargo test --lib frontmatter::                                  # unit tests in 
 
 ## Architecture
 
-The repo is a Cargo **workspace** of four crates: **`opys`** (the core library,
-at the repo root — the model, config, rules, SQL store, and command
-implementations, plus the [`Backend`] storage trait); **`opys-backend-markdown-local`**
-(the default `Backend` impl: one markdown file per document on the local
-filesystem — it owns all corpus filesystem I/O, walking and parsing documents
-on load and executing the store's `FlushPlan` on flush, so the core crate does
-no document filesystem access); **`opys-tui`** (the
-`opys tui` terminal UI); and **`opys-bin`** (the thin `opys` binary). The binary
-(`opys-bin/src/main.rs`) parses `Cli` (clap derive, `src/cli.rs`), injects the
-`MarkdownLocal` backend, and calls `opys::run`, which maps the exit code; it
-intercepts the `tui` command and hands it to `opys-tui`. Commands never touch
-the storage medium directly — they load/flush through the injected
+The repo is a Cargo **workspace** of four crates: **`opys-core`** (the core
+library, at the repo root — the model, config, rules, SQL store, and command
+implementations, plus the [`Backend`] storage trait; lib name `opys_core`);
+**`opys-backend-markdown-local`** (the default `Backend` impl: one markdown file
+per document on the local filesystem — it owns all corpus filesystem I/O,
+walking and parsing documents on load and executing the store's `FlushPlan` on
+flush, so the core crate does no document filesystem access); **`opys-tui`** (the
+`opys tui` terminal UI); and **`opys`** (the binary — this is what
+`cargo install opys` yields). The binary (`opys/src/main.rs`) parses `Cli` (clap
+derive, `src/cli.rs`), injects the `MarkdownLocal` backend, and calls
+`opys_core::run`, which maps the exit code. The **TUI is an opt-in `tui`
+feature** (off by default): the `Command::Tui` variant, its dispatch, and the
+`opys-tui` dependency are all gated, so the default (agent/CLI) build pulls in no
+ratatui/notify; only a `--features tui` build intercepts the `tui` command and
+hands it to `opys-tui`. All four crates publish to crates.io together. Commands
+never touch the storage medium directly — they load/flush through the injected
 `Box<dyn Backend>` on `Ctx`, so the medium is swappable.
 
 **Exit-code contract (important):** `verify` returns `1` when it finds content

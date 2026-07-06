@@ -26,13 +26,14 @@ agents.
 ## Install
 
 ```sh
-cargo install opys
+cargo install opys                 # the CLI (what agents use)
+cargo install opys --features tui  # + the interactive `opys tui` terminal UI
 ```
 
 Or build from source:
 
 ```sh
-cargo build --release   # target/release/opys
+cargo build --release -p opys        # target/release/opys (add --features tui for the TUI)
 ```
 
 ### Use from another flake

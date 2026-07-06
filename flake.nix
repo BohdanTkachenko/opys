@@ -44,7 +44,9 @@
               ./Cargo.toml
               ./Cargo.lock
               ./src
-              ./tests
+              ./opys
+              ./opys-tui
+              ./opys-backend-markdown-local
               ./skills
             ];
           };

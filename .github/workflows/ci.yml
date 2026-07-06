@@ -24,10 +24,10 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --all
-      - name: Clippy (history feature)
-        run: cargo clippy --all-targets -p opys -p opys-bin --features history -- -D warnings
-      - name: Test (history feature)
-        run: cargo test -p opys -p opys-bin --features history
+      - name: Clippy (all features)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Test (all features)
+        run: cargo test --all --all-features
       - name: Packaging manifest versions in sync
         run: scripts/sync-versions.sh --check
 
