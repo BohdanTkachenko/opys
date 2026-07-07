@@ -316,6 +316,7 @@ may reflow the formatting (not the meaning) of complex values.
 | `updated` | no | RFC3339 datetime; refreshed on every user-initiated write; auto-maintained |
 | `references` | no | ID→title map of linked work items (and features); auto-maintained |
 | `blocked_by` / `blocks` | no | ID→title maps of the blocker relation; auto-maintained (see Blockers) |
+| `blocked_from` | no | the status held before `block` auto-set `blocked`; auto-maintained — restored (then removed) by `unblock` |
 | `wontfix_reason` | iff wontfix | one-line ADR for the scope exception |
 | `spec` | no | pointer to long-form shared material (a plain string field) |
 | custom | per config | validated against `[fields.*]` declarations |
@@ -348,7 +349,7 @@ footprint of a bad edit) fails verify.
 
 An `enum` field must declare a non-empty `values` array (verify errors on an
 empty one). Reserved keys (`id`, `status`, `tags`, `created`, `updated`,
-`references`, `blocked_by`, `blocks`) are always allowed; every other key must be
+`references`, `blocked_by`, `blocks`, `blocked_from`) are always allowed; every other key must be
 declared under the type's
 `[types.<name>.fields.*]` or verify rejects it. Richer YAML does not relax
 the declare-or-fail rule.

@@ -45,7 +45,17 @@ pub fn core(
     let mut doc = store.doc(dkey)?;
 
     if let Some(r) = reason {
-        doc.frontmatter.set_str(&format!("{status}_reason"), r);
+        // `--reason` writes `<status>_reason`, which must be a declared field for
+        // the type or the very next `verify` rejects it as unknown frontmatter.
+        // Guard here so a successful command never leaves a red corpus.
+        let field = format!("{status}_reason");
+        if !t.fields.contains_key(&field) {
+            return Err(usage(format!(
+                "--reason has nowhere to go: '{field}' is not a declared field for type \
+                 '{tname}' (add [types.{tname}.fields.{field}], or drop --reason)"
+            )));
+        }
+        doc.frontmatter.set_str(&field, r);
     }
     doc.frontmatter.set_str("status", status);
     touch(&mut doc.frontmatter);

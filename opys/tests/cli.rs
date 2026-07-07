@@ -2042,10 +2042,12 @@ fn unblock_removes_link_and_reverts_status() {
         .args(["unblock", "TASK-0003", "--by", "FEAT-0002"])
         .assert()
         .success();
-    // Both sides cleared, and the auto-blocked status reverted to in-progress.
+    // Both sides cleared, and the auto-blocked status restored to the pre-block
+    // status (the task was created at `todo`), with the bookkeeping field gone.
     dir.child("opys/work-items/TASK-0003.md")
-        .assert(predicate::str::contains("status: in-progress"))
-        .assert(predicate::str::contains("blocked_by").not());
+        .assert(predicate::str::contains("status: todo"))
+        .assert(predicate::str::contains("blocked_by").not())
+        .assert(predicate::str::contains("blocked_from").not());
     dir.child("opys/features/FEAT-0002.md")
         .assert(predicate::str::contains("blocks").not());
     opys(&dir).arg("verify").assert().success();
@@ -2056,6 +2058,148 @@ fn unblock_removes_link_and_reverts_status() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("no blocker"));
+}
+
+/// BUG-0033: unblock restores the exact pre-block status, not a hardcoded
+/// `in-progress`.
+#[test]
+fn unblock_restores_pre_block_status() {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "Alpha", "--tags", "a"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args([
+            "new",
+            "--type",
+            "task",
+            "--title",
+            "Wire",
+            "--features",
+            "FEAT-0001",
+        ])
+        .assert()
+        .success();
+    // Advance the task, then block it — the pre-block status is `in-progress`.
+    opys(&dir)
+        .args(["set-status", "TASK-0002", "in-progress"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["block", "TASK-0002", "--by", "FEAT-0001"])
+        .assert()
+        .success();
+    dir.child("opys/work-items/TASK-0002.md")
+        .assert(predicate::str::contains("status: blocked"))
+        .assert(predicate::str::contains("blocked_from: in-progress"));
+    // Unblock restores in-progress (not todo/default), and clears the field.
+    opys(&dir)
+        .args(["unblock", "TASK-0002", "--by", "FEAT-0001"])
+        .assert()
+        .success();
+    dir.child("opys/work-items/TASK-0002.md")
+        .assert(predicate::str::contains("status: in-progress"))
+        .assert(predicate::str::contains("blocked_from").not());
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// BUG-0033: a type with a `blocked` status but no `in-progress` unblocks back to
+/// its default status (was left stuck at `blocked`, failing verify).
+#[test]
+fn unblock_without_in_progress_falls_back_to_default() {
+    let cfg = format!(
+        "{}\n{}",
+        default_cfg(),
+        "[types.job]\n\
+prefix = \"JOB\"\n\
+dir = \"work-items\"\n\
+statuses = [\"open\", \"blocked\", \"done\"]\n\
+default_status = \"open\"\n\
+terminal_statuses = [\"done\"]\n\
+[[types.job.sections]]\nheading = \"Tasks\"\nkind = \"checklist\"\nrequired = true\n\
+[[rules]]\nwhen = { status = \"blocked\" }\n\
+require_any = [{ link = \"blocked_by\" }]\n"
+    );
+    let dir = project_with(&cfg);
+    opys(&dir)
+        .args(["new", "--title", "Alpha", "--tags", "a"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["new", "--type", "job", "--title", "Do it"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["block", "JOB-0002", "--by", "FEAT-0001"])
+        .assert()
+        .success();
+    dir.child("opys/work-items/JOB-0002.md")
+        .assert(predicate::str::contains("status: blocked"))
+        .assert(predicate::str::contains("blocked_from: open"));
+    opys(&dir)
+        .args(["unblock", "JOB-0002", "--by", "FEAT-0001"])
+        .assert()
+        .success();
+    dir.child("opys/work-items/JOB-0002.md")
+        .assert(predicate::str::contains("status: open"));
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// BUG-0036: `--reason` is rejected when `<status>_reason` is not a declared
+/// field, instead of writing an unknown field that the next verify rejects.
+#[test]
+fn set_status_reason_requires_declared_field() {
+    let dir = project();
+    opys(&dir)
+        .args(["new", "--title", "A", "--tags", "a"])
+        .assert()
+        .success();
+    // `partial_reason` is not declared -> reject, write nothing.
+    opys(&dir)
+        .args(["set-status", "FEAT-0001", "partial", "--reason", "half"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("partial_reason"));
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::str::contains("status: planned"));
+    opys(&dir).arg("verify").assert().success();
+    // `wontfix_reason` IS declared -> accepted, and the corpus stays green.
+    opys(&dir)
+        .args([
+            "set-status",
+            "FEAT-0001",
+            "wontfix",
+            "--reason",
+            "out of scope",
+        ])
+        .assert()
+        .success();
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::str::contains("status: wontfix"))
+        .assert(predicate::str::contains("wontfix_reason"));
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// BUG-0034: agent-rules resolves the project root (like every other command),
+/// so running from a nested subdir writes at the root, not the cwd.
+#[test]
+fn agent_rules_writes_to_project_root_from_subdir() {
+    let dir = project();
+    let deep = dir.path().join("sub/deep");
+    std::fs::create_dir_all(&deep).unwrap();
+    Command::cargo_bin("opys")
+        .unwrap()
+        .arg("--root")
+        .arg(&deep)
+        .args(["agent-rules", "--tool", "cursor"])
+        .assert()
+        .success();
+    // Lands at the project root, not under sub/deep/.
+    dir.child(".cursor/rules/opys.mdc")
+        .assert(predicate::path::exists());
+    assert!(!deep.join(".cursor/rules/opys.mdc").exists());
 }
 
 #[test]

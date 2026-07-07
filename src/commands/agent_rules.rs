@@ -3,10 +3,9 @@
 //! copies are kept in the repo; this writes the right file in the right place,
 //! adding any host-specific frontmatter.
 
-use std::path::Path;
-
 use crate::cli::AgentTool;
 use crate::error::{usage, Result};
+use crate::project::{find_root, start_dir};
 use crate::templates::AGENT_RULE;
 use crate::Ctx;
 
@@ -45,13 +44,20 @@ pub fn run(ctx: &Ctx, tool: AgentTool, stdout: bool) -> Result<()> {
         return Err(usage("--stdout works with a single --tool, not 'all'"));
     }
 
+    // Write relative to the project root (the dir with opys.toml), like every
+    // other command — not the cwd — so running from a subdirectory still lands
+    // the file at `<root>/.cursor/...`. Fall back to the start dir when there is
+    // no project yet, preserving the pre-init use case.
+    let start = start_dir(&ctx.root)?;
+    let root = find_root(&start).unwrap_or(start);
+
     for t in tools {
         let (rel, frontmatter) = target(t);
         let content = format!("{frontmatter}{AGENT_RULE}");
         if stdout {
             print!("{content}");
         } else {
-            let path = Path::new(&ctx.root).join(rel);
+            let path = root.join(rel);
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }

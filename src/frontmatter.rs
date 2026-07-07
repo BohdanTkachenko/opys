@@ -219,13 +219,16 @@ fn render_entry(key: &str, value: &Value) -> String {
         .to_string()
 }
 
-/// Inline representation of a flat scalar, or `None` if `value` is composite.
+/// Inline representation of a flat scalar, or `None` if `value` is composite or
+/// a string that cannot be safely written on one line (contains a newline or
+/// other control character — those fall through to the block-YAML path, which
+/// emits a round-tripping block/escaped scalar instead of a broken inline one).
 fn inline_scalar(value: &Value) -> Option<String> {
     match value {
         Value::Null => Some("null".to_string()),
         Value::Bool(b) => Some(if *b { "true" } else { "false" }.to_string()),
         Value::Number(n) => Some(n.to_string()),
-        Value::String(s) => Some(format_string(s)),
+        Value::String(s) if !s.chars().any(char::is_control) => Some(format_string(s)),
         _ => None,
     }
 }
@@ -239,15 +242,11 @@ fn format_string(s: &str) -> String {
     }
 }
 
+/// Whether a single-line string must be quoted to survive a YAML round-trip
+/// unchanged. (Multi-line / control-char strings never reach here — see
+/// `inline_scalar`.)
 fn needs_quote(s: &str) -> bool {
     if s.is_empty() || s != s.trim() {
-        return true;
-    }
-    // Would parse back as a non-string scalar.
-    if matches!(s, "true" | "false" | "null" | "~" | "yes" | "no") {
-        return true;
-    }
-    if s.parse::<i64>().is_ok() || s.parse::<f64>().is_ok() {
         return true;
     }
     // YAML indicator characters that make a plain scalar ambiguous.
@@ -255,7 +254,20 @@ fn needs_quote(s: &str) -> bool {
     if s.chars().any(|c| SPECIAL.contains(c)) {
         return true;
     }
-    matches!(s.chars().next(), Some('-') | Some('?'))
+    if matches!(s.chars().next(), Some('-') | Some('?')) {
+        return true;
+    }
+    // Authoritative check: if the bare scalar parses back as anything other than
+    // the identical string — a bool, null, int, float, hex/octal, `True`/`NULL`,
+    // etc. — it must be quoted. This defers to the same parser that reads the
+    // file, so it tracks the full YAML core schema without enumerating it.
+    !parses_back_as_same_string(s)
+}
+
+/// True when emitting `s` as a bare (unquoted) scalar parses back to the exact
+/// same string, rather than a bool/number/null/etc.
+fn parses_back_as_same_string(s: &str) -> bool {
+    matches!(serde_norway::from_str::<Value>(s), Ok(Value::String(t)) if t == s)
 }
 
 #[cfg(test)]
@@ -349,5 +361,46 @@ mod tests {
             "---\nid: VIK-0001\nstatus: planned\ntags: [a]\nnote: |\n  line one\n  line two\n---\n\n# T\n";
         let (fm, _) = parse(text, "x.md").unwrap();
         assert_eq!(fm.get_str("note"), Some("line one\nline two"));
+    }
+
+    /// BUG-0024: a multi-line string must serialize to valid YAML that parses
+    /// back to the identical string (was emitted inline, producing invalid YAML).
+    #[test]
+    fn multiline_string_field_round_trips() {
+        let mut fm = Frontmatter::new();
+        fm.set_str("id", "VIK-0001");
+        fm.set_str("status", "planned");
+        fm.set_str("spec", "line one\nline two");
+        let out = serialize(&fm, "# T\n");
+        // Must not be a broken inline value with a raw newline inside quotes.
+        assert!(
+            !out.contains("spec: line one\nline two") && !out.contains("spec: \"line one\n"),
+            "multiline emitted inline:\n{out}"
+        );
+        let (fm2, _) = parse(&out, "x.md").unwrap();
+        assert_eq!(fm2.get_str("spec"), Some("line one\nline two"));
+    }
+
+    /// BUG-0025: YAML keyword-/number-shaped strings must stay strings across a
+    /// re-serialize (`True`, `NULL`, hex, octal were emitted unquoted and flipped
+    /// type on the next parse).
+    #[test]
+    fn keyword_shaped_strings_stay_strings() {
+        for val in [
+            "True", "TRUE", "Null", "NULL", "0x1A", "0o7", "yes", "on", "123", "1.5",
+        ] {
+            let mut fm = Frontmatter::new();
+            fm.set_str("id", "VIK-0001");
+            fm.set_str("status", "planned");
+            fm.set_str("spec", val);
+            let out = serialize(&fm, "# T\n");
+            let (fm2, _) = parse(&out, "x.md")
+                .unwrap_or_else(|e| panic!("re-parse failed for {val:?}: {}\n{out}", e.0));
+            assert_eq!(
+                fm2.get_str("spec"),
+                Some(val),
+                "{val:?} did not round-trip as a string; emitted:\n{out}"
+            );
+        }
     }
 }
