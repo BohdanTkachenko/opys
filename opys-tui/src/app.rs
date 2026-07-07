@@ -63,6 +63,8 @@ pub struct App {
     pub confirm_close: Option<String>,
     /// A document file the loop should open in `$EDITOR` before the next draw.
     pub pending_editor: Option<PathBuf>,
+    /// Honor the CLI's `--no-sync`: skip the auto-sync pass after a write.
+    pub no_sync: bool,
     pub status: Option<String>,
     pub should_quit: bool,
 }
@@ -85,6 +87,7 @@ impl App {
             status_pick: None,
             confirm_close: None,
             pending_editor: None,
+            no_sync: ctx.no_sync,
             status: None,
             should_quit: false,
         };
@@ -330,8 +333,7 @@ impl App {
     /// (reconcile + linkify + relocate), then reload and surface any problems
     /// `verify` reports so a bad hand-edit is visible rather than silent.
     pub fn after_external_edit(&mut self) {
-        let backend = opys_backend_markdown_local::MarkdownLocal;
-        let sync = opys_engine::commands::sync::run(&self.prj, &backend);
+        let sync = self.maybe_sync();
         self.reload();
         // If parsing already failed, `refresh_status` set that message — keep it.
         if self.status.is_some() {
@@ -339,7 +341,8 @@ impl App {
         }
         self.status = match sync {
             Err(e) => Some(format!("sync failed: {e}")),
-            Ok(_) => {
+            Ok(()) => {
+                let backend = opys_backend_markdown_local::MarkdownLocal;
                 let (docs, parse_errors) = backend.load_docs(&self.prj);
                 let problems =
                     opys_engine::commands::verify::collect_problems(&self.prj, &docs, parse_errors);
@@ -349,6 +352,18 @@ impl App {
                 }
             }
         };
+    }
+
+    /// Run the auto-sync pass (reconcile + linkify + relocate) unless `--no-sync`
+    /// was passed. Returns the error as a string so callers can surface it rather
+    /// than discard it silently.
+    fn maybe_sync(&self) -> std::result::Result<(), String> {
+        if self.no_sync {
+            return Ok(());
+        }
+        opys_engine::commands::sync::run(&self.prj, &opys_backend_markdown_local::MarkdownLocal)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 
     /// Open the status picker for the selected document, offering the type's
@@ -365,6 +380,16 @@ impl App {
         };
         let t = &self.prj.pcfg.types[tname];
         let cur = doc.status();
+        // A document already in a terminal status is closed/archived; the board
+        // won't resurrect it. Reopening is a deliberate CLI act (`opys set-status`).
+        if let Some(c) = cur {
+            if t.terminal_statuses.iter().any(|s| s == c) {
+                self.status = Some(format!(
+                    "{id} is {c} (terminal) — reopen with `opys set-status` on the CLI"
+                ));
+                return;
+            }
+        }
         let options: Vec<String> = t
             .statuses
             .iter()
@@ -419,9 +444,12 @@ impl App {
         });
         match result {
             Ok(()) => {
-                let _ = opys_engine::commands::sync::run(&self.prj, &backend);
+                let sync = self.maybe_sync();
                 self.reload();
-                self.status = Some(format!("{id} -> {status}"));
+                self.status = Some(match sync {
+                    Ok(()) => format!("{id} -> {status}"),
+                    Err(e) => format!("{id} -> {status}; sync failed: {e}"),
+                });
             }
             Err(e) => self.status = Some(format!("not changed: {e}")),
         }
@@ -451,9 +479,12 @@ impl App {
         });
         match result {
             Ok(()) => {
-                let _ = opys_engine::commands::sync::run(&self.prj, &backend);
+                let sync = self.maybe_sync();
                 self.reload();
-                self.status = Some(format!("closed {id}"));
+                self.status = Some(match sync {
+                    Ok(()) => format!("closed {id}"),
+                    Err(e) => format!("closed {id}; sync failed: {e}"),
+                });
             }
             Err(e) => self.status = Some(format!("close failed: {e}")),
         }
@@ -495,8 +526,8 @@ mod tests {
         assert!(!is_control_combo(&k));
     }
 
-    /// A `task` type with a terminal `done` status and one live doc.
-    fn app_with_task() -> App {
+    /// A `task` type with a terminal `done` status and one live doc in `status`.
+    fn app_with_task(status: &str) -> App {
         let dir = tempfile::tempdir().unwrap();
         let config = "pad = 4\n\
 [types.task]\nprefix = \"TASK\"\n\
@@ -506,7 +537,7 @@ default_status = \"todo\"\nterminal_statuses = [\"done\"]\ntags_required = false
         std::fs::create_dir_all(dir.path().join("opys")).unwrap();
         std::fs::write(
             dir.path().join("opys/TASK-0001.md"),
-            "---\nid: TASK-0001\nstatus: todo\n---\n\n# A task\n",
+            format!("---\nid: TASK-0001\nstatus: {status}\n---\n\n# A task\n"),
         )
         .unwrap();
         let ctx = Ctx {
@@ -522,7 +553,7 @@ default_status = \"todo\"\nterminal_statuses = [\"done\"]\ntags_required = false
 
     #[test]
     fn status_picker_excludes_terminal_statuses() {
-        let mut app = app_with_task();
+        let mut app = app_with_task("todo");
         app.start_status_pick();
         assert!(app.mode == Mode::Status);
         let pick = app.status_pick.as_ref().expect("picker opened");
@@ -532,5 +563,15 @@ default_status = \"todo\"\nterminal_statuses = [\"done\"]\ntags_required = false
         assert!(!pick.options.contains(&"done".to_string()));
         // The picker starts on the document's current status.
         assert_eq!(pick.options[pick.idx], "todo");
+    }
+
+    #[test]
+    fn status_picker_refuses_terminal_doc() {
+        // A doc already in a terminal status can't be resurrected from the board.
+        let mut app = app_with_task("done");
+        app.start_status_pick();
+        assert!(app.mode == Mode::Browse);
+        assert!(app.status_pick.is_none());
+        assert!(app.status.as_deref().unwrap_or("").contains("terminal"));
     }
 }
