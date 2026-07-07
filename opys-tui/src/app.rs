@@ -1,19 +1,24 @@
 //! The TUI application state (the TEA model) and the input reducer.
+//!
+//! The board is **read-mostly**: it filters, sorts, and previews the inventory,
+//! and the only writes it performs go through the real command cores —
+//! `set_status::core` (status picker) and `close::core` (`D`) — so on-disk
+//! invariants hold exactly as in the CLI. Body edits are delegated to `$EDITOR`
+//! (`e`/Enter): the loop suspends the TUI, runs the editor on the document file,
+//! then runs the sync/verify pass on return.
+use std::path::PathBuf;
+
 use opys_engine::backend::Backend;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use opys_engine::commands::new::scaffold_body;
 use opys_engine::doc::Doc;
 use opys_engine::error::Result;
-use opys_engine::frontmatter::Frontmatter;
 use opys_engine::project::Project;
 use opys_engine::Ctx;
 
 use super::data::Board;
 use super::filter::{self, FilterField, FilterState};
-use super::form::{EditForm, FormAction};
-use super::save;
 use super::sort::{sort_docs, SortKey, SortState};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -29,10 +34,15 @@ pub enum Mode {
     Browse,
     Filter,
     Stats,
-    /// Picking a type for a new document.
-    NewType,
-    /// Editing (or creating) a document.
-    Edit,
+    /// Picking a new status for the selected document.
+    Status,
+}
+
+/// A pending status change: the target document and the choices offered.
+pub struct StatusPick {
+    pub id: String,
+    pub options: Vec<String>,
+    pub idx: usize,
 }
 
 pub struct App {
@@ -47,13 +57,12 @@ pub struct App {
     pub mode: Mode,
     pub filter: FilterState,
     pub filter_focus: FilterField,
-    /// The open edit/new form, when `mode == Edit`.
-    pub edit: Option<EditForm>,
-    /// Type names offered by the new-document picker, and the cursor into them.
-    pub new_types: Vec<String>,
-    pub new_type_idx: usize,
+    /// The open status picker, when `mode == Status`.
+    pub status_pick: Option<StatusPick>,
     /// A pending close confirmation (the document id awaiting `y`).
     pub confirm_close: Option<String>,
+    /// A document file the loop should open in `$EDITOR` before the next draw.
+    pub pending_editor: Option<PathBuf>,
     pub status: Option<String>,
     pub should_quit: bool,
 }
@@ -73,10 +82,9 @@ impl App {
             mode: Mode::Browse,
             filter: FilterState::default(),
             filter_focus: FilterField::Type,
-            edit: None,
-            new_types: Vec::new(),
-            new_type_idx: 0,
+            status_pick: None,
             confirm_close: None,
+            pending_editor: None,
             status: None,
             should_quit: false,
         };
@@ -128,18 +136,11 @@ impl App {
     }
 
     /// Reload the board from disk, preserving selection and the active filter.
-    /// While a form is open, also reconcile it with the external change
-    /// (silent reload when clean, conflict prompt when dirty).
     pub fn reload(&mut self) {
         let keep = self.selected_id();
         self.board.reload(&self.prj, self.sort);
         self.recompute_visible(keep.as_deref());
         self.refresh_status();
-        if self.mode == Mode::Edit {
-            if let Some(form) = self.edit.as_mut() {
-                form.on_external_change(&self.prj);
-            }
-        }
     }
 
     fn resort(&mut self) {
@@ -196,8 +197,7 @@ impl App {
             Mode::Browse => self.handle_browse(key),
             Mode::Filter => self.handle_filter(key),
             Mode::Stats => self.handle_stats(key),
-            Mode::NewType => self.handle_new_type(key),
-            Mode::Edit => self.handle_edit(key),
+            Mode::Status => self.handle_status(key),
         }
     }
 
@@ -236,8 +236,8 @@ impl App {
                 self.refilter();
             }
             KeyCode::Char('S') => self.mode = Mode::Stats,
-            KeyCode::Char('e') | KeyCode::Enter => self.start_edit(),
-            KeyCode::Char('n') => self.start_new(),
+            KeyCode::Char('e') | KeyCode::Enter => self.request_editor(),
+            KeyCode::Char(' ') => self.start_status_pick(),
             KeyCode::Char('D') => self.request_close(),
             _ => {}
         }
@@ -316,133 +316,114 @@ impl App {
         self.refilter();
     }
 
-    // --- edit / new / close ---
+    // --- edit ($EDITOR) / status / close ---
 
-    fn start_edit(&mut self) {
-        if let Some(doc) = self.selected_doc().cloned() {
-            self.edit = Some(EditForm::new(&self.prj, doc, false));
-            self.mode = Mode::Edit;
-            self.status = None;
+    /// Ask the loop to open the selected document in `$EDITOR`. The loop
+    /// suspends the TUI, runs the editor, and calls [`App::after_external_edit`].
+    fn request_editor(&mut self) {
+        if let Some(doc) = self.selected_doc() {
+            self.pending_editor = Some(doc.path.clone());
         }
     }
 
-    fn start_new(&mut self) {
-        self.new_types = self.prj.pcfg.types.keys().cloned().collect();
-        if self.new_types.is_empty() {
-            self.status = Some("no document types defined".into());
+    /// Called by the loop after `$EDITOR` returns: run the auto-sync pass
+    /// (reconcile + linkify + relocate), then reload and surface any problems
+    /// `verify` reports so a bad hand-edit is visible rather than silent.
+    pub fn after_external_edit(&mut self) {
+        let backend = opys_backend_markdown_local::MarkdownLocal;
+        let sync = opys_engine::commands::sync::run(&self.prj, &backend);
+        self.reload();
+        // If parsing already failed, `refresh_status` set that message — keep it.
+        if self.status.is_some() {
             return;
         }
-        self.new_type_idx = 0;
-        if self.new_types.len() == 1 {
-            // Only one type — skip the picker.
-            self.scaffold_new(0);
-        } else {
-            self.mode = Mode::NewType;
-        }
+        self.status = match sync {
+            Err(e) => Some(format!("sync failed: {e}")),
+            Ok(_) => {
+                let (docs, parse_errors) = backend.load_docs(&self.prj);
+                let problems =
+                    opys_engine::commands::verify::collect_problems(&self.prj, &docs, parse_errors);
+                match problems.len() {
+                    0 => Some("saved".into()),
+                    n => Some(format!("{n} problem(s) — run `opys verify`")),
+                }
+            }
+        };
     }
 
-    fn handle_new_type(&mut self, key: KeyEvent) {
+    /// Open the status picker for the selected document, offering the type's
+    /// non-terminal statuses (terminal ones are reached only via `close`).
+    fn start_status_pick(&mut self) {
+        let Some(doc) = self.selected_doc() else {
+            return;
+        };
+        let Some(id) = doc.id() else { return };
+        let id = id.to_string();
+        let Some(tname) = self.prj.pcfg.type_name_for_id(&id) else {
+            self.status = Some(format!("{id}: unrecognized type"));
+            return;
+        };
+        let t = &self.prj.pcfg.types[tname];
+        let cur = doc.status();
+        let options: Vec<String> = t
+            .statuses
+            .iter()
+            .filter(|s| !t.terminal_statuses.iter().any(|term| term == *s))
+            .cloned()
+            .collect();
+        if options.is_empty() {
+            self.status = Some(format!("{id}: type has no settable status"));
+            return;
+        }
+        let idx = cur
+            .and_then(|c| options.iter().position(|s| s == c))
+            .unwrap_or(0);
+        self.status_pick = Some(StatusPick { id, options, idx });
+        self.mode = Mode::Status;
+        self.status = None;
+    }
+
+    fn handle_status(&mut self, key: KeyEvent) {
+        let Some(pick) = self.status_pick.as_mut() else {
+            self.mode = Mode::Browse;
+            return;
+        };
         match key.code {
-            KeyCode::Esc => self.mode = Mode::Browse,
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.new_type_idx = self.new_type_idx.saturating_sub(1)
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.status_pick = None;
+                self.mode = Mode::Browse;
             }
-            KeyCode::Down | KeyCode::Char('j') if self.new_type_idx + 1 < self.new_types.len() => {
-                self.new_type_idx += 1;
+            KeyCode::Up | KeyCode::Char('k') => pick.idx = pick.idx.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') if pick.idx + 1 < pick.options.len() => {
+                pick.idx += 1;
             }
-            KeyCode::Enter => self.scaffold_new(self.new_type_idx),
+            KeyCode::Enter => {
+                let id = pick.id.clone();
+                let status = pick.options[pick.idx].clone();
+                self.status_pick = None;
+                self.mode = Mode::Browse;
+                self.apply_status(&id, &status);
+            }
             _ => {}
         }
     }
 
-    /// Scaffold a fresh in-memory document of the chosen type and open it in the
-    /// edit form. It is not written until the form is saved.
-    fn scaffold_new(&mut self, type_idx: usize) {
-        let Some(tname) = self.new_types.get(type_idx).cloned() else {
-            return;
-        };
-        let t = &self.prj.pcfg.types[&tname];
-        let id = self.prj.next_id_for(&t.prefix, &self.board.docs);
-        let status = t.default_status.clone();
-        let body = scaffold_body("", t);
-        let mut fm = Frontmatter::new();
-        fm.set_str("id", &id);
-        fm.set_str("status", &status);
-        let path = self.prj.doc_path(&id, &status);
-        let doc = Doc {
-            path,
-            frontmatter: fm,
-            body,
-            title: String::new(),
-        };
-        self.edit = Some(EditForm::new(&self.prj, doc, true));
-        self.mode = Mode::Edit;
-        self.status = None;
-    }
-
-    fn handle_edit(&mut self, key: KeyEvent) {
-        let action = match self.edit.as_mut() {
-            Some(form) => form.handle_key(key),
-            None => {
-                self.mode = Mode::Browse;
-                return;
-            }
-        };
-        match action {
-            FormAction::None => {}
-            FormAction::Cancel => {
-                self.edit = None;
-                self.mode = Mode::Browse;
-            }
-            FormAction::Reload => {
-                if let Some(form) = self.edit.as_mut() {
-                    form.reload_from_disk(&self.prj);
-                }
-            }
-            FormAction::Save => self.save_form(),
-        }
-    }
-
-    fn save_form(&mut self) {
-        // Borrow the disjoint fields directly so `apply` (→ &mut Doc) and `&prj`
-        // can be held together.
-        let result = {
-            let Some(form) = self.edit.as_mut() else {
-                return;
-            };
-            match form.apply() {
-                Err(msg) => Err(msg),
-                Ok(doc) => save::save_edited_doc(&self.prj, doc).map_err(|e| e.to_string()),
-            }
-        };
+    /// Apply a status transition through `set_status::core`, then flush + sync.
+    /// A rule failure (e.g. a status that requires a reason) is surfaced on the
+    /// status line and nothing is written.
+    fn apply_status(&mut self, id: &str, status: &str) {
+        let backend = opys_backend_markdown_local::MarkdownLocal;
+        let result = backend.load(&self.prj).and_then(|(mut store, _)| {
+            opys_engine::commands::set_status::core(&self.prj, &mut store, id, status, None)?;
+            backend.flush(&self.prj, store)
+        });
         match result {
             Ok(()) => {
-                let id = self.edit.as_ref().map(|f| f.title_id()).unwrap_or_default();
-                if let Some(form) = self.edit.as_mut() {
-                    form.mark_saved();
-                }
-                // Persist the relation/linkify/relocate pass, then refresh.
-                let _ = opys_engine::commands::sync::run(
-                    &self.prj,
-                    &opys_backend_markdown_local::MarkdownLocal,
-                );
-                self.edit = None;
-                self.mode = Mode::Browse;
+                let _ = opys_engine::commands::sync::run(&self.prj, &backend);
                 self.reload();
-                self.select_id(&id);
-                self.status = Some(format!("saved {id}"));
+                self.status = Some(format!("{id} -> {status}"));
             }
-            Err(msg) => self.status = Some(format!("not saved: {msg}")),
-        }
-    }
-
-    fn select_id(&mut self, id: &str) {
-        if let Some(pos) = self
-            .visible
-            .iter()
-            .position(|&i| self.board.docs[i].id() == Some(id))
-        {
-            self.selected = pos;
+            Err(e) => self.status = Some(format!("not changed: {e}")),
         }
     }
 
@@ -463,18 +444,14 @@ impl App {
     }
 
     fn do_close(&mut self, id: &str) {
-        let result = opys_backend_markdown_local::MarkdownLocal
-            .load(&self.prj)
-            .and_then(|(mut store, _)| {
-                opys_engine::commands::close::core(&self.prj, &mut store, id, false)?;
-                opys_backend_markdown_local::MarkdownLocal.flush(&self.prj, store)
-            });
+        let backend = opys_backend_markdown_local::MarkdownLocal;
+        let result = backend.load(&self.prj).and_then(|(mut store, _)| {
+            opys_engine::commands::close::core(&self.prj, &mut store, id, false)?;
+            backend.flush(&self.prj, store)
+        });
         match result {
             Ok(()) => {
-                let _ = opys_engine::commands::sync::run(
-                    &self.prj,
-                    &opys_backend_markdown_local::MarkdownLocal,
-                );
+                let _ = opys_engine::commands::sync::run(&self.prj, &backend);
                 self.reload();
                 self.status = Some(format!("closed {id}"));
             }
@@ -501,7 +478,8 @@ fn normalize_key(key: KeyEvent) -> KeyEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_control_combo, normalize_key};
+    use super::{is_control_combo, normalize_key, App, Mode};
+    use opys_engine::Ctx;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     #[test]
@@ -515,5 +493,44 @@ mod tests {
         let k = normalize_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
         assert_eq!(k.code, KeyCode::Char('h'));
         assert!(!is_control_combo(&k));
+    }
+
+    /// A `task` type with a terminal `done` status and one live doc.
+    fn app_with_task() -> App {
+        let dir = tempfile::tempdir().unwrap();
+        let config = "pad = 4\n\
+[types.task]\nprefix = \"TASK\"\n\
+statuses = [\"todo\", \"in-progress\", \"done\"]\n\
+default_status = \"todo\"\nterminal_statuses = [\"done\"]\ntags_required = false\n";
+        std::fs::write(dir.path().join("opys.toml"), config).unwrap();
+        std::fs::create_dir_all(dir.path().join("opys")).unwrap();
+        std::fs::write(
+            dir.path().join("opys/TASK-0001.md"),
+            "---\nid: TASK-0001\nstatus: todo\n---\n\n# A task\n",
+        )
+        .unwrap();
+        let ctx = Ctx {
+            root: dir.path().to_string_lossy().into_owned(),
+            no_sync: true,
+            backend: Box::new(opys_backend_markdown_local::MarkdownLocal),
+        };
+        // Keep the temp dir alive for the App's lifetime by leaking it — the test
+        // process is short-lived, so this is fine and keeps the helper simple.
+        std::mem::forget(dir);
+        App::new(&ctx).unwrap()
+    }
+
+    #[test]
+    fn status_picker_excludes_terminal_statuses() {
+        let mut app = app_with_task();
+        app.start_status_pick();
+        assert!(app.mode == Mode::Status);
+        let pick = app.status_pick.as_ref().expect("picker opened");
+        assert!(pick.options.contains(&"todo".to_string()));
+        assert!(pick.options.contains(&"in-progress".to_string()));
+        // `done` is terminal — reachable only via `close`, never the picker.
+        assert!(!pick.options.contains(&"done".to_string()));
+        // The picker starts on the document's current status.
+        assert_eq!(pick.options[pick.idx], "todo");
     }
 }

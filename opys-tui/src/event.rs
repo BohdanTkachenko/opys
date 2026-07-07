@@ -1,5 +1,6 @@
-//! The two event sources — keyboard input and the debounced file watcher —
-//! merged onto one channel that the main loop consumes.
+//! The file-watcher event source. Keyboard input is polled directly by the main
+//! loop (see `lib::event_loop`) rather than pumped through a thread, so it does
+//! not compete with a spawned `$EDITOR` for the terminal's stdin.
 
 use std::path::Path;
 use std::sync::mpsc::Sender;
@@ -7,27 +8,13 @@ use std::time::Duration;
 
 use notify_debouncer_full::notify::{RecursiveMode, Watcher};
 use notify_debouncer_full::{new_debouncer, DebounceEventResult};
-use ratatui::crossterm::event;
 
 use opys_engine::error::{usage, Result};
 
-/// A unit of work for the main loop: a terminal input event, or a debounced
-/// signal that documents on disk changed and the board should reload.
+/// A debounced signal that documents on disk changed and the board should
+/// reload. (Keyboard events are read inline by the loop, not sent here.)
 pub enum Event {
-    Input(event::Event),
     FsChanged,
-}
-
-/// Spawn a thread that blocks on terminal input and forwards each event. The
-/// thread exits when the receiver is dropped (the loop has ended).
-pub fn spawn_input(tx: Sender<Event>) {
-    std::thread::spawn(move || {
-        while let Ok(ev) = event::read() {
-            if tx.send(Event::Input(ev)).is_err() {
-                break;
-            }
-        }
-    });
 }
 
 /// Watch `base` recursively, coalescing the burst of writes a single command or
