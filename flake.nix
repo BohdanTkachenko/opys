@@ -13,9 +13,9 @@
 
   outputs = { self, nixpkgs, flake-utils, rust-overlay }:
     let
-      # Cargo.toml's [package].version is the single source of truth for the
-      # version (scripts/sync-versions.sh fans it out to the other manifests);
-      # read it here so the Nix package never drifts from the crate.
+      # Cargo.toml's [workspace.package].version is the single source of truth
+      # for the version (scripts/sync-versions.sh fans it out to the other
+      # manifests); read it here so the Nix package never drifts from the crate.
       cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
 
       # Build the opys binary from this checkout. Factored out of the per-system
@@ -33,7 +33,7 @@
         in
         pkgs.rustPlatform.buildRustPackage {
           pname = "opys";
-          version = cargoToml.package.version;
+          version = cargoToml.workspace.package.version;
 
           # Only the inputs the build actually reads, so unrelated edits (README,
           # the packaging manifests) don't invalidate it. skills/ is required
@@ -52,6 +52,15 @@
           };
 
           cargoLock.lockFile = ./Cargo.lock;
+
+          # The workspace root package is the `opys-engine` *library*; the `opys`
+          # binary lives in the opys/ member. Build (and test) that member so the
+          # package actually produces the `opys` binary — a plain workspace-root
+          # build installs no binary. `--features tui` then resolves against the
+          # opys crate, so the Nix package ships the `opys tui` board the README
+          # advertises as an install path (`nix run` / the overlay).
+          buildAndTestSubdir = "opys";
+          buildFeatures = [ "tui" ];
 
           nativeCheckInputs = [ shForTests ];
 

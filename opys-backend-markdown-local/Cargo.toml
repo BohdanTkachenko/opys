@@ -6,6 +6,9 @@ rust-version = "1.88"
 description = "Markdown + local-filesystem storage backend for opys"
 license = "Apache-2.0"
 repository = "https://github.com/BohdanTkachenko/opys"
+readme = "README.md"
+keywords = ["opys", "markdown", "storage", "backend", "inventory"]
+categories = ["development-tools", "filesystem"]
 
 [dependencies]
 opys-engine = { path = "..", version = "0.12.0" }

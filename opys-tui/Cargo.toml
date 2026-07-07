@@ -6,6 +6,9 @@ rust-version = "1.88"
 description = "Interactive terminal UI for opys"
 license = "Apache-2.0"
 repository = "https://github.com/BohdanTkachenko/opys"
+readme = "README.md"
+keywords = ["opys", "tui", "terminal", "ratatui", "inventory"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 opys-engine = { path = "..", version = "0.12.0" }
