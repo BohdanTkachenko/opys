@@ -3,9 +3,11 @@
 //! existed at the git merge-base and renumbering the ones that were added on a
 //! feature branch.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use regex::{Captures, Regex};
 
 use crate::commands::maybe_sync;
 use crate::doc::Doc;
@@ -33,6 +35,11 @@ pub fn run(ctx: &Ctx, base: Option<&str>) -> Result<()> {
         }
     }
 
+    // The set of ids present at the base commit, resolved *by id* (the id-named
+    // file anywhere under the inventory base) — not by current path, so a doc
+    // that existed at base but was relocated on the branch is still recognized.
+    let base_ids = ids_at_base(&git_root, &base_sha, &prj);
+
     // Build old→new mapping, allocating new IDs sequentially past the current max.
     let mut counter = store.max_doc_num()? + 1;
     let mut mapping: HashMap<String, String> = HashMap::new();
@@ -42,11 +49,7 @@ pub fn run(ctx: &Ctx, base: Option<&str>) -> Result<()> {
         let mut to_renumber: Vec<&str> = Vec::new();
 
         for id in group {
-            let at_base = docs
-                .iter()
-                .find(|(_, d)| d.id() == Some(id.as_str()))
-                .is_some_and(|(_, d)| exists_at_base(&git_root, &base_sha, d));
-            if at_base {
+            if base_ids.contains(id.as_str()) {
                 keep.push(id.as_str());
             } else {
                 to_renumber.push(id.as_str());
@@ -163,14 +166,45 @@ fn find_conflicts(docs: &[&Doc]) -> Vec<Vec<String>> {
     groups
 }
 
-/// Replace old IDs with new IDs throughout `text`. Longer IDs are substituted
-/// first to avoid partial-match issues when one ID is a prefix of another.
+/// Replace old IDs with new IDs throughout `text`, matching only whole ids
+/// (word-bounded, so renaming `FEAT-1000` never corrupts `FEAT-10005`) and never
+/// inside fenced code blocks (which linkify likewise skips). The alternation is
+/// longest-first so a longer id wins when several share a prefix.
 fn apply_renames(text: &str, mapping: &HashMap<String, String>) -> String {
-    let mut pairs: Vec<_> = mapping.iter().collect();
-    pairs.sort_by_key(|p| std::cmp::Reverse(p.0.len()));
-    let mut out = text.to_string();
-    for (old, new) in pairs {
-        out = out.replace(old.as_str(), new.as_str());
+    let mut olds: Vec<&String> = mapping.keys().collect();
+    olds.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    let alt = olds
+        .iter()
+        .map(|o| regex::escape(o))
+        .collect::<Vec<_>>()
+        .join("|");
+    let re = Regex::new(&format!(r"\b(?:{alt})\b")).expect("valid id alternation");
+
+    let mut out = String::new();
+    let mut fence: Option<(char, usize)> = None;
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        if let Some((fc, flen)) = fence {
+            if crate::links::closes_fence(line, fc, flen) {
+                fence = None;
+            }
+            out.push_str(line);
+            continue;
+        }
+        if let Some((c, len)) = crate::links::opens_fence(line) {
+            fence = Some((c, len));
+            out.push_str(line);
+            continue;
+        }
+        let replaced = re.replace_all(line, |c: &Captures| {
+            mapping
+                .get(&c[0])
+                .cloned()
+                .unwrap_or_else(|| c[0].to_string())
+        });
+        out.push_str(&replaced);
     }
     out
 }
@@ -229,18 +263,90 @@ fn resolve_base(root: &Path, base: Option<&str>) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// True if `doc`'s file exists in the git tree at `base_sha`.
-fn exists_at_base(git_root: &Option<PathBuf>, base_sha: &Option<String>, doc: &Doc) -> bool {
+/// The document ids present at `base_sha`, resolved by the id-named file
+/// (`<ID>.md`) anywhere under the inventory base — one `git ls-tree` for the
+/// whole set. Location-independent, so a relocation on the branch (e.g. into
+/// `_archived/`) does not make a base document look new.
+fn ids_at_base(
+    git_root: &Option<PathBuf>,
+    base_sha: &Option<String>,
+    prj: &Project,
+) -> HashSet<String> {
     let (Some(git_root), Some(sha)) = (git_root, base_sha) else {
-        return false;
+        return HashSet::new();
     };
-    let Ok(rel) = doc.path.strip_prefix(git_root) else {
-        return false;
-    };
-    Command::new("git")
-        .args(["cat-file", "-e", &format!("{sha}:{}", rel.display())])
+    let mut args = vec![
+        "ls-tree".to_string(),
+        "-r".to_string(),
+        "--name-only".to_string(),
+        sha.clone(),
+    ];
+    // Scope to the inventory base when it lives under the git root.
+    if let Ok(rel) = prj.base.strip_prefix(git_root) {
+        args.push("--".to_string());
+        args.push(rel.display().to_string());
+    }
+    let Ok(out) = Command::new("git")
+        .args(&args)
         .current_dir(git_root)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .output()
+    else {
+        return HashSet::new();
+    };
+    if !out.status.success() {
+        return HashSet::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            Path::new(line)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_suffix(".md"))
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn apply_renames_matches_whole_ids_only() {
+        let m = map(&[("FEAT-1000", "FEAT-2000")]);
+        // The exact id is renamed; a longer id that merely shares the prefix
+        // (once ids outgrow the pad width) is left intact.
+        assert_eq!(
+            apply_renames("see FEAT-1000 and FEAT-10005 here", &m),
+            "see FEAT-2000 and FEAT-10005 here"
+        );
+    }
+
+    #[test]
+    fn apply_renames_skips_fenced_code() {
+        let m = map(&[("FEAT-1000", "FEAT-2000")]);
+        let text = "FEAT-1000 prose\n```\nFEAT-1000 code\n```\nFEAT-1000 tail";
+        assert_eq!(
+            apply_renames(text, &m),
+            "FEAT-2000 prose\n```\nFEAT-1000 code\n```\nFEAT-2000 tail"
+        );
+    }
+
+    #[test]
+    fn apply_renames_rewrites_relation_values_and_prose() {
+        let m = map(&[("TASK-0001", "TASK-0009")]);
+        let text = "references:\n  TASK-0001: Wire it\n---\nSee TASK-0001 for context.";
+        assert_eq!(
+            apply_renames(text, &m),
+            "references:\n  TASK-0009: Wire it\n---\nSee TASK-0009 for context."
+        );
+    }
 }

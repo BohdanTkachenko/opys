@@ -192,36 +192,125 @@ pub fn linkify(
     re: &Regex,
 ) -> String {
     let mut out = String::new();
-    let mut in_fence = false;
+    let mut fence: Option<(char, usize)> = None;
     for (i, line) in body.split('\n').enumerate() {
         if i > 0 {
             out.push('\n');
         }
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            in_fence = !in_fence;
-            out.push_str(line);
-            continue;
-        }
-        if in_fence {
-            out.push_str(line);
-            continue;
-        }
-        // Split on backticks: even segments are prose, odd are inline code.
-        let mut code = false;
-        for (j, seg) in line.split('`').enumerate() {
-            if j > 0 {
-                out.push('`');
+        // Inside a fenced code block: emit verbatim, watching only for the close.
+        if let Some((fc, flen)) = fence {
+            if closes_fence(line, fc, flen) {
+                fence = None;
             }
-            if code {
+            out.push_str(line);
+            continue;
+        }
+        // A fence opener starts a code block (skip until it closes).
+        if let Some((c, len)) = opens_fence(line) {
+            fence = Some((c, len));
+            out.push_str(line);
+            continue;
+        }
+        // Prose line: linkify the prose runs, leaving inline code spans (of any
+        // backtick-run length) untouched.
+        for (seg, is_code) in code_aware_segments(line) {
+            if is_code {
                 out.push_str(seg);
             } else {
                 out.push_str(&linkify_prose(seg, current_dir, index, re));
             }
-            code = !code;
         }
     }
     out
+}
+
+/// A fenced-code opener: a line whose first non-space run is ≥3 of `` ` `` or
+/// `~`. Returns the fence char and run length. A backtick fence's info string
+/// may not itself contain a backtick (CommonMark), which rules out an inline
+/// double-backtick span being mistaken for a fence.
+pub(crate) fn opens_fence(line: &str) -> Option<(char, usize)> {
+    let (c, len, info) = fence_run(line)?;
+    if c == '`' && info.contains('`') {
+        return None;
+    }
+    Some((c, len))
+}
+
+/// Whether `line` closes a fence opened with `open_char` × `open_len`: a run of
+/// the *same* char, at least as long, with nothing but whitespace after it.
+pub(crate) fn closes_fence(line: &str, open_char: char, open_len: usize) -> bool {
+    matches!(fence_run(line), Some((c, len, info)) if c == open_char && len >= open_len && info.is_empty())
+}
+
+/// If `line`'s first non-whitespace content is a run of ≥3 identical fence chars
+/// (`` ` `` or `~`), return (char, run length, trailing text trimmed).
+fn fence_run(line: &str) -> Option<(char, usize, String)> {
+    let t = line.trim_start();
+    let c = t.chars().next()?;
+    if c != '`' && c != '~' {
+        return None;
+    }
+    let len = t.chars().take_while(|&x| x == c).count();
+    if len < 3 {
+        return None;
+    }
+    Some((c, len, t[len..].trim().to_string()))
+}
+
+/// Tile a (non-fence) line into prose / inline-code segments. A code span is a
+/// run of N backticks closed by the next run of *exactly* N backticks; its text
+/// (backticks included) is returned with `is_code = true`. Unmatched backtick
+/// runs stay in prose. Concatenating the segments reproduces the line exactly.
+fn code_aware_segments(line: &str) -> Vec<(&str, bool)> {
+    let mut segs = Vec::new();
+    let b = line.as_bytes();
+    let n = b.len();
+    let mut i = 0;
+    let mut prose_start = 0;
+    while i < n {
+        if b[i] == b'`' {
+            let run = b[i..].iter().take_while(|&&x| x == b'`').count();
+            if let Some(rel) = find_closing_run(&line[i + run..], run) {
+                if prose_start < i {
+                    segs.push((&line[prose_start..i], false));
+                }
+                let code_end = i + run + rel + run;
+                segs.push((&line[i..code_end], true));
+                i = code_end;
+                prose_start = i;
+                continue;
+            }
+            // Unmatched run: skip past it (stays in the surrounding prose).
+            i += run;
+            continue;
+        }
+        i += 1;
+    }
+    if prose_start < n {
+        segs.push((&line[prose_start..], false));
+    }
+    segs
+}
+
+/// Byte offset within `s` of the start of the next run of *exactly* `n`
+/// backticks (a run of a different length is code content, not a closer).
+fn find_closing_run(s: &str, n: usize) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'`' {
+            let start = i;
+            while i < b.len() && b[i] == b'`' {
+                i += 1;
+            }
+            if i - start == n {
+                return Some(start);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
 }
 
 /// Linkify one prose segment (no code spans/fences). Existing markdown links
@@ -312,7 +401,10 @@ fn parse_link(s: &str, start: usize) -> Option<(&str, usize)> {
     None
 }
 
-/// Replace bare ID mentions in link-free prose with fresh markdown links.
+/// Replace bare ID mentions in link-free prose with fresh markdown links. A
+/// mention immediately followed by `-` or `.` + a word char is a branch name or
+/// filename fragment (`FEAT-0001-fix-login`, `FEAT-0001.png`), not a doc
+/// reference, and is left untouched.
 fn replace_bare(
     seg: &str,
     current_dir: &Path,
@@ -320,7 +412,11 @@ fn replace_bare(
     re: &Regex,
 ) -> String {
     re.replace_all(seg, |c: &Captures| {
-        let id = &c[0];
+        let m = c.get(0).expect("group 0 always present");
+        let id = m.as_str();
+        if is_identifier_suffix(&seg[m.end()..]) {
+            return id.to_string();
+        }
         match index.get(id) {
             Some((title, path)) => {
                 format!("[{id} — {title}]({})", relpath(current_dir, path))
@@ -331,6 +427,16 @@ fn replace_bare(
     .into_owned()
 }
 
+/// Whether `after` (the text right after a matched id) makes the id part of a
+/// larger token: a `-` or `.` followed by a word char.
+fn is_identifier_suffix(after: &str) -> bool {
+    let mut chars = after.chars();
+    matches!(chars.next(), Some('-') | Some('.'))
+        && chars
+            .next()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+}
+
 /// Scan a body for nested markdown links — a complete `[…](…)` inside another
 /// link's label. That is invalid markdown and, in an opys inventory, the
 /// footprint of linkify corruption; `verify` flags each occurrence. Fenced code
@@ -338,19 +444,21 @@ fn replace_bare(
 /// truncated snippet per offending link.
 pub fn nested_links(body: &str) -> Vec<String> {
     let mut found = Vec::new();
-    let mut in_fence = false;
+    let mut fence: Option<(char, usize)> = None;
     for line in body.split('\n') {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            in_fence = !in_fence;
+        if let Some((fc, flen)) = fence {
+            if closes_fence(line, fc, flen) {
+                fence = None;
+            }
             continue;
         }
-        if in_fence {
+        if let Some((c, len)) = opens_fence(line) {
+            fence = Some((c, len));
             continue;
         }
-        for (j, seg) in line.split('`').enumerate() {
-            if j % 2 == 1 {
-                continue; // inline code span
+        for (seg, is_code) in code_aware_segments(line) {
+            if is_code {
+                continue; // inline code span (any backtick-run length)
             }
             let mut pos = 0;
             while let Some(off) = seg[pos..].find('[') {
@@ -532,6 +640,51 @@ mod tests {
         assert_eq!(
             linkify(body, dir, &idx(), &ref_re(&["FEAT".to_string()])),
             body
+        );
+    }
+
+    /// BUG-0029: a double-backtick (multi-run) code span must not be linkified.
+    #[test]
+    fn multi_backtick_code_span_is_not_linkified() {
+        let dir = Path::new("/p/work-items");
+        let re = ref_re(&["FEAT".to_string()]);
+        let body = "Use ``FEAT-0001 in `code`?`` and FEAT-0001 in prose.";
+        let out = linkify(body, dir, &idx(), &re);
+        // The span content is verbatim; only the prose mention is linkified.
+        assert_eq!(
+            out,
+            "Use ``FEAT-0001 in `code`?`` and [FEAT-0001 — Auth login](../features/FEAT-0001.md) in prose."
+        );
+    }
+
+    /// BUG-0029: an id that is really a branch/filename fragment
+    /// (`FEAT-0001-fix`, `FEAT-0001.png`) is left untouched — no `-fix` residue.
+    #[test]
+    fn identifier_suffix_is_not_linkified() {
+        let dir = Path::new("/p/work-items");
+        let re = ref_re(&["FEAT".to_string()]);
+        let body = "Branch FEAT-0001-fix-login and shot FEAT-0001.png stay put.";
+        assert_eq!(linkify(body, dir, &idx(), &re), body);
+        // But a trailing sentence period does not block linkifying.
+        assert_eq!(
+            linkify("Done in FEAT-0001.", dir, &idx(), &re),
+            "Done in [FEAT-0001 — Auth login](../features/FEAT-0001.md)."
+        );
+    }
+
+    /// BUG-0029: a fence marker of a different char/shorter run does not toggle
+    /// the fence state — a ``` line inside a ~~~ block stays code.
+    #[test]
+    fn mixed_fence_markers_do_not_toggle() {
+        let dir = Path::new("/p/work-items");
+        let re = ref_re(&["FEAT".to_string()]);
+        let body = "~~~\nFEAT-0001\n```\nFEAT-0001\n~~~\nFEAT-0001 after.";
+        let out = linkify(body, dir, &idx(), &re);
+        // Everything inside the ~~~ … ~~~ block (including the ``` line and both
+        // ids) is verbatim; only the mention after the block is linkified.
+        assert_eq!(
+            out,
+            "~~~\nFEAT-0001\n```\nFEAT-0001\n~~~\n[FEAT-0001 — Auth login](../features/FEAT-0001.md) after."
         );
     }
 }

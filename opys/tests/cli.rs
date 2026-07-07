@@ -661,6 +661,55 @@ fn import_is_transactional_on_bad_record() {
         .assert(predicate::path::missing());
 }
 
+/// BUG-0032: import rejects a terminal status (parity with `new`/`set-status`).
+#[test]
+fn import_rejects_terminal_status() {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "Alpha", "--tags", "a"])
+        .assert()
+        .success();
+    let jsonl = dir.child("tasks.jsonl");
+    jsonl
+        .write_str(
+            "{\"title\": \"Done thing\", \"status\": \"done\", \"references\": {\"FEAT-0001\": \"Alpha\"}}\n",
+        )
+        .unwrap();
+    opys(&dir)
+        .args(["import", "--type", "task", jsonl.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("terminal"));
+    dir.child("opys/work-items/TASK-0002.md")
+        .assert(predicate::path::missing());
+}
+
+/// BUG-0032: import scaffolds required sections a record omits, so it lands
+/// verify-clean instead of red.
+#[test]
+fn import_scaffolds_missing_required_sections() {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "Alpha", "--tags", "a"])
+        .assert()
+        .success();
+    let jsonl = dir.child("tasks.jsonl");
+    jsonl
+        .write_str("{\"title\": \"Wire it\", \"references\": {\"FEAT-0001\": \"Alpha\"}}\n")
+        .unwrap();
+    opys(&dir)
+        .args(["import", "--type", "task", jsonl.path().to_str().unwrap()])
+        .assert()
+        .success();
+    // The required Tasks + Progress sections were scaffolded, so verify is green.
+    dir.child("opys/work-items/TASK-0002.md")
+        .assert(predicate::str::contains("## Tasks"))
+        .assert(predicate::str::contains("## Progress"));
+    opys(&dir).arg("verify").assert().success();
+}
+
 #[test]
 fn verify_corpus_grep_check_resolves_test_refs() {
     // The default `Test plan` check greps the test name (the part after the
@@ -2693,7 +2742,6 @@ fn sync_backfills_missing_timestamps_from_mtime() {
 
 /// Run a git command in `dir`, asserting success. Author identity is passed per
 /// invocation so commits don't depend on ambient global git config.
-#[cfg(feature = "history")]
 fn git(dir: &TempDir, args: &[&str]) {
     let ok = std::process::Command::new("git")
         .current_dir(dir.path())
@@ -2705,7 +2753,6 @@ fn git(dir: &TempDir, args: &[&str]) {
 }
 
 /// Stage everything and commit as the given author.
-#[cfg(feature = "history")]
 fn git_commit(dir: &TempDir, author: &str, message: &str) {
     git(dir, &["add", "-A"]);
     git(
@@ -2797,6 +2844,35 @@ tags_required = true\n\
         .stdout(predicate::str::contains("planned"))
         .stdout(predicate::str::contains("archived"))
         .stdout(predicate::str::contains("_archived").not());
+}
+
+/// BUG-0030: a revision is attributed to the commit that introduced it, not the
+/// newest commit while the content was still current.
+#[cfg(feature = "history")]
+#[test]
+fn history_attributes_revision_to_the_introducing_commit() {
+    let dir = project();
+    git(&dir, &["init", "-q"]);
+    opys(&dir)
+        .args(["new", "--title", "Login", "--tags", "auth"])
+        .assert()
+        .success();
+    git_commit(&dir, "Alice", "create feature");
+    // Several unrelated commits on top, by a different author, touching other
+    // files — the document blob is unchanged across all of them.
+    for i in 0..3 {
+        dir.child(format!("notes-{i}.txt")).write_str("x").unwrap();
+        git_commit(&dir, "Mallory", "unrelated work");
+    }
+    // The single revision is credited to Alice (who introduced it), never to the
+    // later Mallory commits that merely carried the same content forward.
+    opys(&dir)
+        .args(["history", "FEAT-0001"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 revision,"))
+        .stdout(predicate::str::contains("Alice"))
+        .stdout(predicate::str::contains("Mallory").not());
 }
 
 #[test]
@@ -3088,6 +3164,52 @@ fn renumber_warns_about_file_references_with_sed_suggestion() {
         .stderr(predicate::str::contains(
             "sed -i 's/\\bTASK-0001\\b/TASK-0002/g' src/worker.rs",
         ));
+}
+
+/// BUG-0035: a base document relocated on the branch is resolved by id (not its
+/// current path), so it is *kept* and the genuinely new id is renumbered — even
+/// when the new id sorts first.
+#[test]
+fn renumber_keeps_a_relocated_base_document() {
+    let cfg = "pad = 4\n\
+[types.note]\n\
+prefix = \"NOTE\"\n\
+status_dirs = { archived = \"_archived\" }\n\
+statuses = [\"open\", \"archived\"]\n\
+default_status = \"open\"\n\
+[types.feature]\n\
+prefix = \"FEAT\"\n\
+statuses = [\"planned\"]\n\
+default_status = \"planned\"\n";
+    let dir = project_with(cfg);
+    git(&dir, &["init", "-q", "-b", "main"]);
+    // Base commit: NOTE-0001 lives at opys/NOTE-0001.md.
+    opys(&dir)
+        .args(["new", "--type", "note", "--title", "A note"])
+        .assert()
+        .success();
+    git_commit(&dir, "Base", "add note");
+    // On the branch, archive it — the file relocates into _archived/.
+    opys(&dir)
+        .args(["set-status", "NOTE-0001", "archived"])
+        .assert()
+        .success();
+    dir.child("opys/_archived/NOTE-0001.md")
+        .assert(predicate::path::exists());
+    // A genuinely new doc collides on the number 1 (and sorts before NOTE).
+    dir.child("opys/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [x]\n---\n\n# New\n")
+        .unwrap();
+
+    opys(&dir)
+        .args(["--no-sync", "renumber", "--base", "main"])
+        .assert()
+        .success()
+        // The relocated base doc is kept; the new id is the one renumbered.
+        .stdout(predicate::str::contains("FEAT-0001 → FEAT-0002"))
+        .stdout(predicate::str::contains("NOTE-0001 →").not());
+    dir.child("opys/_archived/NOTE-0001.md")
+        .assert(predicate::path::exists());
 }
 
 /// `query --write` DELETE of a referenced doc is a lifecycle removal: the file

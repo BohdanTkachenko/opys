@@ -141,13 +141,26 @@ fn build_record(
             ft.statuses.join(", ")
         )));
     }
+    // Parity with `new`: a terminal status is reached only via `close`.
+    if ft.terminal_statuses.iter().any(|s| s == &status) {
+        return Err(usage(format!(
+            "cannot import a '{type_name}' as {status}: it is terminal (reached only via `close`)"
+        )));
+    }
 
-    let body = match extra_body {
+    let mut body = match extra_body {
         Some(extra) if !extra.trim().is_empty() => {
             format!("# {title}\n\n{}\n", extra.trim_matches('\n'))
         }
         _ => format!("# {title}\n"),
     };
+    // Scaffold any required section the record didn't supply, so a section-less
+    // import lands verify-clean instead of red (parity with `new`).
+    for sec in ft.sections.iter().filter(|s| s.required) {
+        if !crate::body::has_section(&body, &sec.heading) {
+            body.push_str(&crate::commands::new::scaffold_section(sec));
+        }
+    }
 
     let problems = rules::evaluate(pcfg, type_name, &status, &fm, &body, doc_ids);
     if !problems.is_empty() {

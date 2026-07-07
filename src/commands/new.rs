@@ -137,25 +137,33 @@ pub fn run(
 pub fn scaffold_body(title: &str, t: &DocType) -> String {
     let mut body = format!("# {title}\n");
     for sec in t.sections.iter().filter(|s| s.required) {
-        body.push_str(&format!("\n## {}\n", sec.heading));
-        match sec.kind {
-            SectionKind::Checklist => body.push_str("- [ ] First item\n"),
-            // Scaffold the structured section from its mdprism schema.
-            SectionKind::Structured => {
-                if let Some(schema) = sec
-                    .structure
-                    .as_deref()
-                    .and_then(|s| crate::mdprism::parse_schema(s).ok())
-                {
-                    let scaffolded = schema.scaffold();
-                    body.push_str(&scaffolded);
-                    if !scaffolded.ends_with('\n') {
-                        body.push('\n');
-                    }
-                }
-            }
-            SectionKind::Prose | SectionKind::Log => {}
-        }
+        body.push_str(&scaffold_section(sec));
     }
     body
+}
+
+/// Scaffold one section — its `## heading` plus a kind-appropriate seed. Shared
+/// by `new` (whole-body scaffold) and `import` (fill in any required section a
+/// record omitted).
+pub fn scaffold_section(sec: &crate::project_config::SectionSpec) -> String {
+    let mut out = format!("\n## {}\n", sec.heading);
+    match sec.kind {
+        SectionKind::Checklist => out.push_str("- [ ] First item\n"),
+        // Scaffold the structured section from its mdprism schema.
+        SectionKind::Structured => {
+            if let Some(schema) = sec
+                .structure
+                .as_deref()
+                .and_then(|s| crate::mdprism::parse_schema(s).ok())
+            {
+                let scaffolded = schema.scaffold();
+                out.push_str(&scaffolded);
+                if !scaffolded.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+        }
+        SectionKind::Prose | SectionKind::Log => {}
+    }
+    out
 }
