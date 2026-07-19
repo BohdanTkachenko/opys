@@ -47,6 +47,11 @@ pub struct Store {
     /// Whether a legacy plaintext `_retired.txt` was present at load, so flush
     /// migrates it to `_retired.md` even when no id was reserved this run.
     retired_legacy: bool,
+    /// The load-time retired-ledger read error, if the file was present but
+    /// unreadable. While set, id allocation, reservation, and flush all refuse
+    /// to run — acting on an empty ledger read would reuse reserved ids or
+    /// rewrite the file without them. Read-only commands still work.
+    retired_corrupt: Option<String>,
     next_dkey: i64,
     next_rkey: i64,
 }
@@ -65,6 +70,10 @@ pub struct LoadedCorpus {
     pub retired: Vec<(String, String)>,
     /// Whether a legacy `_retired.txt` was present (triggers migration on flush).
     pub retired_legacy: bool,
+    /// The ledger read error when `_retired.md` was present but unreadable
+    /// (`retired` is then empty). Reported as a content problem and blocks
+    /// allocation/reservation/flush until the file is fixed.
+    pub retired_err: Option<String>,
 }
 
 impl Store {
@@ -80,6 +89,7 @@ impl Store {
             loaded: Vec::new(),
             retired_loaded: 0,
             retired_legacy: loaded.retired_legacy,
+            retired_corrupt: loaded.retired_err.clone(),
             next_dkey: 1,
             next_rkey: 1,
         };
@@ -129,7 +139,20 @@ impl Store {
         }
         store.retired_loaded = rows.len();
         store.insert_batch("retired", 4, rows)?;
-        Ok((store, loaded.errors))
+        let mut errors = loaded.errors;
+        if let Some(msg) = &loaded.retired_err {
+            errors.push(msg.clone());
+        }
+        Ok((store, errors))
+    }
+
+    /// Refuse an operation that would act on the empty read of a corrupt
+    /// retired ledger (allocation, reservation, flush).
+    fn ledger_guard(&self) -> Result<()> {
+        match &self.retired_corrupt {
+            Some(msg) => Err(crate::error::usage(msg.clone())),
+            None => Ok(()),
+        }
     }
 
     // ------------------------------------------------------------------
@@ -388,6 +411,7 @@ impl Store {
 
     /// Reserve a retired id with its last-known `title`; flush writes the ledger.
     pub fn retire_id(&mut self, id: &str, title: &str) -> Result<()> {
+        self.ledger_guard()?;
         let rkey = self.next_rkey;
         self.next_rkey += 1;
         self.exec(
@@ -423,6 +447,7 @@ impl Store {
     /// Highest numeric id across live docs, every relation-map entry (struck or
     /// not), and the retired ledger — the global monotonic sequence.
     pub fn max_doc_num(&mut self) -> Result<i64> {
+        self.ledger_guard()?;
         let mut max = 0i64;
         for sql in [
             "SELECT MAX(num) FROM docs",
@@ -602,7 +627,7 @@ terminal_statuses = ["done"]
             .iter()
             .map(|(rel, text)| (Doc::parse(prj.base.join(rel), text).expect("parse"), None))
             .collect();
-        let retired = crate::retired::read(&prj.base);
+        let retired = crate::retired::read(&prj.base).expect("readable ledger");
         let retired_legacy = crate::retired::legacy_path(&prj.base).exists();
         Store::build(
             prj,
@@ -611,6 +636,7 @@ terminal_statuses = ["done"]
                 errors: Vec::new(),
                 retired,
                 retired_legacy,
+                retired_err: None,
             },
         )
         .expect("build")

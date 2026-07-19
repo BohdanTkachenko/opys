@@ -83,6 +83,22 @@ pub fn core(prj: &Project, store: &mut Store, id: &str, force: bool) -> Result<(
     }
 
     store.delete_doc(dkey)?;
+    // The tombstones struck above also reserve the id, but they are not
+    // durable: the doc may be unreferenced (no tombstone at all), and `cleanup`
+    // strips tombstones later. The ledger entry is the reservation of record.
+    store.reserve_id(id, &closing.title)?;
+    // Relation entries living only in the closed doc's own maps (e.g. the
+    // tombstone of an earlier close) are destroyed with its file — reserve any
+    // id they were the last anchor for.
+    let carried: Vec<(String, String)> = refs::RELATION_FIELDS
+        .iter()
+        .flat_map(|f| refs::parse_in(&closing.frontmatter, f))
+        .map(|(tid, val)| {
+            let title = refs::unstrike(&val).to_string();
+            (tid, title)
+        })
+        .collect();
+    store.reserve_unanchored(&carried)?;
     Ok(())
 }
 

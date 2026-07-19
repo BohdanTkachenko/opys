@@ -10,6 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::error::{usage, OpysError, Result};
 use crate::frontmatter::{self, Frontmatter};
 use crate::refs;
 
@@ -35,22 +36,45 @@ pub fn legacy_path(base: &Path) -> PathBuf {
 }
 
 /// The ledger as `(id, title)` pairs sorted by number. Prefers `_retired.md`;
-/// falls back to the legacy plaintext ledger (ids only, empty titles). A missing
-/// ledger reads as empty.
-pub fn read(base: &Path) -> Vec<(String, String)> {
-    if let Ok(text) = std::fs::read_to_string(path(base)) {
-        if let Ok((fm, _)) = frontmatter::parse(&text, FILE) {
-            return refs::parse_in(&fm, FIELD);
-        }
+/// falls back to the legacy plaintext ledger (ids only, empty titles) only when
+/// the markdown ledger is *absent*. A missing ledger reads as empty; a present
+/// but unreadable/unparseable one is an error — treating it as empty would
+/// silently release every reserved id (and the next reservation would rewrite
+/// the file without them).
+pub fn read(base: &Path) -> Result<Vec<(String, String)>> {
+    let p = path(base);
+    let text = match std::fs::read_to_string(&p) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return read_legacy(base),
+        Err(e) => return Err(corrupt(&p, &e.to_string())),
+    };
+    let (fm, _) = frontmatter::parse(&text, FILE).map_err(|e| corrupt(&p, &e.0))?;
+    match fm.get(FIELD) {
+        Some(serde_norway::Value::Mapping(_)) => Ok(refs::parse_in(&fm, FIELD)),
+        _ => Err(corrupt(&p, "no 'retired' id map in the frontmatter")),
     }
-    read_legacy(base)
+}
+
+/// The error for a present-but-unreadable ledger.
+fn corrupt(path: &Path, why: &str) -> OpysError {
+    usage(format!(
+        "{}: unreadable retired ledger ({why}) — fix or restore the file; \
+         reserved ids must never read as empty",
+        path.display()
+    ))
 }
 
 /// Parse the legacy plaintext ledger (`ID  # retired DATE: reason`): the id is
-/// the first token of each non-comment line; titles are unknown (empty).
-fn read_legacy(base: &Path) -> Vec<(String, String)> {
-    let Ok(text) = std::fs::read_to_string(legacy_path(base)) else {
-        return Vec::new();
+/// the first token of each non-comment line; titles are unknown (empty). Like
+/// the markdown ledger, a present-but-unreadable file is an error — an empty
+/// read here would both release the reservations and let the next flush's
+/// migration delete the file outright.
+fn read_legacy(base: &Path) -> Result<Vec<(String, String)>> {
+    let p = legacy_path(base);
+    let text = match std::fs::read_to_string(&p) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(corrupt(&p, &e.to_string())),
     };
     let mut out = Vec::new();
     for line in text.lines() {
@@ -61,7 +85,7 @@ fn read_legacy(base: &Path) -> Vec<(String, String)> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Render `(id, title)` entries (sorted by number) to the ledger file's text.

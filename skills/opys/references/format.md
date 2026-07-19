@@ -31,7 +31,36 @@ live flat at the base; empty segments collapse, so the order is free (e.g.
 `"{status}/{type}/{id}.md"` groups by status first). Setting a doc's status (or
 editing the layout) moves its file to the new canonical path on the next write —
 relocated documents stay fully in the inventory. Directory structure must never
-encode taxonomy — that is what tags and `opys list` are for.
+encode taxonomy — that is what tags and `opys list` are for. A document's path
+always stays under the base: a write that would place a file outside it (only
+reachable via raw SQL edits) is refused.
+
+### The retired ledger (`_retired.md`)
+
+`_retired.md` at the base is the reserved-id ledger: a document-shaped markdown
+file whose frontmatter holds a single `retired:` map of `ID: last title`, sorted
+by number. Every id it lists is reserved forever — allocation continues past it,
+and `verify` rejects a live document reusing one. It is written by `retire`,
+`close`, `renumber`, the removal cascade of a `query --write` DELETE, and
+`cleanup` (which first ledger-reserves any id whose last struck tombstone it is
+about to strip). The value is the document's last title, for human reference
+only; git records the when and why (`retire --reason` is echoed, not persisted).
+
+**An unreadable ledger is an error, never an empty ledger**: if `_retired.md`
+(or the legacy file, below) exists but cannot be read or parsed, `verify`
+reports it as a problem, and every command that allocates ids, reserves ids, or
+flushes files refuses to run (and never rewrites the ledger) until the file is
+fixed — an empty read would reuse reserved numbers and the next rewrite would
+drop them permanently. Read-only commands (`list`, `show`, plain `query`) still
+work. A pre-0.12 plaintext `_retired.txt` is read only when `_retired.md` is
+absent, and is migrated to it on the next write.
+
+Retiring or closing a document that another live document *requires* a link to
+(a `requires_link`/`require_link` rule) leaves that rule failing — a struck
+tombstone is not a live link; `retire` warns about each such document so the
+corpus never goes red silently. To undo a mistaken close/retire, restore the
+file from git and delete its line from `_retired.md` — the one sanctioned hand
+edit of the ledger.
 
 ## Configuration: `opys.toml`
 
@@ -326,8 +355,10 @@ the test plan, eliminating a sync surface.
 
 The `references` map is **auto-maintained** by opys — it links a document to the
 others it relates to and is kept bidirectional and title-fresh on every write.
-You do not hand-edit it; a closed document leaves a struck-through (`~~title~~`)
-tombstone here. Bare `PREFIX-NNNN` ID mentions
+You do not hand-edit it; a closed or retired document leaves a struck-through
+(`~~title~~`) tombstone here (its id is also recorded in `_retired.md` — the
+tombstone is presentation, the ledger is the reservation of record). Bare
+`PREFIX-NNNN` ID mentions
 in body prose are rewritten into markdown links on sync; text already inside
 markdown link syntax (label or destination, including labels that themselves
 contain `[…]`) is never re-linkified, and an existing link whose label starts
@@ -398,7 +429,8 @@ informational.
 
 Blocker entries resolve, tombstone on close (`TASK-0042: ~~title~~`), and reserve
 ids exactly like `references`; a closed blocker is therefore safe to leave in
-place, and `opys cleanup` strips the struck entries.
+place, and `opys cleanup` strips the struck entries (ledger-reserving any id
+whose last tombstone it strips).
 
 ## Status semantics
 
@@ -555,6 +587,26 @@ features. Two supported bulk paths avoid that:
 Either way: do **not** loop `opys new` over a large migration. After import,
 review in batches per tag using `opys list`, exactly as for a hand-built
 inventory.
+
+## Raw SQL edits (`opys query --write`)
+
+`opys query` is read-only: every statement must be a SELECT (all tables,
+including `retired`, are queryable). `--write` accepts only INSERT/UPDATE/DELETE
+against the authoritative user-facing tables `docs`/`tags`/`relations`/
+`fm_fields` plus `blocks` (whose `text` column splices a `##` section back into
+the body). The `retired` ledger is not a DML surface (reservations are managed
+by the lifecycle commands — though deleting a doc, or even a tombstone relation
+row, through `--write` still ledger-reserves the id), and the derived
+`fields`/`sections` tables are rebuilt from the docs. `UPDATE` may not assign
+the internal bookkeeping columns (`dkey`, `num`, `ref_num`, `orig_*`);
+`INSERT INTO docs` requires an explicit column list drawn from
+`id`/`type`/`status`/`title`/`body` (child-table inserts are full rows by
+nature — they attach to a doc via `dkey`, and derived pieces like `ref_num` are
+recomputed on the next load). A `docs.path` edit must stay a plain relative
+path under the inventory base. An edit is applied only if the corpus passes
+`verify` no worse than before (problems are compared keyed by doc id, so a
+relocation does not disturb pre-existing findings); a refused edit changes
+nothing on disk.
 
 ## What never goes in feature files
 

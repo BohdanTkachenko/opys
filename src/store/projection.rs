@@ -161,15 +161,7 @@ impl Store {
             return Err("no statements to run".to_string());
         }
         for s in &stmts {
-            if !matches!(
-                s,
-                Statement::Insert { .. } | Statement::Update { .. } | Statement::Delete { .. }
-            ) {
-                return Err(format!(
-                    "query --write allows only INSERT/UPDATE/DELETE (got {})",
-                    stmt_kind(s)
-                ));
-            }
+            check_dml_target(s)?;
         }
         let mut payloads = Vec::with_capacity(stmts.len());
         for s in &stmts {
@@ -190,6 +182,103 @@ impl Store {
             .collect();
         Ok(parts.join(", "))
     }
+}
+
+/// Load-snapshot / bookkeeping columns no user DML may assign: the row keys the
+/// tables join on, the derived numeric id parts, and the original-file snapshot
+/// `flush` diffs against.
+const GUARDED_COLUMNS: [&str; 6] = [
+    "dkey",
+    "num",
+    "ref_num",
+    "orig_path",
+    "orig_text",
+    "orig_mtime",
+];
+
+/// Columns a user `INSERT INTO docs` may supply — the fields `materialize_inserts`
+/// consumes; everything else is allocated/derived (or is load snapshot).
+const DOCS_INSERT_COLUMNS: [&str; 5] = ["id", "type", "status", "title", "body"];
+
+/// Guard one planned `--write` statement: DML only, against the authoritative
+/// user-facing tables, without touching reservation or snapshot state. The
+/// `retired` ledger is written by the lifecycle commands (`close`/`retire`/
+/// `renumber`) and the removal cascade — never by raw DML, whose edits to it
+/// would persist as (or drop) id reservations. The derived `fields`/`sections`
+/// tables are rebuilt from the docs, so writing them is a silent no-op better
+/// rejected. All tables remain readable via plain `query`.
+///
+/// Column rules: `UPDATE` may not assign the internal bookkeeping columns
+/// ([`GUARDED_COLUMNS`]); `INSERT INTO docs` must name a user-facing column
+/// list ([`DOCS_INSERT_COLUMNS`] — a positional insert would smuggle values
+/// into the snapshot columns). Child-table inserts are full rows by nature
+/// (they attach to a doc via `dkey`), so they take the positional form; the
+/// derived pieces (`ref_num`, sort order) are recomputed from the flushed doc
+/// on the next load.
+fn check_dml_target(s: &Statement) -> std::result::Result<(), String> {
+    let table = match s {
+        Statement::Insert { table_name, .. }
+        | Statement::Update { table_name, .. }
+        | Statement::Delete { table_name, .. } => table_name.as_str(),
+        other => {
+            return Err(format!(
+                "query --write allows only INSERT/UPDATE/DELETE (got {})",
+                stmt_kind(other)
+            ))
+        }
+    };
+    match table {
+        "docs" | "tags" | "relations" | "fm_fields" | "blocks" => {}
+        "retired" => {
+            return Err(
+                "query --write may not modify 'retired' — id reservations are managed by \
+                 close/retire/renumber"
+                    .to_string(),
+            )
+        }
+        "fields" | "sections" => {
+            return Err(format!(
+                "query --write may not modify '{table}' — it is a derived projection \
+                 (rebuilt from the docs); edit docs/tags/relations/fm_fields/blocks instead"
+            ))
+        }
+        other => {
+            return Err(format!("query --write may not modify '{other}'"));
+        }
+    }
+    match s {
+        Statement::Update { assignments, .. } => {
+            if let Some(a) = assignments
+                .iter()
+                .find(|a| GUARDED_COLUMNS.contains(&a.id.as_str()))
+            {
+                return Err(format!(
+                    "query --write: column '{}' is internal bookkeeping and not writable",
+                    a.id
+                ));
+            }
+        }
+        Statement::Insert { columns, .. } if table == "docs" => {
+            if columns.is_empty() {
+                return Err(
+                    "query --write: INSERT INTO docs needs an explicit column list \
+                     (any subset of: id, type, status, title, body)"
+                        .to_string(),
+                );
+            }
+            if let Some(c) = columns
+                .iter()
+                .find(|c| !DOCS_INSERT_COLUMNS.contains(&c.as_str()))
+            {
+                return Err(format!(
+                    "query --write: INSERT INTO docs may not set '{c}' \
+                     (allowed: id, type, status, title, body)"
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// A human-readable name for a rejected statement kind.

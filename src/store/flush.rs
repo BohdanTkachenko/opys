@@ -14,9 +14,9 @@
 //! would execute the same plan differently.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
-use crate::error::Result;
+use crate::error::{usage, Result};
 use crate::project::Project;
 
 use super::{g_i64, g_str, Store};
@@ -41,7 +41,17 @@ impl Store {
     /// Compute the [`FlushPlan`] — no filesystem access. Consumes the store, the
     /// final read of an invocation.
     pub fn flush_plan(mut self, prj: &Project) -> Result<FlushPlan> {
+        // A corrupt (present but unreadable) retired ledger blocks every write:
+        // the in-memory reservations are incomplete, and a rewrite would drop
+        // the entries the bad read lost.
+        self.ledger_guard()?;
         let rows = self.full_rows()?;
+        // Stored paths normally come from `relpath_of`/`doc_relpath`, but raw
+        // SQL (`query --write`) can put anything in `docs.path` — refuse any
+        // path that would land outside the inventory base when joined onto it.
+        for r in &rows {
+            contained(&r.relpath)?;
+        }
         let mut plan = FlushPlan::default();
 
         // 1. Deletions: loaded rows that no longer exist in `docs`.
@@ -105,5 +115,24 @@ impl Store {
             }
         }
         Ok(plan)
+    }
+}
+
+/// A `docs.path` value must be a plain relative path: absolute paths and
+/// `..`/root components are rejected, so `base.join(it)` can never escape the
+/// inventory base (`.` segments are harmless — a `dir = "."` layout produces
+/// them). Lexical on purpose — the target may not exist yet, so `canonicalize`
+/// is not an option.
+fn contained(relpath: &str) -> Result<()> {
+    let p = Path::new(relpath);
+    let ok = !relpath.is_empty()
+        && p.components()
+            .all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
+    if ok {
+        Ok(())
+    } else {
+        Err(usage(format!(
+            "doc path {relpath:?} is not a plain relative path under the inventory base — refusing to flush"
+        )))
     }
 }

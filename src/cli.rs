@@ -143,12 +143,15 @@ pub enum Command {
     },
 
     /// Delete one or more documents; each ID is logged and never reused.
+    /// Inbound references are struck into `~~title~~` tombstones, like `close`.
     Retire {
         /// One id, a comma-separated list (e.g. `FEAT-1,FEAT-2`), or `-` to read
         /// the list from stdin (comma/space/newline-separated).
         ids: String,
+        /// Optional context, echoed with the confirmation. The ledger records
+        /// the id and title; git records the when and why.
         #[arg(long)]
-        reason: String,
+        reason: Option<String>,
     },
 
     /// Mark one or more documents as blocked by another, linking both
@@ -224,9 +227,9 @@ pub enum Command {
     #[cfg(feature = "history")]
     History { id: String },
 
-    /// Finish a document of a type with a terminal status: delete the file and
-    /// strike its title in every referencing doc (the struck reference reserves
-    /// the ID forever).
+    /// Finish a document of a type with a terminal status: delete the file,
+    /// strike its title in every referencing doc, and log the ID to
+    /// `_retired.md` so it is never reused.
     Close {
         /// One id, a comma-separated list (e.g. `FEAT-1,FEAT-2`), or `-` to read
         /// the list from stdin (comma/space/newline-separated).

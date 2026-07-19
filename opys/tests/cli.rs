@@ -3483,3 +3483,415 @@ statuses = [\"planned\"]\ndefault_status = \"planned\"\n";
             "## Notes\nfirst line\nline with 'quotes' and 50% off",
         ));
 }
+
+/// A minimal closable type for the ledger-on-close tests: no links, no
+/// required sections, so a doc can be closed with nothing referencing it.
+const SOLO_TASK_CFG: &str = "pad = 4\n\
+[types.task]\nprefix = \"TASK\"\n\
+statuses = [\"todo\", \"done\"]\ndefault_status = \"todo\"\n\
+terminal_statuses = [\"done\"]\n";
+
+/// Closing a doc nobody references must still reserve its id — there is no
+/// tombstone in any relation map, so the retired ledger is the only record.
+#[test]
+fn close_unreferenced_doc_reserves_id() {
+    let dir = project_with(SOLO_TASK_CFG);
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Solo"])
+        .assert()
+        .success();
+    opys(&dir).args(["close", "TASK-0001"]).assert().success();
+    dir.child("opys/TASK-0001.md")
+        .assert(predicate::path::missing());
+    dir.child("opys/_retired.md")
+        .assert(predicate::str::contains("TASK-0001: Solo"));
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Next"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("TASK-0002"));
+}
+
+/// Closing a doc whose own maps carry the only tombstone of an earlier close
+/// must reserve that id too — the tombstone is destroyed with the file.
+#[test]
+fn close_reserves_tombstones_carried_by_the_closed_doc() {
+    let dir = project_with(SOLO_TASK_CFG);
+    // Pre-fix state: TASK-0001 was closed while only TASK-0002 referenced it —
+    // its number is anchored solely by this struck entry (no ledger).
+    dir.child("opys/TASK-0002.md")
+        .write_str(
+            "---\nid: TASK-0002\nstatus: todo\nreferences:\n  TASK-0001: ~~Old one~~\n---\n\n# Two\n",
+        )
+        .unwrap();
+    opys(&dir).args(["close", "TASK-0002"]).assert().success();
+    let ledger = std::fs::read_to_string(dir.child("opys/_retired.md").path()).unwrap();
+    assert!(ledger.contains("TASK-0001: Old one"), "{ledger:?}");
+    assert!(ledger.contains("TASK-0002: Two"), "{ledger:?}");
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Next"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("TASK-0003"));
+}
+
+/// `cleanup` stripping the last tombstone of a dead id must first reserve it in
+/// the ledger — covers docs closed before close itself wrote the ledger.
+#[test]
+fn cleanup_reserves_stripped_tombstone_ids() {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "F", "--tags", "core"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args([
+            "new",
+            "--type",
+            "task",
+            "--title",
+            "First",
+            "--features",
+            "FEAT-0001",
+        ])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["close", "TASK-0002", "--force"])
+        .assert()
+        .success();
+    // Simulate the pre-ledger-on-close era: only the tombstone reserves the id.
+    std::fs::remove_file(dir.child("opys/_retired.md").path()).unwrap();
+    opys(&dir).args(["cleanup"]).assert().success();
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::str::contains("~~First~~").not());
+    dir.child("opys/_retired.md")
+        .assert(predicate::str::contains("TASK-0002: First"));
+    opys(&dir)
+        .args([
+            "new",
+            "--type",
+            "task",
+            "--title",
+            "Second",
+            "--features",
+            "FEAT-0001",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("TASK-0003"));
+}
+
+/// A present-but-unparseable `_retired.md` is an error, never an empty ledger:
+/// allocation refuses to run (exit 2) and the file is left byte-identical.
+#[test]
+fn corrupt_ledger_blocks_allocation_and_stays_untouched() {
+    let dir = project();
+    opys(&dir)
+        .args(["new", "--title", "X", "--tags", "a"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["retire", "FEAT-0001", "--reason", "dupe"])
+        .assert()
+        .success();
+    let broken = "--\nbroken ledger\n";
+    dir.child("opys/_retired.md").write_str(broken).unwrap();
+
+    opys(&dir)
+        .args(["new", "--title", "Y", "--tags", "a"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("unreadable retired ledger"));
+    // Nothing was created and the ledger was not rewritten from the empty read.
+    dir.child("opys/features/FEAT-0002.md")
+        .assert(predicate::path::missing());
+    let after = std::fs::read_to_string(dir.child("opys/_retired.md").path()).unwrap();
+    assert_eq!(after, broken);
+}
+
+/// `verify` reports a corrupt ledger as a content problem (exit 1, alongside
+/// everything else), not a hard error.
+#[test]
+fn verify_flags_corrupt_ledger() {
+    let dir = project();
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# One\n")
+        .unwrap();
+    dir.child("opys/_retired.md")
+        .write_str("--\nbroken ledger\n")
+        .unwrap();
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("unreadable retired ledger"));
+}
+
+/// `retire` strikes every inbound reference into a tombstone (like `close`), so
+/// a successful retire leaves the corpus passing verify.
+#[test]
+fn retire_strikes_inbound_references_and_verify_stays_green() {
+    let dir = project();
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# One\n")
+        .unwrap();
+    dir.child("opys/features/FEAT-0002.md")
+        .write_str(
+            "---\nid: FEAT-0002\nstatus: planned\ntags: [a]\nreferences:\n  FEAT-0001: One\n---\n\n# Two\n",
+        )
+        .unwrap();
+    opys(&dir)
+        .args(["retire", "FEAT-0001", "--reason", "dupe"])
+        .assert()
+        .success();
+    dir.child("opys/features/FEAT-0002.md")
+        .assert(predicate::str::contains("FEAT-0001: ~~One~~"));
+    dir.child("opys/_retired.md")
+        .assert(predicate::str::contains("FEAT-0001: One"));
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("verify: OK (1 documents)"));
+}
+
+/// `--reason` is optional: the ledger records the id and title; git records the
+/// when and why.
+#[test]
+fn retire_reason_is_optional() {
+    let dir = project();
+    opys(&dir)
+        .args(["new", "--title", "X", "--tags", "a"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["retire", "FEAT-0001"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("retired FEAT-0001"));
+    dir.child("opys/_retired.md")
+        .assert(predicate::str::contains("FEAT-0001: X"));
+}
+
+/// A raw `UPDATE docs SET path` may not relocate a file outside the inventory
+/// base — the flush refuses the plan and nothing on disk changes.
+#[test]
+fn query_write_rejects_path_escape() {
+    let cfg = "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
+statuses = [\"planned\"]\ndefault_status = \"planned\"\n";
+    let dir = project_with(cfg);
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# One\n")
+        .unwrap();
+    opys(&dir)
+        .args([
+            "--no-sync",
+            "query",
+            "--write",
+            "UPDATE docs SET path = '../../evil/FEAT-0001.md' WHERE id = 'FEAT-0001'",
+        ])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("not a plain relative path"));
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::path::exists());
+    assert!(!dir.path().parent().unwrap().join("evil").exists());
+}
+
+/// The `retired` ledger is not a DML surface: reservations are managed by the
+/// lifecycle commands. It stays readable via plain `query`.
+#[test]
+fn query_write_rejects_retired_table_dml() {
+    let dir = project();
+    opys(&dir)
+        .args(["new", "--title", "X", "--tags", "a"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["retire", "FEAT-0001", "--reason", "dupe"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["query", "--write", "DELETE FROM retired"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("may not modify 'retired'"));
+    dir.child("opys/_retired.md")
+        .assert(predicate::str::contains("FEAT-0001: X"));
+    opys(&dir)
+        .args(["query", "SELECT id FROM retired"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0001"));
+}
+
+/// Load-snapshot columns (`orig_*`, `dkey`, `num`) are internal bookkeeping —
+/// not writable through `query --write`.
+#[test]
+fn query_write_rejects_snapshot_columns() {
+    let dir = project();
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# One\n")
+        .unwrap();
+    opys(&dir)
+        .args([
+            "query",
+            "--write",
+            "UPDATE docs SET orig_text = '' WHERE id = 'FEAT-0001'",
+        ])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("not writable"));
+}
+
+/// A positional `INSERT INTO docs VALUES (…)` would smuggle values into the
+/// internal columns — an explicit (user-facing) column list is required.
+#[test]
+fn query_write_insert_docs_requires_column_list() {
+    let dir = project();
+    opys(&dir)
+        .args([
+            "query",
+            "--write",
+            "INSERT INTO docs VALUES (99, 'FEAT-0099', 99, 'feature', 'planned', 'X', \
+             '', '', '', 'FEAT-0099.md', NULL, NULL, NULL)",
+        ])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("explicit column list"));
+    dir.child("opys/features/FEAT-0099.md")
+        .assert(predicate::path::missing());
+}
+
+/// The write gate diffs verify problems keyed by doc id, not rendered path — an
+/// edit that relocates a file must not make its pre-existing problems look new.
+#[test]
+fn query_write_relocation_keeps_preexisting_problems_keyed_by_id() {
+    let cfg = "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
+statuses = [\"planned\", \"archived\"]\ndefault_status = \"planned\"\n\
+status_dirs = { archived = \"_archived\" }\n";
+    let dir = project_with(cfg);
+    // Pre-existing problem: the live doc reuses a retired id. Its verify
+    // message is path-prefixed, and the status change below moves the path.
+    dir.child("opys/features/FEAT-0007.md")
+        .write_str("---\nid: FEAT-0007\nstatus: planned\n---\n\n# Seven\n")
+        .unwrap();
+    dir.child("opys/_retired.txt")
+        .write_str("FEAT-0007  # retired\n")
+        .unwrap();
+    opys(&dir)
+        .args([
+            "query",
+            "--write",
+            "UPDATE docs SET status = 'archived' WHERE id = 'FEAT-0007'",
+        ])
+        .assert()
+        .success();
+    dir.child("opys/features/_archived/FEAT-0007.md")
+        .assert(predicate::path::exists());
+}
+
+/// The legacy plaintext ledger gets the same protection as `_retired.md`: a
+/// present-but-unreadable `_retired.txt` blocks allocation instead of reading
+/// as empty (which would also let the migration delete it).
+#[test]
+fn corrupt_legacy_ledger_blocks_allocation_and_survives() {
+    let dir = project();
+    // Invalid UTF-8 makes the read fail deterministically on every platform.
+    std::fs::create_dir_all(dir.child("opys").path()).unwrap();
+    std::fs::write(dir.child("opys/_retired.txt").path(), b"FEAT-0007 \xff\n").unwrap();
+    opys(&dir)
+        .args(["new", "--title", "X", "--tags", "a"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("unreadable retired ledger"));
+    // The legacy file was neither migrated away nor rewritten.
+    dir.child("opys/_retired.txt")
+        .assert(predicate::path::exists());
+    dir.child("opys/_retired.md")
+        .assert(predicate::path::missing());
+}
+
+/// Retiring a doc that another doc *requires* a link to succeeds but warns —
+/// the struck tombstone no longer satisfies the `requires_link` rule.
+#[test]
+fn retire_warns_when_striking_a_required_link() {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "F", "--tags", "core"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args([
+            "new",
+            "--type",
+            "task",
+            "--title",
+            "First",
+            "--features",
+            "FEAT-0001",
+        ])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["retire", "FEAT-0001", "--reason", "dupe"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "must reference at least 1 doc(s) of type 'feature'",
+        ));
+}
+
+/// A `--write` DELETE of a relation row that was an id's only anchor (a
+/// tombstone from the pre-ledger era) re-reserves the id in the ledger.
+#[test]
+fn query_write_deleting_a_tombstone_row_reserves_the_id() {
+    let dir = project_with(SOLO_TASK_CFG);
+    dir.child("opys/TASK-0002.md")
+        .write_str(
+            "---\nid: TASK-0002\nstatus: todo\nreferences:\n  TASK-0001: ~~Old one~~\n---\n\n# Two\n",
+        )
+        .unwrap();
+    opys(&dir)
+        .args([
+            "query",
+            "--write",
+            "DELETE FROM relations WHERE ref_id = 'TASK-0001'",
+        ])
+        .assert()
+        .success();
+    dir.child("opys/TASK-0002.md")
+        .assert(predicate::str::contains("TASK-0001").not());
+    dir.child("opys/_retired.md")
+        .assert(predicate::str::contains("TASK-0001: Old one"));
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Next"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("TASK-0003"));
+}
+
+/// A `dir = "."` layout renders paths with a leading `./` segment — harmless,
+/// and must not trip the flush containment check.
+#[test]
+fn layout_dot_dir_still_flushes() {
+    let cfg = "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\ndir = \".\"\n\
+statuses = [\"planned\"]\ndefault_status = \"planned\"\n";
+    let dir = project_with(cfg);
+    opys(&dir).args(["new", "--title", "X"]).assert().success();
+    dir.child("opys/FEAT-0001.md")
+        .assert(predicate::path::exists());
+}

@@ -52,6 +52,21 @@ impl Store {
             return Ok(());
         }
 
+        // Entries in the removed docs' own relation maps vanish with them; an
+        // id anchored nowhere else (e.g. a tombstone of an earlier close) must
+        // keep its reservation. Collect before the purge below destroys them.
+        let mut carried: Vec<(String, String)> = Vec::new();
+        for (_, dkey, _) in &removed {
+            let (_, rows) = self.select(
+                "SELECT ref_id, title FROM relations WHERE dkey = $1",
+                vec![dkey.into_param()],
+            )?;
+            carried.extend(
+                rows.iter()
+                    .filter_map(|r| Some((g_str(&r[0])?, g_str(&r[1]).unwrap_or_default()))),
+            );
+        }
+
         // 1. Purge orphaned child rows: a raw `DELETE FROM docs WHERE …` only
         //    removes the `docs` row, leaving this doc's tags/relations/fm_fields
         //    behind. Clear them first so a removed doc's own outbound relations
@@ -65,12 +80,13 @@ impl Store {
             self.reserve_id(id, title)?;
             self.strike_inbound(pcfg, id, &refs::strike(title))?;
         }
+        self.reserve_unanchored(&carried)?;
         Ok(())
     }
 
     /// Reserve `id` (with its last-known `title`) in the used-id ledger so its
     /// number is never reused, unless it is already reserved.
-    fn reserve_id(&mut self, id: &str, title: &str) -> Result<()> {
+    pub(crate) fn reserve_id(&mut self, id: &str, title: &str) -> Result<()> {
         let already = self
             .scalar(
                 "SELECT 1 FROM retired WHERE id = $1 LIMIT 1",
@@ -83,15 +99,64 @@ impl Store {
         self.retire_id(id, title)
     }
 
+    /// Every distinct `(ref_id, unstruck title)` currently in a relation map.
+    /// Snapshotted before user `--write` DML so entries the edit destroys (e.g.
+    /// a `DELETE FROM relations` hitting a closed doc's tombstone) can keep
+    /// their id reservations via [`Store::reserve_unanchored`].
+    pub(crate) fn relation_entries(&mut self) -> Result<Vec<(String, String)>> {
+        let (_, rows) = self.select("SELECT DISTINCT ref_id, title FROM relations", vec![])?;
+        Ok(rows
+            .iter()
+            .filter_map(|r| Some((g_str(&r[0])?, g_str(&r[1]).unwrap_or_default())))
+            .collect())
+    }
+
+    /// Reserve every `(id, title)` candidate whose id is no longer anchored
+    /// anywhere: not a live doc, not present in any relation map, not already in
+    /// the ledger. Called when relation-map entries are destroyed (a deleted doc
+    /// carried them, or `cleanup` stripped them) so a number whose only record
+    /// was such an entry is still never reissued.
+    pub(crate) fn reserve_unanchored(&mut self, candidates: &[(String, String)]) -> Result<()> {
+        for (id, title) in candidates {
+            let live = self
+                .scalar(
+                    "SELECT 1 FROM docs WHERE id = $1 LIMIT 1",
+                    vec![id.as_str().into_param()],
+                )?
+                .is_some();
+            if live {
+                continue;
+            }
+            let anchored = self
+                .scalar(
+                    "SELECT 1 FROM relations WHERE ref_id = $1 LIMIT 1",
+                    vec![id.as_str().into_param()],
+                )?
+                .is_some();
+            if anchored {
+                continue;
+            }
+            self.reserve_id(id, title)?;
+        }
+        Ok(())
+    }
+
     /// Strike every live document's reference to `id` (in any relation map) into
     /// the `struck` tombstone value. Only existing entries are struck — a doc
     /// that never referenced `id` has nothing dangling and is left untouched.
-    fn strike_inbound(&mut self, pcfg: &ProjectConfig, id: &str, struck: &str) -> Result<()> {
+    /// Returns the row keys of the documents that changed.
+    pub(crate) fn strike_inbound(
+        &mut self,
+        pcfg: &ProjectConfig,
+        id: &str,
+        struck: &str,
+    ) -> Result<Vec<i64>> {
         let (_, rows) = self.select(
             "SELECT DISTINCT dkey FROM relations WHERE ref_id = $1",
             vec![id.into_param()],
         )?;
         let dkeys: Vec<i64> = rows.iter().filter_map(|r| g_i64(&r[0])).collect();
+        let mut struck_dkeys = Vec::new();
         for k in dkeys {
             let mut doc = self.doc(k)?;
             let mut changed = false;
@@ -107,8 +172,9 @@ impl Store {
             }
             if changed {
                 self.put_doc(pcfg, Some(k), &doc)?;
+                struck_dkeys.push(k);
             }
         }
-        Ok(())
+        Ok(struck_dkeys)
     }
 }

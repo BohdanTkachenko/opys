@@ -87,7 +87,10 @@ impl Project {
                 consider(&id);
             }
         }
-        for id in self.retired_ids() {
+        // A corrupt ledger reads as empty here; harmless for this best-effort
+        // max — every allocating path goes through the store, which refuses to
+        // run on a corrupt ledger.
+        for id in self.retired_ids().unwrap_or_default() {
             consider(&id);
         }
         max
@@ -103,12 +106,14 @@ impl Project {
         )
     }
 
-    /// IDs that have been retired and may never be reused.
-    pub fn retired_ids(&self) -> HashSet<String> {
-        crate::retired::read(&self.base)
+    /// IDs that have been retired and may never be reused. Errs when the ledger
+    /// file exists but cannot be read — never silently empty (see
+    /// [`crate::retired::read`]).
+    pub fn retired_ids(&self) -> Result<HashSet<String>> {
+        Ok(crate::retired::read(&self.base)?
             .into_iter()
             .map(|(id, _)| id)
-            .collect()
+            .collect())
     }
 
     /// Find a document by ID, or a not-found error.

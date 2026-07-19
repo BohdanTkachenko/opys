@@ -130,7 +130,7 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
             Ok(0)
         }
         Command::Retire { ids, reason } => {
-            commands::retire::run(&ctx, &ids, &reason)?;
+            commands::retire::run(&ctx, &ids, reason.as_deref())?;
             Ok(0)
         }
         Command::Block { ids, by } => {

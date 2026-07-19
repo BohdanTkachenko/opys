@@ -31,7 +31,13 @@ impl Backend for MarkdownLocal {
                 (d, mtime)
             })
             .collect();
-        let retired = opys_engine::retired::read(&prj.base);
+        // A present-but-unreadable ledger is carried as an error, not an empty
+        // read: verify reports it, and the store refuses to allocate/reserve/
+        // flush until the file is fixed.
+        let (retired, retired_err) = match opys_engine::retired::read(&prj.base) {
+            Ok(r) => (r, None),
+            Err(e) => (Vec::new(), Some(e.to_string())),
+        };
         let retired_legacy = opys_engine::retired::legacy_path(&prj.base).exists();
         Store::build(
             prj,
@@ -40,6 +46,7 @@ impl Backend for MarkdownLocal {
                 errors,
                 retired,
                 retired_legacy,
+                retired_err,
             },
         )
     }

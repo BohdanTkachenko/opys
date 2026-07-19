@@ -56,6 +56,7 @@ pub fn run(ctx: &Ctx, sql: &str, plain: bool, write: bool, stdin_value: bool) ->
 
     if write {
         let baseline = store.baseline()?;
+        let rel_before = store.relation_entries()?;
         let before_blocks = block_texts(&mut store)?;
         // Three seams: (1) apply the user's intent as raw DML, (2) the model
         // pass reconciles the raw tables into a consistent model (cascades +
@@ -66,7 +67,7 @@ pub fn run(ctx: &Ctx, sql: &str, plain: bool, write: bool, stdin_value: bool) ->
 
         let summary = store.run_user_write(&sql, &params).map_err(usage)?;
         apply_block_edits(&prj, &mut store, &before_blocks)?;
-        reconcile_model(&prj, &mut store, &baseline, !ctx.no_sync)?;
+        reconcile_model(&prj, &mut store, &baseline, &rel_before, !ctx.no_sync)?;
 
         let after = verify_problems(&prj, &mut store, &errors)?;
         let new: Vec<String> = after.difference(&before).cloned().collect();
@@ -198,10 +199,15 @@ fn reconcile_model(
     prj: &crate::project::Project,
     store: &mut Store,
     baseline: &crate::store::Baseline,
+    rel_before: &[(String, String)],
     run_sync: bool,
 ) -> Result<()> {
     // Removals: strike inbound references + reserve ids for docs the edit dropped.
     store.cascade_removals(&prj.pcfg, baseline)?;
+    // A relation row the edit deleted may have been an id's only anchor (e.g.
+    // the tombstone of a closed doc) — re-reserve any pre-edit entry that is
+    // now anchored nowhere.
+    store.reserve_unanchored(rel_before)?;
     // Inserts: turn raw `INSERT INTO docs` rows into allocated, scaffolded docs.
     materialize_inserts(prj, store)?;
     if run_sync {
@@ -213,18 +219,36 @@ fn reconcile_model(
 /// The validation seam: the current corpus's verify problems as a set. The
 /// write gate compares this before vs. after the model pass and refuses any
 /// edit that introduces a NEW problem — pre-existing issues never block an edit.
-/// A future typed data model would replace THIS function, leaving the model pass
-/// (see [`reconcile_model`]) untouched.
+/// Problems verify prefixes with a document *path* are re-keyed to the doc's id
+/// (paths are mutable — an edit that relocates a file must not make its
+/// pre-existing problems look new). A future typed data model would replace
+/// THIS function, leaving the model pass (see [`reconcile_model`]) untouched.
 fn verify_problems(
     prj: &crate::project::Project,
     store: &mut Store,
     errors: &[String],
 ) -> Result<std::collections::HashSet<String>> {
-    Ok(
-        verify::collect_problems(prj, &docs_of(store)?, errors.to_vec())
-            .into_iter()
-            .collect(),
-    )
+    let docs = docs_of(store)?;
+    let id_by_path: Vec<(String, String)> = docs
+        .iter()
+        .filter_map(|d| Some((d.path.display().to_string(), d.id()?.to_string())))
+        .collect();
+    Ok(verify::collect_problems(prj, &docs, errors.to_vec())
+        .into_iter()
+        .map(|p| rekey_by_id(p, &id_by_path))
+        .collect())
+}
+
+/// Replace every known doc path in a problem message with the doc's id — the
+/// `"<path>: …"` head and any path embedded in the tail (e.g. the duplicate-id
+/// message's `(also in <path>)`).
+fn rekey_by_id(mut problem: String, id_by_path: &[(String, String)]) -> String {
+    for (path, id) in id_by_path {
+        if problem.contains(path.as_str()) {
+            problem = problem.replace(path.as_str(), id);
+        }
+    }
+    problem
 }
 
 /// Snapshot the `blocks` projection's section texts (`(doc_id, seq) -> text`),

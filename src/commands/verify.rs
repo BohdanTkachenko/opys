@@ -53,7 +53,9 @@ pub fn collect_problems(prj: &Project, docs: &[Doc], parse_errors: Vec<String>) 
         check_field_specs(&t.fields, &format!("type '{tname}'"), &mut errors);
     }
 
-    let retired = prj.retired_ids();
+    // A corrupt ledger is already reported as a load error (it rides in via
+    // `parse_errors`); the reuse check then just runs against an empty set.
+    let retired = prj.retired_ids().unwrap_or_default();
     let reserved = reserved_fields();
     // Corpus for `must_match` checks without a `file`, scanned at most once per
     // distinct set of `roots`.
