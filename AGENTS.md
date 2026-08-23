@@ -58,7 +58,7 @@ The CI that gates merges (`.github/workflows/ci.yml`) runs exactly:
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings   # warnings are errors
 cargo test --all
-cargo clippy --workspace --all-targets --all-features -- -D warnings   # tui + history
+cargo clippy --workspace --all-targets --all-features -- -D warnings   # + history feature
 cargo test --all --all-features
 cargo build --workspace --all-targets       # also built on MSRV 1.88 — don't use newer std APIs
 ```
@@ -78,23 +78,24 @@ cargo test --lib frontmatter::                                  # unit tests in 
 
 ## Architecture
 
-The repo is a Cargo **workspace** of four crates: **`opys-engine`** (the core
+The repo is a Cargo **workspace** of three crates: **`opys-engine`** (the core
 library, at the repo root — the model, config, rules, SQL store, and command
 implementations, plus the [`Backend`] storage trait; lib name `opys_engine`);
 **`opys-backend-markdown-local`** (the default `Backend` impl: one markdown file
 per document on the local filesystem — it owns all corpus filesystem I/O,
-walking and parsing documents on load and executing the store's `FlushPlan` on
-flush, so the core crate does no document filesystem access); **`opys-tui`** (the
-`opys tui` terminal UI); and **`opys`** (the binary — this is what
-`cargo install opys` yields). The binary (`opys/src/main.rs`) parses `Cli` (clap
-derive, `src/cli.rs`), injects the `MarkdownLocal` backend, and calls
-`opys_engine::run`, which maps the exit code. The **TUI is an opt-in `tui`
-feature** (off by default): the `Command::Tui` variant, its dispatch, and the
-`opys-tui` dependency are all gated, so the default (agent/CLI) build pulls in no
-ratatui/notify; only a `--features tui` build intercepts the `tui` command and
-hands it to `opys-tui`. All four crates publish to crates.io together. Commands
-never touch the storage medium directly — they load/flush through the injected
-`Box<dyn Backend>` on `Ctx`, so the medium is swappable.
+walking and parsing documents on load, executing the store's `FlushPlan` on
+flush, and holding the **exclusive inventory lock** (`<base>/.opys.lock`, a
+flock) from load through flush, so parallel invocations serialize instead of
+colliding — contention retries until `OPYS_LOCK_TIMEOUT_MS`, default 10 s, and
+the OS releases the flock with the process, so stale locks cannot exist); and
+**`opys`** (the binary — this is what `cargo install opys` yields). The binary
+(`opys/src/main.rs`) parses `Cli` (clap derive, `src/cli.rs`), injects the
+`MarkdownLocal` backend, and calls `opys_engine::run`, which maps the exit code.
+(The former `opys-tui` terminal board was retired per ADR-0050 — the web UI over
+the always-on node replaces it; the crate lives on in git history.) All three
+crates publish to crates.io together. Commands never touch the storage medium
+directly — they load/flush through the injected `Box<dyn Backend>` on `Ctx`, so
+the medium is swappable.
 
 **Exit-code contract (important):** `verify` returns `1` when it finds content
 problems; every other command returns `0` on success. Real failures (bad
@@ -131,19 +132,19 @@ Layering, roughly outermost-in:
   `fields`/`sections`/`blocks` (the `[[stats]]`/`opys query` contract) are
   rebuilt by `refresh_projections`; `blocks(doc_id, seq, heading, text)` decomposes
   each body into its `##` sections and is the one *writable* projection —
-  `query --write` splices an edited `blocks.text` back into the authoritative body. ID allocation is one SQL `MAX` across docs/relations/
-  retired. Internal SQL uses `$n` parameters and JOINs only — never
+  `query --write` splices an edited `blocks.text` back into the authoritative body. ID allocation goes through the `ids::IdSource`
+  seam — default `SequenceMax`, one SQL `MAX` across docs/relations/retired; a
+  lease-block source slots in later (ADR-0055). Internal SQL uses `$n` parameters and JOINs only — never
   `IN (subquery)`/FROM-subqueries/`UNION` (GlueSQL executes/​rejects those
   badly). `commands/query.rs` exposes user SQL: read-only (plan-guarded to
   SELECT) by default, or `--write` edit statements that are applied only if the
   post-write corpus still passes `verify::collect_problems` (else nothing is
   flushed — the store mutation stays in memory).
 - `src/project.rs` — `Project` ties the on-disk layout to `pcfg`. `Project::open`
-  requires `<base>/opys.toml`. Owns generic discovery (`load_docs`: scan the base
-  recursively for ID-named files, parse into `Doc`; used by `Store::open`, the
-  TUI, and `history`), the canonical-path helper (`doc_path`), and — for the
-  still-file-based TUI/history paths — `save_doc`, `next_id_for`/`max_doc_id`,
-  and `find`. Mutating commands go through the store, not `save_doc`.
+  requires `<root>/opys.toml`. Owns the canonical-path helper (`doc_path`) and —
+  for the still-file-based `history` path — `next_id_for`/`max_doc_id` and
+  `find` over an already-loaded doc set. Document discovery/parsing lives in the
+  backend crate (`load_docs`). Mutating commands go through the store.
 - `src/doc.rs` / `src/frontmatter.rs` / `src/body.rs` — the parse layer. `Doc` is
   the single document struct (`{path, frontmatter, body, title}`; type derived
   from the id prefix). `frontmatter` parses YAML with `serde_norway` and

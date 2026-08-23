@@ -14,9 +14,9 @@ pub mod doc;
 pub mod error;
 pub mod file_refs;
 pub mod frontmatter;
+pub mod ids;
 pub mod links;
 pub mod mdprism;
-pub mod palette;
 pub mod project;
 pub mod project_config;
 pub mod refs;
@@ -191,11 +191,5 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
             commands::agent_rules::run(&ctx, tool, stdout)?;
             Ok(0)
         }
-        // The TUI is launched by the binary (opys-tui crate); it intercepts this
-        // command before calling run(), so this arm is unreachable in practice.
-        #[cfg(feature = "tui")]
-        Command::Tui { .. } => Err(crate::error::usage(
-            "the tui is launched by the opys binary, not opys::run",
-        )),
     }
 }

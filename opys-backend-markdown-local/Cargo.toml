@@ -15,6 +15,9 @@ opys-engine = { path = "..", version = "0.12.0" }
 walkdir = "2"
 regex = "1"
 time = { version = "0.3", features = ["formatting"] }
+# flock-style advisory locking for the inventory lock (std's File::lock needs
+# rustc ≥ 1.89; this crate's MSRV is 1.88).
+fs4 = "0.13"
 
 [dev-dependencies]
 tempfile = "3"

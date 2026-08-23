@@ -14,6 +14,7 @@ use std::io::Read as _;
 use crate::commands::verify;
 use crate::doc::Doc;
 use crate::error::{usage, Result};
+use crate::ids::IdSource;
 use crate::store::Store;
 use crate::Ctx;
 
@@ -166,7 +167,10 @@ fn materialize_inserts(prj: &crate::project::Project, store: &mut Store) -> Resu
         let t = &pcfg.types[&raw.type_name];
         let id = match raw.id {
             Some(id) => id,
-            None => store.next_id_for(&t.prefix, pcfg.pad)?,
+            None => {
+                let n = crate::ids::SequenceMax.reserve(store, 1)?;
+                crate::ids::format_id(&t.prefix, n, pcfg.pad)
+            }
         };
         let mut fm = crate::frontmatter::Frontmatter::new();
         fm.set_str("id", &id);

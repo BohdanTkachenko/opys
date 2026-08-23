@@ -45,7 +45,6 @@
               ./Cargo.lock
               ./src
               ./opys
-              ./opys-tui
               ./opys-backend-markdown-local
               ./skills
             ];
@@ -56,11 +55,8 @@
           # The workspace root package is the `opys-engine` *library*; the `opys`
           # binary lives in the opys/ member. Build (and test) that member so the
           # package actually produces the `opys` binary — a plain workspace-root
-          # build installs no binary. `--features tui` then resolves against the
-          # opys crate, so the Nix package ships the `opys tui` board the README
-          # advertises as an install path (`nix run` / the overlay).
+          # build installs no binary.
           buildAndTestSubdir = "opys";
-          buildFeatures = [ "tui" ];
 
           nativeCheckInputs = [ shForTests ];
 

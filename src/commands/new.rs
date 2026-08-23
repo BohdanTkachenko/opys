@@ -2,6 +2,7 @@ use crate::commands::{maybe_sync, split_csv, touch};
 use crate::doc::Doc;
 use crate::error::{usage, Result};
 use crate::frontmatter::Frontmatter;
+use crate::ids::IdSource;
 use crate::project::{self, Project};
 use crate::project_config::{DocType, SectionKind};
 use crate::store::Store;
@@ -33,7 +34,8 @@ pub fn core(
         ))
     })?;
 
-    let id = store.next_id_for(&t.prefix, pcfg.pad)?;
+    let first = crate::ids::SequenceMax.reserve(store, 1)?;
+    let id = crate::ids::format_id(&t.prefix, first, pcfg.pad);
 
     // Resolve status: empty → the type's default. Reject unknown / terminal.
     let status = if status.is_empty() {

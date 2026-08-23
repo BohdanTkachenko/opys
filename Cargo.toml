@@ -1,12 +1,11 @@
 [workspace]
 members = [
     "opys-backend-markdown-local",
-    "opys-tui",
     "opys",
 ]
 resolver = "2"
 
-# All four crates share one version and release together.
+# All three crates share one version and release together.
 [workspace.package]
 version = "0.12.0"
 
@@ -39,9 +38,6 @@ default = []
 # In-process git history for `opys history <id>`, via gix. Off by default so the
 # standard build (and the MSRV check) never depends on gix or any git library.
 history = ["dep:gix"]
-# Gate the `tui` subcommand (the enum variant + dispatch); the actual UI lives in
-# the opys-tui crate, wired in by the binary's matching `tui` feature.
-tui = []
 
 [lib]
 name = "opys_engine"

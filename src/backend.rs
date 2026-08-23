@@ -26,6 +26,6 @@ pub trait Backend {
 
     /// Read and parse every durable document (raw, without building a store),
     /// returning parsed docs + non-fatal parse errors. Used by read-only passes
-    /// (stats, history) and the TUI board.
+    /// (stats, history).
     fn load_docs(&self, prj: &Project) -> (Vec<crate::doc::Doc>, Vec<String>);
 }

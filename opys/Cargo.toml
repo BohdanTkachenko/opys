@@ -15,9 +15,6 @@ categories = ["command-line-utilities", "development-tools"]
 [features]
 default = []
 history = ["opys-engine/history"]
-# The interactive terminal UI — off by default so the common (agent/CLI) build
-# pulls in no ratatui/crossterm/notify. Build with `--features tui` for humans.
-tui = ["dep:opys-tui", "opys-engine/tui"]
 
 [[bin]]
 name = "opys"
@@ -26,7 +23,6 @@ path = "src/main.rs"
 [dependencies]
 opys-engine = { path = "..", version = "0.12.0" }
 opys-backend-markdown-local = { path = "../opys-backend-markdown-local", version = "0.12.0" }
-opys-tui = { path = "../opys-tui", version = "0.12.0", optional = true }
 clap = { version = "4", features = ["derive", "env"] }
 
 [dev-dependencies]
@@ -34,3 +30,5 @@ assert_cmd = "2"
 predicates = "3"
 assert_fs = "1"
 tempfile = "3"
+# The lock tests hold the inventory lock from the test harness side.
+fs4 = "0.13"

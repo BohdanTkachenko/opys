@@ -27,13 +27,12 @@ agents.
 
 ```sh
 cargo install opys                 # the CLI (what agents use)
-cargo install opys --features tui  # + the interactive `opys tui` terminal UI
 ```
 
 Or build from source:
 
 ```sh
-cargo build --release -p opys        # target/release/opys (add --features tui for the TUI)
+cargo build --release -p opys        # target/release/opys
 ```
 
 ### Use from another flake
@@ -103,23 +102,6 @@ Mutating commands (`new`, `set-status`, `tag`, `retire`, `block`, `close`,
 their canonical layout path (e.g. an archived doc moves into `_archived/`)
 automatically; pass `--no-sync` to skip, or run `opys sync` after editing files
 by hand.
-
-## Interactive board (`opys tui`)
-
-The optional `tui` feature adds `opys tui`, a live, **read-mostly** board over the
-same inventory (the default agent build pulls in no ratatui). It watches the
-files and reflects external changes without a restart. Slicing and navigation are
-local to the board; the few writes it offers route through the same command cores
-as the CLI, so on-disk invariants hold identically:
-
-- `j`/`k`, `g`/`G` move; `p` cycles the preview pane; `u`/`c`/`s`/`t`/`i` sort
-- `f` or `/` filters by type/status/tag/text; `x` clears; `S` shows stats
-- `space` changes status (offers the type's non-terminal statuses, via `set-status`)
-- `D` closes the selected document (via `close`)
-- `e` or `Enter` opens the document in `$EDITOR`; on return the board runs the
-  auto-sync + `verify` pass and reports any problem in the status line
-
-<!-- TODO: add a screenshot/GIF of the board here -->
 
 ## Commands
 

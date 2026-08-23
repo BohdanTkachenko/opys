@@ -12,6 +12,7 @@ references:
 ## Tasks
 - [ ] add a 0.12.0 section to CHANGELOG.md (the rename release opys-core → opys-engine currently has an empty Unreleased)
 - [ ] publish a deprecation pointer for opys-core 0.11.x on crates.io (README stub or yank note pointing at opys-engine)
+- [ ] publish a deprecation pointer for opys-tui on crates.io (retired per [ADR-0050 — Retire the TUI; the web UI over the server is the human surface](ADR-0050.md) / [TASK-0065 — Remove the opys-tui crate](TASK-0065.md); the crate left the workspace)
 - [ ] route future version bumps through release-plz so changelog_update fires
 
 ## Progress

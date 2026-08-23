@@ -5,6 +5,7 @@ retired:
   BUG-0027: query --write can relocate files outside the inventory base
   BUG-0028: retire leaves inbound references dangling and the corpus failing verify
   TASK-0045: 'TUI: cut the built-in editor, spawn $EDITOR instead'
+  TASK-0065: Remove the opys-tui crate
 ---
 
 # Retired ids

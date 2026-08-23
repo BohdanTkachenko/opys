@@ -11,7 +11,6 @@ document filesystem access and the storage medium stays swappable.
 Most users depend on this transitively through the [`opys`](https://crates.io/crates/opys)
 CLI rather than directly. Part of the
 [opys](https://github.com/BohdanTkachenko/opys) workspace, alongside
-[`opys-engine`](https://crates.io/crates/opys-engine) and
-[`opys-tui`](https://crates.io/crates/opys-tui).
+[`opys-engine`](https://crates.io/crates/opys-engine).
 
 Licensed under Apache-2.0.

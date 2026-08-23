@@ -15,7 +15,6 @@ use serde::Deserialize;
 
 use crate::config::{FieldSpec, FieldType};
 use crate::error::{usage, OpysError, Result};
-use crate::palette::{parse_color, PaletteEntry};
 use crate::refs;
 
 fn default_pad() -> usize {
@@ -297,36 +296,6 @@ impl Rule {
     }
 }
 
-/// Built-in column keys for the TUI list (everything else is a custom field).
-pub const BUILTIN_COLUMNS: [&str; 7] = [
-    "id", "type", "title", "status", "tags", "created", "updated",
-];
-
-fn default_columns() -> Vec<String> {
-    ["id", "title", "status", "tags"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
-}
-
-/// `[tui]` — presentation knobs for the `opys tui` board (ignored by the core
-/// engine, validated here so `config validate` catches mistakes).
-#[derive(Debug, Clone, Deserialize)]
-pub struct TuiConfig {
-    /// The list columns, left to right. Each is a [`BUILTIN_COLUMNS`] key or the
-    /// name of a custom frontmatter field (shown as that field's value).
-    #[serde(default = "default_columns")]
-    pub columns: Vec<String>,
-}
-
-impl Default for TuiConfig {
-    fn default() -> Self {
-        TuiConfig {
-            columns: default_columns(),
-        }
-    }
-}
-
 /// `[file_refs]` — how document ids are mentioned in code, for `opys show <id>
 /// --refs` and the post-`renumber` reference warning. This is about textual
 /// mentions of an id (e.g. `FEAT-0123`) in source files, distinct from the
@@ -412,19 +381,10 @@ pub struct ProjectConfig {
     pub types: BTreeMap<String, DocType>,
     #[serde(default)]
     pub rules: Vec<Rule>,
-    /// Custom stats sections rendered by `opys stats` (and the TUI stats
-    /// screen). Each is a single `sql` query over the corpus view, rendered as
-    /// a markdown table.
+    /// Custom stats sections rendered by `opys stats`. Each is a single `sql`
+    /// query over the corpus view, rendered as a markdown table.
     #[serde(default)]
     pub stats: Vec<StatSpec>,
-    /// Presentation rules for the TUI. Ignored by the core engine; parsed and
-    /// validated here so `config validate` catches mistakes regardless of the
-    /// `tui` feature. See [`crate::palette`].
-    #[serde(default)]
-    pub palette: BTreeMap<String, PaletteEntry>,
-    /// TUI list presentation. Ignored by the core engine; see [`TuiConfig`].
-    #[serde(default)]
-    pub tui: TuiConfig,
     /// How document ids are mentioned in code, for `show --refs` and the
     /// post-`renumber` reference warning. See [`FileRefs`].
     #[serde(default)]
@@ -596,8 +556,6 @@ impl ProjectConfig {
             self.validate_rule(i + 1, rule, &type_names, &mut errs);
         }
 
-        self.validate_palette(&type_names, &mut errs);
-        self.validate_tui(&mut errs);
         self.validate_file_refs(&mut errs);
         self.validate_stats(&mut errs);
         errs
@@ -636,70 +594,6 @@ impl ProjectConfig {
                     "file_refs.formats[{i}]: template '{}' must include a number placeholder ({{id}}, {{num}}, or {{padded}})",
                     f.template
                 ));
-            }
-        }
-    }
-
-    /// Validate `[tui].columns`: each must be a built-in key or a custom field
-    /// declared on some type.
-    fn validate_tui(&self, errs: &mut Vec<String>) {
-        let known_field = |key: &str| self.types.values().any(|t| t.fields.contains_key(key));
-        for col in &self.tui.columns {
-            if !BUILTIN_COLUMNS.contains(&col.as_str()) && !known_field(col) {
-                errs.push(format!(
-                    "tui.columns: '{col}' is not a built-in column or a declared field"
-                ));
-            }
-        }
-    }
-
-    /// Validate the `[palette]` rules: every matcher must reference a real type
-    /// and/or a real status, the colors must parse, and each entry needs ≥1
-    /// matcher.
-    fn validate_palette(&self, types: &HashSet<&str>, errs: &mut Vec<String>) {
-        for (name, entry) in &self.palette {
-            if entry.matchers.is_empty() {
-                errs.push(format!("palette '{name}': needs at least one matcher"));
-            }
-            for m in &entry.matchers {
-                if let Some(t) = &m.doc_type {
-                    if !types.contains(t.as_str()) {
-                        errs.push(format!(
-                            "palette '{name}': matcher type '{t}' is not a defined type"
-                        ));
-                    }
-                }
-                if let Some(s) = &m.status {
-                    let ok = match &m.doc_type {
-                        // When the matcher also fixes a type, the status must be
-                        // one of that type's statuses; otherwise it must be a
-                        // status of some type.
-                        Some(t) => self.types.get(t).is_some_and(|dt| dt.statuses.contains(s)),
-                        None => self.types.values().any(|dt| dt.statuses.contains(s)),
-                    };
-                    if !ok {
-                        let scope = m
-                            .doc_type
-                            .as_ref()
-                            .map(|t| format!(" of type '{t}'"))
-                            .unwrap_or_default();
-                        errs.push(format!(
-                            "palette '{name}': matcher status '{s}' is not a status{scope}"
-                        ));
-                    }
-                }
-            }
-            for (label, color) in [
-                ("fg_color", &entry.style.fg_color),
-                ("bg_color", &entry.style.bg_color),
-            ] {
-                if let Some(c) = color {
-                    if parse_color(c).is_none() {
-                        errs.push(format!(
-                            "palette '{name}': {label} '{c}' is not a valid color (a name, #rrggbb, or 0-255)"
-                        ));
-                    }
-                }
             }
         }
     }
@@ -956,81 +850,6 @@ structure = "- @x"
         assert!(
             joined
                 .contains("section 'Notes': 'structure' is only allowed on a 'structured' section"),
-            "{joined}"
-        );
-    }
-
-    #[test]
-    fn flags_unknown_tui_column() {
-        let cfg: ProjectConfig = toml::from_str(
-            r#"
-[types.feature]
-prefix = "FEAT"
-statuses = ["planned"]
-default_status = "planned"
-[types.feature.fields.priority]
-type = "string"
-
-[tui]
-columns = ["id", "title", "priority", "bogus"]
-"#,
-        )
-        .unwrap();
-        let joined = cfg.validate().join("\n");
-        assert!(joined.contains("tui.columns: 'bogus'"), "{joined}");
-        // built-ins and declared fields are accepted
-        assert!(!joined.contains("'priority'"), "{joined}");
-        assert!(!joined.contains("'id'"), "{joined}");
-    }
-
-    #[test]
-    fn flags_palette_unknown_type_status_and_bad_color() {
-        let cfg: ProjectConfig = toml::from_str(
-            r#"
-[types.feature]
-prefix = "FEAT"
-statuses = ["planned", "done"]
-default_status = "planned"
-
-[palette.ghost]
-matchers = [ { type = "ghost" } ]
-
-[palette.badstatus]
-matchers = [ { status = "nope" } ]
-
-[palette.typedstatus]
-matchers = [ { type = "feature", status = "nope" } ]
-
-[palette.badcolor]
-matchers = [ { status = "done" } ]
-[palette.badcolor.style]
-fg_color = "rainbow"
-
-[palette.empty]
-matchers = []
-"#,
-        )
-        .unwrap();
-        let joined = cfg.validate().join("\n");
-        assert!(
-            joined.contains("matcher type 'ghost' is not a defined type"),
-            "{joined}"
-        );
-        assert!(
-            joined.contains("matcher status 'nope' is not a status\n")
-                || joined.contains("matcher status 'nope' is not a status of"),
-            "{joined}"
-        );
-        assert!(
-            joined.contains("matcher status 'nope' is not a status of type 'feature'"),
-            "{joined}"
-        );
-        assert!(
-            joined.contains("fg_color 'rainbow' is not a valid color"),
-            "{joined}"
-        );
-        assert!(
-            joined.contains("palette 'empty': needs at least one matcher"),
             "{joined}"
         );
     }

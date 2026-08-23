@@ -15,6 +15,7 @@ use crate::commands::maybe_sync;
 use crate::doc::Doc;
 use crate::error::{usage, Result};
 use crate::frontmatter::Frontmatter;
+use crate::ids::IdSource;
 use crate::project::Project;
 use crate::project_config::{DocType, ProjectConfig};
 use crate::{rules, Ctx};
@@ -36,10 +37,15 @@ pub fn run(ctx: &Ctx, type_name: &str, file: &str) -> Result<()> {
     let text = std::fs::read_to_string(file)
         .map_err(|e| usage(format!("cannot read import file {file:?}: {e}")))?;
 
-    // Allocate IDs sequentially from the current global max, building every
-    // document in memory and collecting *all* rejections before touching the
-    // store (so a rejected batch leaves it — and thus disk — untouched).
-    let mut next = store.max_doc_num()?;
+    // Reserve the whole batch's numbers up front through the allocation seam,
+    // building every document in memory and collecting *all* rejections before
+    // touching the store (so a rejected batch leaves it — and thus disk —
+    // untouched; the reserved numbers become a harmless gap).
+    let count = text.lines().filter(|l| !l.trim().is_empty()).count() as u64;
+    let mut next = match count {
+        0 => 0, // no records: skip reservation, fall through to the error below
+        n => crate::ids::SequenceMax.reserve(&mut store, n)?,
+    };
     let mut built: Vec<Doc> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
 
@@ -47,8 +53,8 @@ pub fn run(ctx: &Ctx, type_name: &str, file: &str) -> Result<()> {
         if line.trim().is_empty() {
             continue;
         }
+        let id = crate::ids::format_id(&ft.prefix, next, pcfg.pad);
         next += 1;
-        let id = format!("{}-{:0pad$}", ft.prefix, next, pad = pcfg.pad);
         match build_record(&prj, ft, pcfg, type_name, &doc_ids, &id, line) {
             Ok(d) => built.push(d),
             Err(e) => errors.push(format!("line {}: {e}", i + 1)),

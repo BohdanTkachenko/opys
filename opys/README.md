@@ -15,7 +15,6 @@ no sprints, assignees, or priorities.
 
 ```sh
 cargo install opys                 # the CLI (what agents use)
-cargo install opys --features tui  # + the interactive `opys tui` terminal board
 ```
 
 ```sh
@@ -30,7 +29,6 @@ opys verify                        # wire into CI
 - **`opys`** — this crate: the command-line binary.
 - [`opys-engine`](https://crates.io/crates/opys-engine) — the core library (model, config, rules, SQL store, command implementations).
 - [`opys-backend-markdown-local`](https://crates.io/crates/opys-backend-markdown-local) — the default storage backend (one markdown file per document on the local filesystem).
-- [`opys-tui`](https://crates.io/crates/opys-tui) — the optional `opys tui` terminal board (behind the `tui` feature).
 
 Full documentation, the format spec, and the agent workflow live in the
 [project README](https://github.com/BohdanTkachenko/opys).

@@ -54,6 +54,12 @@ pub struct Store {
     retired_corrupt: Option<String>,
     next_dkey: i64,
     next_rkey: i64,
+    /// The inventory lock guard the backend attached at load (an open,
+    /// exclusively-locked handle on the medium's lock file). Held for the
+    /// store's whole life — dropping it (store drop, or [`Store::take_lock`]
+    /// after flush) releases the lock, including on every error path. The
+    /// engine never operates on this handle; it only carries it.
+    lock: Option<std::fs::File>,
 }
 
 /// An already-read, already-parsed corpus snapshot — the input to
@@ -92,6 +98,7 @@ impl Store {
             retired_corrupt: loaded.retired_err.clone(),
             next_dkey: 1,
             next_rkey: 1,
+            lock: None,
         };
 
         let mut doc_rows: Vec<Vec<ParamLiteral>> = Vec::new();
@@ -389,8 +396,7 @@ impl Store {
     }
 
     /// Point `docs.path` at the canonical layout path for the doc's id/status
-    /// (no-op when either is missing, matching `save_doc`). Flush performs the
-    /// actual rename.
+    /// (no-op when either is missing). Flush performs the actual rename.
     pub fn set_canonical_path(&mut self, pcfg: &ProjectConfig, dkey: i64) -> Result<()> {
         let (_, rows) = self.select(
             "SELECT id, status FROM docs WHERE dkey = $1",
@@ -461,10 +467,17 @@ impl Store {
         Ok(max)
     }
 
-    /// Next id for a type prefix: one past the global max, zero-padded.
-    pub fn next_id_for(&mut self, prefix: &str, pad: usize) -> Result<String> {
-        let next = self.max_doc_num()? + 1;
-        Ok(format!("{prefix}-{next:0pad$}"))
+    /// Attach the medium's inventory-lock guard (see the `lock` field). Called
+    /// by the backend at load, once.
+    pub fn hold_lock(&mut self, guard: std::fs::File) {
+        self.lock = Some(guard);
+    }
+
+    /// Detach the lock guard so the backend can keep it alive across the
+    /// filesystem writes that happen *after* the store is consumed by
+    /// [`Store::flush_plan`]. Dropping the returned handle releases the lock.
+    pub fn take_lock(&mut self) -> Option<std::fs::File> {
+        self.lock.take()
     }
 
     // ------------------------------------------------------------------
@@ -834,9 +847,11 @@ terminal_statuses = ["done"]
     }
 
     /// The id sequence covers live docs, relation-map ids (struck or not), and
-    /// the retired ledger.
+    /// the retired ledger — asserted through the allocation seam
+    /// (`ids::SequenceMax`), the path `new`/`import`/`query --write` use.
     #[test]
     fn next_id_covers_docs_relations_and_ledger() {
+        use crate::ids::{format_id, IdSource, SequenceMax};
         let docs: &[(&str, &str)] = &[(
             "FEAT-0001.md",
             "---\nid: FEAT-0001\nstatus: planned\nreferences:\n  TASK-0007: ~~Gone~~\n---\n\n# A\n",
@@ -844,7 +859,8 @@ terminal_statuses = ["done"]
         let (_t, prj) = project_with(docs);
         std::fs::write(prj.base.join("_retired.txt"), "FEAT-0012  # retired\n").unwrap();
         let (mut s, _) = store_of(&prj, docs);
-        assert_eq!(s.next_id_for("FEAT", 4).unwrap(), "FEAT-0013");
+        let first = SequenceMax.reserve(&mut s, 2).unwrap();
+        assert_eq!(format_id("FEAT", first, 4), "FEAT-0013");
     }
 
     /// User SQL is statement-guarded on the plan: no mutation can execute, even

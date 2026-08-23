@@ -3895,3 +3895,106 @@ statuses = [\"planned\"]\ndefault_status = \"planned\"\n";
     dir.child("opys/FEAT-0001.md")
         .assert(predicate::path::exists());
 }
+
+// ------------------------------------------------------------------ lock
+
+/// FEAT-0021: concurrent `new` invocations serialize on the inventory lock and
+/// never allocate the same id — six racing processes yield six documents with
+/// six distinct numbers, and the corpus still verifies (duplicate numbers
+/// would make `verify` exit 1).
+#[test]
+fn concurrent_new_allocates_distinct_ids() {
+    let dir = project();
+    let root = dir.path().to_path_buf();
+    let handles: Vec<_> = (0..6)
+        .map(|i| {
+            let root = root.clone();
+            std::thread::spawn(move || {
+                let mut cmd = Command::cargo_bin("opys").unwrap();
+                cmd.arg("--root").arg(&root);
+                cmd.args(["new", "--title", &format!("Doc {i}"), "--tags", "core"]);
+                cmd.assert().success();
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+    let files = std::fs::read_dir(dir.path().join("opys").join("features"))
+        .unwrap()
+        .count();
+    assert_eq!(files, 6);
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// FEAT-0021: while another process holds the lock, an invocation waits
+/// (retries) instead of failing, and proceeds as soon as the holder releases.
+#[test]
+fn lock_contention_waits_then_succeeds() {
+    use fs4::fs_std::FileExt as _;
+    let dir = project();
+    let base = dir.path().join("opys");
+    std::fs::create_dir_all(&base).unwrap();
+    let holder = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(base.join(".opys.lock"))
+        .unwrap();
+    assert!(holder.try_lock_exclusive().unwrap());
+
+    let root = dir.path().to_path_buf();
+    let waiter = std::thread::spawn(move || {
+        let mut cmd = Command::cargo_bin("opys").unwrap();
+        cmd.arg("--root").arg(&root);
+        cmd.env("OPYS_LOCK_TIMEOUT_MS", "5000");
+        cmd.args(["new", "--title", "Waited", "--tags", "core"]);
+        cmd.assert().success();
+    });
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    drop(holder); // closing the fd releases the flock
+    waiter.join().unwrap();
+}
+
+/// FEAT-0021: contention past the timeout surfaces as a real error (exit 2)
+/// naming the inventory lock, not a hang or a corrupt write.
+#[test]
+fn lock_timeout_is_a_clear_error() {
+    use fs4::fs_std::FileExt as _;
+    let dir = project();
+    let base = dir.path().join("opys");
+    std::fs::create_dir_all(&base).unwrap();
+    let holder = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(base.join(".opys.lock"))
+        .unwrap();
+    assert!(holder.try_lock_exclusive().unwrap());
+
+    opys(&dir)
+        .env("OPYS_LOCK_TIMEOUT_MS", "150")
+        .args(["new", "--title", "Blocked", "--tags", "core"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("inventory lock"));
+}
+
+/// FEAT-0021: an invocation that fails mid-command releases the lock (the
+/// flock dies with its file handle — stale locks cannot exist), so the next
+/// invocation proceeds without waiting out any timeout.
+#[test]
+fn failed_command_releases_the_lock() {
+    let dir = project();
+    opys(&dir)
+        .args(["set-status", "FEAT-9999", "implemented"])
+        .assert()
+        .failure()
+        .code(2);
+    opys(&dir)
+        .env("OPYS_LOCK_TIMEOUT_MS", "500")
+        .args(["new", "--title", "After the failure", "--tags", "core"])
+        .assert()
+        .success();
+}

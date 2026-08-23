@@ -13,7 +13,7 @@ use walkdir::WalkDir;
 
 use opys_engine::backend::Backend;
 use opys_engine::doc::Doc;
-use opys_engine::error::{OpysError, Result};
+use opys_engine::error::{usage, Result};
 use opys_engine::project::Project;
 use opys_engine::store::{FlushPlan, LoadedCorpus, Store};
 
@@ -23,6 +23,11 @@ pub struct MarkdownLocal;
 
 impl Backend for MarkdownLocal {
     fn load(&self, prj: &Project) -> Result<(Store, Vec<String>)> {
+        // Take the inventory lock BEFORE reading anything, so a concurrent
+        // invocation's flush can never be observed half-applied, and hand the
+        // guard to the store: it is held load-to-flush (FEAT-0021) and released
+        // by drop on every path, success or error.
+        let lock = lock_inventory(&prj.base)?;
         let (docs, errors) = load_docs(prj);
         let docs: Vec<(Doc, Option<String>)> = docs
             .into_iter()
@@ -39,7 +44,7 @@ impl Backend for MarkdownLocal {
             Err(e) => (Vec::new(), Some(e.to_string())),
         };
         let retired_legacy = opys_engine::retired::legacy_path(&prj.base).exists();
-        Store::build(
+        let (mut store, errors) = Store::build(
             prj,
             LoadedCorpus {
                 docs,
@@ -48,16 +53,64 @@ impl Backend for MarkdownLocal {
                 retired_legacy,
                 retired_err,
             },
-        )
+        )?;
+        store.hold_lock(lock);
+        Ok((store, errors))
     }
 
-    fn flush(&self, prj: &Project, store: Store) -> Result<()> {
+    fn flush(&self, prj: &Project, mut store: Store) -> Result<()> {
+        // `flush_plan` consumes the store (and would drop the lock guard with
+        // it), so detach the guard first and keep it alive across the actual
+        // filesystem writes; it drops — releasing the lock — on return.
+        let _lock = store.take_lock();
         let plan = store.flush_plan(prj)?;
         apply_plan(&plan, &prj.base)
     }
 
     fn load_docs(&self, prj: &Project) -> (Vec<Doc>, Vec<String>) {
         load_docs(prj)
+    }
+}
+
+/// The inventory lock file, under the base dir. Not a document (the discovery
+/// regex only matches `PREFIX-NNNN.md`); safe to gitignore. The file stays
+/// empty — the lock is the flock on its handle, so the OS releases it when the
+/// holding process exits (however it exits): stale locks cannot happen.
+const LOCK_FILENAME: &str = ".opys.lock";
+
+/// Take the exclusive inventory lock, waiting (25 ms polls) up to
+/// `OPYS_LOCK_TIMEOUT_MS` (default 10 000) for a concurrent invocation to
+/// finish — contention is a retry, not an error, until the deadline.
+fn lock_inventory(base: &Path) -> Result<std::fs::File> {
+    use fs4::fs_std::FileExt;
+    std::fs::create_dir_all(base)?;
+    let path = base.join(LOCK_FILENAME);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)?;
+    let timeout_ms: u64 = std::env::var("OPYS_LOCK_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10_000);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    loop {
+        match file.try_lock_exclusive() {
+            Ok(true) => return Ok(file),
+            Ok(false) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => return Err(e.into()),
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(usage(format!(
+                "timed out after {timeout_ms} ms waiting for the inventory lock \
+                 ({}) — another opys invocation is holding it; raise \
+                 OPYS_LOCK_TIMEOUT_MS to wait longer",
+                path.display()
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
     }
 }
 
@@ -77,29 +130,6 @@ pub fn load_docs(prj: &Project) -> (Vec<Doc>, Vec<String>) {
     }
     docs.sort_by(|a, b| a.path.cmp(&b.path));
     (docs, errors)
-}
-
-/// Write a single document to its canonical path, relocating (rename) first if
-/// its id/status now imply a different path. Emptied source dirs are pruned.
-/// Used by the TUI's inline editor.
-pub fn save_doc(prj: &Project, d: &mut Doc) -> Result<()> {
-    let target = match (d.id(), d.status()) {
-        (Some(id), Some(status)) => Some(prj.doc_path(id, status)),
-        _ => None,
-    };
-    if let Some(target) = target {
-        if target != d.path {
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let old = std::mem::replace(&mut d.path, target.clone());
-            if old.exists() {
-                std::fs::rename(&old, &target)?;
-                prune_empty_dir(old.parent(), &prj.base);
-            }
-        }
-    }
-    std::fs::write(&d.path, d.to_text()).map_err(OpysError::from)
 }
 
 /// Execute a [`FlushPlan`] against the local filesystem: deletes → renames →
