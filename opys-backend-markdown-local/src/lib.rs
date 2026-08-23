@@ -72,11 +72,49 @@ impl Backend for MarkdownLocal {
     }
 }
 
-/// The inventory lock file, under the base dir. Not a document (the discovery
-/// regex only matches `PREFIX-NNNN.md`); safe to gitignore. The file stays
-/// empty — the lock is the flock on its handle, so the OS releases it when the
-/// holding process exits (however it exits): stale locks cannot happen.
-const LOCK_FILENAME: &str = ".opys.lock";
+/// The directory holding inventory lock files: `$XDG_RUNTIME_DIR` when set
+/// (private per-user tmpfs — the spec home for runtime lock files), else the
+/// OS temp dir (already per-user on macOS/Windows). Never the inventory
+/// itself: the flock model keeps the file around (unlink-while-held is racy),
+/// and a permanent untracked file inside the user's repo is garbage.
+fn lock_dir() -> PathBuf {
+    match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(d) if !d.is_empty() => PathBuf::from(d),
+        _ => std::env::temp_dir(),
+    }
+}
+
+/// The machine-local lock file for an inventory base, e.g.
+/// `/run/user/1000/opys-lock-_home_dan_myproj_inventory-<hash>`. The name is a
+/// readable sanitized tail of the *canonicalized* base path (so symlinked
+/// spellings of one inventory share a lock) plus an FNV-64 of the full path —
+/// sanitizing is lossy, the hash keeps the mapping injective. The file stays
+/// empty forever: the lock is the flock on its handle, which the OS releases
+/// when the holding process exits (however it exits), so stale locks cannot
+/// happen. Machine-local is the lock's whole scope by design — cross-machine
+/// coordination is id leases + `renumber`, not this file.
+pub fn lock_path(base: &Path) -> Result<PathBuf> {
+    let canon = std::fs::canonicalize(base)?;
+    let s = canon.to_string_lossy();
+    // All-ASCII by construction, so the byte-indexed tail below is safe.
+    let mapped: String = s
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let tail = &mapped[mapped.len().saturating_sub(60)..];
+    Ok(lock_dir().join(format!("opys-lock-{tail}-{:016x}", fnv1a64(s.as_bytes()))))
+}
+
+/// FNV-1a 64-bit. A collision only makes two inventories share a lock (extra
+/// serialization, never lost exclusion), so a small inline hash is plenty.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
 
 /// Take the exclusive inventory lock, waiting (25 ms polls) up to
 /// `OPYS_LOCK_TIMEOUT_MS` (default 10 000) for a concurrent invocation to
@@ -84,7 +122,7 @@ const LOCK_FILENAME: &str = ".opys.lock";
 fn lock_inventory(base: &Path) -> Result<std::fs::File> {
     use fs4::fs_std::FileExt;
     std::fs::create_dir_all(base)?;
-    let path = base.join(LOCK_FILENAME);
+    let path = lock_path(base)?;
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -105,8 +143,9 @@ fn lock_inventory(base: &Path) -> Result<std::fs::File> {
         if std::time::Instant::now() >= deadline {
             return Err(usage(format!(
                 "timed out after {timeout_ms} ms waiting for the inventory lock \
-                 ({}) — another opys invocation is holding it; raise \
+                 for {} ({}) — another opys invocation is holding it; raise \
                  OPYS_LOCK_TIMEOUT_MS to wait longer",
+                base.display(),
                 path.display()
             )));
         }

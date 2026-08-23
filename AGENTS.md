@@ -84,10 +84,12 @@ implementations, plus the [`Backend`] storage trait; lib name `opys_engine`);
 **`opys-backend-markdown-local`** (the default `Backend` impl: one markdown file
 per document on the local filesystem — it owns all corpus filesystem I/O,
 walking and parsing documents on load, executing the store's `FlushPlan` on
-flush, and holding the **exclusive inventory lock** (`<base>/.opys.lock`, a
-flock) from load through flush, so parallel invocations serialize instead of
-colliding — contention retries until `OPYS_LOCK_TIMEOUT_MS`, default 10 s, and
-the OS releases the flock with the process, so stale locks cannot exist); and
+flush, and holding the **exclusive inventory lock** from load through flush, so
+parallel invocations serialize instead of colliding — a flock on a per-inventory
+file under `$XDG_RUNTIME_DIR` (or the OS temp dir), named by the canonicalized
+base path + hash, so nothing untracked ever appears in the user's repo;
+contention retries until `OPYS_LOCK_TIMEOUT_MS`, default 10 s, and the OS
+releases the flock with the process, so stale locks cannot exist); and
 **`opys`** (the binary — this is what `cargo install opys` yields). The binary
 (`opys/src/main.rs`) parses `Cli` (clap derive, `src/cli.rs`), injects the
 `MarkdownLocal` backend, and calls `opys_engine::run`, which maps the exit code.

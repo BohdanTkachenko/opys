@@ -3939,7 +3939,7 @@ fn lock_contention_waits_then_succeeds() {
         .create(true)
         .truncate(false)
         .write(true)
-        .open(base.join(".opys.lock"))
+        .open(opys_backend_markdown_local::lock_path(&base).unwrap())
         .unwrap();
     assert!(holder.try_lock_exclusive().unwrap());
 
@@ -3968,7 +3968,7 @@ fn lock_timeout_is_a_clear_error() {
         .create(true)
         .truncate(false)
         .write(true)
-        .open(base.join(".opys.lock"))
+        .open(opys_backend_markdown_local::lock_path(&base).unwrap())
         .unwrap();
     assert!(holder.try_lock_exclusive().unwrap());
 
