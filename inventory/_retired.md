@@ -4,6 +4,7 @@ retired:
   BUG-0026: Corrupt _retired.md is silently read as an empty ledger
   BUG-0027: query --write can relocate files outside the inventory base
   BUG-0028: retire leaves inbound references dangling and the corpus failing verify
+  TASK-0045: 'TUI: cut the built-in editor, spawn $EDITOR instead'
 ---
 
 # Retired ids

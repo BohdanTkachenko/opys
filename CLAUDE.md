@@ -278,3 +278,11 @@ only the relevant files. To create or change documents, use the CLI (`new
 --type`, `set-status`, `tag`, `retire`, `block`, `close`); body prose edits are
 normal file edits — run `opys verify` before finishing. Known code-review
 findings are filed as `bug`/`chore` docs linked to their feature.
+
+Product and architecture decisions are `adr` docs (`new --type adr`;
+Context/Decision/Consequences sections, statuses proposed → accepted →
+superseded). The platform roadmap (server, relay, orchestrator, teams) is
+ADR-0050…0057 plus the planned features they reference, chained with
+`blocked_by` in build order — consult the accepted ADRs before working on
+anything server/cloud/teams-shaped, and file a new ADR (or supersede one)
+when a direction changes rather than editing an accepted decision in place.

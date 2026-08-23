@@ -77,6 +77,32 @@ structure = '''
   - +@checks
 '''
 
+# ------------------------------------ adr ------------------------------------
+# Architecture/product Decision Record: one decision, its context, and its
+# consequences. Permanent; a reversed decision becomes "superseded" (with a
+# reference to its successor), never deleted.
+[types.adr]
+prefix = "ADR"
+statuses = ["proposed", "accepted", "superseded"]
+default_status = "proposed"
+terminal_statuses = []               # decisions are history; never closed/deleted
+tags_required = true
+
+[[types.adr.sections]]
+heading = "Context"
+kind = "prose"
+required = true
+
+[[types.adr.sections]]
+heading = "Decision"
+kind = "prose"
+required = true
+
+[[types.adr.sections]]
+heading = "Consequences"
+kind = "prose"
+required = true
+
 # ----------------------------------- task ------------------------------------
 # Ephemeral implementation work. Deleted on `close`.
 [types.task]
