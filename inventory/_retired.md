@@ -8,6 +8,7 @@ retired:
   TASK-0065: Remove the opys-tui crate
   TASK-0067: 'opys-server: scaffold the AGPL crate'
   TASK-0068: 'engine: extract print-free cores for block/unblock'
+  TASK-0069: 'opys-server: project discovery and the corpus registry'
 ---
 
 # Retired ids
