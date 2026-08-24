@@ -147,6 +147,17 @@ impl Manager {
         self.corpora.get(cid)
     }
 
+    /// How to build a backend for a caller that is not an actor.
+    ///
+    /// The write path needs one (`crate::action`), and it must be a *fresh*
+    /// instance over a *fresh* store: reusing an actor's would mean writing
+    /// through the warm cache, which is the one thing the node must never do.
+    /// Exposing the factory rather than a backend keeps the choice of medium
+    /// where the binary put it.
+    pub fn backend(&self) -> BackendFactory {
+        self.backend
+    }
+
     /// Every live corpus id, sorted.
     pub fn cids(&self) -> Vec<String> {
         self.corpora.keys().cloned().collect()

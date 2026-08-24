@@ -60,6 +60,18 @@ pub enum Event {
     CorpusRemoved {
         cid: String,
     },
+    /// A write completed through the API (TASK-0072). `action` is the request's
+    /// own wire name (`set-status`, `close`), and `id` the document it touched.
+    ///
+    /// This is the acknowledgement, not the refresh: the write also trips the
+    /// corpus watcher, so a `corpus-reloaded` follows once the debounce expires.
+    /// A subscriber that reacts to both sees the result immediately and the new
+    /// counts a moment later.
+    ActionCompleted {
+        cid: String,
+        action: String,
+        id: String,
+    },
 }
 
 /// One row of the board: everything a list view needs without opening a doc.
@@ -536,7 +548,27 @@ impl Actor {
     }
 
     fn load(&self) -> Result<Warm> {
+        // `Project::open` searches *upward* for `opys.toml`. A corpus whose own
+        // config has gone — a branch switch, a removed worktree — would
+        // otherwise start serving the nearest enclosing project, which the user
+        // never allowlisted (ADR-0077), under this corpus's cid. Refuse; the
+        // manager's next tick retires the corpus properly, and until then reads
+        // answer from the last good load rather than from someone else's
+        // documents. `crate::action::perform` guards the write path the same way.
+        if !self.corpus.root.join("opys.toml").is_file() {
+            return Err(OpysError::Usage(format!(
+                "{} is no longer an opys project",
+                self.corpus.root.display()
+            )));
+        }
         let prj = Project::open(&self.corpus.root.to_string_lossy())?;
+        if prj.root != self.corpus.root {
+            return Err(OpysError::Usage(format!(
+                "{} resolved to a different project ({})",
+                self.corpus.root.display(),
+                prj.root.display()
+            )));
+        }
         let (mut store, parse_errors) = self.backend.load(&prj)?;
         // THE RULE (see the module docs): the flock goes back immediately. A
         // warm store never writes, so it has no business holding it.

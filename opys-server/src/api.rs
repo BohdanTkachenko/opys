@@ -1,15 +1,21 @@
-//! The read API and the event stream (TASK-0071).
+//! The API — reads and the event stream (TASK-0071), writes (TASK-0072).
 //!
 //! Everything is JSON, there is no auth (a loopback bind is the boundary in M1),
 //! and every failure is `{"error": "<message>"}` with 400 for bad input, 404 for
-//! an unknown corpus or document, and 500 for anything internal. That includes
+//! an unknown corpus (and, on the read routes, an unknown document), 422 for a
+//! write the corpus refused — including a write naming an id that does not
+//! exist, which is one member of the "the CLI would have exited 2" class rather
+//! than a routing miss — 503 for a write the node was too busy to attempt, and
+//! 500 for anything internal. That includes
 //! the failures axum would otherwise render as `text/plain` — a rejected body, a
 //! malformed query string, an unroutable path — because a client that parses one
 //! error shape should never meet a second.
 //!
 //! **No endpoint executes commands or accepts a filesystem path** (ADR-0052).
 //! Corpora are addressed by their opaque `cid`, and the set of them comes from
-//! the allowlist file the user owns — the route surface here is exhaustive.
+//! the allowlist file the user owns — the route surface here is exhaustive. The
+//! one endpoint that writes takes a closed enum of the six mutating commands and
+//! their arguments, never anything shell- or path-shaped; see [`crate::action`].
 //!
 //! A loopback bind keeps other machines out, but not the user's own browser:
 //! any page they visit can `fetch` a localhost URL, and the same-origin policy
@@ -47,6 +53,7 @@ use opys_engine::error::OpysError;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
+use crate::action::{Action, ActionError};
 use crate::actor::{
     CorpusClient, CorpusHandle, CorpusStats, DocFilter, DocSummary, DocView, Event, QueryResult,
     VerifyStatus,
@@ -239,6 +246,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/corpus/{cid}/doc/{docid}", get(doc))
         .route("/api/corpus/{cid}/query", post(query))
         .route("/api/corpus/{cid}/verify", get(verify))
+        .route("/api/corpus/{cid}/action", post(action))
         // `any`, not `get`: that is what enables WebSockets over HTTP/2, where
         // the handshake is a CONNECT rather than a GET.
         .route("/api/events", any(events))
@@ -281,6 +289,31 @@ impl ApiError {
     /// No such corpus, or no such document in it.
     pub fn not_found(message: impl Into<String>) -> ApiError {
         ApiError::new(StatusCode::NOT_FOUND, message)
+    }
+
+    /// The corpus refused a write: an unknown status, a terminal status reached
+    /// without `close`, an unchecked test-plan item, an id that resolves to
+    /// nothing. The message is the engine's own, which is the text the CLI
+    /// prints before exiting 2.
+    ///
+    /// Every [`OpysError`] the write cycle can raise lands here, including the
+    /// two that are arguably the node's rather than the caller's (a failed disk
+    /// write, an internal store bug). That is deliberate: "the CLI would have
+    /// exited 2" is one outcome a client can present as one thing, and splitting
+    /// it across 422 and 500 would make a caller parse two shapes to learn the
+    /// same fact — the write did not happen, here is why. Reads keep the older
+    /// rule, where an engine error really is the state of the node ([`ApiError`]'s
+    /// `From<OpysError>`, which is a 500 and must not be reached from a write).
+    pub fn unprocessable(message: impl Into<String>) -> ApiError {
+        ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, message)
+    }
+
+    /// The node could not attempt the write, but nothing about the request was
+    /// wrong: another `opys` invocation held the inventory lock past the
+    /// timeout. A retry is the right response, which is precisely what a 422
+    /// would not have said.
+    pub fn unavailable(message: impl Into<String>) -> ApiError {
+        ApiError::new(StatusCode::SERVICE_UNAVAILABLE, message)
     }
 
     /// Our fault, not the caller's.
@@ -608,6 +641,124 @@ async fn verify(
     Ok(Json(
         with_corpus(&state, &cid, |client| client.verify()).await?,
     ))
+}
+
+/// A completed write.
+#[derive(Serialize)]
+struct ActionOk {
+    ok: bool,
+    /// The document the action touched: allocated by `new`, echoed by the rest.
+    id: String,
+    /// The line the CLI prints for the same command. For display, not parsing.
+    message: String,
+    /// Present only when the write landed but the auto-sync pass did not run —
+    /// the CLI's `note: skipped sync` on stderr, which a headless node has
+    /// nowhere else to put. The write is still authoritative; relation maps and
+    /// prose links are not being maintained until the reason is fixed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sync_skipped: Option<String>,
+}
+
+/// How a refused write is answered, per [`ActionError`].
+///
+/// Three statuses rather than one, because a client has to act on them
+/// differently: 404 stop, 503 retry, 422 the write is invalid — show the user.
+/// Only the last carries the engine's own text.
+fn refusal(cid: &str, e: ActionError) -> ApiError {
+    match e {
+        ActionError::Gone => ApiError::not_found(format!("corpus is no longer available: {cid}")),
+        busy @ ActionError::Busy => ApiError::unavailable(busy.to_string()),
+        ActionError::Refused(e) => ApiError::unprocessable(e.to_string()),
+    }
+}
+
+/// Perform one write against a corpus.
+///
+/// The body is a closed enum of the six mutating commands
+/// ([`crate::action::Action`]); an unknown action or an undeclared field fails
+/// deserialization and comes back as a 400, which is what makes this endpoint
+/// incapable of executing anything the node did not implement.
+///
+/// The write does **not** go through the corpus actor, and that is the point.
+/// The actor owns a warm store loaded in the past without the inventory lock;
+/// flushing it would clobber every CLI write made since. So the blocking task
+/// below borrows nothing from the actor's state, runs a fresh CLI-identical
+/// cycle against the files, and only *then* asks the actor to reload.
+///
+/// That last step is not the watcher's job to do alone. Nothing else in the node
+/// ever reloads an actor — `refresh` only drops corpora that vanished, `rescan`
+/// skips cids it already serves — so a corpus whose watcher never started (an
+/// inventory directory created after the corpus was allowlisted) or died (the
+/// directory replaced wholesale by a branch switch; inotify on a network mount
+/// or WSL `/mnt`) would answer reads from a cache frozen at the last watched
+/// change, *permanently*, while happily reporting each write as a success.
+/// Asking explicitly costs one load and closes read-your-own-write as well: the
+/// 200 goes out after the cache reflects the write. The cycle's flock is
+/// released by then, so the reload cannot deadlock against it.
+///
+/// Worst case that parks a blocking-pool thread for `OPYS_LOCK_TIMEOUT_MS`
+/// (10 s by default) waiting on the inventory lock, then answers 503. There is
+/// no deadline on top of it deliberately: a timeout that abandoned a half-written
+/// cycle would be worse than a slow answer, and a client should expect the wait.
+async fn action(
+    State(state): State<AppState>,
+    Path(cid): Path<String>,
+    body: Result<Json<Action>, JsonRejection>,
+) -> Result<Json<ActionOk>, ApiError> {
+    let Json(request) = body?;
+    let name = request.name().to_string();
+    let manager = Arc::clone(&state.manager);
+    let events = state.events.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        // Owned copies, so the manager lock is gone well before the cycle
+        // blocks: a rescan can hold it for seconds, and the cycle itself can
+        // wait out the inventory lock for ten.
+        let target = {
+            let manager = lock(&manager);
+            manager.get(&cid).map(|handle| {
+                (
+                    handle.corpus.root.clone(),
+                    handle.client(),
+                    manager.backend(),
+                )
+            })
+        };
+        let (root, client, make_backend) =
+            target.ok_or_else(|| ApiError::not_found(format!("no such corpus: {cid}")))?;
+        let backend = make_backend();
+        let done = crate::action::perform(&root, backend.as_ref(), &request);
+        // Gone and Busy are the two outcomes that touched nothing; everything
+        // else reached the corpus — a refused core still flushes and syncs, so
+        // the files moved either way and the cache is stale either way.
+        if !matches!(done, Err(ActionError::Gone | ActionError::Busy)) {
+            if let Ok(outcome) = &done {
+                // Broadcast here rather than after the `.await` below: a client
+                // that hangs up mid-cycle cannot cancel `spawn_blocking`, so the
+                // write still lands, and an acknowledgement nobody sends is a
+                // write nobody hears about. Err only means nobody is subscribed.
+                let _ = events.send(Event::ActionCompleted {
+                    cid: cid.clone(),
+                    action: name,
+                    id: outcome.id.clone(),
+                });
+            }
+            let _ = client.reload();
+        }
+        // Not `?` on the engine error: the blanket `From<OpysError>` is a 500,
+        // and here every refusal is the caller's answer rather than the node's.
+        done.map_err(|e| refusal(&cid, e))
+    })
+    .await
+    // A panic mid-cycle would otherwise abort the response task and hang up the
+    // connection with no explanation.
+    .map_err(|e| ApiError::internal(format!("action task failed: {e}")))??;
+
+    Ok(Json(ActionOk {
+        ok: true,
+        id: outcome.id,
+        message: outcome.message,
+        sync_skipped: outcome.sync_skipped,
+    }))
 }
 
 /// The greeting frame. Keyed on `type` rather than the `event` tag the broadcast

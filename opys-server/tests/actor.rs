@@ -304,3 +304,42 @@ fn corpus_base_comes_from_the_project_config() {
     assert_eq!(handle.docs(DocFilter::default()).unwrap().len(), 1);
     handle.shutdown();
 }
+
+/// A corpus that has lost its own `opys.toml` must not start serving the
+/// project it happens to sit inside.
+///
+/// `Project::open` searches *upward*, which is the CLI's convenience and would
+/// be an allowlist escape here (ADR-0077): nested projects are the normal shape
+/// a `[[prefix]]` entry produces, and a git worktree inside its main repo is the
+/// layout FEAT-0058 targets, so an inner corpus whose config went away on a
+/// branch switch would silently list — and, through the action endpoint, write
+/// to — documents from a project nobody approved.
+#[test]
+fn a_corpus_without_its_own_config_does_not_serve_its_parent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let outer = std::fs::canonicalize(tmp.path()).unwrap();
+    let outer_corpus = fixture(&outer);
+    // A second note that exists only in the parent, so "we are reading the
+    // wrong project" is visible rather than inferred.
+    write_note(&outer.join("inventory"), 9, "Only in the parent.");
+
+    let inner = outer.join("inner");
+    std::fs::create_dir_all(&inner).unwrap();
+    let corpus = fixture(&inner);
+    assert_ne!(corpus.cid, outer_corpus.cid);
+
+    std::fs::remove_file(inner.join("opys.toml")).unwrap();
+    let (handle, _rx) = spawn(corpus);
+    handle.reload().unwrap();
+
+    let refusal = handle
+        .docs(DocFilter::default())
+        .expect_err("a corpus with no config of its own has nothing to serve");
+    assert!(
+        refusal.to_string().contains("no longer an opys project"),
+        "{refusal}"
+    );
+    let status = handle.verify().unwrap();
+    assert!(status.load_error.is_some(), "{status:#?}");
+    handle.shutdown();
+}

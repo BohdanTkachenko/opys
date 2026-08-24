@@ -8,6 +8,7 @@
 //! This is the library half; `src/main.rs` is the `opys-server` binary, and the
 //! `opys` CLI links this crate for its `web` subcommand.
 
+pub mod action;
 pub mod actor;
 pub mod api;
 pub mod discover;

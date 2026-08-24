@@ -541,11 +541,22 @@ async fn an_unknown_corpus_is_404_on_every_route() {
             "{uri}: {body}"
         );
     }
-    let (status, body) = fx
-        .post("/api/corpus/nope/query", json!({"sql": "SELECT 1"}))
-        .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(body["error"].is_string(), "{body}");
+    for (uri, body) in [
+        ("/api/corpus/nope/query", json!({"sql": "SELECT 1"})),
+        // The write route resolves the cid itself rather than through
+        // `with_corpus`, so it is the one 404 here that is not shared code.
+        (
+            "/api/corpus/nope/action",
+            json!({"action": "tag", "id": "NOTE-0001", "add": "x"}),
+        ),
+    ] {
+        let (status, answer) = fx.post(uri, body).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}: {answer}");
+        assert!(
+            answer["error"].as_str().is_some_and(|e| e.contains("nope")),
+            "{uri}: {answer}"
+        );
+    }
 }
 
 /// The bind address keeps other machines out; it does nothing about the user's
