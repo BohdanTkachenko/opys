@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1](https://github.com/BohdanTkachenko/opys/compare/v0.12.0...v0.12.1) - 2026-08-24
+
+### Added
+
+- *(server)* embedded Svelte web UI and its build pipeline (TASK-0074)
+- *(server)* worktree union view (TASK-0073)
+- *(server)* write actions through the engine command cores (TASK-0072)
+- *(server)* read API, WebSocket events, and the main loop (TASK-0071)
+- *(server)* corpus actor with warm store and watcher (TASK-0070)
+- *(server)* allowlist registry and bounded project discovery (TASK-0069)
+- *(server)* scaffold opys-server — the always-on node (TASK-0067)
+- *(core)* advisory inventory lock + id-allocation seam; retire the TUI
+
+### Fixed
+
+- *(lock)* move the inventory lock out of the repo
+- harden the retired ledger, retire, and query --write (four bugs)
+- repair linkify, history, import, and renumber (four bugs)
+- close five verify/serialization bugs (frontmatter, reason, unblock, agent-rules)
+- *(nix,publish)* repair the flake build and restore crate READMEs
+- *(tui)* harden board writes and close BUG-0031
+
+### Other
+
+- *(inventory)* close TASK-0074; TASK-0075 becomes pickable
+- *(inventory)* close TASK-0073; TASK-0074 becomes pickable
+- *(inventory)* close TASK-0072
+- *(inventory)* close TASK-0071; TASK-0072 and TASK-0073 become pickable
+- *(inventory)* ADR-0078 — Svelte for the web UI, committed build output
+- *(inventory)* close TASK-0070; TASK-0071 becomes pickable
+- *(inventory)* close TASK-0069; TASK-0070 becomes pickable
+- *(inventory)* close TASK-0068 as a no-op; its premise was already true
+- *(inventory)* accept ADR-0077 — background scan, depth 10, allowlist
+- *(inventory)* ADR-0076/0077 — Apache node, allowlist over scan
+- *(inventory)* close TASK-0067; TASK-0069 becomes pickable
+- *(inventory)* plan M1 — nine spec-complete tasks for opys-server
+- *(inventory)* record ADR-0066 — SQL as the internal working representation
+- *(inventory)* accept ADR-0056 (Apache core, AGPL server components)
+- *(inventory)* file the platform pivot — adr type, 8 ADRs, 7 platform features
+- *(tui)* cut the built-in editor for a read-mostly board
+- dogfood opys — seed the repo's own feature inventory
+
 ## [0.11.0](https://github.com/BohdanTkachenko/opys/compare/v0.10.1...v0.11.0) - 2026-07-04
 
 ### Added

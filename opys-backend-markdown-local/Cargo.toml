@@ -11,7 +11,7 @@ keywords = ["opys", "markdown", "storage", "backend", "inventory"]
 categories = ["development-tools", "filesystem"]
 
 [dependencies]
-opys-engine = { path = "..", version = "0.12.0" }
+opys-engine = { path = "..", version = "0.12.1" }
 walkdir = "2"
 regex = "1"
 time = { version = "0.3", features = ["formatting"] }
