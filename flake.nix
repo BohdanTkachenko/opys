@@ -48,7 +48,19 @@
               ./src
               ./opys
               ./opys-backend-markdown-local
-              ./opys-server
+              # opys-server minus the web UI's node_modules. A developer who has
+              # run `ui-build` has tens of megabytes of npm packages sitting
+              # there, and copying them into the store would rehash this
+              # derivation on every `npm ci`. `maybeMissing`, because a clean
+              # checkout has no such directory and `difference` against a
+              # nonexistent path is an eval error.
+              #
+              # ui/dist stays *in* — it is committed, and build.rs embeds it
+              # (ADR-0078). Do not "tidy" this down to src/ + Cargo.toml: the day
+              # `opys web` links opys-server, the sandbox compiles it and needs
+              # the bundle.
+              (pkgs.lib.fileset.difference ./opys-server
+                (pkgs.lib.fileset.maybeMissing ./opys-server/ui/node_modules))
               ./skills
             ];
           };
@@ -102,6 +114,12 @@
           rustfmt
           rust-analyzer
           gcc
+          # The web UI's build toolchain (ADR-0078). Node lives here and nowhere
+          # else: the crate build never runs it, because `cargo install`,
+          # docs.rs, and the nix sandbox all have to work with no Node and no
+          # network. `ui-build` regenerates opys-server/ui/dist, which is
+          # committed and checked for drift in CI.
+          nodejs_22
         ];
 
         refresh = pkgs.writeShellScriptBin "refresh" ''
@@ -117,6 +135,40 @@
           # The script resolves the repo root from its own location, so this
           # works as long as it's run from inside a checkout.
           text = ''exec bash ./scripts/sync-versions.sh "$@"'';
+        };
+
+        # Rebuild the node's committed web UI bundle, opys-server/ui/dist
+        # (ADR-0078). Run `ui-build` after editing opys-server/ui/src;
+        # `ui-build --check` is the CI drift gate. Wraps scripts/ui-build.sh.
+        #
+        # This is the *only* place Node is invoked. Nothing in the crate build,
+        # and nothing in CI's cargo jobs, may ever run it — see the comment on
+        # devPackages.
+        ui-build = pkgs.writeShellApplication {
+          name = "ui-build";
+          # No git: the drift gate compares the rebuilt bundle against the one
+          # that was in the tree, which is a question about bytes, not about a
+          # working copy (see the gate's comment in scripts/ui-build.sh).
+          # diffutils answers it. The GNU tools because the script's audit uses
+          # `find -printf` and `grep -r`, which BSD spells differently.
+          runtimeInputs = with pkgs; [ nodejs_22 diffutils gnugrep findutils gawk coreutils ];
+          # Find the checkout by walking up from the cwd, rather than running
+          # `./scripts/ui-build.sh` (which needs the repo root as the cwd) or the
+          # store copy of the script (which resolves the tree from its own
+          # location, and would find /nix/store). The one command a UI
+          # contributor is told to run has to work from opys-server/ui, which is
+          # where the README puts them.
+          text = ''
+            dir=$PWD
+            while [ ! -f "$dir/scripts/ui-build.sh" ]; do
+              if [ "$dir" = / ] || [ -z "$dir" ]; then
+                echo "ui-build: run this from inside an opys checkout" >&2
+                exit 2
+              fi
+              dir=$(dirname "$dir")
+            done
+            exec bash "$dir/scripts/ui-build.sh" "$@"
+          '';
         };
       in
       {
@@ -135,9 +187,16 @@
           type = "app";
           program = "${sync-versions}/bin/sync-versions";
         };
+        apps.ui-build = {
+          type = "app";
+          program = "${ui-build}/bin/ui-build";
+        };
 
         devShells.default = pkgs.mkShell {
-          packages = devPackages ++ [ refresh sync-versions msrv ];
+          # ui-build belongs to the shell, not to devPackages: devPackages feeds
+          # packages.dev-profile, which `refresh` rebuilds, and a mkShell package
+          # only needs the shell re-entered.
+          packages = devPackages ++ [ refresh sync-versions msrv ui-build ];
 
           shellHook = ''
             refresh

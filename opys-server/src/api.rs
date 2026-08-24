@@ -42,7 +42,7 @@ use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, Request, State};
-use axum::http::header::{HOST, ORIGIN};
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, HOST, ORIGIN};
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -261,6 +261,11 @@ pub fn router(state: AppState) -> Router {
         // `any`, not `get`: that is what enables WebSockets over HTTP/2, where
         // the handshake is a CONNECT rather than a GET.
         .route("/api/events", any(events))
+        // The web UI, compiled into the binary (ADR-0078). The SPA is hash
+        // routed, so `/` is the only document path there ever is and every
+        // other view is a fragment the server never sees.
+        .route("/", get(ui_index))
+        .route("/ui/{*path}", get(ui_asset))
         // Routing-level failures answer in the same shape as everything else;
         // axum's own would be an empty body with no content type.
         .fallback(no_route)
@@ -397,6 +402,49 @@ async fn wrong_method(uri: Uri) -> ApiError {
         StatusCode::METHOD_NOT_ALLOWED,
         format!("method not allowed for {}", uri.path()),
     )
+}
+
+/// The SPA shell, for `GET /`.
+///
+/// Served unconditionally and revalidated on every load: its URL never changes,
+/// so an upgraded node that let a browser cache it would keep showing the
+/// previous UI. The hashed assets it pulls in are cached forever instead — see
+/// [`crate::assets::cache_control`].
+async fn ui_index() -> Response {
+    match crate::assets::index() {
+        Some(asset) => serve(asset),
+        None => ApiError::internal(format!(
+            "the embedded web UI has no {}",
+            crate::assets::INDEX
+        ))
+        .into_response(),
+    }
+}
+
+/// One bundled asset, for `GET /ui/…`.
+///
+/// A miss answers the same JSON 404 as any other unrouted path. That is right
+/// even for a browser expecting a script: the only way to ask for an asset that
+/// is not in the table is to ask for one this build never emitted, and a JSON
+/// body is what the rest of the node says.
+async fn ui_asset(Path(path): Path<String>) -> Response {
+    match crate::assets::get(&format!("ui/{path}")) {
+        Some(asset) => serve(asset),
+        None => ApiError::not_found(format!("no such asset: /ui/{path}")).into_response(),
+    }
+}
+
+/// One embedded file as a response. `Bytes::from_static` — the bundle lives in
+/// the binary's rodata, so serving it copies nothing.
+fn serve(asset: crate::assets::Asset) -> Response {
+    (
+        [
+            (CONTENT_TYPE, asset.content_type),
+            (CACHE_CONTROL, asset.cache_control),
+        ],
+        Bytes::from_static(asset.bytes),
+    )
+        .into_response()
 }
 
 /// Resolve `cid` and run one blocking actor call, both off the reactor.

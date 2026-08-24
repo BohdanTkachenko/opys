@@ -332,6 +332,37 @@ async fn doc_exposes_relations_and_the_rendered_body() {
     assert!(html.contains("world."), "{html}");
 }
 
+/// The status vocabulary travels with the document (TASK-0074), so the UI's
+/// status picker never has to read `opys.toml`. Terminal statuses are left out
+/// because `set-status` refuses them — `close` is the only way there — and
+/// `closable` says whether that door exists at all.
+#[tokio::test]
+async fn doc_carries_the_statuses_a_write_would_accept() {
+    let fx = Fixture::new();
+
+    let (status, note) = fx
+        .get(&format!("/api/corpus/{}/doc/NOTE-0001", fx.cid))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        note["allowed_statuses"],
+        json!(["open"]),
+        "`closed` is terminal, so set-status cannot reach it: {note:#}"
+    );
+    assert_eq!(note["closable"], true);
+
+    let (status, task) = fx
+        .get(&format!("/api/corpus/{}/doc/TASK-0002", fx.cid))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        task["allowed_statuses"],
+        json!(["todo", "doing"]),
+        "{task:#}"
+    );
+    assert_eq!(task["closable"], true);
+}
+
 #[tokio::test]
 async fn an_unknown_document_is_404() {
     let fx = Fixture::new();

@@ -175,6 +175,42 @@ fn docs_and_doc_and_query_answer_from_the_warm_store() {
     handle.shutdown();
 }
 
+/// Bodies are GFM, not bare CommonMark: `checklist` is a section kind, so a
+/// `- [ ]` list is the most common block in any corpus, and tables are used
+/// throughout. Rendering them as literal text would misread nearly every
+/// document. The one thing that must *not* be relaxed is raw HTML.
+#[test]
+fn body_html_renders_the_gfm_a_corpus_is_written_in() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let corpus = fixture(&root);
+    write_note(
+        &root.join("inventory"),
+        2,
+        "## Test plan\n\n- [ ] unchecked\n- [x] checked\n\n\
+         | a | b |\n| --- | --- |\n| 1 | 2 |\n\n\
+         ~~dropped~~ and <script>alert(1)</script>",
+    );
+    let (handle, _rx) = spawn(corpus);
+
+    let html = handle
+        .doc("NOTE-0002")
+        .unwrap()
+        .expect("the note")
+        .body_html;
+    assert!(html.contains("<input type=\"checkbox\""), "{html}");
+    assert!(html.contains("checked=\"\""), "{html}");
+    assert!(
+        html.contains("<table>") && html.contains("<td>1</td>"),
+        "{html}"
+    );
+    assert!(html.contains("<del>dropped</del>"), "{html}");
+    // `render.unsafe_` is still off, which is what makes `{@html}` safe.
+    assert!(!html.contains("<script>"), "{html}");
+
+    handle.shutdown();
+}
+
 #[test]
 fn external_edit_triggers_debounced_reload() {
     let tmp = tempfile::tempdir().unwrap();

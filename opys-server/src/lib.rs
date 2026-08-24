@@ -11,6 +11,7 @@
 pub mod action;
 pub mod actor;
 pub mod api;
+pub mod assets;
 pub mod discover;
 pub mod manager;
 pub mod registry;

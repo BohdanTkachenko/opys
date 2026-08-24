@@ -101,6 +101,22 @@ pub struct DocView {
     #[serde(rename = "type")]
     pub type_name: String,
     pub status: String,
+    /// Every status `set-status` will accept for this document's type: the
+    /// type's declared statuses minus its terminal ones, which are reachable
+    /// only through `close`.
+    ///
+    /// Here rather than in the client so nothing outside this crate has to read
+    /// `opys.toml` — a UI that knew the status vocabulary would be a second
+    /// interpretation of the config, drifting the moment a type is edited.
+    /// Empty when the id's prefix matches no configured type, which is the same
+    /// answer `type_name` gives.
+    pub allowed_statuses: Vec<String>,
+    /// Whether `close` is even possible: a type with no terminal status has
+    /// nothing to close *to*, and the engine refuses. Without this the UI's
+    /// close button would 422 on, say, an ADR no matter what the user did —
+    /// [`DocView::allowed_statuses`] cannot express it, because a terminal
+    /// status is precisely what it leaves out.
+    pub closable: bool,
     pub title: String,
     pub path: String,
     pub tags: Vec<String>,
@@ -639,9 +655,23 @@ fn view(prj: &Project, doc: &Doc) -> DocView {
             fields.insert(key.to_string(), json);
         }
     }
+    let doc_type = prj
+        .pcfg
+        .type_name_for_id(&id)
+        .and_then(|name| prj.pcfg.types.get(name));
     DocView {
         type_name: type_of(prj, &id),
         status: doc.frontmatter.status().unwrap_or_default().to_string(),
+        allowed_statuses: doc_type
+            .map(|t| {
+                t.statuses
+                    .iter()
+                    .filter(|s| !t.terminal_statuses.contains(s))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default(),
+        closable: doc_type.is_some_and(|t| !t.terminal_statuses.is_empty()),
         title: doc.title.clone(),
         path: rel_path(prj, doc),
         tags: doc.frontmatter.tags().unwrap_or_default(),
@@ -650,10 +680,29 @@ fn view(prj: &Project, doc: &Doc) -> DocView {
         blocked_by: relation(doc, refs::BLOCKED_BY),
         blocks: relation(doc, refs::BLOCKS),
         fields,
-        body_html: comrak::markdown_to_html(&doc.body, &comrak::Options::default()),
+        body_html: comrak::markdown_to_html(&doc.body, &markdown_options()),
         body: doc.body.clone(),
         id,
     }
+}
+
+/// How a document body is rendered.
+///
+/// GFM, because that is the dialect the corpus is written in: `checklist` is a
+/// code-backed section kind, so nearly every document carries a `- [ ]` list,
+/// and tables are used throughout. Plain CommonMark renders both as literal
+/// text — `<li>[ ] …</li>` and a paragraph of pipes.
+///
+/// `render.unsafe_` stays off, and must: bodies are user content and the client
+/// injects this string with `{@html}`. Raw HTML and `javascript:` hrefs are
+/// filtered by that switch, which none of these extensions touches.
+fn markdown_options() -> comrak::Options<'static> {
+    let mut options = comrak::Options::default();
+    options.extension.table = true;
+    options.extension.tasklist = true;
+    options.extension.strikethrough = true;
+    options.extension.autolink = true;
+    options
 }
 
 /// One relation map as id → title. An absent map is an empty one: a caller

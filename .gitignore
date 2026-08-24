@@ -17,6 +17,16 @@ target
 # Contains mutation testing data
 **/mutants.out*/
 
+# The web UI's build toolchain (ADR-0078).
+#
+# NEVER add opys-server/ui/dist here. The bundle is COMMITTED on purpose:
+# build.rs embeds it with include_bytes!, cargo packages only tracked files, and
+# `cargo install opys`, docs.rs and the nix sandbox all build with no Node and no
+# network. Ignoring it would break every one of them at once, and nothing in the
+# local dev loop would notice. Only the toolchain's working files belong here.
+opys-server/ui/node_modules/
+opys-server/ui/.vite/
+
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
