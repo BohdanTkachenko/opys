@@ -13,6 +13,7 @@ retired:
   TASK-0071: 'opys-server: read API and WebSocket events'
   TASK-0072: 'opys-server: action endpoint through the command cores'
   TASK-0073: 'opys-server: worktree union view'
+  TASK-0074: 'opys-server: embedded web UI'
 ---
 
 # Retired ids
