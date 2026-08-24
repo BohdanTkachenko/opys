@@ -9,7 +9,7 @@ resolver = "2"
 # The published crates share one version and release together; opys-server
 # rides the same version but is not published yet (see its manifest).
 [workspace.package]
-version = "0.12.0"
+version = "0.12.1"
 
 [package]
 name = "opys-engine"
