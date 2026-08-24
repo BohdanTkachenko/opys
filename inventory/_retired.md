@@ -12,6 +12,7 @@ retired:
   TASK-0070: 'opys-server: corpus actor with warm store and watcher'
   TASK-0071: 'opys-server: read API and WebSocket events'
   TASK-0072: 'opys-server: action endpoint through the command cores'
+  TASK-0073: 'opys-server: worktree union view'
 ---
 
 # Retired ids
