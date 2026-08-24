@@ -132,7 +132,13 @@ pub struct DocFilter {
 }
 
 impl DocFilter {
-    fn matches(&self, d: &DocSummary) -> bool {
+    /// Whether a summary passes every set field.
+    ///
+    /// Public because one caller filters outside the actor: the union view asks
+    /// each corpus for *everything* (it needs the unfiltered id set to spot an
+    /// impending id collision) and applies the request's filter itself, so the
+    /// two paths must agree on what a filter means.
+    pub fn matches(&self, d: &DocSummary) -> bool {
         self.type_name.as_ref().is_none_or(|t| *t == d.type_name)
             && self.status.as_ref().is_none_or(|s| *s == d.status)
             && self.tag.as_ref().is_none_or(|t| d.tags.contains(t))

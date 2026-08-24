@@ -2,14 +2,14 @@
 //!
 //! Everything is JSON, there is no auth (a loopback bind is the boundary in M1),
 //! and every failure is `{"error": "<message>"}` with 400 for bad input, 404 for
-//! an unknown corpus (and, on the read routes, an unknown document), 422 for a
-//! write the corpus refused — including a write naming an id that does not
-//! exist, which is one member of the "the CLI would have exited 2" class rather
-//! than a routing miss — 503 for a write the node was too busy to attempt, and
-//! 500 for anything internal. That includes
-//! the failures axum would otherwise render as `text/plain` — a rejected body, a
-//! malformed query string, an unroutable path — because a client that parses one
-//! error shape should never meet a second.
+//! an unknown corpus or project group (and, on the read routes, an unknown
+//! document), 422 for a write the corpus refused — including a write naming an
+//! id that does not exist, which is one member of the "the CLI would have exited
+//! 2" class rather than a routing miss — 503 for a write the node was too busy
+//! to attempt, and 500 for anything internal. That includes the failures axum
+//! would otherwise render as `text/plain` — a rejected body, a malformed query
+//! string, an unroutable path — because a client that parses one error shape
+//! should never meet a second.
 //!
 //! **No endpoint executes commands or accepts a filesystem path** (ADR-0052).
 //! Corpora are addressed by their opaque `cid`, and the set of them comes from
@@ -58,7 +58,9 @@ use crate::actor::{
     CorpusClient, CorpusHandle, CorpusStats, DocFilter, DocSummary, DocView, Event, QueryResult,
     VerifyStatus,
 };
+use crate::discover::Corpus;
 use crate::manager::Manager;
+use crate::union::{contested_numbers, union, CorpusDocs, UnionView};
 
 /// How often the server pings an idle WebSocket client.
 const PING_EVERY: Duration = Duration::from_secs(30);
@@ -76,6 +78,14 @@ const MISSED_PINGS_ALLOWED: u32 = 2;
 /// wait out several of them in turn — so a corpus that does not answer in time
 /// is reported as busy and the rest of the list goes out.
 const STATS_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long the union view waits on any one corpus of a group.
+///
+/// Same reasoning as [`STATS_TIMEOUT`], and the same two seconds: a worktree
+/// that is mid-reload must not hold up the columns that are ready, and several
+/// of them must not add up. A column that misses the deadline is labelled busy
+/// rather than silently rendered empty — see [`crate::union::Column::error`].
+const UNION_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The WebSocket liveness settings.
 ///
@@ -242,6 +252,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/health", get(health))
         .route("/api/projects", get(projects))
         // axum 0.8 path captures are `{name}`; the 0.7 `:name` form panics.
+        .route("/api/group/{key}/union", get(group_union))
         .route("/api/corpus/{cid}/docs", get(docs))
         .route("/api/corpus/{cid}/doc/{docid}", get(doc))
         .route("/api/corpus/{cid}/query", post(query))
@@ -587,6 +598,122 @@ async fn docs(
     Ok(Json(
         with_corpus(&state, &cid, move |client| client.docs(filter)).await?,
     ))
+}
+
+/// The merged, labeled view across one project group's corpora (TASK-0073).
+///
+/// A group is a repository's worktrees, so this is the one endpoint that answers
+/// "what does each branch say about this document" — presentation only. The node
+/// never merges or resolves anything; git remains the only merger (ADR-0051).
+///
+/// The filters apply **per corpus, before merging**, which is what makes
+/// `?status=` mean "where does this document match" rather than "where does it
+/// exist": a task that is `doing` on main and `done` on a branch is dropped from
+/// the branch's column and reported as `only_in` main. [`crate::union::union`]
+/// says the same thing at more length; a client offering the filter should say
+/// it to the user.
+///
+/// The one thing a filter does *not* reshape is the collision warning. Each
+/// corpus is asked for its whole summary set, the contested id numbers are
+/// derived from that, and the filter is applied here — so a `?type=` that hides
+/// one half of a contested number cannot retract the warning on the other half.
+/// An impending id collision is a fact about the corpora, not about the current
+/// view. Filtering in this handler rather than in the actor costs one pass over
+/// summaries that are cloned out of the warm cache anyway.
+///
+/// 404 only for a group nobody is serving. A group of one corpus is a valid,
+/// trivial, one-column view — a project with no worktrees is not an error, and a
+/// UI that can render the union should not need a second code path for it.
+///
+/// A member that cannot answer — never loaded, stopped by a rescan mid-request,
+/// still holding the inventory lock past [`UNION_TIMEOUT`] — does not fail the
+/// request. One broken branch is precisely the divergence this view exists to
+/// show, and refusing the whole group because of it would hide the other
+/// columns. The failure is handed to the merge as such, so the column carries
+/// the reason and no row claims the branch deleted anything.
+async fn group_union(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    filters: Result<Query<DocQuery>, QueryRejection>,
+) -> Result<Json<UnionView>, ApiError> {
+    let Query(filters) = filters?;
+    let filter = filters.into_filter();
+    let manager = Arc::clone(&state.manager);
+    let wanted = key.clone();
+    // One lock, taken off the reactor, held for the group's clone and a client
+    // per member. `None` means no such group; an inner `None` means that member
+    // stopped between the group being listed and its client being taken.
+    let members = tokio::task::spawn_blocking(move || {
+        let manager = lock(&manager);
+        let group = manager.groups().iter().find(|g| g.key == wanted)?;
+        let members: Vec<(Corpus, Option<CorpusClient>)> = group
+            .corpora
+            .iter()
+            .map(|c| (c.clone(), manager.get(&c.cid).map(CorpusHandle::client)))
+            .collect();
+        Some(members)
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("building the union view failed: {e}")))?
+    .ok_or_else(|| ApiError::not_found(format!("no such project group: {key}")))?;
+
+    // Unfiltered, because the collision warning is derived from every id the
+    // corpora hold; the request's filter is applied to the rows below.
+    let gathered = gather_docs(members, DocFilter::default()).await;
+    let contested = contested_numbers(&gathered);
+    let rows: Vec<CorpusDocs> = gathered
+        .into_iter()
+        .map(|(corpus, docs)| {
+            // A corpus that failed stays a failure: an empty column would say
+            // "this branch has nothing", which is the one thing we do not know.
+            let docs = docs.map(|docs| docs.into_iter().filter(|d| filter.matches(d)).collect());
+            (corpus, docs)
+        })
+        .collect();
+    Ok(Json(union(&rows, &contested)))
+}
+
+/// Every member's summaries — those matching `filter` — gathered in parallel
+/// under one deadline. A member that could not answer comes back as the `Err`
+/// side, never as an empty list; see [`crate::union::Column::error`].
+///
+/// Order is preserved: it becomes the column order, and discovery puts the main
+/// worktree first. One task per corpus for the same reason as [`gather_stats`] —
+/// a member waiting out a reload would otherwise add its whole wait to the
+/// response, once per member.
+async fn gather_docs(
+    members: Vec<(Corpus, Option<CorpusClient>)>,
+    filter: DocFilter,
+) -> Vec<CorpusDocs> {
+    let deadline = tokio::time::Instant::now() + UNION_TIMEOUT;
+    let tasks: Vec<(Corpus, Option<_>)> = members
+        .into_iter()
+        .map(|(corpus, client)| {
+            let started = client.map(|client| {
+                let filter = filter.clone();
+                tokio::task::spawn_blocking(move || client.docs(filter))
+            });
+            (corpus, started)
+        })
+        .collect();
+    let mut out = Vec::with_capacity(tasks.len());
+    for (corpus, task) in tasks {
+        let docs = match task {
+            // A rescan stopped this corpus between the two steps above. Rare,
+            // and better said than silently blank.
+            None => Err("corpus is not being served".to_string()),
+            // All the tasks are already running, so one shared deadline bounds
+            // the whole gather rather than each wait in turn.
+            Some(task) => match tokio::time::timeout_at(deadline, task).await {
+                Ok(Ok(Ok(docs))) => Ok(docs),
+                Ok(Ok(Err(e))) => Err(e.to_string()),
+                Ok(Err(e)) => Err(format!("corpus task failed: {e}")),
+                Err(_) => Err("corpus is busy".to_string()),
+            },
+        };
+        out.push((corpus, docs));
+    }
+    out
 }
 
 /// One document, with its frontmatter, relations and rendered body.

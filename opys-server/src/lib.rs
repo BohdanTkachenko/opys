@@ -14,3 +14,4 @@ pub mod api;
 pub mod discover;
 pub mod manager;
 pub mod registry;
+pub mod union;

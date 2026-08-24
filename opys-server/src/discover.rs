@@ -177,7 +177,10 @@ pub fn suggest_default(reg: &Registry) -> (PathBuf, usize) {
     (home, depth)
 }
 
-fn display_name(path: &Path) -> String {
+/// What a directory is called, for a human: its last segment, or the whole path
+/// when it has none. The one definition of a corpus's name — the union view
+/// labels a column with it when git has no branch to offer.
+pub fn display_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())
