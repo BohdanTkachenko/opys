@@ -13,6 +13,13 @@ categories = ["development-tools", "web-programming::http-server"]
 # comes first. A published `opys` cannot depend on an unpublished crate.
 publish = false
 
+# A library as well as a binary: ADR-0077 makes `opys web` a subcommand of the
+# CLI, which means the CLI links this crate. The binary stays for `opys-server`
+# on its own and for the systemd unit.
+[lib]
+name = "opys_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "opys-server"
 path = "src/main.rs"
@@ -27,6 +34,10 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 comrak = "0.52"
+# The allowlist registry is TOML; discovery walks the filesystem. Same versions
+# as the engine uses, so neither widens the dependency tree.
+toml = "0.8"
+walkdir = "2"
 
 [dev-dependencies]
 tempfile = "3"
