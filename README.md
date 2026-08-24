@@ -202,4 +202,8 @@ same everywhere: `opys new --type/set-status/close/verify ...` for writes,
 
 ## License
 
-Apache-2.0
+Apache-2.0 — the CLI, the engine, the storage backends, and the skill.
+
+The server-side component `opys-server/` is **AGPL-3.0-only**: still open
+source and freely self-hostable, but a commercial rehost has to publish its
+modifications. Nothing you embed or script is affected.

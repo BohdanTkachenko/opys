@@ -78,7 +78,7 @@ cargo test --lib frontmatter::                                  # unit tests in 
 
 ## Architecture
 
-The repo is a Cargo **workspace** of three crates: **`opys-engine`** (the core
+The repo is a Cargo **workspace** of four crates: **`opys-engine`** (the core
 library, at the repo root — the model, config, rules, SQL store, and command
 implementations, plus the [`Backend`] storage trait; lib name `opys_engine`);
 **`opys-backend-markdown-local`** (the default `Backend` impl: one markdown file
@@ -90,14 +90,23 @@ file under `$XDG_RUNTIME_DIR` (or the OS temp dir), named by the canonicalized
 base path + hash, so nothing untracked ever appears in the user's repo;
 contention retries until `OPYS_LOCK_TIMEOUT_MS`, default 10 s, and the OS
 releases the flock with the process, so stale locks cannot exist); and
-**`opys`** (the binary — this is what `cargo install opys` yields). The binary
+**`opys`** (the binary — this is what `cargo install opys` yields); and
+**`opys-server`** (the always-on node of FEAT-0058: watcher, HTTP/WS API, and
+web UI over local inventories — currently a scaffold with a `GET /api/health`
+route). The binary
 (`opys/src/main.rs`) parses `Cli` (clap derive, `src/cli.rs`), injects the
 `MarkdownLocal` backend, and calls `opys_engine::run`, which maps the exit code.
 (The former `opys-tui` terminal board was retired per ADR-0050 — the web UI over
-the always-on node replaces it; the crate lives on in git history.) All three
-crates publish to crates.io together. Commands never touch the storage medium
+the always-on node replaces it; the crate lives on in git history.) The three
+Apache crates publish to crates.io together; `opys-server` is `publish = false`
+until the M2 milestone. Commands never touch the storage medium
 directly — they load/flush through the injected `Box<dyn Backend>` on `Ctx`, so
 the medium is swappable.
+
+**License boundary (ADR-0056):** `opys-server` is AGPL-3.0-only; nothing
+Apache-side may depend on it. `opys-engine`, `opys-backend-markdown-local`, and
+the `opys` binary stay Apache-2.0, and dependencies flow one way — `opys-server`
+→ engine/backend, never back.
 
 **Exit-code contract (important):** `verify` returns `1` when it finds content
 problems; every other command returns `0` on success. Real failures (bad

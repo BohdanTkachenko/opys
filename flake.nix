@@ -37,7 +37,9 @@
 
           # Only the inputs the build actually reads, so unrelated edits (README,
           # the packaging manifests) don't invalidate it. skills/ is required
-          # because src/templates.rs embeds skills/opys/agent-rule.md.
+          # because src/templates.rs embeds skills/opys/agent-rule.md, and
+          # opys-server/ because cargo refuses to load a workspace whose member
+          # manifests are missing (it is never built — see buildAndTestSubdir).
           src = pkgs.lib.fileset.toSource {
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
@@ -46,6 +48,7 @@
               ./src
               ./opys
               ./opys-backend-markdown-local
+              ./opys-server
               ./skills
             ];
           };
