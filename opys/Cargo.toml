@@ -23,6 +23,10 @@ path = "src/main.rs"
 [dependencies]
 opys-engine = { path = "..", version = "0.12.0" }
 opys-backend-markdown-local = { path = "../opys-backend-markdown-local", version = "0.12.0" }
+# The always-on node, mounted as `opys web`. Linked unconditionally rather than
+# behind a cargo feature: a `cargo install opys` whose `opys web` did not exist
+# would defeat the reason for folding it in (ADR-0077).
+opys-server = { path = "../opys-server", version = "0.12.0" }
 clap = { version = "4", features = ["derive", "env"] }
 
 [dev-dependencies]

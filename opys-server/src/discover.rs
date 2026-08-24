@@ -131,6 +131,20 @@ pub fn is_skipped(name: &str) -> bool {
     name.starts_with('.') || SKIP_DIRS.contains(&name)
 }
 
+/// Project *directories* at most `depth` levels below `root`.
+///
+/// The `+ 1` is the whole point of this wrapper, and it lives here once: a depth
+/// bound counts directories — `depth = 1` means "the projects directly under
+/// this one" — while [`scan`] walks to the `opys.toml` inside them, which is one
+/// level deeper. Without it the walk stops a level short of what
+/// [`Entry::covers`] authorizes, and the CLI ends up refusing to allowlist a
+/// project ("already served by the prefix entry") that the node never serves.
+///
+/// [`Entry::covers`]: crate::registry::Entry::covers
+fn scan_projects(root: &Path, depth: usize) -> Vec<PathBuf> {
+    scan(root, depth.saturating_add(1))
+}
+
 /// Expand the allowlist into project groups. Explicit entries contribute
 /// themselves; prefix entries contribute whatever the scan finds beneath them.
 ///
@@ -144,7 +158,7 @@ pub fn expand(reg: &Registry) -> Vec<ProjectGroup> {
         }
         match entry.kind {
             EntryKind::Project => roots.push(entry.path.clone()),
-            EntryKind::Prefix => roots.extend(scan(&entry.path, entry.depth)),
+            EntryKind::Prefix => roots.extend(scan_projects(&entry.path, entry.depth)),
         }
     }
     roots.sort();
@@ -154,8 +168,11 @@ pub fn expand(reg: &Registry) -> Vec<ProjectGroup> {
 
 /// Projects the scan found under `root` that are not already allowlisted.
 /// Purely advisory — nothing here is ever served until the user adds it.
+///
+/// `depth` counts project directories, exactly as a prefix entry's does, so
+/// `scan --depth N` finds what `add --prefix` at that depth would serve.
 pub fn suggest(root: &Path, depth: usize, reg: &Registry) -> Vec<Suggestion> {
-    scan(root, depth)
+    scan_projects(root, depth)
         .into_iter()
         .map(|path| Suggestion {
             name: display_name(&path),
@@ -549,6 +566,46 @@ detached
             "explicit entry served: {roots:?}"
         );
         assert!(roots.contains(&&under), "prefix entry expanded: {roots:?}");
+    }
+
+    /// The depth bound has to mean one thing on both sides. When `covers` counts
+    /// a level the walk never reaches, the CLI refuses to allowlist a project
+    /// ("already served by the prefix entry") that the node in fact never
+    /// serves, and `list` says "serving nothing" in the same breath.
+    #[test]
+    fn covers_and_expand_agree_at_every_prefix_depth() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = std::fs::canonicalize(tmp.path()).unwrap();
+        let work = home.join("work");
+        let near = work.join("alpha");
+        let far = work.join("a/b/beta");
+        project_at(&near, "inventory");
+        project_at(&far, "inventory");
+
+        let config = home.join("server.toml");
+        for depth in 0..=4 {
+            std::fs::write(
+                &config,
+                format!(
+                    "[[prefix]]\npath = {:?}\ndepth = {depth}\n",
+                    work.display().to_string()
+                ),
+            )
+            .unwrap();
+            let reg = Registry::load_from(&config).unwrap();
+            let served: Vec<PathBuf> = expand(&reg)
+                .iter()
+                .flat_map(|g| g.corpora.iter().map(|c| c.root.clone()))
+                .collect();
+            for project in [&near, &far] {
+                assert_eq!(
+                    reg.covers(project),
+                    served.contains(project),
+                    "depth {depth}: covers and expand disagree about {}",
+                    project.display()
+                );
+            }
+        }
     }
 
     #[test]

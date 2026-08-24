@@ -92,16 +92,24 @@ contention retries until `OPYS_LOCK_TIMEOUT_MS`, default 10 s, and the OS
 releases the flock with the process, so stale locks cannot exist); and
 **`opys`** (the binary — this is what `cargo install opys` yields); and
 **`opys-server`** (the always-on node of FEAT-0058: watcher, HTTP/WS API, and
-web UI over local inventories — currently a scaffold with a `GET /api/health`
-route, and the crate the CLI will link for `opys web`, ADR-0077). The binary
-(`opys/src/main.rs`) parses `Cli` (clap derive, `src/cli.rs`), injects the
-`MarkdownLocal` backend, and calls `opys_engine::run`, which maps the exit code.
+embedded web UI over the allowlisted inventories, ADR-0077). The binary
+(`opys/src/main.rs`) owns the top-level parser — `opys_engine::cli::Command`
+flattened in with `#[command(flatten)]`, plus a `web` variant carrying
+`opys_server::cli::WebCommand` — and dispatches each half to its crate: engine
+commands rebuild `opys_engine::cli::Cli` and call `opys_engine::run` (injecting
+the `MarkdownLocal` backend), `web` calls `opys_server::cli::dispatch`. Both map
+the exit code the same way. **`opys-engine` must never depend on
+`opys-server`**: the engine is the library every consumer embeds, and it does not
+pull in axum or tokio — joining the two surfaces is the binary's job. A
+`#[cfg(test)] mod tests` in `opys/src/main.rs` compares the duplicated root
+metadata (name, about, `--root`, `--no-sync`, the subcommand list) against
+`opys_engine::cli::Cli::command()`, because nothing else in the build would
+notice it drifting.
 (The former `opys-tui` terminal board was retired per ADR-0050 — the web UI over
-the always-on node replaces it; the crate lives on in git history.) The first
-three publish to crates.io together; `opys-server` is `publish = false`
-until the CLI links it. Commands never touch the storage medium
-directly — they load/flush through the injected `Box<dyn Backend>` on `Ctx`, so
-the medium is swappable.
+the always-on node replaces it; the crate lives on in git history.) All four
+crates publish to crates.io together, in dependency order. Commands never touch
+the storage medium directly — they load/flush through the injected
+`Box<dyn Backend>` on `Ctx`, so the medium is swappable.
 
 **License (ADR-0076, superseding ADR-0056):** the whole workspace is Apache-2.0,
 node included — everything that runs on the user's own machine is permissive.
@@ -255,6 +263,64 @@ inline (`tags: [a, b]`), complex values as block YAML. `format_string` quotes
 only when needed for unambiguous round-tripping. The unit tests in
 `frontmatter.rs` pin this exact output — update them deliberately when changing
 formatting.
+
+### The always-on node (`opys web`)
+
+`opys-server` is a library as well as a binary, and the CLI mounts its whole
+surface as `opys web` (ADR-0077). The surface *and* its one implementation live
+in `opys-server/src/cli.rs` — `WebCommand` + `dispatch`, mounted twice (by
+`opys/src/main.rs` and by `opys-server/src/main.rs`) so the two entry points are
+argument plumbing and nothing else. Serving is `opys-server/src/serve.rs`
+(`serve::blocking` owns the tokio runtime, which is what lets a plain `fn main`
+start the node without a tokio dependency of its own); the unit file is
+`opys-server/src/systemd.rs`.
+
+The **user-facing** documentation is the README's "The always-on node (`opys
+web`)" section — the walkthrough from an empty allowlist to a dashboard, plus
+the systemd and NixOS/home-manager notes. It is the only place these commands
+are written up for humans, and its transcripts are real command output: if you
+change what a `web` subcommand prints, re-run it and paste the new output rather
+than editing the block by hand.
+
+- `opys web start` runs the node; `add`/`remove`/`list`/`scan` manage the
+  **allowlist** at `~/.config/opys/server.toml`. **No endpoint accepts a
+  filesystem path** (ADR-0052/0077): `add` edits the file and never speaks to a
+  running node, which watches the file instead. `scan` only suggests — it is
+  handed a `&Registry`, so it *cannot* add anything.
+- Writes over the API are typed actions (`action.rs`) that reproduce the CLI's
+  call sequence exactly — its own `Project`/`Store`, the inventory flock, the
+  same write-time rules — never a flush through a warm store. The request body
+  is a closed enum, so the node cannot execute arbitrary commands, and it serves
+  only what was allowlisted.
+- `opys web install` writes `~/.config/systemd/user/opys-server.service` and
+  *prints* the `systemctl --user` commands rather than running them; it refuses
+  to overwrite without `--force`, and exits 0 with manual instructions where
+  there is no systemd user manager — which means *systemd-booted*
+  (`/run/systemd/system`), not merely Linux, or a container would get a unit
+  nothing reads. A `--config` the user passed is baked into `ExecStart` (an
+  install that read `bind` from a file the unit does not name would serve the
+  default allowlist on that file's port); the resolved default is not, so the
+  ordinary unit stays self-describing. `uninstall` prints the disable command
+  *before* the removal line: deleting a unit file does not stop the service.
+  Tests drive all of it over a fake `$HOME` **and** `$XDG_CONFIG_HOME` —
+  `registry::config_home` prefers XDG, so setting only one leaks into the
+  developer's real config.
+- `web scan`'s scan root is spelled `--under`, not `--root`: the CLI's global
+  `--root` propagates into every subcommand, so that name is taken tree-wide.
+  `opys/src/main.rs` *refuses* `--root`/`--no-sync` under `web` (exit 2, naming
+  `--under`) rather than warning — ignoring them yields a confident scan of the
+  home directory that looks exactly like a scan of the right tree.
+- A prefix entry's `depth` counts **project directories**, one level shallower
+  than the `opys.toml` the walk reaches: `discover::scan_projects` owns the `+1`
+  and is pinned against `registry::Entry::covers` by a test. When those two
+  disagree, `add` refuses to allowlist projects the node never serves.
+- The dashboard (`opys-server/ui/`, embedded by `assets.rs`) is a sidebar of
+  projects/corpora — each with a verify dot — over four views: board, document,
+  query console, and the worktree union. Its writes are the same typed actions;
+  there is no create-document view, so `opys new` stays a CLI job.
+
+`opys/tests/web.rs` covers the surface end to end. `opys/tests/cli.rs` is the
+byte-identity pin for every pre-existing command and must keep passing untouched.
 
 ## Conventions
 

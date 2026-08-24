@@ -81,10 +81,10 @@
           <p>This node is not serving any projects.</p>
           <p class="why">
             A node serves an explicit allowlist and nothing else — there is no way
-            to add a project over HTTP, by design. List the projects you want in
-            <code>~/.config/opys/server.toml</code>, or start the node with
-            <code>opys-server run --config &lt;path&gt;</code>, and they appear here
-            without a restart.
+            to add a project over HTTP, by design. Run
+            <code>opys web add &lt;path&gt;</code> in a terminal (or
+            <code>opys web scan</code> to see what is on this machine) and the
+            project appears here without a restart.
           </p>
         </div>
       {:else if served.length > 0}

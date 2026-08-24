@@ -1,11 +1,10 @@
 # release-plz configuration — https://release-plz.dev/docs/config
 [workspace]
 changelog_update = true
-# The crates share one version (see [workspace.package] in Cargo.toml); the
-# first three publish to crates.io together, while `opys-server` carries
-# `publish = false` for now and release-plz skips it for that reason. The
-# workspace cuts a single GitHub release + `v{version}` tag (for the `opys`
-# binary), not one per crate.
+# The crates share one version (see [workspace.package] in Cargo.toml) and all
+# four publish to crates.io together, in dependency order — release-plz derives
+# that order itself. The workspace cuts a single GitHub release + `v{version}`
+# tag (for the `opys` binary), not one per crate.
 git_release_enable = false
 git_tag_enable = false
 git_tag_name = "v{{ version }}"

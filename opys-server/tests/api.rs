@@ -6,9 +6,11 @@ use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use clap::Parser;
 use http_body_util::BodyExt;
 use opys_backend_markdown_local::MarkdownLocal;
 use opys_engine::backend::Backend;
+use opys_engine::cli::Cli;
 use opys_server::api::{self, AppState};
 use opys_server::manager::Manager;
 use serde_json::{json, Value};
@@ -113,6 +115,10 @@ struct Fixture {
     messy_cid: String,
     broken_cid: String,
     root: PathBuf,
+    /// The roots behind `messy_cid`/`broken_cid`, so a test can run the real CLI
+    /// against the same corpus the node is serving.
+    messy: PathBuf,
+    broken: PathBuf,
     _dir: tempfile::TempDir,
 }
 
@@ -144,6 +150,8 @@ impl Fixture {
             messy_cid,
             broken_cid,
             root,
+            messy,
+            broken,
             _dir: dir,
         }
     }
@@ -654,4 +662,85 @@ async fn a_rebound_host_is_refused_and_a_local_one_is_served() {
         let (status, body) = fx.send(request.body(Body::empty()).unwrap()).await;
         assert_eq!(status, StatusCode::OK, "{host} / {origin:?}: {body}");
     }
+}
+
+/// Run the real `opys verify` in-process against `root` and return its exit
+/// code, or the error the CLI would have exited 2 on.
+///
+/// `opys_engine::run` is the same dispatch the binary calls, so this is the CLI's
+/// own verdict rather than a transcription of it.
+fn cli_verify(root: &Path) -> opys_engine::error::Result<i32> {
+    let argv = [
+        "opys".to_string(),
+        "--root".to_string(),
+        root.to_string_lossy().into_owned(),
+        "verify".to_string(),
+    ];
+    opys_engine::run(Cli::parse_from(argv), Box::new(MarkdownLocal))
+}
+
+/// FEAT-0058's test plan claims the node's verify status "matches `opys verify`
+/// exit semantics". This pins that — including the one case where it does not
+/// hold, so the divergence is recorded rather than assumed away.
+///
+/// The problem *lists* are identical by construction (both sides call
+/// `verify::collect_problems`), so asserting on those would prove nothing. What
+/// is worth pinning is the verdict a caller acts on: the CLI's exit code against
+/// the API's `ok`.
+#[tokio::test]
+async fn verify_agrees_with_the_cli_exit_code() {
+    let fx = Fixture::new();
+
+    // Clean corpus: exit 0, ok.
+    assert_eq!(cli_verify(&fx.root).ok(), Some(0), "a clean corpus exits 0");
+    let (_, body) = fx.get(&format!("/api/corpus/{}/verify", fx.cid)).await;
+    assert_eq!(body["ok"], true, "{body:#}");
+    assert_eq!(
+        body["problems"].as_array().map(Vec::len),
+        Some(0),
+        "{body:#}"
+    );
+
+    // Content problems: exit 1, not ok, and the problems are listed.
+    assert_eq!(
+        cli_verify(&fx.messy).ok(),
+        Some(1),
+        "content problems are the CI-gate exit code, not an error"
+    );
+    let (_, body) = fx
+        .get(&format!("/api/corpus/{}/verify", fx.messy_cid))
+        .await;
+    assert_eq!(body["ok"], false, "{body:#}");
+    assert!(
+        !body["problems"].as_array().unwrap().is_empty(),
+        "the node has to say what is wrong, not just that something is: {body:#}"
+    );
+    assert_eq!(
+        body["load_error"],
+        Value::Null,
+        "a content problem is not a load failure: {body:#}"
+    );
+
+    // The divergence. A config that will not parse is an `OpysError` for the
+    // CLI — exit 2, a different class from "this corpus has problems" — while
+    // the API answers `ok: false` for both. `ok` alone cannot tell them apart;
+    // `load_error` is what distinguishes them, and an empty problem list is the
+    // tell that nothing was ever checked.
+    assert!(
+        cli_verify(&fx.broken).is_err(),
+        "a config that will not parse is an error, not a problem list"
+    );
+    let (_, body) = fx
+        .get(&format!("/api/corpus/{}/verify", fx.broken_cid))
+        .await;
+    assert_eq!(body["ok"], false, "{body:#}");
+    assert!(
+        body["load_error"].as_str().is_some_and(|e| !e.is_empty()),
+        "the reason has to reach the client: {body:#}"
+    );
+    assert_eq!(
+        body["problems"].as_array().map(Vec::len),
+        Some(0),
+        "nothing was verified, so nothing may be reported as verified: {body:#}"
+    );
 }

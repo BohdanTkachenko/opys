@@ -38,8 +38,8 @@
           # Only the inputs the build actually reads, so unrelated edits (README,
           # the packaging manifests) don't invalidate it. skills/ is required
           # because src/templates.rs embeds skills/opys/agent-rule.md, and
-          # opys-server/ because cargo refuses to load a workspace whose member
-          # manifests are missing (it is never built — see buildAndTestSubdir).
+          # opys-server/ because the `opys` binary links it for `opys web`
+          # (ADR-0077) — it is compiled here, build.rs and all.
           src = pkgs.lib.fileset.toSource {
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
@@ -56,9 +56,9 @@
               # nonexistent path is an eval error.
               #
               # ui/dist stays *in* — it is committed, and build.rs embeds it
-              # (ADR-0078). Do not "tidy" this down to src/ + Cargo.toml: the day
-              # `opys web` links opys-server, the sandbox compiles it and needs
-              # the bundle.
+              # (ADR-0078). Do not "tidy" this down to src/ + Cargo.toml: `opys
+              # web` links opys-server, so the sandbox compiles it and needs the
+              # bundle.
               (pkgs.lib.fileset.difference ./opys-server
                 (pkgs.lib.fileset.maybeMissing ./opys-server/ui/node_modules))
               ./skills
@@ -73,7 +73,11 @@
           # build installs no binary.
           buildAndTestSubdir = "opys";
 
-          nativeCheckInputs = [ shForTests ];
+          # git as well as sh: `renumber_keeps_a_relocated_base_document` and the
+          # history tests build a real repo in a tempdir, and the sandbox has no
+          # git on PATH either. Without it `nix build .#opys` fails in the check
+          # phase — which is the path every `pkgs.opys` consumer takes.
+          nativeCheckInputs = [ shForTests pkgs.git ];
 
           meta = {
             description = cargoToml.package.description;

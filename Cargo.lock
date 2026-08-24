@@ -2487,6 +2487,7 @@ dependencies = [
  "fs4",
  "opys-backend-markdown-local",
  "opys-engine",
+ "opys-server",
  "predicates",
  "tempfile",
 ]
@@ -2532,6 +2533,7 @@ dependencies = [
  "axum",
  "clap",
  "comrak",
+ "fs4",
  "futures-util",
  "http-body-util",
  "notify",

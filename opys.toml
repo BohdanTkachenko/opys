@@ -19,7 +19,9 @@ path = "{type}/{status}/{id}.md"
 # `word = false` matches a substring instead of a whole word. With no formats
 # configured, only the canonical {id} is scanned.
 [file_refs]
-roots = ["src", "opys/tests"]             # where to scan (project-root relative)
+# Where to scan (project-root relative). The server crate is here too: its code
+# and tests name documents in doc comments, and `show --refs` should find them.
+roots = ["src", "opys/tests", "opys-server/src", "opys-server/tests"]
 formats = [
     { template = "{id}" },               # FEAT-0001
     { template = "{prefix}{num}" },       # FEAT1
@@ -56,7 +58,9 @@ kind = "checklist"                   # structure: checkbox items
 # `mod::name` backtick span; `must_match` greps the test name under `roots`.
 [[types.feature.sections.checks]]
 pattern = '`(?P<ref>[^`]*::(?P<name>[^`]+))`'
-roots = ["src", "opys/tests"]
+# The workspace grew a fourth crate; a test plan that cites a real test in it
+# must be able to resolve, or the check would push authors back to prose.
+roots = ["src", "opys/tests", "opys-server/src", "opys-server/tests"]
 must_match = '${name}'               # ${group} = the regex-escaped capture
 scope = "checked"                    # "all" (every line) | "checked" (checked items)
 message = "test reference `${ref}` not found"

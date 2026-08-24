@@ -29,8 +29,9 @@ pub enum EntryKind {
 }
 
 impl EntryKind {
-    /// The config key an entry of this kind is written under.
-    fn key(self) -> &'static str {
+    /// The config key an entry of this kind is written under, which doubles as
+    /// its label when the CLI lists the allowlist.
+    pub fn key(self) -> &'static str {
         match self {
             EntryKind::Project => "project",
             EntryKind::Prefix => "prefix",
@@ -53,6 +54,32 @@ pub struct Entry {
     pub error: Option<String>,
 }
 
+impl Entry {
+    /// Whether this entry authorizes `path` — exactly, for a project entry, or
+    /// within the depth bound, for a prefix. An entry carrying an error
+    /// authorizes nothing.
+    ///
+    /// The one definition of "allowlisted", so `Registry::covers` and the CLI's
+    /// "which entry is responsible?" message can never disagree.
+    ///
+    /// `depth` counts *directories* below the prefix, which is what
+    /// `discover::scan_projects` walks to (one level deeper, for the `opys.toml`
+    /// inside). The two are pinned together by a test — a `covers` that reaches
+    /// further than the walk makes the CLI refuse to allowlist projects the node
+    /// then never serves.
+    pub fn covers(&self, path: &Path) -> bool {
+        if self.error.is_some() {
+            return false;
+        }
+        match self.kind {
+            EntryKind::Project => self.path == path,
+            EntryKind::Prefix => path
+                .strip_prefix(&self.path)
+                .is_ok_and(|rest| rest.components().count() <= self.depth),
+        }
+    }
+}
+
 /// The parsed allowlist, plus the raw table it came from so edits preserve keys
 /// this version does not know about.
 #[derive(Debug, Clone)]
@@ -64,16 +91,25 @@ pub struct Registry {
     raw: toml::Table,
 }
 
-/// `$XDG_CONFIG_HOME/opys/server.toml`, falling back to `~/.config/opys/server.toml`.
-pub fn config_path() -> Result<PathBuf> {
+/// `$XDG_CONFIG_HOME`, falling back to `~/.config`.
+///
+/// The single definition of that precedence: the allowlist file and the systemd
+/// user unit both hang off it, so a test that redirects one redirects both.
+pub fn config_home() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME").filter(|s| !s.is_empty()) {
-        return Ok(PathBuf::from(dir).join("opys").join("server.toml"));
+        return Ok(PathBuf::from(dir));
     }
     let home = home_dir().ok_or_else(|| usage("neither XDG_CONFIG_HOME nor HOME is set"))?;
-    Ok(home.join(".config").join("opys").join("server.toml"))
+    Ok(home.join(".config"))
 }
 
-fn home_dir() -> Option<PathBuf> {
+/// `$XDG_CONFIG_HOME/opys/server.toml`, falling back to `~/.config/opys/server.toml`.
+pub fn config_path() -> Result<PathBuf> {
+    Ok(config_home()?.join("opys").join("server.toml"))
+}
+
+/// `$HOME`, when it is set to something non-empty.
+pub fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
@@ -92,6 +128,67 @@ pub fn expand_tilde(s: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
+/// An exclusive lock over one allowlist file, held for the whole of a
+/// read-modify-write. Released when dropped — or, if the process dies, by the
+/// OS, so a stale lock cannot happen.
+pub struct Lock {
+    /// Held open for the lock's lifetime: closing the handle is what releases
+    /// the flock, so this is the whole value of the struct.
+    _file: std::fs::File,
+}
+
+/// Take the exclusive lock for the allowlist at `path`.
+///
+/// `add` and `remove` load, mutate and save. Two of them racing would each load
+/// the same pre-state and the second save would drop the first's entry — after
+/// both printed "added". The corpus gets exactly this protection from the
+/// backend's inventory flock; the allowlist is the other shared mutable file.
+///
+/// The lock file lives in `$XDG_RUNTIME_DIR` (else the OS temp dir) rather than
+/// beside the allowlist, for the same two reasons the backend's does: nothing
+/// untracked appears next to the user's config, and `save` renames a *new* inode
+/// over the allowlist, so a lock held on the allowlist itself would stop
+/// excluding anything the moment it was used.
+pub fn lock(path: &Path) -> Result<Lock> {
+    use fs4::fs_std::FileExt;
+
+    let key = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let dir = match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(d) if !d.is_empty() => PathBuf::from(d),
+        _ => std::env::temp_dir(),
+    };
+    let lock_path = dir.join(format!("opys-allowlist-{}", crate::discover::id_for(&key)));
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|e| usage(format!("{}: {e}", lock_path.display())))?;
+
+    let timeout_ms: u64 = std::env::var("OPYS_LOCK_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10_000);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    loop {
+        match file.try_lock_exclusive() {
+            Ok(true) => return Ok(Lock { _file: file }),
+            Ok(false) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => return Err(usage(format!("{}: {e}", lock_path.display()))),
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(usage(format!(
+                "timed out after {timeout_ms} ms waiting for the allowlist lock for {} ({}) — \
+                 another opys invocation is editing it",
+                path.display(),
+                lock_path.display()
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
 /// The inverse of [`expand_tilde`]: write paths under `$HOME` back as `~/…` so
 /// the file stays portable between machines.
 fn contract_tilde(path: &Path) -> String {
@@ -104,6 +201,46 @@ fn contract_tilde(path: &Path) -> String {
         }
     }
     path.display().to_string()
+}
+
+/// Refuse a hand-edited allowlist whose entries are the wrong shape.
+///
+/// The same policy as a syntax error, for the same reason: an entry this version
+/// cannot read is one the user asked for and would not get. Dropping it silently
+/// makes `web list` say "nothing allowlisted" about a file that plainly names a
+/// project — and leaves `[project]` (one bracket) or a misspelled `path` sitting
+/// there forever, because nothing ever complains about it.
+fn check_shape(raw: &toml::Table, path: &Path) -> Result<()> {
+    let bad = |msg: String| usage(format!("{}: {msg} — fix it by hand", path.display()));
+    for kind in [EntryKind::Project, EntryKind::Prefix] {
+        let key = kind.key();
+        let Some(value) = raw.get(key) else { continue };
+        let Some(items) = value.as_array() else {
+            return Err(bad(format!(
+                "`{key}` is not a list of entries (write `[[{key}]]`, not `[{key}]`)"
+            )));
+        };
+        for item in items {
+            let Some(table) = item.as_table() else {
+                return Err(bad(format!("a `{key}` entry is not a table")));
+            };
+            if table.get("path").and_then(toml::Value::as_str).is_none() {
+                return Err(bad(format!("a `{key}` entry has no `path` string")));
+            }
+            match table.get("depth") {
+                None => {}
+                // A `depth` this version cannot read must not widen silently to
+                // the default: the user picked a number to bound the walk.
+                Some(v) if v.as_integer().is_some_and(|d| usize::try_from(d).is_ok()) => {}
+                Some(v) => {
+                    return Err(bad(format!(
+                        "`depth` in a `{key}` entry is not a non-negative integer: {v}"
+                    )))
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 impl Registry {
@@ -124,8 +261,12 @@ impl Registry {
                     source,
                 })?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
-            Err(e) => return Err(e.into()),
+            // The path, not a bare errno: `web list` is the command you run to
+            // find out why the node is serving nothing, so it has to say which
+            // file it could not read.
+            Err(e) => return Err(usage(format!("{}: {e}", path.display()))),
         };
+        check_shape(&raw, path)?;
         let mut reg = Registry {
             path: path.to_path_buf(),
             bind: None,
@@ -195,12 +336,12 @@ impl Registry {
     /// Whether `path` is already allowlisted, either explicitly or by a prefix
     /// that covers it within its depth bound.
     pub fn covers(&self, path: &Path) -> bool {
-        self.entries.iter().any(|e| match e.kind {
-            EntryKind::Project => e.path == path,
-            EntryKind::Prefix => path
-                .strip_prefix(&e.path)
-                .is_ok_and(|rest| rest.components().count() <= e.depth),
-        })
+        self.entry_covering(path).is_some()
+    }
+
+    /// The first entry that authorizes `path`, so a caller can name it.
+    pub fn entry_covering(&self, path: &Path) -> Option<&Entry> {
+        self.entries.iter().find(|e| e.covers(path))
     }
 
     /// Add an entry. Idempotent: adding the same path and kind twice is a no-op.
@@ -278,11 +419,28 @@ impl Registry {
     }
 
     /// Write the file, creating parent directories.
+    ///
+    /// Through a temporary file and a rename, not a truncating write: the node
+    /// watches this file, and `fs::write` leaves a window in which a rescan
+    /// reads half an allowlist. A rename within the same directory is atomic, so
+    /// a reader sees either the old file or the new one.
     pub fn save(&self) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&self.path, self.render()?)?;
+        let text = self.render()?;
+        let dir = self.path.parent().unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(dir).map_err(|e| usage(format!("{}: {e}", dir.display())))?;
+        let tmp = self.path.with_file_name(format!(
+            ".{}.{}.tmp",
+            self.path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "server.toml".to_string()),
+            std::process::id()
+        ));
+        std::fs::write(&tmp, text).map_err(|e| usage(format!("{}: {e}", tmp.display())))?;
+        std::fs::rename(&tmp, &self.path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            usage(format!("{}: {e}", self.path.display()))
+        })?;
         Ok(())
     }
 

@@ -6,8 +6,9 @@ members = [
 ]
 resolver = "2"
 
-# The published crates share one version and release together; opys-server
-# rides the same version but is not published yet (see its manifest).
+# All four crates share one version and publish together, in the order the
+# dependency graph implies: opys-engine, then the backend, then opys-server,
+# then the opys binary that links them all.
 [workspace.package]
 version = "0.12.0"
 
