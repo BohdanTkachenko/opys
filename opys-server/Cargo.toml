@@ -43,3 +43,7 @@ walkdir = "2"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# A real WebSocket client for the end-to-end event test. Pinned to the version
+# axum's `ws` feature already resolves, so this adds no crates to the lock.
+tokio-tungstenite = "0.29"
+futures-util = "0.3"

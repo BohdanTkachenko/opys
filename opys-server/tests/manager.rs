@@ -159,6 +159,17 @@ fn refresh_drops_a_corpus_whose_project_vanished() {
     let mut mgr = Manager::new(config, tx, backend);
     mgr.rescan().unwrap();
     assert_eq!(mgr.len(), 1);
+    // Wait out the startup load before deleting anything. `rescan` returns once
+    // the actor thread is spawned, and the load it then runs takes the inventory
+    // lock — which creates the inventory directory if it is missing. Racing that
+    // against the removal below either loses a `rmdir` to a concurrent `mkdir`
+    // (`DirectoryNotEmpty`) or resurrects the project the test just deleted. A
+    // read blocks until the load is done, which orders the two for good.
+    let cid = mgr.cids().into_iter().next().unwrap();
+    mgr.get(&cid)
+        .expect("the corpus is served")
+        .docs(DocFilter::default())
+        .unwrap();
     let _ = drain(&mut rx);
 
     std::fs::remove_dir_all(&proj).unwrap();
@@ -186,6 +197,17 @@ fn a_quiet_refresh_changes_nothing() {
     let mut mgr = Manager::new(config, tx, backend);
     mgr.rescan().unwrap();
     let cids = mgr.cids();
+    // `rescan` returns once the actor threads are spawned, not once they have
+    // loaded. A read blocks until the startup load is done, and the actor
+    // broadcasts that load before it serves anything — so draining after this
+    // is guaranteed to clear the startup event instead of racing it into the
+    // window below, where it would read as churn.
+    for cid in &cids {
+        mgr.get(cid)
+            .expect("the corpus is served")
+            .docs(DocFilter::default())
+            .unwrap();
+    }
     let _ = drain(&mut rx);
 
     for _ in 0..3 {

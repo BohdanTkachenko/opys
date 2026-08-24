@@ -9,6 +9,7 @@
 //! `opys` CLI links this crate for its `web` subcommand.
 
 pub mod actor;
+pub mod api;
 pub mod discover;
 pub mod manager;
 pub mod registry;

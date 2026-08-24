@@ -1,0 +1,794 @@
+//! The read API and the event stream (TASK-0071).
+//!
+//! Everything is JSON, there is no auth (a loopback bind is the boundary in M1),
+//! and every failure is `{"error": "<message>"}` with 400 for bad input, 404 for
+//! an unknown corpus or document, and 500 for anything internal. That includes
+//! the failures axum would otherwise render as `text/plain` — a rejected body, a
+//! malformed query string, an unroutable path — because a client that parses one
+//! error shape should never meet a second.
+//!
+//! **No endpoint executes commands or accepts a filesystem path** (ADR-0052).
+//! Corpora are addressed by their opaque `cid`, and the set of them comes from
+//! the allowlist file the user owns — the route surface here is exhaustive.
+//!
+//! A loopback bind keeps other machines out, but not the user's own browser:
+//! any page they visit can `fetch` a localhost URL, and the same-origin policy
+//! does not apply to a WebSocket handshake at all. [`AppState::check_local`]
+//! closes both — see its docs — and is the one thing here that answers 403.
+//!
+//! Two rules shape the code below:
+//!
+//! - The manager lock is a [`std::sync::Mutex`], and a background pass can hold
+//!   it for seconds (a rescan walks the filesystem and joins actor threads). No
+//!   handler takes it on the reactor: the lock, the clone and the blocking call
+//!   all happen inside one [`tokio::task::spawn_blocking`].
+//! - Actor calls block on a channel, so they run on the blocking pool. A read
+//!   that lands mid-reload waits out the whole load; on the reactor that would
+//!   stall unrelated requests.
+
+use std::collections::BTreeMap;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
+
+use axum::body::Bytes;
+use axum::extract::rejection::{JsonRejection, QueryRejection};
+use axum::extract::ws::rejection::WebSocketUpgradeRejection;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Path, Query, Request, State};
+use axum::http::header::{HOST, ORIGIN};
+use axum::http::{HeaderMap, StatusCode, Uri};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{any, get, post};
+use axum::{Json, Router};
+use opys_engine::commands::now_rfc3339;
+use opys_engine::error::OpysError;
+use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
+
+use crate::actor::{
+    CorpusClient, CorpusHandle, CorpusStats, DocFilter, DocSummary, DocView, Event, QueryResult,
+    VerifyStatus,
+};
+use crate::manager::Manager;
+
+/// How often the server pings an idle WebSocket client.
+const PING_EVERY: Duration = Duration::from_secs(30);
+
+/// How many pings may go unanswered before the client is dropped. At
+/// [`PING_EVERY`] that is a minute and a half of silence from a peer that has
+/// stopped reading — long enough to survive a suspended laptop's first hiccup,
+/// short enough that dead sockets do not accumulate.
+const MISSED_PINGS_ALLOWED: u32 = 2;
+
+/// How long the project list waits on any one corpus.
+///
+/// A corpus mid-reload can sit on the inventory flock for `OPYS_LOCK_TIMEOUT_MS`
+/// (10 s by default). The landing page must not wait that out — and must not
+/// wait out several of them in turn — so a corpus that does not answer in time
+/// is reported as busy and the rest of the list goes out.
+const STATS_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The WebSocket liveness settings.
+///
+/// Constants everywhere else; a field here only so a test can drive the ping /
+/// missed-pong path at millisecond scale instead of needing a minute and a half
+/// of wall clock.
+#[derive(Clone, Copy, Debug)]
+struct PingConfig {
+    every: Duration,
+    missed_allowed: u32,
+}
+
+impl Default for PingConfig {
+    fn default() -> PingConfig {
+        PingConfig {
+            every: PING_EVERY,
+            missed_allowed: MISSED_PINGS_ALLOWED,
+        }
+    }
+}
+
+/// Everything a handler needs. Cheap to clone: two pointers and a timestamp.
+#[derive(Clone)]
+pub struct AppState {
+    /// The live corpus actors. See the module docs for the locking rule.
+    pub manager: Arc<Mutex<Manager>>,
+    /// The fan-out every WebSocket client subscribes to.
+    pub events: broadcast::Sender<Event>,
+    /// When this process started, RFC3339. Reported by `/api/health` so a client
+    /// can tell "the node is up" from "the node restarted under me".
+    pub started: String,
+    /// Where the node listens, when it is known. `None` means "assume the
+    /// loopback default", which is the safe way to be wrong.
+    bind: Option<SocketAddr>,
+    ping: PingConfig,
+}
+
+impl AppState {
+    /// Wrap a manager and its event channel for serving.
+    pub fn new(manager: Arc<Mutex<Manager>>, events: broadcast::Sender<Event>) -> AppState {
+        AppState {
+            manager,
+            events,
+            started: now_rfc3339(),
+            bind: None,
+            ping: PingConfig::default(),
+        }
+    }
+
+    /// Tell the state where the node listens, which is what decides whether the
+    /// `Host` guard applies (see [`AppState::check_local`]).
+    pub fn with_bind(mut self, bind: SocketAddr) -> AppState {
+        self.bind = Some(bind);
+        self
+    }
+
+    /// Ping WebSocket clients this often instead of every 30 s. For tests.
+    pub fn with_ping_interval(mut self, every: Duration) -> AppState {
+        self.ping.every = every;
+        self
+    }
+
+    /// Whether a request may be served at all.
+    ///
+    /// A loopback bind stops other machines, not other *origins*: a page the
+    /// user visits can point a `fetch` at `127.0.0.1`, and a WebSocket
+    /// handshake is not subject to the same-origin policy in the first place,
+    /// so `ws://127.0.0.1:6797/api/events` is readable by any site unless the
+    /// server itself refuses. DNS rebinding is the same story for the rest of
+    /// the API: an attacker's name resolving to 127.0.0.1 makes their page
+    /// same-origin with the node. Both attacks have to send a header we can
+    /// check — a browser always sends `Host`, and always sends `Origin` on a
+    /// cross-origin request and on every WebSocket handshake.
+    ///
+    /// So: the `Host` must name loopback (rebinding cannot forge that, because
+    /// the browser sends the attacker's own name), and an `Origin`, if present,
+    /// must be loopback or the very host the request was addressed to. A node
+    /// deliberately bound to a non-loopback address has opted out of the first
+    /// check — it is presumably reached by a name we cannot know — but keeps the
+    /// second, which is what a reverse proxy in front of it satisfies anyway.
+    fn check_local(&self, uri: &Uri, headers: &HeaderMap) -> Result<(), ApiError> {
+        // HTTP/2 puts the authority in the URI; HTTP/1.1 in the header.
+        let host = uri
+            .host()
+            .map(str::to_owned)
+            .or_else(|| header_str(headers, HOST).map(str::to_owned));
+        let guarded = self.bind.is_none_or(|addr| addr.ip().is_loopback());
+        if guarded {
+            if let Some(host) = host.as_deref().filter(|h| !is_loopback_host(h)) {
+                return Err(ApiError::forbidden(format!(
+                    "refusing a request for {host:?}: this node serves loopback only"
+                )));
+            }
+        }
+        if let Some(origin) = header_str(headers, ORIGIN) {
+            let same_site = origin_host(origin).is_some_and(|o| {
+                is_loopback_host(o)
+                    || host
+                        .as_deref()
+                        .is_some_and(|h| host_only(h).eq_ignore_ascii_case(o))
+            });
+            if !same_site {
+                return Err(ApiError::forbidden(format!(
+                    "refusing a cross-origin request from {origin:?}"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One header, when it is present and text.
+fn header_str(headers: &HeaderMap, name: axum::http::HeaderName) -> Option<&str> {
+    headers.get(name).and_then(|v| v.to_str().ok())
+}
+
+/// The host part of an authority: `[::1]:6797` → `::1`, `localhost:6797` →
+/// `localhost`, `127.0.0.1` → `127.0.0.1`.
+fn host_only(authority: &str) -> &str {
+    if let Some(rest) = authority.strip_prefix('[') {
+        // An IPv6 literal, which is the only bracketed form.
+        return rest.split(']').next().unwrap_or(rest);
+    }
+    if authority.parse::<IpAddr>().is_ok() {
+        // A bare `::1` — not legal in a `Host`, but cheap to accept.
+        return authority;
+    }
+    authority.split(':').next().unwrap_or(authority)
+}
+
+/// Whether an authority names this machine.
+fn is_loopback_host(authority: &str) -> bool {
+    let host = host_only(authority);
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+/// The host of an `Origin` header. `None` for anything that is not a real
+/// origin — notably the literal `null` a sandboxed frame sends.
+fn origin_host(origin: &str) -> Option<&str> {
+    let (_scheme, rest) = origin.split_once("://")?;
+    let host = host_only(rest);
+    (!host.is_empty()).then_some(host)
+}
+
+/// Take the manager lock, ignoring poisoning.
+///
+/// A panic inside one background pass must not turn every later request into a
+/// 500: the manager's own state stays consistent because each pass either
+/// completes or leaves a corpus out, and the alternative — a node that answers
+/// nothing until restarted — is strictly worse.
+///
+/// **Only ever called inside a blocking task.** See the module docs.
+fn lock(manager: &Mutex<Manager>) -> MutexGuard<'_, Manager> {
+    manager.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Every route the node serves. Kept as one function so tests can drive it with
+/// `tower::ServiceExt::oneshot` instead of binding a socket.
+pub fn router(state: AppState) -> Router {
+    Router::new()
+        .route("/api/health", get(health))
+        .route("/api/projects", get(projects))
+        // axum 0.8 path captures are `{name}`; the 0.7 `:name` form panics.
+        .route("/api/corpus/{cid}/docs", get(docs))
+        .route("/api/corpus/{cid}/doc/{docid}", get(doc))
+        .route("/api/corpus/{cid}/query", post(query))
+        .route("/api/corpus/{cid}/verify", get(verify))
+        // `any`, not `get`: that is what enables WebSockets over HTTP/2, where
+        // the handshake is a CONNECT rather than a GET.
+        .route("/api/events", any(events))
+        // Routing-level failures answer in the same shape as everything else;
+        // axum's own would be an empty body with no content type.
+        .fallback(no_route)
+        .method_not_allowed_fallback(wrong_method)
+        .layer(middleware::from_fn_with_state(state.clone(), guard))
+        .with_state(state)
+}
+
+/// Refuse anything that is not addressed to this node — before it reaches a
+/// route, so `/api/events` is covered too (it is the one endpoint a foreign page
+/// could otherwise read).
+async fn guard(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    if let Err(refusal) = state.check_local(request.uri(), request.headers()) {
+        return refusal.into_response();
+    }
+    next.run(request).await
+}
+
+/// A failure, in the one shape every endpoint uses.
+pub struct ApiError {
+    status: StatusCode,
+    message: String,
+}
+
+impl ApiError {
+    /// The caller sent something unusable — malformed JSON, rejected SQL.
+    pub fn bad_request(message: impl Into<String>) -> ApiError {
+        ApiError::new(StatusCode::BAD_REQUEST, message)
+    }
+
+    /// The request was well formed but is not allowed to be answered: it came
+    /// from another origin, or was addressed to a name that is not this node.
+    pub fn forbidden(message: impl Into<String>) -> ApiError {
+        ApiError::new(StatusCode::FORBIDDEN, message)
+    }
+
+    /// No such corpus, or no such document in it.
+    pub fn not_found(message: impl Into<String>) -> ApiError {
+        ApiError::new(StatusCode::NOT_FOUND, message)
+    }
+
+    /// Our fault, not the caller's.
+    pub fn internal(message: impl Into<String>) -> ApiError {
+        ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, message)
+    }
+
+    fn new(status: StatusCode, message: impl Into<String>) -> ApiError {
+        ApiError {
+            status,
+            message: message.into(),
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (
+            self.status,
+            Json(serde_json::json!({ "error": self.message })),
+        )
+            .into_response()
+    }
+}
+
+impl From<OpysError> for ApiError {
+    /// Engine errors reaching a handler are internal by construction: bad input
+    /// is caught before the actor is asked, and a corpus that vanished mid-request
+    /// or never loaded is the state of the node rather than something the caller
+    /// did.
+    fn from(e: OpysError) -> ApiError {
+        ApiError::internal(e.to_string())
+    }
+}
+
+impl From<JsonRejection> for ApiError {
+    /// Every way a JSON body can be rejected is the caller's mistake — missing
+    /// field, wrong content type, oversized — so all of them are 400 and not
+    /// axum's assorted 415/422/413, which are outside the contract. The message
+    /// already says which kind.
+    fn from(rejection: JsonRejection) -> ApiError {
+        ApiError::bad_request(rejection.body_text())
+    }
+}
+
+impl From<QueryRejection> for ApiError {
+    /// A query string that will not deserialize (a repeated `?type=`, say) is
+    /// bad input, and must not escape as axum's `text/plain`.
+    fn from(rejection: QueryRejection) -> ApiError {
+        ApiError::bad_request(rejection.body_text())
+    }
+}
+
+impl From<WebSocketUpgradeRejection> for ApiError {
+    /// A plain `GET /api/events` — a browser address bar, a health probe —
+    /// deserves the same JSON as everything else.
+    fn from(rejection: WebSocketUpgradeRejection) -> ApiError {
+        ApiError::bad_request(rejection.body_text())
+    }
+}
+
+/// Nothing is routed here.
+async fn no_route(uri: Uri) -> ApiError {
+    ApiError::not_found(format!("no such route: {}", uri.path()))
+}
+
+/// The path exists, the method does not.
+async fn wrong_method(uri: Uri) -> ApiError {
+    ApiError::new(
+        StatusCode::METHOD_NOT_ALLOWED,
+        format!("method not allowed for {}", uri.path()),
+    )
+}
+
+/// Resolve `cid` and run one blocking actor call, both off the reactor.
+///
+/// The manager lock is taken *inside* the blocking task on purpose: a rescan can
+/// hold it across a filesystem walk and an actor join, and a reactor thread
+/// parked on that stalls every other request, the accept loop and the WebSocket
+/// pumps along with it.
+async fn with_corpus<T, F>(state: &AppState, cid: &str, call: F) -> Result<T, ApiError>
+where
+    F: FnOnce(CorpusClient) -> opys_engine::error::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    let manager = Arc::clone(&state.manager);
+    let cid = cid.to_string();
+    tokio::task::spawn_blocking(move || {
+        // An owned client, so the lock is gone before the call blocks.
+        let client = lock(&manager).get(&cid).map(CorpusHandle::client);
+        let client = client.ok_or_else(|| ApiError::not_found(format!("no such corpus: {cid}")))?;
+        call(client).map_err(ApiError::from)
+    })
+    .await
+    // A panic in the actor call would otherwise abort the response task and
+    // hang up the connection with no explanation.
+    .map_err(|e| ApiError::internal(format!("corpus task failed: {e}")))?
+}
+
+#[derive(Serialize)]
+struct Health {
+    ok: bool,
+    version: &'static str,
+    started: String,
+}
+
+/// Liveness, plus enough to notice a restart.
+async fn health(State(state): State<AppState>) -> Json<Health> {
+    Json(Health {
+        ok: true,
+        version: env!("CARGO_PKG_VERSION"),
+        started: state.started,
+    })
+}
+
+/// One project (a repository and its worktrees) as the UI presents it.
+#[derive(Serialize)]
+struct ProjectOut {
+    key: String,
+    name: String,
+    corpora: Vec<CorpusOut>,
+}
+
+/// One inventory, with the cached numbers for it.
+///
+/// A bespoke struct rather than [`crate::discover::Corpus`]'s own `Serialize`:
+/// that one carries an internal `group` key, and it would serialize `root`/`base`
+/// as paths — a non-UTF-8 path then fails mid-response and degrades to a 500 with
+/// a plain-text body, breaking the error contract in the one case it matters.
+#[derive(Serialize)]
+struct CorpusOut {
+    cid: String,
+    root: String,
+    base: String,
+    branch: Option<String>,
+    is_primary: bool,
+    /// `None` until a load has succeeded — a corpus whose config will not parse
+    /// reports its `error` and no counts, rather than a misleading zero.
+    doc_count: Option<usize>,
+    verify_problems: Option<usize>,
+    loaded_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// The allowlisted projects, each with its corpora and their cached counts.
+async fn projects(State(state): State<AppState>) -> Result<Json<Vec<ProjectOut>>, ApiError> {
+    let manager = Arc::clone(&state.manager);
+    // One lock, taken off the reactor, held for two cheap clones.
+    let (groups, clients) = tokio::task::spawn_blocking(move || {
+        let manager = lock(&manager);
+        let groups = manager.groups().to_vec();
+        let clients: Vec<CorpusClient> = manager
+            .cids()
+            .iter()
+            .filter_map(|cid| manager.get(cid).map(CorpusHandle::client))
+            .collect();
+        (groups, clients)
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("listing projects failed: {e}")))?;
+
+    let stats = gather_stats(clients).await;
+    let out = groups
+        .into_iter()
+        .map(|group| ProjectOut {
+            key: group.key,
+            name: group.name,
+            corpora: group
+                .corpora
+                .into_iter()
+                .map(|corpus| {
+                    let numbers = stats.get(&corpus.cid);
+                    let ok = numbers.and_then(|r| r.as_ref().ok());
+                    // Counts only mean something once a load has succeeded.
+                    let loaded = ok.filter(|s| s.loaded_at.is_some());
+                    let unreachable = match numbers {
+                        Some(Err(e)) => Some(e.clone()),
+                        // A rescan stopped this corpus between the two steps
+                        // above. Rare, and better said than silently blank.
+                        None => Some("corpus is not being served".to_string()),
+                        Some(Ok(_)) => None,
+                    };
+                    CorpusOut {
+                        cid: corpus.cid,
+                        root: corpus.root.display().to_string(),
+                        base: corpus.base.display().to_string(),
+                        branch: corpus.branch,
+                        is_primary: corpus.is_primary,
+                        doc_count: loaded.map(|s| s.doc_count),
+                        verify_problems: loaded.map(|s| s.verify_problems),
+                        loaded_at: ok.and_then(|s| s.loaded_at.clone()),
+                        // Most specific reason first: discovery could not read
+                        // the config, the last load failed, the actor is gone.
+                        error: corpus
+                            .error
+                            .or_else(|| ok.and_then(|s| s.load_error.clone()))
+                            .or(unreachable),
+                    }
+                })
+                .collect(),
+        })
+        .collect();
+    Ok(Json(out))
+}
+
+/// Every corpus's cached numbers, gathered in parallel under one deadline.
+///
+/// One task per corpus rather than a loop inside a single task: these are cache
+/// reads, but a corpus that is mid-reload answers only when the load finishes,
+/// and in a loop each such corpus would add its whole wait to the response.
+async fn gather_stats(clients: Vec<CorpusClient>) -> BTreeMap<String, Result<CorpusStats, String>> {
+    let deadline = tokio::time::Instant::now() + STATS_TIMEOUT;
+    let tasks: Vec<(String, _)> = clients
+        .into_iter()
+        .map(|client| {
+            (
+                client.cid.clone(),
+                tokio::task::spawn_blocking(move || client.stats()),
+            )
+        })
+        .collect();
+    let mut out = BTreeMap::new();
+    for (cid, task) in tasks {
+        // All the tasks are already running, so one shared deadline bounds the
+        // whole gather rather than each wait in turn.
+        let stats = match tokio::time::timeout_at(deadline, task).await {
+            Ok(Ok(Ok(stats))) => Ok(stats),
+            Ok(Ok(Err(e))) => Err(e.to_string()),
+            Ok(Err(e)) => Err(format!("corpus task failed: {e}")),
+            Err(_) => Err("corpus is busy".to_string()),
+        };
+        out.insert(cid, stats);
+    }
+    out
+}
+
+/// The `?type=&status=&tag=` filters, each optional and AND-combined.
+#[derive(Debug, Deserialize)]
+struct DocQuery {
+    #[serde(rename = "type")]
+    type_name: Option<String>,
+    status: Option<String>,
+    tag: Option<String>,
+}
+
+impl DocQuery {
+    fn into_filter(self) -> DocFilter {
+        // `?status=` with no value is what a UI sends when its dropdown is
+        // cleared, and it means "no filter" — not "match the empty status",
+        // which would return nothing.
+        fn set(value: Option<String>) -> Option<String> {
+            value.filter(|s| !s.is_empty())
+        }
+        DocFilter {
+            type_name: set(self.type_name),
+            status: set(self.status),
+            tag: set(self.tag),
+        }
+    }
+}
+
+/// Document summaries from a corpus's warm cache.
+async fn docs(
+    State(state): State<AppState>,
+    Path(cid): Path<String>,
+    filters: Result<Query<DocQuery>, QueryRejection>,
+) -> Result<Json<Vec<DocSummary>>, ApiError> {
+    let Query(filters) = filters?;
+    let filter = filters.into_filter();
+    Ok(Json(
+        with_corpus(&state, &cid, move |client| client.docs(filter)).await?,
+    ))
+}
+
+/// One document, with its frontmatter, relations and rendered body.
+async fn doc(
+    State(state): State<AppState>,
+    Path((cid, docid)): Path<(String, String)>,
+) -> Result<Json<DocView>, ApiError> {
+    let wanted = docid.clone();
+    with_corpus(&state, &cid, move |client| client.doc(&wanted))
+        .await?
+        .map(Json)
+        .ok_or_else(|| ApiError::not_found(format!("no such document: {docid}")))
+}
+
+/// A user SQL query. `params` fills the statement's `$n` placeholders.
+#[derive(Debug, Deserialize)]
+struct QueryBody {
+    sql: String,
+    #[serde(default)]
+    params: Vec<String>,
+}
+
+/// Run read-only SQL over a corpus's store.
+async fn query(
+    State(state): State<AppState>,
+    Path(cid): Path<String>,
+    body: Result<Json<QueryBody>, JsonRejection>,
+) -> Result<Json<QueryResult>, ApiError> {
+    let Json(body) = body?;
+    // The outer error is the node's (no warm store, projections would not
+    // rebuild) and is a 500; only the inner one is about the statement.
+    let result = with_corpus(&state, &cid, move |client| {
+        client.query(&body.sql, &body.params)
+    })
+    .await?;
+    // SELECT-only is enforced by the engine's plan guard, which is the single
+    // place that decision lives. Whatever it says goes back verbatim: it names
+    // the statement kind it refused, which is more useful than a rewrite.
+    result.map(Json).map_err(ApiError::bad_request)
+}
+
+/// The corpus's cached verify problems.
+///
+/// A superset of the documented `{problems, loaded_at}`: `ok` and `load_error`
+/// come along because "verify found nothing" and "the corpus would not load at
+/// all" are different states, and a client showing a green tick needs to tell
+/// them apart.
+async fn verify(
+    State(state): State<AppState>,
+    Path(cid): Path<String>,
+) -> Result<Json<VerifyStatus>, ApiError> {
+    Ok(Json(
+        with_corpus(&state, &cid, |client| client.verify()).await?,
+    ))
+}
+
+/// The greeting frame. Keyed on `type` rather than the `event` tag the broadcast
+/// payloads use: it is connection metadata, not something that happened.
+#[derive(Serialize)]
+struct Hello {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    version: &'static str,
+}
+
+/// The event stream: one `hello`, then every broadcast event as JSON.
+async fn events(
+    State(state): State<AppState>,
+    upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
+) -> Response {
+    let upgrade = match upgrade {
+        Ok(upgrade) => upgrade,
+        Err(rejection) => return ApiError::from(rejection).into_response(),
+    };
+    // Subscribe before the handshake completes, not inside the callback: events
+    // published in that window would otherwise reach nobody, and a client that
+    // connects in response to an action would miss its own result.
+    let receiver = state.events.subscribe();
+    let ping = state.ping;
+    upgrade.on_upgrade(move |socket| pump(socket, receiver, ping))
+}
+
+/// One frame, with a deadline.
+///
+/// `send` parks indefinitely on a peer that has stopped draining its socket, and
+/// a parked send means nothing else in the loop below runs — including the ping
+/// timer, which exists for exactly that peer. A write that misses the deadline
+/// is treated as a dead client.
+async fn send(socket: &mut WebSocket, message: Message, within: Duration) -> bool {
+    matches!(
+        tokio::time::timeout(within, socket.send(message)).await,
+        Ok(Ok(()))
+    )
+}
+
+/// Forward broadcast events to one client until it stops keeping up.
+///
+/// A single task drives both directions. Each `select!` branch awaits a
+/// cancel-safe future — a broadcast receive, an interval tick, a socket read
+/// that buffers inside the codec — while the sends happen in the branch bodies,
+/// where nothing can cancel them mid-frame.
+async fn pump(mut socket: WebSocket, mut events: broadcast::Receiver<Event>, config: PingConfig) {
+    let hello = Hello {
+        kind: "hello",
+        version: env!("CARGO_PKG_VERSION"),
+    };
+    let Ok(hello) = serde_json::to_string(&hello) else {
+        return;
+    };
+    if !send(&mut socket, Message::text(hello), config.every).await {
+        return;
+    }
+
+    let mut ping = tokio::time::interval(config.every);
+    // Not the default `Burst`: after any stall longer than two periods — a
+    // suspended laptop, a starved runtime — the missed ticks would fire
+    // back-to-back and drop a perfectly live client before it could answer even
+    // one of them. `Delay` gives a resumed pump a full period again.
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // The first tick of an interval fires immediately; a ping on connect would
+    // be noise.
+    ping.tick().await;
+    let mut unanswered: u32 = 0;
+
+    loop {
+        tokio::select! {
+            event = events.recv() => {
+                // Both `Closed` and `Lagged` drop this client. Lagging means the
+                // buffer overran while it was not reading: its view is already
+                // incomplete, and retrying would spin. Reconnecting refetches.
+                let Ok(event) = event else { break };
+                let Ok(json) = serde_json::to_string(&event) else { continue };
+                if !send(&mut socket, Message::text(json), config.every).await {
+                    break;
+                }
+            }
+            _ = ping.tick() => {
+                if unanswered >= config.missed_allowed {
+                    break;
+                }
+                unanswered += 1;
+                if !send(&mut socket, Message::Ping(Bytes::new()), config.every).await {
+                    break;
+                }
+            }
+            incoming = socket.recv() => {
+                match incoming {
+                    // Any frame proves the peer is alive, but a pong is the one
+                    // we asked for. (Client pings are answered by the protocol
+                    // layer, below this loop.)
+                    Some(Ok(Message::Pong(_))) => unanswered = 0,
+                    Some(Ok(_)) => {}
+                    // A close frame or a broken socket: nothing left to do.
+                    Some(Err(_)) | None => break,
+                }
+            }
+        }
+    }
+    send(&mut socket, Message::Close(None), config.every).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_query_values_mean_no_filter() {
+        let filter = DocQuery {
+            type_name: Some(String::new()),
+            status: Some("open".into()),
+            tag: Some("server".into()),
+        }
+        .into_filter();
+        assert_eq!(filter.type_name, None, "`?type=` must not filter on \"\"");
+        assert_eq!(filter.status.as_deref(), Some("open"));
+        assert_eq!(filter.tag.as_deref(), Some("server"), "`?tag=` is plumbed");
+    }
+
+    /// One shape for every failure, whatever produced it — a client parsing our
+    /// errors should never need a second code path.
+    #[tokio::test]
+    async fn errors_render_as_one_json_shape() {
+        let cases = [
+            (ApiError::bad_request("nope"), StatusCode::BAD_REQUEST),
+            (ApiError::forbidden("elsewhere"), StatusCode::FORBIDDEN),
+            (ApiError::not_found("gone"), StatusCode::NOT_FOUND),
+            (
+                ApiError::from(OpysError::Store("boom".into())),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ];
+        for (error, expected) in cases {
+            let response = error.into_response();
+            assert_eq!(response.status(), expected);
+            let bytes = http_body_util::BodyExt::collect(response.into_body())
+                .await
+                .unwrap()
+                .to_bytes();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert!(body["error"].is_string(), "{body}");
+        }
+    }
+
+    #[test]
+    fn loopback_is_recognised_in_every_spelling() {
+        for host in [
+            "localhost",
+            "localhost:6797",
+            "LOCALHOST:6797",
+            "127.0.0.1",
+            "127.0.0.1:6797",
+            "127.1.2.3:6797",
+            "[::1]:6797",
+            "::1",
+        ] {
+            assert!(is_loopback_host(host), "{host} is this machine");
+        }
+        for host in [
+            "evil.attacker.test",
+            "evil.attacker.test:6797",
+            "10.0.0.5:6797",
+            "127.0.0.1.attacker.test",
+            "[2001:db8::1]:6797",
+            "",
+        ] {
+            assert!(!is_loopback_host(host), "{host} is not this machine");
+        }
+    }
+
+    #[test]
+    fn an_origin_is_its_host_and_null_is_not_one() {
+        assert_eq!(origin_host("http://localhost:5173"), Some("localhost"));
+        assert_eq!(origin_host("https://evil.example"), Some("evil.example"));
+        assert_eq!(origin_host("http://[::1]:6797"), Some("::1"));
+        assert_eq!(origin_host("null"), None, "a sandboxed frame is not local");
+        assert_eq!(origin_host("http://"), None);
+    }
+}

@@ -23,6 +23,7 @@ use opys_engine::commands::{now_rfc3339, verify};
 use opys_engine::doc::Doc;
 use opys_engine::error::{OpysError, Result};
 use opys_engine::project::Project;
+use opys_engine::refs;
 use opys_engine::store::Store;
 use serde::Serialize;
 use tokio::sync::broadcast;
@@ -39,8 +40,13 @@ pub const DEBOUNCE: Duration = Duration::from_millis(250);
 /// the API. A broadcast channel clones its message per receiver and buffers for
 /// slow ones, so pushing whole corpora through it would cost memory
 /// proportional to viewers times corpus size for data most of them already have.
+///
+/// On the wire this is `{"event": "corpus-reloaded", …}` — the discriminant is
+/// kebab-case because that is the vocabulary TASK-0071 and TASK-0072 write
+/// against. Field names stay snake_case, matching every other JSON payload the
+/// API emits (`verify_problems`, `is_primary`, `body_html`).
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "event", rename_all = "camelCase")]
+#[serde(tag = "event", rename_all = "kebab-case")]
 pub enum Event {
     CorpusReloaded {
         cid: String,
@@ -71,6 +77,12 @@ pub struct DocSummary {
 }
 
 /// One document, opened.
+///
+/// The frontmatter keys a reader always wants — tags, `updated`, the three
+/// relation maps — are lifted to the top level *as well as* staying in
+/// [`DocView::fields`]. Lifting them here rather than in the HTTP layer keeps
+/// one interpretation of frontmatter in the crate: the API handler serializes
+/// this struct and adds nothing.
 #[derive(Debug, Clone, Serialize)]
 pub struct DocView {
     pub id: String,
@@ -79,6 +91,16 @@ pub struct DocView {
     pub status: String,
     pub title: String,
     pub path: String,
+    pub tags: Vec<String>,
+    pub updated: Option<String>,
+    /// `references`, as an id → title map. Values keep the `~~strikethrough~~`
+    /// of a closed document's tombstone: that distinction is the point of the
+    /// marker, so it is the caller's to render, not ours to strip.
+    pub references: BTreeMap<String, String>,
+    /// What blocks this document, id → title.
+    pub blocked_by: BTreeMap<String, String>,
+    /// What this document blocks, id → title.
+    pub blocks: BTreeMap<String, String>,
     /// Every frontmatter key, as JSON.
     pub fields: BTreeMap<String, serde_json::Value>,
     /// The markdown body, verbatim.
@@ -112,6 +134,23 @@ pub struct QueryResult {
     pub rows: Vec<Vec<String>>,
 }
 
+/// Per-corpus numbers for a project list: how much is there and how healthy it
+/// is, without shipping any of it.
+///
+/// One request answers all four, because `/api/projects` asks every served
+/// corpus on every call — two round trips each (docs then verify) that clone
+/// every summary and every problem string would be a lot of work to produce
+/// four integers.
+#[derive(Debug, Clone, Serialize)]
+pub struct CorpusStats {
+    pub doc_count: usize,
+    pub verify_problems: usize,
+    /// When the numbers were computed; `None` if the corpus has never loaded.
+    pub loaded_at: Option<String>,
+    /// Why the most recent load attempt failed, if it did.
+    pub load_error: Option<String>,
+}
+
 /// The corpus's health, as of the last successful load.
 #[derive(Debug, Clone, Serialize)]
 pub struct VerifyStatus {
@@ -132,30 +171,104 @@ enum Message {
 }
 
 enum Request {
-    Docs(DocFilter, SyncSender<Vec<DocSummary>>),
-    Doc(String, SyncSender<Option<DocView>>),
+    // The reads carry a `Result` rather than a bare answer so that "this corpus
+    // never loaded" stays distinguishable from "there is nothing to show". An
+    // empty list and a missing document are answers; a corpus whose config will
+    // not parse has none, and saying so is what lets the API return a server
+    // error instead of a misleading 200 or 404.
+    Docs(DocFilter, SyncSender<Result<Vec<DocSummary>>>),
+    Doc(String, SyncSender<Result<Option<DocView>>>),
     Query(
         String,
         Vec<String>,
-        SyncSender<std::result::Result<QueryResult, String>>,
+        SyncSender<Result<std::result::Result<QueryResult, String>>>,
     ),
     Verify(SyncSender<VerifyStatus>),
+    Stats(SyncSender<CorpusStats>),
     /// Reload now and reply when done — the deterministic path for tests and
     /// for the manager after a registry change.
     Reload(SyncSender<()>),
     Shutdown,
 }
 
-/// A handle to one corpus actor. Cloning is deliberately not offered: the
-/// manager owns handles and hands out references.
+/// The request-sending half of a corpus actor: `Clone + Send + Sync`, and cheap
+/// (one `String` and one channel sender).
+///
+/// This exists so a request handler never holds the manager's lock while it
+/// blocks. Every call below waits on a channel, and the actor may be halfway
+/// through a reload; a handler that kept the lock for that would stall the
+/// periodic passes and every other request behind one slow corpus. The pattern
+/// is: lock, clone the client, drop the lock, then block on the client.
+///
+/// A client may outlive its [`CorpusHandle`] — a rescan can stop the corpus
+/// while a request is in flight. Calls then fail with "corpus actor stopped"
+/// rather than hanging.
+#[derive(Clone)]
+pub struct CorpusClient {
+    /// Which corpus this talks to, for error messages and log lines.
+    pub cid: String,
+    tx: mpsc::Sender<Message>,
+}
+
+/// A handle to one corpus actor: the thread, the corpus it serves, and the
+/// [`CorpusClient`] used to talk to it. The manager owns handles; everyone else
+/// gets a client.
 pub struct CorpusHandle {
     pub corpus: Corpus,
-    tx: mpsc::Sender<Message>,
+    client: CorpusClient,
     join: Option<JoinHandle<()>>,
 }
 
 fn gone() -> OpysError {
     OpysError::Store("corpus actor stopped".to_string())
+}
+
+impl CorpusClient {
+    fn ask<T>(&self, make: impl FnOnce(SyncSender<T>) -> Request) -> Result<T> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.tx.send(Message::Req(make(tx))).map_err(|_| gone())?;
+        rx.recv().map_err(|_| gone())
+    }
+
+    /// Filtered document summaries, from the warm cache. Fails if the corpus has
+    /// never loaded — an empty list would claim the inventory is empty.
+    pub fn docs(&self, filter: DocFilter) -> Result<Vec<DocSummary>> {
+        self.ask(|reply| Request::Docs(filter, reply))?
+    }
+
+    /// One document with its rendered body, or `None` if this corpus has no
+    /// such id. Fails if the corpus has never loaded — `None` would claim the
+    /// document does not exist.
+    pub fn doc(&self, id: &str) -> Result<Option<DocView>> {
+        self.ask(|reply| Request::Doc(id.to_string(), reply))?
+    }
+
+    /// Run a user query against the warm store. The inner `Err` is the user's
+    /// SQL problem (a 400 for the API); the outer one is ours — the actor is
+    /// gone, the corpus never loaded, the projections would not rebuild — and
+    /// must not be reported as bad input.
+    pub fn query(
+        &self,
+        sql: &str,
+        params: &[String],
+    ) -> Result<std::result::Result<QueryResult, String>> {
+        self.ask(|reply| Request::Query(sql.to_string(), params.to_vec(), reply))?
+    }
+
+    /// Cached verify problems and the time they were computed.
+    pub fn verify(&self) -> Result<VerifyStatus> {
+        self.ask(Request::Verify)
+    }
+
+    /// Document count and health in one round trip.
+    pub fn stats(&self) -> Result<CorpusStats> {
+        self.ask(Request::Stats)
+    }
+
+    /// Force a reload and wait for it.
+    pub fn reload(&self) -> Result<()> {
+        self.ask(Request::Reload)
+    }
 }
 
 impl CorpusHandle {
@@ -187,27 +300,30 @@ impl CorpusHandle {
             })
             .expect("spawning a corpus thread");
         CorpusHandle {
+            client: CorpusClient {
+                cid: corpus.cid.clone(),
+                tx,
+            },
             corpus,
-            tx,
             join: Some(join),
         }
     }
 
-    fn ask<T>(&self, make: impl FnOnce(SyncSender<T>) -> Request) -> Result<T> {
-        let (tx, rx) = mpsc::sync_channel(1);
-        self.tx.send(Message::Req(make(tx))).map_err(|_| gone())?;
-        rx.recv().map_err(|_| gone())
+    /// A cloneable talker to this actor, for callers who cannot hold a borrow of
+    /// the manager (see [`CorpusClient`]).
+    pub fn client(&self) -> CorpusClient {
+        self.client.clone()
     }
 
     /// Filtered document summaries, from the warm cache.
     pub fn docs(&self, filter: DocFilter) -> Result<Vec<DocSummary>> {
-        self.ask(|reply| Request::Docs(filter, reply))
+        self.client.docs(filter)
     }
 
     /// One document with its rendered body, or `None` if this corpus has no
     /// such id.
     pub fn doc(&self, id: &str) -> Result<Option<DocView>> {
-        self.ask(|reply| Request::Doc(id.to_string(), reply))
+        self.client.doc(id)
     }
 
     /// Run a user query against the warm store. The inner `Err` is the user's
@@ -217,22 +333,27 @@ impl CorpusHandle {
         sql: &str,
         params: &[String],
     ) -> Result<std::result::Result<QueryResult, String>> {
-        self.ask(|reply| Request::Query(sql.to_string(), params.to_vec(), reply))
+        self.client.query(sql, params)
     }
 
     /// Cached verify problems and the time they were computed.
     pub fn verify(&self) -> Result<VerifyStatus> {
-        self.ask(Request::Verify)
+        self.client.verify()
+    }
+
+    /// Document count and health in one round trip.
+    pub fn stats(&self) -> Result<CorpusStats> {
+        self.client.stats()
     }
 
     /// Force a reload and wait for it.
     pub fn reload(&self) -> Result<()> {
-        self.ask(Request::Reload)
+        self.client.reload()
     }
 
     /// Stop the actor and wait for its thread.
     pub fn shutdown(mut self) {
-        let _ = self.tx.send(Message::Req(Request::Shutdown));
+        let _ = self.client.tx.send(Message::Req(Request::Shutdown));
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
@@ -241,10 +362,12 @@ impl CorpusHandle {
 
 impl Drop for CorpusHandle {
     fn drop(&mut self) {
-        // Dropping the sender is enough: the loop exits when the channel closes.
+        // An explicit message, not channel closure: the watcher callback owns a
+        // cloned sender that lives *inside* the actor thread, and outstanding
+        // clients own more, so the receiver never sees a disconnect on its own.
         // Deliberately no join here — a `Drop` that blocks on a reload in
         // progress would be a surprising place to spend 100 ms.
-        let _ = self.tx.send(Message::Req(Request::Shutdown));
+        let _ = self.client.tx.send(Message::Req(Request::Shutdown));
     }
 }
 
@@ -306,17 +429,13 @@ impl Actor {
     fn handle(&mut self, req: Request) {
         match req {
             Request::Docs(filter, reply) => {
-                let out = self
-                    .warm
-                    .as_ref()
-                    .map(|w| {
-                        w.summaries
-                            .iter()
-                            .filter(|d| filter.matches(d))
-                            .cloned()
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let out = self.warm().map(|w| {
+                    w.summaries
+                        .iter()
+                        .filter(|d| filter.matches(d))
+                        .cloned()
+                        .collect()
+                });
                 let _ = reply.send(out);
             }
             Request::Doc(id, reply) => {
@@ -338,6 +457,14 @@ impl Actor {
                     load_error: self.load_error.clone(),
                 });
             }
+            Request::Stats(reply) => {
+                let _ = reply.send(CorpusStats {
+                    doc_count: self.warm.as_ref().map_or(0, |w| w.summaries.len()),
+                    verify_problems: self.warm.as_ref().map_or(0, |w| w.problems.len()),
+                    loaded_at: self.warm.as_ref().map(|w| w.loaded_at.clone()),
+                    load_error: self.load_error.clone(),
+                });
+            }
             Request::Reload(reply) => {
                 self.reload();
                 let _ = reply.send(());
@@ -346,29 +473,46 @@ impl Actor {
         }
     }
 
-    fn doc_view(&mut self, id: &str) -> Option<DocView> {
-        let warm = self.warm.as_mut()?;
-        let dkey = warm.store.dkey_opt(id).ok().flatten()?;
-        let doc = warm.store.doc(dkey).ok()?;
-        Some(view(&warm.prj, &doc))
+    /// The warm cache, or why there is none.
+    ///
+    /// Reads answer from the last good load, so the only way here is a corpus
+    /// that has never had one. That is a state of the server, not of the
+    /// caller's request, and every read says so the same way.
+    fn warm(&mut self) -> Result<&mut Warm> {
+        if self.warm.is_none() {
+            let why = match &self.load_error {
+                Some(e) => format!("corpus is not loaded: {e}"),
+                None => "corpus is not loaded".to_string(),
+            };
+            return Err(OpysError::Store(why));
+        }
+        Ok(self.warm.as_mut().expect("checked just above"))
     }
 
+    fn doc_view(&mut self, id: &str) -> Result<Option<DocView>> {
+        let warm = self.warm()?;
+        let Some(dkey) = warm.store.dkey_opt(id)? else {
+            return Ok(None);
+        };
+        let doc = warm.store.doc(dkey)?;
+        Ok(Some(view(&warm.prj, &doc)))
+    }
+
+    /// Run user SQL. The outer error is ours (no warm store, projections would
+    /// not rebuild); the inner one is the statement's, verbatim from the engine.
     fn run_query(
         &mut self,
         sql: &str,
         params: &[String],
-    ) -> std::result::Result<QueryResult, String> {
-        let warm = self
-            .warm
-            .as_mut()
-            .ok_or_else(|| "corpus is not loaded".to_string())?;
+    ) -> Result<std::result::Result<QueryResult, String>> {
+        let warm = self.warm()?;
         // The derived projections (`fields`, `sections`, `blocks`) are what user
         // SQL is written against, and they are rebuilt rather than maintained.
-        warm.store
-            .refresh_projections(&warm.prj.pcfg)
-            .map_err(|e| e.to_string())?;
-        let (columns, rows) = warm.store.run_user_query(sql, params)?;
-        Ok(QueryResult { columns, rows })
+        warm.store.refresh_projections(&warm.prj.pcfg)?;
+        Ok(warm
+            .store
+            .run_user_query(sql, params)
+            .map(|(columns, rows)| QueryResult { columns, rows }))
     }
 
     /// Load afresh and swap the cache in. A failure leaves the previous warm
@@ -462,11 +606,25 @@ fn view(prj: &Project, doc: &Doc) -> DocView {
         status: doc.frontmatter.status().unwrap_or_default().to_string(),
         title: doc.title.clone(),
         path: rel_path(prj, doc),
+        tags: doc.frontmatter.tags().unwrap_or_default(),
+        updated: doc.frontmatter.get_str("updated").map(str::to_string),
+        references: relation(doc, refs::FIELD),
+        blocked_by: relation(doc, refs::BLOCKED_BY),
+        blocks: relation(doc, refs::BLOCKS),
         fields,
         body_html: comrak::markdown_to_html(&doc.body, &comrak::Options::default()),
         body: doc.body.clone(),
         id,
     }
+}
+
+/// One relation map as id → title. An absent map is an empty one: a caller
+/// iterating `references` should not have to special-case "the key is missing"
+/// separately from "there are none".
+fn relation(doc: &Doc, field: &str) -> BTreeMap<String, String> {
+    refs::parse_in(&doc.frontmatter, field)
+        .into_iter()
+        .collect()
 }
 
 /// Watch the corpus's inventory directory and its `opys.toml`.

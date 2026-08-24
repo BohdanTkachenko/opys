@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use opys_backend_markdown_local::MarkdownLocal;
 use opys_engine::backend::Backend;
 use opys_engine::project::Project;
-use opys_server::actor::{CorpusHandle, DocFilter, Event};
+use opys_server::actor::{CorpusHandle, DocFilter, Event, VerifyStatus};
 use opys_server::discover::{self, Corpus};
 use tokio::sync::broadcast;
 
@@ -58,6 +58,29 @@ fn next_event(rx: &mut broadcast::Receiver<Event>, timeout: Duration) -> Option<
             }
             Err(_) => return None,
         }
+    }
+}
+
+/// Poll the actor's cached verify state until it satisfies `want`, or give up
+/// and return whatever it says so the assertion can report it.
+///
+/// Deliberately not "wait for one broadcast event, then read": an event says
+/// *a* reload happened, not that it was the one carrying this edit — a
+/// filesystem burst can straddle the debounce, and a load that fails publishes
+/// no event at all while leaving the previous (clean) answers in place. The
+/// state is what this test is about, so it is the state that is waited on.
+fn wait_for_verify(
+    handle: &CorpusHandle,
+    timeout: Duration,
+    want: impl Fn(&VerifyStatus) -> bool,
+) -> VerifyStatus {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let status = handle.verify().expect("the actor answers");
+        if want(&status) || Instant::now() >= deadline {
+            return status;
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -190,14 +213,13 @@ fn verify_problems_are_cached_and_refreshed() {
     let root = std::fs::canonicalize(tmp.path()).unwrap();
     let corpus = fixture(&root);
     let inventory = root.join("inventory");
-    let (handle, mut rx) = spawn(corpus);
+    let (handle, _rx) = spawn(corpus);
 
     let clean = handle.verify().unwrap();
     assert!(clean.ok, "a fresh fixture should be clean: {clean:#?}");
     assert!(clean.problems.is_empty());
     assert!(clean.loaded_at.is_some());
     assert!(clean.load_error.is_none());
-    let _ = next_event(&mut rx, Duration::from_secs(2));
 
     // Frontmatter is closed, so an undeclared key is a verify problem.
     std::fs::write(
@@ -205,23 +227,17 @@ fn verify_problems_are_cached_and_refreshed() {
         "---\nid: NOTE-0002\nstatus: open\nbogus: 1\n---\n\n# Broken\n\nText.\n",
     )
     .unwrap();
-    assert!(
-        next_event(&mut rx, Duration::from_secs(2)).is_some(),
-        "the watcher should have noticed the new file"
-    );
 
-    let dirty = handle.verify().unwrap();
+    let dirty = wait_for_verify(&handle, Duration::from_secs(5), |s| !s.problems.is_empty());
     assert!(!dirty.ok, "the problem should surface: {dirty:#?}");
     assert!(
         dirty.problems.iter().any(|p| p.contains("NOTE-0002")),
-        "{:#?}",
-        dirty.problems
+        "{dirty:#?}"
     );
 
     // …and clears again when the cause goes away.
     std::fs::remove_file(inventory.join("NOTE-0002.md")).unwrap();
-    assert!(next_event(&mut rx, Duration::from_secs(2)).is_some());
-    let healed = handle.verify().unwrap();
+    let healed = wait_for_verify(&handle, Duration::from_secs(5), |s| s.problems.is_empty());
     assert!(
         healed.ok,
         "problems must be recomputed, not accumulated: {healed:#?}"
