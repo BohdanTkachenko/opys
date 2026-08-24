@@ -4,14 +4,13 @@ version.workspace = true
 edition = "2021"
 rust-version = "1.88"
 description = "Always-on opys node: watcher, HTTP/WS API, and web UI over local inventories"
-# AGPL-3.0-only, unlike the rest of the workspace (Apache-2.0) — see ADR-0056.
-# Nothing Apache-side may depend on this crate.
-license = "AGPL-3.0-only"
+license = "Apache-2.0"
 repository = "https://github.com/BohdanTkachenko/opys"
 readme = "README.md"
 keywords = ["opys", "server", "inventory", "api", "daemon"]
 categories = ["development-tools", "web-programming::http-server"]
-# Flipped at the M2 milestone, not before.
+# Flipped when the CLI links it for `opys web` (ADR-0077), or at M2 — whichever
+# comes first. A published `opys` cannot depend on an unpublished crate.
 publish = false
 
 [[bin]]

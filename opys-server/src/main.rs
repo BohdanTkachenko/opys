@@ -5,7 +5,9 @@
 //! scaffold: argument parsing and a health route. Discovery, the corpus actors,
 //! and the API arrive in the tasks that follow (TASK-0069 onward).
 //!
-//! Licensed AGPL-3.0-only, unlike the Apache-2.0 core it depends on (ADR-0056).
+//! Apache-2.0 like the rest of the workspace: everything that runs on the user's
+//! own machine is permissive, and the copyleft boundary starts at the relay
+//! (ADR-0076).
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

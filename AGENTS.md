@@ -93,20 +93,20 @@ releases the flock with the process, so stale locks cannot exist); and
 **`opys`** (the binary — this is what `cargo install opys` yields); and
 **`opys-server`** (the always-on node of FEAT-0058: watcher, HTTP/WS API, and
 web UI over local inventories — currently a scaffold with a `GET /api/health`
-route). The binary
+route, and the crate the CLI will link for `opys web`, ADR-0077). The binary
 (`opys/src/main.rs`) parses `Cli` (clap derive, `src/cli.rs`), injects the
 `MarkdownLocal` backend, and calls `opys_engine::run`, which maps the exit code.
 (The former `opys-tui` terminal board was retired per ADR-0050 — the web UI over
-the always-on node replaces it; the crate lives on in git history.) The three
-Apache crates publish to crates.io together; `opys-server` is `publish = false`
-until the M2 milestone. Commands never touch the storage medium
+the always-on node replaces it; the crate lives on in git history.) The first
+three publish to crates.io together; `opys-server` is `publish = false`
+until the CLI links it. Commands never touch the storage medium
 directly — they load/flush through the injected `Box<dyn Backend>` on `Ctx`, so
 the medium is swappable.
 
-**License boundary (ADR-0056):** `opys-server` is AGPL-3.0-only; nothing
-Apache-side may depend on it. `opys-engine`, `opys-backend-markdown-local`, and
-the `opys` binary stay Apache-2.0, and dependencies flow one way — `opys-server`
-→ engine/backend, never back.
+**License (ADR-0076, superseding ADR-0056):** the whole workspace is Apache-2.0,
+node included — everything that runs on the user's own machine is permissive.
+The copyleft boundary starts at the scaling layer (the relay, the hosted plane),
+which lives outside this repo and gets its license decided in its own ADR.
 
 **Exit-code contract (important):** `verify` returns `1` when it finds content
 problems; every other command returns `0` on success. Real failures (bad

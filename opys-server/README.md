@@ -12,10 +12,9 @@ write authorities.
 
 ## License
 
-**AGPL-3.0-only** — unlike the rest of the workspace. The tool everyone embeds
-and scripts (`opys`, `opys-engine`, and the storage backends) stays Apache-2.0;
-the server-side components are copyleft. Dependencies flow one way,
-`opys-server` → engine/backend, and nothing Apache-side may depend on this
-crate.
+Apache-2.0, like the rest of the workspace. Everything you run on your own
+machine over your own files is permissive; the copyleft boundary sits at the
+layer that turns local nodes into a fleet or a service — the relay and the
+hosted plane (ADR-0076).
 
 See the [project README](../README.md) for what opys is and how to use it.

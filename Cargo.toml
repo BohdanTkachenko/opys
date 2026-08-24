@@ -2,14 +2,12 @@
 members = [
     "opys-backend-markdown-local",
     "opys",
-    # AGPL-3.0-only (ADR-0056) — a workspace member, but nothing Apache-side
-    # (engine, backend, the `opys` binary) may depend on it.
     "opys-server",
 ]
 resolver = "2"
 
 # The published crates share one version and release together; opys-server
-# rides the same version but is `publish = false` until the M2 milestone.
+# rides the same version but is not published yet (see its manifest).
 [workspace.package]
 version = "0.12.0"
 

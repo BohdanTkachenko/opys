@@ -2,8 +2,8 @@
 [workspace]
 changelog_update = true
 # The crates share one version (see [workspace.package] in Cargo.toml); the
-# three Apache ones publish to crates.io together, while `opys-server` carries
-# `publish = false` (until M2) and release-plz skips it for that reason. The
+# first three publish to crates.io together, while `opys-server` carries
+# `publish = false` for now and release-plz skips it for that reason. The
 # workspace cuts a single GitHub release + `v{version}` tag (for the `opys`
 # binary), not one per crate.
 git_release_enable = false
