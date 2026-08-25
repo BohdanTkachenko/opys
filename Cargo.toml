@@ -34,6 +34,14 @@ exclude = [
     "package.json",
     "gemini-extension.json",
     "opencode.json",
+    # This repo dogfoods opys, so the root package directory contains the
+    # project's own inventory — 50-odd documents of product and business
+    # planning that are no part of the library. Without this line every
+    # `cargo publish` would bake them into the .crate tarball, and a published
+    # version is immutable: yanking hides it from the resolver, it does not
+    # unpublish the bytes. The 0.12.0 tarball predates the inventory and is
+    # clean; keep it that way.
+    "inventory/",
 ]
 
 [features]
