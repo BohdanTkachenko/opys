@@ -18,11 +18,11 @@ references:
 - [ ] unify the framing: crates.io says "issue tracker", SKILL.md says "file-based JIRA", README says "not a task board" — pick the README's story everywhere
 - [ ] document the 0/1/2 exit-code contract and a copy-paste CI snippet in the README
 - [ ] state the missing-pieces story: no opys edit by design (hand edits + sync), comparison to alternatives, eject/durability note
-- [ ] pre-announcement sanitization pass ([ADR-0057 — One announcement, at the relay milestone](ADR-0057.md)): erase git history to a fresh root commit; sweep the inventory and docs of internal pricing drafts and business notes — the public repo carries the product decisions, not the planning trail
+- [ ] pre-announcement sanitization pass: erase git history to a fresh root commit, and re-read the tree for anything that describes plans rather than the tool
 - [ ] purge remaining TUI references from all docs after [TASK-0065 — Remove the opys-tui crate](TASK-0065.md) lands
 
 ## Progress
 - Filed from the pre-announcement review.
-- Extended per [ADR-0057 — One announcement, at the relay milestone](ADR-0057.md) with the history-erase + sanitization pass and the
-  TUI purge; the sweep now targets the relay-milestone announcement, not the
+- Extended with the history-erase + sanitization pass and the
+  TUI purge; the sweep targets the launch announcement, not the
   original CLI-only launch.

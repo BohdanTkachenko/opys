@@ -11,7 +11,7 @@
 //! string, an unroutable path — because a client that parses one error shape
 //! should never meet a second.
 //!
-//! **No endpoint executes commands or accepts a filesystem path** (ADR-0052).
+//! **No endpoint executes commands or accepts a filesystem path** (ADR-0077).
 //! Corpora are addressed by their opaque `cid`, and the set of them comes from
 //! the allowlist file the user owns — the route surface here is exhaustive. The
 //! one endpoint that writes takes a closed enum of the six mutating commands and

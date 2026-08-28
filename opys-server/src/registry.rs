@@ -6,7 +6,7 @@
 //!
 //! `add`/`remove` edit this file and nothing else. They never speak to a running
 //! node, which is what keeps filesystem paths out of the API surface entirely
-//! (ADR-0052): the node watches the file instead.
+//! (ADR-0077): the node watches the file instead.
 
 use std::path::{Path, PathBuf};
 

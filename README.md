@@ -510,6 +510,4 @@ same everywhere: `opys new --type/set-status/close/verify ...` for writes,
 ## License
 
 Apache-2.0 — everything here, including the always-on node and its web UI.
-Anything you run on your own machine over your own files is permissive; the
-copyleft boundary begins at the hosted relay that connects nodes across
-machines.
+Permanently, and for every crate in the workspace.

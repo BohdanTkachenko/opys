@@ -13,10 +13,10 @@
 //! is show a user which branch says what and let them go and merge it.
 //!
 //! [`union`] is a pure function over [`CorpusDocs`] pairs: no manager, no
-//! actors, no filesystem, no HTTP. That is deliberate. FEAT-0063's team union
-//! view is the same shape with different columns — branches become nodes,
-//! worktrees become teammates — and it can only reuse this if the merge knows
-//! nothing about where the summaries came from.
+//! actors, no filesystem, no HTTP. That is deliberate: the same merge with
+//! different columns answers a more general question — any set of corpora that
+//! drifted apart, however they were gathered — and it can only be reused that
+//! way if it knows nothing about where the summaries came from.
 //!
 //! A corpus that could not be asked arrives as an `Err`, never as an empty
 //! `Vec`. That distinction is the honesty of the whole table: "this branch has
@@ -80,8 +80,8 @@ pub struct Column {
     /// the merge is handed the failure rather than an empty list, and every
     /// derived claim below ([`Cell::unknown`], [`Row::only_in`],
     /// [`Row::differs`]) is computed as if this column were not there.
-    /// FEAT-0063 inherits the same problem one layer out, where a column is a
-    /// node that may be offline.
+    /// A column that is a remote source rather than a local worktree inherits
+    /// the same problem one layer out, where "did not answer" is routine.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -626,8 +626,8 @@ mod tests {
     }
 
     /// The primary is not always column zero — discovery puts it first today,
-    /// FEAT-0063's columns are nodes and will not. The rule is "the primary
-    /// names the row", not "the first column does".
+    /// and a caller assembling columns some other way need not. The rule is
+    /// "the primary names the row", not "the first column does".
     #[test]
     fn the_primary_names_the_row_wherever_it_sits() {
         let view = merged(vec![

@@ -111,10 +111,9 @@ crates publish to crates.io together, in dependency order. Commands never touch
 the storage medium directly — they load/flush through the injected
 `Box<dyn Backend>` on `Ctx`, so the medium is swappable.
 
-**License (ADR-0076, superseding ADR-0056):** the whole workspace is Apache-2.0,
-node included — everything that runs on the user's own machine is permissive.
-The copyleft boundary starts at the scaling layer (the relay, the hosted plane),
-which lives outside this repo and gets its license decided in its own ADR.
+**License (ADR-0080):** the whole workspace is Apache-2.0 — the CLI, the engine,
+the storage backends, and the node with its embedded web UI. Permanently, and
+for every crate here.
 
 **Exit-code contract (important):** `verify` returns `1` when it finds content
 problems; every other command returns `0` on success. Real failures (bad
@@ -284,7 +283,7 @@ than editing the block by hand.
 
 - `opys web start` runs the node; `add`/`remove`/`list`/`scan` manage the
   **allowlist** at `~/.config/opys/server.toml`. **No endpoint accepts a
-  filesystem path** (ADR-0052/0077): `add` edits the file and never speaks to a
+  filesystem path** (ADR-0077): `add` edits the file and never speaks to a
   running node, which watches the file instead. `scan` only suggests — it is
   handed a `&Registry`, so it *cannot* add anything.
 - Writes over the API are typed actions (`action.rs`) that reproduce the CLI's
@@ -359,8 +358,6 @@ findings are filed as `bug`/`chore` docs linked to their feature.
 
 Product and architecture decisions are `adr` docs (`new --type adr`;
 Context/Decision/Consequences sections, statuses proposed → accepted →
-superseded). The platform roadmap (server, relay, orchestrator, teams) is
-ADR-0050…0057 plus the planned features they reference, chained with
-`blocked_by` in build order — consult the accepted ADRs before working on
-anything server/cloud/teams-shaped, and file a new ADR (or supersede one)
-when a direction changes rather than editing an accepted decision in place.
+superseded). Consult the accepted ADRs before changing anything they settled,
+and file a new ADR (or supersede one) when a direction changes rather than
+editing an accepted decision in place.

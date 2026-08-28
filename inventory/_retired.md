@@ -6,7 +6,7 @@ retired:
   BUG-0028: retire leaves inbound references dangling and the corpus failing verify
   TASK-0045: 'TUI: cut the built-in editor, spawn $EDITOR instead'
   TASK-0065: Remove the opys-tui crate
-  TASK-0067: 'opys-server: scaffold the AGPL crate'
+  TASK-0067: 'opys-server: scaffold the server crate'
   TASK-0068: 'engine: extract print-free cores for block/unblock'
   TASK-0069: 'opys-server: project discovery and the corpus registry'
   TASK-0070: 'opys-server: corpus actor with warm store and watcher'

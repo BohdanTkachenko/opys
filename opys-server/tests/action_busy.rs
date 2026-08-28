@@ -94,7 +94,7 @@ async fn post_action(state: &AppState, cid: &str, body: Value) -> (StatusCode, V
 /// trips the watcher and the actor's reload takes the same flock. And the
 /// engine's own message names the inventory directory and the lock file under
 /// `$XDG_RUNTIME_DIR`, which is precisely what this endpoint promises never to
-/// hand out (ADR-0052): every other payload's paths are relative to the project
+/// hand out (ADR-0077): every other payload's paths are relative to the project
 /// root.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_held_inventory_lock_is_a_503_without_paths() {

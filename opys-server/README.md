@@ -36,9 +36,6 @@ default port.
 
 ## License
 
-Apache-2.0, like the rest of the workspace. Everything you run on your own
-machine over your own files is permissive; the copyleft boundary sits at the
-layer that turns local nodes into a fleet or a service — the relay and the
-hosted plane (ADR-0076).
+Apache-2.0, like the rest of the workspace, permanently (ADR-0080).
 
 See the [project README](../README.md) for what opys is and how to use it.

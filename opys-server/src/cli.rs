@@ -7,7 +7,7 @@
 //!
 //! `add` and `remove` edit the allowlist file and nothing else. They never speak
 //! to a running node, which is what keeps filesystem paths out of the HTTP
-//! surface entirely (ADR-0052) — the node watches the file instead. And `scan`
+//! surface entirely (ADR-0077) — the node watches the file instead. And `scan`
 //! cannot add anything: it is handed a `&Registry`, so the type system, not
 //! discipline, is what stops it.
 

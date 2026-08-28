@@ -11,9 +11,7 @@
 //! `ExecStart=<exe> web start …` line the systemd installer writes is valid
 //! whichever of the two binaries wrote it.
 //!
-//! Apache-2.0 like the rest of the workspace: everything that runs on the user's
-//! own machine is permissive, and the copyleft boundary starts at the relay
-//! (ADR-0076).
+//! Apache-2.0 like the rest of the workspace, permanently (ADR-0080).
 
 use clap::{Parser, Subcommand};
 use opys_server::cli::{dispatch, InstallArgs, StartArgs, WebCommand};

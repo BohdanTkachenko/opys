@@ -15,7 +15,7 @@
 //!   a client has. Nothing here accepts a filesystem path, a command line, or
 //!   even a field it does not recognise: `deny_unknown_fields` turns anything
 //!   else into a deserialization failure before this module is reached, and that
-//!   is the no-arbitrary-execution guarantee (ADR-0052), not a nicety.
+//!   is the no-arbitrary-execution guarantee (ADR-0077), not a nicety.
 //! - **The corpus root is a boundary.** The allowlist is the whole security
 //!   boundary (ADR-0077), and `Project::open`'s upward search would walk
 //!   straight through it; [`perform`] refuses to write anywhere but the corpus
@@ -39,7 +39,7 @@ use serde::Deserialize;
 /// Deliberately says nothing about *where*: the engine's own message names the
 /// inventory directory and the lock file under `$XDG_RUNTIME_DIR`, and this is
 /// the one endpoint whose premise is that it never traffics in filesystem paths
-/// (ADR-0052).
+/// (ADR-0077).
 const BUSY: &str = "the inventory is busy — another opys invocation is holding the lock; retry";
 
 /// The result of asking the node to write.
