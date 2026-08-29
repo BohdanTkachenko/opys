@@ -3998,3 +3998,55 @@ fn failed_command_releases_the_lock() {
         .assert()
         .success();
 }
+
+/// `base` names a directory *inside* the project, and nothing else. An escaping
+/// base aims every read and write the tool performs at another directory, which
+/// has no legitimate use — so it is a hard error (exit 2), not a `verify`
+/// finding, and it fires before any command can act on it.
+#[test]
+fn base_may_not_escape_the_project_root() {
+    let dir = project_with(&format!("base = \"../victim\"\n{}", default_cfg()));
+    std::fs::create_dir_all(dir.path().parent().unwrap().join("victim")).ok();
+
+    opys(&dir)
+        .args([
+            "new", "--type", "feature", "--title", "escaped", "--tags", "x",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("must live inside the project"));
+
+    // The same refusal on a read path, so nothing loads the corpus either.
+    opys(&dir)
+        .arg("list")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("must live inside the project"));
+}
+
+/// An absolute `base` escapes just as effectively as `..` — `Path::join` with an
+/// absolute path discards the root entirely — so it is refused the same way.
+#[test]
+fn base_may_not_be_absolute() {
+    let dir = project_with(&format!("base = \"/tmp\"\n{}", default_cfg()));
+    opys(&dir)
+        .arg("list")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("must live inside the project"));
+}
+
+/// The check must not cost the ordinary case: a nested base under the root is
+/// still fine, and `config validate` names the problem when it is not.
+#[test]
+fn a_nested_base_is_fine_and_config_validate_reports_an_escaping_one() {
+    let ok = project_with(&format!("base = \"docs/inventory\"\n{}", default_cfg()));
+    opys(&ok).arg("verify").assert().success();
+
+    let bad = project_with(&format!("base = \"../victim\"\n{}", default_cfg()));
+    opys(&bad)
+        .args(["config", "validate"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("must live inside the project"));
+}
