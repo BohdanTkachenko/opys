@@ -67,6 +67,11 @@ impl Manager {
         }
     }
 
+    /// The allowlist file this manager serves from.
+    pub fn registry_path(&self) -> &std::path::Path {
+        &self.registry_path
+    }
+
     /// The frequent tick. Rescans when the allowlist changed; otherwise just
     /// notices corpora that have gone away.
     pub fn refresh(&mut self) -> Result<()> {

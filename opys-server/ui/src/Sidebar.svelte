@@ -82,8 +82,8 @@
     <div class="notice">
       <p>No projects.</p>
       <p class="why">
-        This node serves an allowlist. Add the projects you want to
-        <code>~/.config/opys/server.toml</code>.
+        This node serves an allowlist. <a href={href('/setup')}>Add a project</a>
+        to get started.
       </p>
     </div>
   {:else}

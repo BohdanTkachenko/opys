@@ -169,4 +169,34 @@ export const api = {
 
   /** The merged view across one project group's corpora (views 5). */
   union: (key, filters) => get(`/api/group/${seg(key)}/union${qs(filters)}`),
+
+  /**
+   * The allowlist as the setup screen needs it: whether the file exists at all
+   * (`configured` — false is what triggers onboarding), the scan mode, the
+   * resolved scan root, `$HOME`, and the current entries.
+   */
+  setup: () => get('/api/setup'),
+
+  /** Write the scan mode and root. Returns the new setup state. */
+  saveSetup: (body) => post('/api/setup', body),
+
+  /**
+   * Projects the scan found that are not allowlisted.
+   *
+   * Paths and names only, deliberately: a count or a verify dot beside an
+   * unaccepted entry would mean opening the project to render it, and opening
+   * it reads wherever its `opys.toml` points `base`. Keeping a person between
+   * "found" and "opened" is the point.
+   */
+  suggestions: () => get('/api/suggestions'),
+
+  /**
+   * Add or remove one entry: `{action: 'add', path}` or
+   * `{action: 'remove', path}`. Returns the new setup state, so a caller never
+   * has to re-read to find out what it now looks like.
+   *
+   * An add is vetted by the node — under `$HOME`, no hidden directories — and a
+   * refusal is a 422 whose message is written to be shown verbatim.
+   */
+  allowlist: (body) => post('/api/allowlist', body),
 };

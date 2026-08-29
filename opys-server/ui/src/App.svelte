@@ -10,6 +10,7 @@
   import Board from './Board.svelte';
   import Doc from './Doc.svelte';
   import Query from './Query.svelte';
+  import Setup from './Setup.svelte';
   import Sidebar from './Sidebar.svelte';
   import Union from './Union.svelte';
   import { corpora } from './lib/corpora.svelte.js';
@@ -74,20 +75,17 @@
       {#key route.key}
         <Union key={route.key} filters={route.query} />
       {/key}
+    {:else if route.view === 'setup'}
+      <Setup />
     {:else if route.view === 'home'}
-      <h1>opys</h1>
       {#if corpora.empty}
-        <div class="notice">
-          <p>This node is not serving any projects.</p>
-          <p class="why">
-            A node serves an explicit allowlist and nothing else — there is no way
-            to add a project over HTTP, by design. Run
-            <code>opys web add &lt;path&gt;</code> in a terminal (or
-            <code>opys web scan</code> to see what is on this machine) and the
-            project appears here without a restart.
-          </p>
-        </div>
+        <!-- A node serving nothing has exactly one thing worth showing, so the
+             setup screen *is* the landing page rather than a link to one. It
+             introduces itself when no allowlist file exists yet, and is the
+             plain management panel once one does. -->
+        <Setup />
       {:else if served.length > 0}
+        <h1>opys</h1>
         <p class="lede">
           {served.length}
           {served.length === 1 ? 'corpus' : 'corpora'} served. Pick one on the left,
@@ -102,6 +100,7 @@
           {/each}
         </ul>
       {:else if corpora.error}
+        <h1>opys</h1>
         <!-- Without this the column below claims a load is in progress that
              will never finish: `empty` requires a successful read, and a failed
              one leaves `served` empty forever. -->
