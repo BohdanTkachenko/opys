@@ -284,7 +284,7 @@ pub fn router(state: AppState) -> Router {
         // `any`, not `get`: that is what enables WebSockets over HTTP/2, where
         // the handshake is a CONNECT rather than a GET.
         .route("/api/events", any(events))
-        // The web UI, compiled into the binary (ADR-0078). The SPA is hash
+        // The web UI, compiled into the binary (ADR-0086). The SPA is hash
         // routed, so `/` is the only document path there ever is and every
         // other view is a fragment the server never sees.
         .route("/", get(ui_index))
@@ -358,6 +358,14 @@ impl ApiError {
     /// Our fault, not the caller's.
     pub fn internal(message: impl Into<String>) -> ApiError {
         ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, message)
+    }
+
+    /// This binary cannot answer that route at all — it was built without the
+    /// `web-ui` feature, so there is no bundle to serve. Deliberately not a 404:
+    /// the route exists and the URL is right, and telling a confused operator
+    /// "not found" would send them looking for a typo instead of at their build.
+    pub fn not_implemented(message: impl Into<String>) -> ApiError {
+        ApiError::new(StatusCode::NOT_IMPLEMENTED, message)
     }
 
     fn new(status: StatusCode, message: impl Into<String>) -> ApiError {
@@ -436,6 +444,15 @@ async fn wrong_method(uri: Uri) -> ApiError {
 async fn ui_index() -> Response {
     match crate::assets::index() {
         Some(asset) => serve(asset),
+        // Two different failures share this arm, and they get different answers.
+        // An empty table is a deliberate `--no-default-features` build and is
+        // the node working as configured; a populated table with no shell is a
+        // broken build product, which is ours to own.
+        None if !crate::assets::embedded() => ApiError::not_implemented(
+            "this opys-server was built without the `web-ui` feature, so it serves no web UI — \
+             its API is unaffected. Rebuild with default features to get the dashboard.",
+        )
+        .into_response(),
         None => ApiError::internal(format!(
             "the embedded web UI has no {}",
             crate::assets::INDEX
@@ -453,6 +470,10 @@ async fn ui_index() -> Response {
 async fn ui_asset(Path(path): Path<String>) -> Response {
     match crate::assets::get(&format!("ui/{path}")) {
         Some(asset) => serve(asset),
+        None if !crate::assets::embedded() => ApiError::not_implemented(
+            "this opys-server was built without the `web-ui` feature, so it serves no web UI",
+        )
+        .into_response(),
         None => ApiError::not_found(format!("no such asset: /ui/{path}")).into_response(),
     }
 }

@@ -1,9 +1,13 @@
-//! The embedded web UI bundle (ADR-0078).
+//! The embedded web UI bundle (ADR-0086).
 //!
-//! `ui/dist` is built by the `ui-build` devShell command, **committed**, and
-//! compiled into the binary by `build.rs`. Nothing here reads the filesystem at
+//! `ui/dist` is built by the `ui-build` devShell command and compiled into the
+//! binary by `build.rs`. It is **not committed** — it reaches crates.io
+//! consumers inside the published tarball. Nothing here reads the filesystem at
 //! runtime: a node serves the exact bundle it was built with, so an upgrade
 //! cannot leave a half-old UI behind and a deployment is one file.
+//!
+//! With the `web-ui` feature off the table is empty and every lookup misses.
+//! That is a supported build, not a broken one — see [`embedded`].
 //!
 //! This module is pure data plus one policy decision (caching); the HTTP shape
 //! lives in [`crate::api`], which owns the routes and the error envelope.
@@ -38,6 +42,15 @@ const REVALIDATE: &str = "no-cache";
 /// A year, immutable: correct only for a content-hashed URL, where new content
 /// means a new URL.
 const FOREVER: &str = "public, max-age=31536000, immutable";
+
+/// Whether this binary carries a UI bundle at all.
+///
+/// False exactly when the crate was built without the `web-ui` feature. Callers
+/// use it to tell "built deliberately without a UI" from "the bundle is broken",
+/// which are the same `None` from [`index`] but very different answers to give.
+pub fn embedded() -> bool {
+    !generated::ASSETS.is_empty()
+}
 
 /// The SPA shell, if the bundle has one.
 ///
@@ -124,8 +137,14 @@ fn is_fingerprinted(path: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// The two tests below assert a bundle is present, so they only mean
+    /// anything with `web-ui` on. Compiled out rather than made tolerant of an
+    /// empty table: a test that passes whether or not the thing it checks exists
+    /// is worse than no test, because it reports green for the broken case too.
+    #[cfg(feature = "web-ui")]
     #[test]
     fn the_bundle_is_embedded() {
+        assert!(embedded(), "the `web-ui` feature must embed a bundle");
         let index = index().expect("the build embeds ui/dist/index.html");
         assert!(!index.bytes.is_empty());
         assert_eq!(index.content_type, "text/html; charset=utf-8");
@@ -135,6 +154,18 @@ mod tests {
         );
     }
 
+    /// The mirror of the above: with the feature off there must be *nothing*
+    /// embedded. Without this, dropping the feature could silently keep shipping
+    /// a bundle and no test would notice.
+    #[cfg(not(feature = "web-ui"))]
+    #[test]
+    fn no_bundle_is_embedded_without_the_feature() {
+        assert!(!embedded());
+        assert!(index().is_none());
+        assert_eq!(all().count(), 0);
+    }
+
+    #[cfg(feature = "web-ui")]
     #[test]
     fn the_shell_is_revalidated_and_hashed_assets_are_not() {
         assert_eq!(index().unwrap().cache_control, REVALIDATE);

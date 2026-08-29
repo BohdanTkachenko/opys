@@ -9,6 +9,13 @@
 //! Note there is no [`AppState`] fixture with corpora: nothing about serving the
 //! bundle touches the manager, and building a tempdir project to prove that
 //! would test the fixture instead.
+//!
+//! The whole file is gated on `web-ui`: with the feature off there is no bundle,
+//! and every test here would either fail or — worse — pass vacuously by looping
+//! over an empty asset table. The `--no-default-features` build gets its own
+//! coverage from the unit tests in `src/assets.rs` and from
+//! `tests/api.rs`'s check that the UI routes answer 501.
+#![cfg(feature = "web-ui")]
 
 use std::sync::{Arc, Mutex};
 

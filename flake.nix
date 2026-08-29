@@ -18,11 +18,52 @@
       # manifests); read it here so the Nix package never drifts from the crate.
       cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
 
+      # The node's web UI bundle. `opys-server/ui/dist` is NOT committed: it
+      # reaches crates.io consumers inside the published tarball (`include` in
+      # opys-server/Cargo.toml) and every build-from-source produces it here.
+      # So the Nix package is one of the builds that must run npm — which is
+      # fine in a derivation, because the lockfile is pinned and npmDepsHash
+      # makes the dependency fetch a fixed-output derivation rather than
+      # arbitrary network access at build time.
+      #
+      # Bump npmDepsHash whenever package-lock.json changes:
+      #   nix run nixpkgs#prefetch-npm-deps -- opys-server/ui/package-lock.json
+      mkUi = pkgs: pkgs.buildNpmPackage {
+        pname = "opys-ui";
+        version = cargoToml.workspace.package.version;
+
+        # Only what `vite build` reads. dist/ is deliberately absent — this
+        # derivation is what creates it — and node_modules must never enter the
+        # store, or every `npm ci` in a developer checkout would rehash this.
+        src = pkgs.lib.fileset.toSource {
+          root = ./opys-server/ui;
+          fileset = pkgs.lib.fileset.unions [
+            ./opys-server/ui/package.json
+            ./opys-server/ui/package-lock.json
+            ./opys-server/ui/index.html
+            ./opys-server/ui/svelte.config.js
+            ./opys-server/ui/vite.config.js
+            ./opys-server/ui/src
+          ];
+        };
+
+        npmDepsHash = "sha256-bpdX2bMIRP7UedeDVty81/wTBR6824tYaGRMIKIv6rw=";
+
+        # The bundle is the whole output: $out *is* dist/, so the consumer can
+        # `cp -r ${ui} …/ui/dist` without reaching through a subdirectory.
+        installPhase = ''
+          runHook preInstall
+          cp -r dist "$out"
+          runHook postInstall
+        '';
+      };
+
       # Build the opys binary from this checkout. Factored out of the per-system
       # outputs so the exact same derivation backs both `packages.opys` and the
       # `overlays.default` that downstream flakes pull in.
       mkOpys = pkgs:
         let
+          ui = mkUi pkgs;
           # The end-to-end pipe test (`opys list … | opys close -`) shells out
           # to `sh`, which the build sandbox doesn't place on PATH. Provide one
           # (bash in POSIX mode) just for the check phase.
@@ -48,24 +89,30 @@
               ./src
               ./opys
               ./opys-backend-markdown-local
-              # opys-server minus the web UI's node_modules. A developer who has
-              # run `ui-build` has tens of megabytes of npm packages sitting
-              # there, and copying them into the store would rehash this
-              # derivation on every `npm ci`. `maybeMissing`, because a clean
-              # checkout has no such directory and `difference` against a
-              # nonexistent path is an eval error.
-              #
-              # ui/dist stays *in* — it is committed, and build.rs embeds it
-              # (ADR-0078). Do not "tidy" this down to src/ + Cargo.toml: `opys
-              # web` links opys-server, so the sandbox compiles it and needs the
-              # bundle.
-              (pkgs.lib.fileset.difference ./opys-server
-                (pkgs.lib.fileset.maybeMissing ./opys-server/ui/node_modules))
+              # opys-server minus the whole web UI tree, which `mkUi` owns and
+              # postPatch below plants as ui/dist. Excluding it keeps two
+              # unrelated things out of this derivation's hash: a developer's
+              # node_modules (tens of megabytes, rewritten by every `npm ci`)
+              # and the UI sources, whose effect arrives via the `${ui}` store
+              # path instead. Do not "tidy" this down to src/ + Cargo.toml:
+              # `opys web` links opys-server, so the sandbox compiles it —
+              # build.rs and all — and needs the bundle to be there.
+              (pkgs.lib.fileset.difference ./opys-server ./opys-server/ui)
               ./skills
             ];
           };
 
           cargoLock.lockFile = ./Cargo.lock;
+
+          # Plant the separately-built bundle where opys-server/build.rs expects
+          # it. The `web` feature is on by default, so this must happen for the
+          # ordinary build: without it the crate fails to compile rather than
+          # silently producing a node that serves a blank page.
+          postPatch = ''
+            mkdir -p opys-server/ui
+            cp -r ${ui} opys-server/ui/dist
+            chmod -R u+w opys-server/ui/dist
+          '';
 
           # The workspace root package is the `opys-engine` *library*; the `opys`
           # binary lives in the opys/ member. Build (and test) that member so the
@@ -118,11 +165,13 @@
           rustfmt
           rust-analyzer
           gcc
-          # The web UI's build toolchain (ADR-0078). Node lives here and nowhere
-          # else: the crate build never runs it, because `cargo install`,
-          # docs.rs, and the nix sandbox all have to work with no Node and no
-          # network. `ui-build` regenerates opys-server/ui/dist, which is
-          # committed and checked for drift in CI.
+          # The web UI's build toolchain (ADR-0086). The *crate build* still
+          # never runs Node — `cargo install`, docs.rs and the nix sandbox all
+          # have to work with no Node and no network, and they get the bundle
+          # prebuilt (from the crate tarball, or from `mkUi` above). What changed
+          # is that opys-server/ui/dist is no longer committed, so building from
+          # a checkout needs `ui-build` first — or `--no-default-features`, which
+          # drops the `web-ui` feature and needs no Node at all.
           nodejs_22
         ];
 
@@ -141,21 +190,20 @@
           text = ''exec bash ./scripts/sync-versions.sh "$@"'';
         };
 
-        # Rebuild the node's committed web UI bundle, opys-server/ui/dist
-        # (ADR-0078). Run `ui-build` after editing opys-server/ui/src;
-        # `ui-build --check` is the CI drift gate. Wraps scripts/ui-build.sh.
+        # Build the node's web UI bundle, opys-server/ui/dist (ADR-0086). It is
+        # generated, not committed, so this runs after editing opys-server/ui/src
+        # *and* on a fresh checkout before the first cargo build. Wraps
+        # scripts/ui-build.sh.
         #
-        # This is the *only* place Node is invoked. Nothing in the crate build,
-        # and nothing in CI's cargo jobs, may ever run it — see the comment on
+        # This is the only place Node is invoked interactively. The crate build
+        # still never runs it; CI's cargo jobs now call this script first — see
         # devPackages.
         ui-build = pkgs.writeShellApplication {
           name = "ui-build";
-          # No git: the drift gate compares the rebuilt bundle against the one
-          # that was in the tree, which is a question about bytes, not about a
-          # working copy (see the gate's comment in scripts/ui-build.sh).
-          # diffutils answers it. The GNU tools because the script's audit uses
-          # `find -printf` and `grep -r`, which BSD spells differently.
-          runtimeInputs = with pkgs; [ nodejs_22 diffutils gnugrep findutils gawk coreutils ];
+          # No git, and no diffutils since ADR-0086 removed the drift gate. The
+          # GNU tools because the script's audit uses `find -printf` and
+          # `grep -r`, which BSD spells differently.
+          runtimeInputs = with pkgs; [ nodejs_22 gnugrep findutils gawk coreutils ];
           # Find the checkout by walking up from the cwd, rather than running
           # `./scripts/ui-build.sh` (which needs the repo root as the cwd) or the
           # store copy of the script (which resolves the tree from its own
@@ -176,6 +224,11 @@
         };
       in
       {
+        # The web UI bundle on its own. `packages.opys` plants this into
+        # opys-server/ui/dist, but exposing it separately makes the npm half
+        # buildable — and npmDepsHash verifiable — without the Rust half.
+        packages.opys-ui = mkUi pkgs;
+
         # The opys CLI — `nix build`, `nix run`, and downstream `packages` refs.
         packages.default = opys;
         packages.opys = opys;

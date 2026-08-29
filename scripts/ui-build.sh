@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
-# Rebuild the node's embedded web UI bundle (ADR-0078).
+# Build the node's embedded web UI bundle (ADR-0086).
 #
-# opys-server/ui/dist is a *committed* build product: build.rs embeds it with
-# include_bytes!, because `cargo install opys`, docs.rs and the nix sandbox all
-# build with no Node and no network. So the bundle can only be regenerated
-# deliberately — by this script — and CI has to prove the committed bytes still
-# match their sources.
+# opys-server/ui/dist is a generated artifact that is NOT committed. build.rs
+# embeds it with include_bytes!, because `cargo install opys` and docs.rs build
+# with no Node and no network — those consumers get it inside the published
+# crate tarball (`include` in opys-server/Cargo.toml). Everyone building from
+# source runs this script first, which is why CI's cargo jobs now set up Node.
 #
 # Usage:
-#   ui-build            # rebuild opys-server/ui/dist from opys-server/ui/src
-#   ui-build --check    # rebuild and fail if the committed bundle drifted (CI gate)
+#   ui-build    # build opys-server/ui/dist from opys-server/ui/src
 #
-# Node lives in the devShell only (flake.nix's devPackages); nothing in the
-# crate build, and nothing in CI's cargo jobs, ever runs it.
+# Nix builds the same bundle in its own derivation (flake.nix's `mkUi`), and the
+# two are byte-identical — the vite config keeps anything build-time-variable
+# out of the output, so this script, the Nix derivation and CI all agree.
+#
+# There is no --check mode any more: with nothing committed there is no drift to
+# detect. What used to be the gate's job is now done by building the bundle
+# wherever it is needed, and by the audit below, which runs on every build.
 set -euo pipefail
 
 # Resolve the repo root from this script's location so it works from any cwd.
@@ -21,11 +25,8 @@ root=$(cd "$script_dir/.." && pwd)
 ui="$root/opys-server/ui"
 dist="$ui/dist"
 
-check_only=false
-if [[ "${1:-}" == "--check" ]]; then
-  check_only=true
-elif [[ $# -gt 0 ]]; then
-  echo "usage: ui-build [--check]" >&2
+if [[ $# -gt 0 ]]; then
+  echo "usage: ui-build" >&2
   exit 2
 fi
 
@@ -52,22 +53,16 @@ fi
 # Where the bundle that was in the tree before this rebuild is snapshotted.
 previous=$(mktemp -d)
 
-# Whether the EXIT trap puts that snapshot back. True until this run has earned
-# the right to keep what it built, which is:
+# Whether the EXIT trap puts that snapshot back. True until the build and the
+# audit have both succeeded, at which point the new bundle is the point of the
+# run and `restore` is cleared just before exiting.
 #
-#   - plain mode: the build and the audit both succeeded. The new bundle is the
-#     point of the run, so `restore` is cleared just before the successful exit.
-#   - --check: never. A check that edits the thing it is checking is a trap —
-#     the first run reports drift, the rebuild it just did becomes the new state
-#     of the tree, and the *second* run passes without anything having been
-#     fixed. Restoring keeps the verdict reproducible, and keeps `--check` safe
-#     to run on a dirty tree.
-#
-# The failure case is why this is armed in both modes. `dist` is *committed* and
-# `build.rs` embeds it, so a wipe followed by a failed `npm run build` (one typo
-# in a Svelte file) would leave the whole cargo workspace unbuildable — not a
-# UI-local failure but a red `cargo test`, `cargo clippy` and `msrv` for
-# everyone in that checkout. A failed rebuild must cost nothing but the rebuild.
+# `build.rs` embeds `dist`, so a wipe followed by a failed `npm run build` (one
+# typo in a Svelte file) would leave the whole cargo workspace unbuildable — not
+# a UI-local failure but a red `cargo test`, `cargo clippy` and `msrv` for
+# everyone in that checkout. That matters more now that the bundle is not
+# committed: there is no `git checkout` to undo it with. A failed rebuild must
+# cost nothing but the rebuild.
 restore=true
 
 # Runs from the EXIT trap so it covers every way out: a failed `npm run build`,
@@ -105,7 +100,8 @@ if ! npm run build; then
 fi
 
 # ---------------------------------------------------------------------------
-# Zero external requests (ADR-0078). The node must work with the machine
+# Zero external requests (ADR-0086, carried over from ADR-0078 unchanged).
+# The node must work with the machine
 # offline, so nothing in the bundle may reach the network: no CDN script, no
 # webfont, no remote image, no source map pointing at the internet.
 # ---------------------------------------------------------------------------
@@ -162,46 +158,5 @@ bytes=$(find "$dist" -type f -printf '%s\n' | awk '{ total += $1 } END { print t
 files=$(find "$dist" -type f | wc -l)
 echo "web UI bundle: $files files, $bytes bytes"
 
-if ! $check_only; then
-  # Built and audited: this bundle is the point of the run, so keep it.
-  restore=false
-  exit 0
-fi
-
-# ---------------------------------------------------------------------------
-# Drift gate: compare the bundle that was in the tree against the one this
-# rebuild just produced.
-#
-# Content, not `git status`. The invariant is "the bundle in the tree is what
-# its sources compile to", and comparing bytes states exactly that, with no
-# dependency on git at all. Asking git instead would answer a *different*
-# question — "is the working tree clean?" — which happens to coincide only in
-# CI, on a fresh checkout where the working tree is the committed tree. It goes
-# wrong everywhere else, and the failures are the kind that get worked around:
-#
-#   - Nothing is committed yet. The very first `ui-build --check` on a branch
-#     that adds the bundle reports drift no rebuild can fix, because the files
-#     are new. Same for any tree with the bundle staged but not committed.
-#   - `git` need not be git. A colocated jj checkout puts a shim on PATH that
-#     ignores `-C` when resolving the pathspec, so the query silently widens to
-#     the whole repo and every unrelated edit reads as bundle drift.
-#
-# Filenames are content-hashed, so a changed asset shows up as a deletion plus
-# an addition rather than an edit — `diff -r` reports both, which is why this
-# recurses over the trees instead of diffing file by file. `-q` because the
-# payload is minified: which files differ is the useful signal, and dumping a
-# unified diff of an 87 kB single-line bundle is not.
-# ---------------------------------------------------------------------------
-if ! drift=$(diff -rq "$previous" "$dist" 2>&1); then
-  echo >&2
-  # Name the two sides. Unsubstituted, every line reads as a temp directory
-  # against an absolute path and it is not obvious which one is the committed
-  # bundle and which one is what the sources actually compile to.
-  drift=${drift//$previous/[committed]}
-  echo "${drift//$dist/[rebuilt]}" >&2
-  echo >&2
-  echo "the committed web UI bundle does not match its sources." >&2
-  echo "run \`ui-build\` and commit opys-server/ui/dist." >&2
-  exit 1
-fi
-echo "the committed web UI bundle matches its sources"
+# Built and audited: this bundle is the point of the run, so keep it.
+restore=false

@@ -55,13 +55,29 @@ belong in the devShell permanently.
 The CI that gates merges (`.github/workflows/ci.yml`) runs exactly:
 
 ```sh
+ui-build                                    # opys-server/ui/dist is generated, not committed
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings   # warnings are errors
 cargo test --all
 cargo clippy --workspace --all-targets --all-features -- -D warnings   # + history feature
 cargo test --all --all-features
+cargo package --list -p opys-server --allow-dirty       # the bundle is in the tarball
 cargo build --workspace --all-targets       # also built on MSRV 1.88 — don't use newer std APIs
 ```
+
+plus a second job for the no-Node path, which must keep passing on its own:
+
+```sh
+cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+cargo test --all --no-default-features
+```
+
+**`ui-build` comes first, and a fresh checkout will not compile without it**
+(ADR-0086): `opys-server/ui/dist` is gitignored, and `build.rs` embeds it. Two
+ways out — build the bundle, or drop the `web-ui` feature with
+`--no-default-features`, which is the supported path for working on the Rust
+without a Node toolchain. Never make the missing-bundle case degrade silently to
+a UI-less binary; `build.rs` fails on purpose.
 
 The MSRV (`rust-version` in `Cargo.toml`) is set by the dependency tree's floor,
 not just our own code — reproduce the CI floor build locally with **`msrv`** (a
