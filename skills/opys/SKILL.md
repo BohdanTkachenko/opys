@@ -32,7 +32,9 @@ This file covers operation.
    `tags`; all groupings are live queries (`opys list`).
 3. Stable IDs are the contract. Tests, commits, and specs reference
    `FEAT-NNNN` (and `TASK-`/`BUG-`/`CHORE-NNNN` for work items). IDs are never
-   reused or renumbered, even after deletion.
+   reused or renumbered, even after deletion. An id is a *key*, though, not a
+   name — so whenever one appears in prose it is written with its title (see
+   [Naming documents in prose](#naming-documents-in-prose)).
 4. Intent is stored; derived state is generated. Test pass/fail, dates, and
    completion claims never go into feature files.
 5. Writes go through the CLI (prevents parallel-agent collisions, enforces
@@ -174,6 +176,35 @@ Manual verification is *not* reserved for the unautomatable: it may re-check
 behavior that automated tests also cover (a friendlier, end-to-end sanity pass).
 The shape is whatever the type's `structure` (an `mdprism` schema) declares —
 `verify` validates the section against it.
+
+## Naming documents in prose
+
+`ADR-0082` identifies a document. It does not describe one. A reader meeting a
+bare id has to go look it up before your sentence means anything, and an agent
+writing bare ids produces text that is precise and unreadable at the same time.
+
+So: **an id in prose always carries its title.**
+
+    ADR-0082 — The web UI may manage the allowlist within $HOME
+    [ADR-0082 — The web UI may manage the allowlist within $HOME](ADR-0082.md)
+
+The second form is what `opys sync` writes into document bodies; `linkify`
+maintains it, and `reconcile` keeps the titles fresh as they change. Match it in
+prose you write by hand, and use the plain `id — title` form outside markdown
+(commit messages, terminal output, a reply to a person).
+
+This holds everywhere prose is addressed to a reader: document bodies, commit
+messages, pull requests, review comments, and chat. `opys show <id>` gives the
+title in one line — look it up rather than guessing, because a *wrong* title is
+worse than a bare id: it reads as authoritative and sends the reader to the
+wrong document.
+
+Leave an id bare only where a title would be noise or an error:
+
+- inside a command — `opys close TASK-0042`, `opys show BUG-0079 --refs`
+- a filename, a path, or a frontmatter key
+- a table or list that already carries titles in a neighbouring column
+- a code reference (`// FEAT-0001`), where `[file_refs]` matches on the id alone
 
 ## Retrieval discipline
 

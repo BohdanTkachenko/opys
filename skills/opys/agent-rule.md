@@ -18,6 +18,15 @@ exists; otherwise ignore it.
   don't collide: `opys new --type <T>`, `set-status`, `tag`, `retire`, `block`,
   `close`. Body prose, `## Test plan`, and `## Tasks` edits are normal file
   edits. Run `opys verify` before finishing.
+- **Always say what an id is.** `PREFIX-NNNN` is a lookup key, not a name:
+  a reader who sees `ADR-0082` learns nothing at all. Every time you write an id
+  in prose — in a document body, a commit message, or a reply to a person —
+  give its title with it: `ADR-0082 — The web UI may manage the allowlist within
+  $HOME`. Look it up with `opys show <id>` if you do not have it; never guess a
+  title, and never leave a bare id standing in for one. Bare is correct only
+  where the id *is* the payload and a title would be noise: inside a command
+  (`opys close TASK-0042`), a filename, a frontmatter key, or a table that
+  already has a title column.
 - **IDs in code.** When a `PREFIX-NNNN` id is cited in code (comments, tests,
   strings), `opys show <id> --refs` lists those mentions. If two branches
   allocated the same number, `opys renumber` reconciles them — it rewrites
