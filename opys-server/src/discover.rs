@@ -246,10 +246,12 @@ pub fn group(roots: &[PathBuf]) -> Vec<ProjectGroup> {
     for (common, members) in buckets {
         let key = id_for(&common);
         // Ask any member for the repo's worktrees; they all share one repo.
-        let worktrees = members
-            .first()
-            .map(|m| worktree_list(m))
-            .unwrap_or_default();
+        let listed = members.first().map(|m| worktree_list(m));
+        // "no git" is not "no repository". Remember which one this was, so a
+        // node running without git on its PATH reports that instead of
+        // presenting every worktree-bearing project as a lone directory.
+        let git_unavailable = matches!(listed, Some(Err(GitFail::Unavailable)));
+        let worktrees = listed.and_then(std::result::Result::ok).unwrap_or_default();
         let mut seen: HashSet<PathBuf> = HashSet::new();
         let mut corpora: Vec<Corpus> = Vec::new();
 
@@ -290,6 +292,18 @@ pub fn group(roots: &[PathBuf]) -> Vec<ProjectGroup> {
 
         if corpora.is_empty() {
             continue;
+        }
+        if git_unavailable {
+            // Attach it to every corpus that has no worse problem already: the
+            // dashboard shows the reason rather than a silently narrowed view.
+            for c in &mut corpora {
+                c.error.get_or_insert_with(|| {
+                    "git is not available to this process, so worktrees could not be \
+                     discovered — only the allowlisted directory is served. A systemd \
+                     unit inherits the user manager's PATH, which usually has no git."
+                        .to_string()
+                });
+            }
         }
         let name = corpora
             .iter()
@@ -333,21 +347,37 @@ pub fn parse_worktree_list(out: &str) -> Vec<Worktree> {
 /// Run a git command in `dir`, returning stdout on success. Any failure — git
 /// missing, not a repo, a non-zero exit — is `None`: discovery degrades, it
 /// never fails because of git.
-fn git(dir: &Path, args: &[&str]) -> Option<String> {
+/// Why a git call produced nothing.
+///
+/// The distinction is the whole point: "git said no" and "there is no git" look
+/// identical at the call site and mean opposite things. A node whose `PATH` has
+/// no `git` — the shape a systemd user unit lands in by default — would
+/// otherwise read every repository as a plain directory and quietly serve one
+/// corpus where the project has several worktrees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitFail {
+    /// The `git` binary could not be run at all: not on `PATH`, or not
+    /// executable. Every git-derived fact is *unknown*, not false.
+    Unavailable,
+    /// git ran and answered no — not a repository, or the subcommand failed.
+    Failed,
+}
+
+fn git(dir: &Path, args: &[&str]) -> std::result::Result<String, GitFail> {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
         .args(args)
         .output()
-        .ok()?;
+        .map_err(|_| GitFail::Unavailable)?;
     if !out.status.success() {
-        return None;
+        return Err(GitFail::Failed);
     }
-    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 fn git_common_dir(root: &Path) -> Option<PathBuf> {
-    let raw = git(root, &["rev-parse", "--git-common-dir"])?;
+    let raw = git(root, &["rev-parse", "--git-common-dir"]).ok()?;
     let path = PathBuf::from(&raw);
     // `--git-common-dir` answers relatively (".git") from inside a worktree.
     let abs = if path.is_absolute() {
@@ -359,15 +389,13 @@ fn git_common_dir(root: &Path) -> Option<PathBuf> {
 }
 
 fn git_toplevel(root: &Path) -> Option<PathBuf> {
-    let raw = git(root, &["rev-parse", "--show-toplevel"])?;
+    let raw = git(root, &["rev-parse", "--show-toplevel"]).ok()?;
     let path = PathBuf::from(raw);
     Some(std::fs::canonicalize(&path).unwrap_or(path))
 }
 
-fn worktree_list(root: &Path) -> Vec<Worktree> {
-    let mut list = git(root, &["worktree", "list", "--porcelain"])
-        .map(|out| parse_worktree_list(&out))
-        .unwrap_or_default();
+fn worktree_list(root: &Path) -> std::result::Result<Vec<Worktree>, GitFail> {
+    let mut list = parse_worktree_list(&git(root, &["worktree", "list", "--porcelain"])?);
     // Branches git already reports as checked out somewhere are not candidates
     // for labelling a *different*, detached worktree.
     let claimed: HashSet<String> = list.iter().filter_map(|w| w.branch.clone()).collect();
@@ -376,7 +404,7 @@ fn worktree_list(root: &Path) -> Vec<Worktree> {
             wt.branch = branch_pointing_at_head(&wt.path, &claimed);
         }
     }
-    list
+    Ok(list)
 }
 
 /// The branch whose tip is the current commit, for a worktree git calls
@@ -400,7 +428,8 @@ fn branch_pointing_at_head(path: &Path, claimed: &HashSet<String>) -> Option<Str
             "--format=%(refname:short)",
             "refs/heads/",
         ],
-    )?;
+    )
+    .ok()?;
     // Several branches can share a commit; git's own order (alphabetical) is the
     // tiebreak once the ones checked out elsewhere are excluded.
     out.lines()
