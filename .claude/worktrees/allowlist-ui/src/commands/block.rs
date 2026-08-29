@@ -1,0 +1,191 @@
+//! `opys block` / `opys unblock` — record a directional blocker relationship
+//! between two documents of any type, through the corpus store.
+//!
+//! Marking `<id>` blocked by `<by>` writes `<by>` into `<id>`'s `blocked_by` map
+//! and `<id>` into `<by>`'s `blocks` map (the bidirectional link). When the
+//! blocked document's type has a `blocked` status, it is auto-set — the blocker
+//! link itself serves as the `blocked_reason`.
+
+use crate::commands::{expand_ids, for_each_id, maybe_sync, touch};
+use crate::error::{usage, OpysError, Result};
+use crate::frontmatter::Frontmatter;
+use crate::project::Project;
+use crate::refs;
+use crate::store::Store;
+use crate::Ctx;
+
+/// Mark `id` as blocked by `by`, linking both directions. Does not flush/print/
+/// sync — the shared core for the CLI wrapper and the TUI.
+pub fn block_core(prj: &Project, store: &mut Store, id: &str, by: &str) -> Result<()> {
+    if id == by {
+        return Err(usage("an item cannot block itself"));
+    }
+    let id_title = store
+        .title_of(id)?
+        .ok_or_else(|| OpysError::NotFound { id: id.to_string() })?;
+    let by_title = store
+        .title_of(by)?
+        .ok_or_else(|| OpysError::NotFound { id: by.to_string() })?;
+
+    let id_blockable = has_status(prj, id, "blocked");
+    edit_doc(prj, store, id, true, |fm| {
+        let mut changed = refs::add_to_map(fm, refs::BLOCKED_BY, by, &by_title);
+        // Auto-set `blocked`, remembering the status we came from so `unblock` can
+        // restore it (rather than guessing `in-progress`). Only on the first
+        // transition into `blocked`, so a second blocker doesn't clobber it.
+        if id_blockable && fm.status() != Some("blocked") {
+            if let Some(prev) = fm.status().map(str::to_string) {
+                fm.set_str("blocked_from", prev);
+            }
+            fm.set_str("status", "blocked");
+            changed = true;
+        }
+        if changed {
+            touch(fm);
+        }
+        changed
+    })?;
+    // The reverse `blocks` link on the blocker is derived bookkeeping (the same
+    // link reconcile maintains), so it does not bump the blocker's `updated`.
+    edit_doc(prj, store, by, false, |fm| {
+        refs::add_to_map(fm, refs::BLOCKS, id, &id_title)
+    })?;
+    Ok(())
+}
+
+/// Mark one or more documents as blocked by `by`, linking both directions.
+pub fn block(ctx: &Ctx, ids: &str, by: &str) -> Result<()> {
+    let prj = ctx.open()?;
+    let ids = expand_ids(ids)?;
+    let (mut store, _) = ctx.load(&prj)?;
+    let res = for_each_id(&ids, |id| {
+        block_core(&prj, &mut store, id, by)?;
+        println!("{id} blocked by {by}");
+        Ok(())
+    });
+    ctx.flush(&prj, store)?;
+    maybe_sync(ctx, &prj);
+    res
+}
+
+/// Remove the blocker link from both sides. When the blocked document's type has
+/// a `blocked` status, is left at `blocked` with no remaining blockers and no
+/// free-text `blocked_reason`, its status is restored to the value it held before
+/// it was auto-blocked (`blocked_from`), falling back to the type's default
+/// status. Does not flush/print/sync — the shared core for the CLI and the TUI.
+pub fn unblock_core(prj: &Project, store: &mut Store, id: &str, by: &str) -> Result<()> {
+    if store.dkey_opt(id)?.is_none() {
+        return Err(OpysError::NotFound { id: id.to_string() });
+    }
+    let linked = store.has_relation(id, refs::BLOCKED_BY, by)?
+        || store.has_relation(by, refs::BLOCKS, id)?;
+    if !linked {
+        return Err(usage(format!("no blocker '{by}' recorded on '{id}'")));
+    }
+
+    let id_blockable = has_status(prj, id, "blocked");
+    let default_status = prj
+        .pcfg
+        .type_name_for_id(id)
+        .map(|n| prj.pcfg.types[n].default_status.clone())
+        .unwrap_or_default();
+    edit_doc(prj, store, id, true, |fm| {
+        let mut changed = refs::remove_from_map(fm, refs::BLOCKED_BY, by);
+        // Fully unblocked (no blockers, no free-text reason): leave `blocked` by
+        // restoring the pre-block status, falling back to the type's default.
+        if id_blockable
+            && fm.status() == Some("blocked")
+            && refs::parse_in(fm, refs::BLOCKED_BY).is_empty()
+            && fm.get_str("blocked_reason").is_none()
+        {
+            let restore = restore_status(prj, id, fm, &default_status);
+            fm.set_str("status", restore);
+            changed = true;
+        }
+        // Clear the bookkeeping field once no blocker remains (whether or not the
+        // status was `blocked` — e.g. a manual status change already moved it).
+        if refs::parse_in(fm, refs::BLOCKED_BY).is_empty() && fm.remove("blocked_from").is_some() {
+            changed = true;
+        }
+        if changed {
+            touch(fm);
+        }
+        changed
+    })?;
+    // The blocker may already be gone (a closed doc's struck tombstone); cleaning
+    // the target side is enough, so a missing blocker is not an error.
+    match edit_doc(prj, store, by, false, |fm| {
+        refs::remove_from_map(fm, refs::BLOCKS, id)
+    }) {
+        Ok(()) | Err(OpysError::NotFound { .. }) => {}
+        Err(e) => return Err(e),
+    }
+    Ok(())
+}
+
+/// Remove the blocker link from both sides for one or more documents.
+pub fn unblock(ctx: &Ctx, ids: &str, by: &str) -> Result<()> {
+    let prj = ctx.open()?;
+    let ids = expand_ids(ids)?;
+    let (mut store, _) = ctx.load(&prj)?;
+    let res = for_each_id(&ids, |id| {
+        unblock_core(&prj, &mut store, id, by)?;
+        println!("{id} no longer blocked by {by}");
+        Ok(())
+    });
+    ctx.flush(&prj, store)?;
+    maybe_sync(ctx, &prj);
+    res
+}
+
+/// The status to restore on unblock: the remembered `blocked_from` when it is
+/// still a valid, non-terminal, non-`blocked` status of the type; otherwise the
+/// type's `default_status` (also the fallback for docs blocked before this field
+/// existed, or types without an obvious resting status).
+fn restore_status(prj: &Project, id: &str, fm: &Frontmatter, default: &str) -> String {
+    match fm.get_str("blocked_from") {
+        Some(s) if is_restorable(prj, id, s) => s.to_string(),
+        _ => default.to_string(),
+    }
+}
+
+/// Whether `status` is a valid resting status to restore a doc of `id`'s type to
+/// (declared, not terminal, not `blocked` itself).
+fn is_restorable(prj: &Project, id: &str, status: &str) -> bool {
+    if status == "blocked" {
+        return false;
+    }
+    prj.pcfg
+        .type_name_for_id(id)
+        .map(|n| &prj.pcfg.types[n])
+        .is_some_and(|t| {
+            t.statuses.iter().any(|s| s == status)
+                && !t.terminal_statuses.iter().any(|s| s == status)
+        })
+}
+
+/// Whether the type of `id` declares `status`.
+fn has_status(prj: &Project, id: &str, status: &str) -> bool {
+    prj.pcfg
+        .type_name_for_id(id)
+        .map(|n| prj.pcfg.types[n].statuses.iter().any(|s| s == status))
+        .unwrap_or(false)
+}
+
+/// Apply `f` to the frontmatter of the doc with `id`, writing it back (and,
+/// when `relocate`, updating its canonical path) only if `f` reports a change.
+/// Errors if `id` is not found.
+fn edit_doc<F>(prj: &Project, store: &mut Store, id: &str, relocate: bool, f: F) -> Result<()>
+where
+    F: FnOnce(&mut Frontmatter) -> bool,
+{
+    let dkey = store.dkey_of(id)?;
+    let mut doc = store.doc(dkey)?;
+    if f(&mut doc.frontmatter) {
+        store.put_doc(&prj.pcfg, Some(dkey), &doc)?;
+        if relocate {
+            store.set_canonical_path(&prj.pcfg, dkey)?;
+        }
+    }
+    Ok(())
+}

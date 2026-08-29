@@ -1,0 +1,79 @@
+[workspace]
+members = [
+    "opys-backend-markdown-local",
+    "opys",
+    "opys-server",
+]
+resolver = "2"
+
+# All four crates share one version and publish together, in the order the
+# dependency graph implies: opys-engine, then the backend, then opys-server,
+# then the opys binary that links them all.
+[workspace.package]
+version = "0.12.0"
+
+[package]
+name = "opys-engine"
+version.workspace = true
+edition = "2021"
+# 1.88 is the real floor: while gluesql's core only needs edition 2024 (≥ 1.85),
+# other deps in the tree (time, darling) require 1.88. Verify with `msrv`.
+rust-version = "1.88"
+description = "Core library for opys — a file-based inventory of typed markdown documents with a verify gate and SQL query layer"
+license = "Apache-2.0"
+repository = "https://github.com/BohdanTkachenko/opys"
+readme = "README.md"
+keywords = ["feature-inventory", "traceability", "markdown", "sql", "ci"]
+categories = ["development-tools"]
+# skills/ is shipped: src/templates.rs embeds skills/opys/agent-rule.md.
+exclude = [
+    ".github/",
+    ".claude-plugin/",
+    ".codex-plugin/",
+    "pi-extension/",
+    "package.json",
+    "gemini-extension.json",
+    "opencode.json",
+    # This repo dogfoods opys, so the root package directory contains the
+    # project's own inventory — 50-odd documents of product and business
+    # planning that are no part of the library. Without this line every
+    # `cargo publish` would bake them into the .crate tarball, and a published
+    # version is immutable: yanking hides it from the resolver, it does not
+    # unpublish the bytes. The 0.12.0 tarball predates the inventory and is
+    # clean; keep it that way.
+    "inventory/",
+]
+
+[features]
+default = []
+# In-process git history for `opys history <id>`, via gix. Off by default so the
+# standard build (and the MSRV check) never depends on gix or any git library.
+history = ["dep:gix"]
+
+[lib]
+name = "opys_engine"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_norway = "0.9"
+serde_json = "1"
+toml = "0.8"
+regex = "1"
+walkdir = "2"
+anyhow = "1"
+thiserror = "1"
+time = { version = "0.3", features = ["formatting", "parsing", "local-offset", "macros"] }
+comrak = "0.52"
+gluesql = { version = "0.19.0", default-features = false, features = [
+    "gluesql_memory_storage",
+] }
+futures = "0.3"
+termimad = "0.34"
+gix = { version = "0.84", default-features = false, features = [
+    "sha1",
+], optional = true }
+
+[dev-dependencies]
+tempfile = "3"

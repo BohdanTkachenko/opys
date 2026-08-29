@@ -1,0 +1,247 @@
+# opys.toml — the opys document-inventory config. Lives at the project root;
+# opys finds it by searching upward from the current directory.
+
+base = "inventory"                   # inventory dir ("opys/" is taken by the binary crate)
+pad = 4                              # zero-padding width for the numeric id part
+
+# On-disk layout. Each document's path (under `base`) is this template with
+# {type} → the type's `dir`, {status} → the type's `status_dirs[status]`, and
+# {id} → PREFIX-NNNN. Both segments are empty by default, so documents live flat
+# at the base (e.g. opys/FEAT-0001.md). Empty segments collapse, so the order is
+# free — e.g. "{status}/{type}/{id}.md" groups by status first.
+[layout]
+path = "{type}/{status}/{id}.md"
+
+# How document ids are mentioned in code, for `opys show <id> --refs` and the
+# warning `opys renumber` prints when a renumbered id is still referenced. Each
+# format renders an id with the placeholders {id} (the full PREFIX-NNNN),
+# {prefix}/{prefix_lower}, {num} (unpadded), and {padded} (zero-padded to `pad`);
+# `word = false` matches a substring instead of a whole word. With no formats
+# configured, only the canonical {id} is scanned.
+[file_refs]
+# Where to scan (project-root relative). The server crate is here too: its code
+# and tests name documents in doc comments, and `show --refs` should find them.
+roots = ["src", "opys/tests", "opys-server/src", "opys-server/tests"]
+formats = [
+    { template = "{id}" },               # FEAT-0001
+    { template = "{prefix}{num}" },       # FEAT1
+    { template = "{prefix_lower}_{num}" }, # feat_1
+]
+
+# ---------------------------------- feature ----------------------------------
+# Permanent description of product behavior. A feature removed from the product
+# becomes status "archived" (kept in the inventory), never deleted.
+[types.feature]
+prefix = "FEAT"
+statuses = ["planned", "partial", "implemented", "wontfix", "archived"]
+default_status = "planned"
+terminal_statuses = []               # features are never closed/deleted
+tags_required = true
+status_dirs = { archived = "_archived" }   # archived features move to opys/_archived/
+
+[types.feature.fields.spec]
+type = "string"
+pattern = '^\S.*$'                   # non-empty, single line
+description = "Path to long-form shared spec material"
+
+[types.feature.fields.wontfix_reason]
+type = "string"
+
+[types.feature.fields.archived_reason]
+type = "string"
+
+[[types.feature.sections]]
+heading = "Test plan"
+kind = "checklist"                   # structure: checkbox items
+
+# Each checked item must carry a resolvable test reference. `pattern` parses a
+# `mod::name` backtick span; `must_match` greps the test name under `roots`.
+[[types.feature.sections.checks]]
+pattern = '`(?P<ref>[^`]*::(?P<name>[^`]+))`'
+# The workspace grew a fourth crate; a test plan that cites a real test in it
+# must be able to resolve, or the check would push authors back to prose.
+roots = ["src", "opys/tests", "opys-server/src", "opys-server/tests"]
+must_match = '${name}'               # ${group} = the regex-escaped capture
+scope = "checked"                    # "all" (every line) | "checked" (checked items)
+message = "test reference `${ref}` not found"
+
+# A `structured` section: its content shape is an mdprism schema (the body
+# portion of the DSL — see docs/structure-dsl-spec.md). This reproduces the
+# classic manual-QA shape with Setup / Procedure / Expectations sub-sections;
+# the format is yours to change per type.
+[[types.feature.sections]]
+heading = "Manual verification"
+kind = "structured"
+structure = '''
+### @setup Setup
+  - +@items
+### @procedure Procedure
+  1. +@steps
+### @expect Expectations
+  - +@checks
+'''
+
+# ------------------------------------ adr ------------------------------------
+# Architecture/product Decision Record: one decision, its context, and its
+# consequences. Permanent; a reversed decision becomes "superseded" (with a
+# reference to its successor), never deleted.
+[types.adr]
+prefix = "ADR"
+statuses = ["proposed", "accepted", "superseded"]
+default_status = "proposed"
+terminal_statuses = []               # decisions are history; never closed/deleted
+tags_required = true
+
+[[types.adr.sections]]
+heading = "Context"
+kind = "prose"
+required = true
+
+[[types.adr.sections]]
+heading = "Decision"
+kind = "prose"
+required = true
+
+[[types.adr.sections]]
+heading = "Consequences"
+kind = "prose"
+required = true
+
+# ----------------------------------- task ------------------------------------
+# Ephemeral implementation work. Deleted on `close`.
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "in-progress", "blocked", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]         # "done" reached only via `close`
+tags_required = false
+requires_link = { to = "feature", min = 1 }
+
+[types.task.fields.blocked_reason]
+type = "string"
+
+[[types.task.sections]]
+heading = "Tasks"
+kind = "checklist"
+required = true
+
+[[types.task.sections]]
+heading = "Progress"
+kind = "log"
+required = true
+
+# ------------------------------------ bug ------------------------------------
+# Like task, plus a required Reproduction section.
+[types.bug]
+prefix = "BUG"
+statuses = ["todo", "in-progress", "blocked", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]
+tags_required = false
+requires_link = { to = "feature", min = 1 }
+
+[types.bug.fields.blocked_reason]
+type = "string"
+
+[[types.bug.sections]]
+heading = "Reproduction"
+kind = "prose"
+required = true
+
+[[types.bug.sections]]
+heading = "Tasks"
+kind = "checklist"
+required = true
+
+[[types.bug.sections]]
+heading = "Progress"
+kind = "log"
+required = true
+
+# ----------------------------------- chore -----------------------------------
+# Maintenance/tooling work with no user-facing behavior change.
+[types.chore]
+prefix = "CHORE"
+statuses = ["todo", "in-progress", "blocked", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]
+tags_required = false
+requires_link = { to = "feature", min = 1 }
+
+[types.chore.fields.blocked_reason]
+type = "string"
+
+[[types.chore.sections]]
+heading = "Tasks"
+kind = "checklist"
+required = true
+
+[[types.chore.sections]]
+heading = "Progress"
+kind = "log"
+required = true
+
+# ------------------------------ validation rules -----------------------------
+# Each rule: an optional `when { type?, status? }` + one assertion. Closed set:
+# require_field, field_matches, require_section, require_checked_section,
+# require_link, require_any.
+
+[[rules]]
+when = { type = "feature", status = "wontfix" }
+require_field = "wontfix_reason"
+
+[[rules]]
+when = { type = "feature", status = "archived" }
+require_field = "archived_reason"
+
+[[rules]]
+when = { type = "feature", status = "implemented" }
+require_checked_section = "Test plan"
+
+[[rules]]
+when = { status = "blocked" }
+require_any = [{ field = "blocked_reason" }, { link = "blocked_by" }]
+
+# ---------------------------------- stats ------------------------------------
+# `opys stats` renders these sections (and the TUI stats screen shows the same
+# text). Each stat is a single SQL query over an in-memory relational view of the
+# corpus; its result set is rendered as a markdown table headed by `name`. The
+# tables (all rebuilt on every run, read-only):
+#   docs(id, num, type, status, title, created, updated)
+#   tags(doc_id, tag, key, value)    -- one row per tag; value NULL for a plain tag
+#   sections(doc_id, heading, kind, items, unchecked)   -- countable sections only
+#   fields(doc_id, key, value)       -- one row per declared field (per element for lists)
+# Any SQL GlueSQL supports works (GROUP BY, subqueries, CASE, JOIN, …). Edit freely.
+# Add an optional `template` to render each result row through it (`{column}`
+# placeholders) instead of a table — handy for single-row summaries. Omit it for
+# the default table (these three are naturally tabular, so they use tables).
+
+[[stats]]
+name = "Status by type"
+sql = '''
+SELECT type, status, COUNT(*) AS count,
+       ROUND(100.0 * COUNT(*) /
+             (SELECT COUNT(*) FROM docs d2 WHERE d2.type = d1.type)) AS pct
+FROM docs d1
+GROUP BY type, status
+ORDER BY type, status
+'''
+
+[[stats]]
+name = "Tags by key"
+sql = '''
+SELECT key, value, COUNT(DISTINCT doc_id) AS docs
+FROM tags
+WHERE value IS NOT NULL
+GROUP BY key, value
+ORDER BY key, value
+'''
+
+[[stats]]
+name = "Section coverage"
+sql = '''
+SELECT heading, kind, SUM(items) AS items, SUM(unchecked) AS uncovered
+FROM sections
+GROUP BY heading, kind
+ORDER BY heading
+'''
