@@ -1,0 +1,889 @@
+//! The universal typed-document config (`opys.toml`) — the sole
+//! source of truth for the engine.
+//!
+//! A project declares its own document **types** (each with a prefix, dir,
+//! statuses, fields, and required sections) plus a list of conditional
+//! **validation rules**. `Project::open` loads this; every command reads it, and
+//! `verify` enforces it via [`crate::rules`]. Reuses
+//! `config::FieldSpec`/`FieldType`/`TestRefCheck`.
+
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
+
+use regex::Regex;
+use serde::Deserialize;
+
+use crate::config::{FieldSpec, FieldType};
+use crate::error::{usage, OpysError, Result};
+use crate::refs;
+
+fn default_pad() -> usize {
+    4
+}
+fn default_base() -> String {
+    DEFAULT_BASE.to_string()
+}
+fn default_roots() -> Vec<String> {
+    vec![".".to_string()]
+}
+fn default_min() -> usize {
+    1
+}
+fn default_true() -> bool {
+    true
+}
+fn default_layout_path() -> String {
+    DEFAULT_LAYOUT_PATH.to_string()
+}
+
+/// Placeholder names in a layout template that aren't one of `type`/`status`/`id`.
+fn unknown_placeholders(template: &str) -> Vec<&str> {
+    let known = ["type", "status", "id"];
+    placeholder_names(template)
+        .into_iter()
+        .filter(|name| !known.contains(name))
+        .collect()
+}
+
+/// Every distinct `{name}` placeholder in `template`, in order of first
+/// appearance.
+fn placeholder_names(template: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        rest = &rest[open + 1..];
+        if let Some(close) = rest.find('}') {
+            let name = &rest[..close];
+            if !out.contains(&name) {
+                out.push(name);
+            }
+            rest = &rest[close + 1..];
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+/// Inventory base directory (the documents and `_retired.txt`), relative to the
+/// project root that holds `opys.toml`; the config `base` default.
+pub const DEFAULT_BASE: &str = "opys";
+
+/// Directory (under the inventory base) for a type that declares no explicit
+/// `dir`. Empty by default → documents live flat at the base.
+pub const DEFAULT_DOC_DIR: &str = "";
+
+/// Default file-path template (relative to the base). Both the `{type}` and
+/// `{status}` segments are empty by default, so this collapses to a flat
+/// `PREFIX-NNNN.md` at the base.
+pub const DEFAULT_LAYOUT_PATH: &str = "{type}/{status}/{id}.md";
+
+/// The on-disk layout: a single path template rendered per document. The
+/// `{type}` placeholder resolves to the type's `dir`, `{status}` to the type's
+/// `status_dirs[status]` (both empty by default), and `{id}` to `PREFIX-NNNN`.
+/// Empty segments collapse, so the order of segments is freely configurable.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Layout {
+    #[serde(default = "default_layout_path")]
+    pub path: String,
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Layout {
+            path: default_layout_path(),
+        }
+    }
+}
+
+/// A built-in section behavior a type's section opts into. The validator and
+/// scaffold for each kind are compiled code (closed set, not extensible from
+/// config) — this is the guardrail that keeps the engine opinionated. The
+/// `structured` kind is the configurable one: its content shape is declared by
+/// the section's `structure` (an [`mdprism`] schema; see
+/// `docs/structure-dsl-spec.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SectionKind {
+    Prose,
+    Log,
+    Checklist,
+    Structured,
+}
+
+impl SectionKind {
+    /// Whether "≥1 checked item" is meaningful for this kind.
+    pub fn is_checkable(self) -> bool {
+        matches!(self, SectionKind::Checklist)
+    }
+}
+
+/// Which lines of a section a [`SectionCheck`] validates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckScope {
+    /// Every line in the section; lines not matching `pattern` are skipped.
+    #[default]
+    All,
+    /// Only checked checklist items; a checked item with no `pattern` match is
+    /// itself an error.
+    Checked,
+}
+
+/// A universal, config-driven content check attached to a section. `pattern`
+/// parses a line into named capture groups; `file` (a group name) and/or
+/// `must_match` (a regex built from `${group}` substitutions) then assert the
+/// captured reference points at something real.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SectionCheck {
+    /// Regex parsing one line into named groups. A line that does not match is
+    /// prose (skipped); a match is validated.
+    pub pattern: String,
+    /// Optional capture-group name holding a file path to open (resolved against
+    /// `roots`). Its presence is what makes the check file-scoped vs corpus-wide.
+    #[serde(default)]
+    pub file: Option<String>,
+    /// Directories the `file` path / corpus resolve against (project-root
+    /// relative). Defaults to `["."]`.
+    #[serde(default = "default_roots")]
+    pub roots: Vec<String>,
+    /// Optional regex that must match in the opened file (or, when `file` is
+    /// unset, in the concatenated corpus under `roots`). `${group}` is replaced
+    /// by the regex-escaped capture from `pattern`.
+    #[serde(default)]
+    pub must_match: Option<String>,
+    /// Which lines to validate. Defaults to `all`.
+    #[serde(default)]
+    pub scope: CheckScope,
+    /// Optional custom failure message; `${group}` is replaced by the raw
+    /// capture from `pattern`.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SectionSpec {
+    pub heading: String,
+    pub kind: SectionKind,
+    /// Whether the section must be present (verify enforces it; `new` scaffolds it).
+    #[serde(default)]
+    pub required: bool,
+    /// Universal content checks run over this section at `verify` time.
+    #[serde(default)]
+    pub checks: Vec<SectionCheck>,
+    /// The content shape for a `structured` section: an [`mdprism`] schema (the
+    /// body portion of the DSL). Required for `structured`, rejected otherwise.
+    #[serde(default)]
+    pub structure: Option<String>,
+}
+
+/// `requires_link = { to = "feature", min = 1 }` — a type must reference ≥`min`
+/// docs of type `to`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LinkReq {
+    pub to: String,
+    #[serde(default = "default_min")]
+    pub min: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DocType {
+    pub prefix: String,
+    /// Directory under the inventory base holding this type's files (defaults to
+    /// the type name). The legacy adapter sets `features`/`work-items`.
+    #[serde(default)]
+    pub dir: Option<String>,
+    #[serde(default)]
+    pub statuses: Vec<String>,
+    /// Per-status subdirectory (the `{status}` layout segment). A status absent
+    /// from the map contributes an empty segment. E.g. `archived = "_archived"`.
+    #[serde(default)]
+    pub status_dirs: BTreeMap<String, String>,
+    #[serde(default)]
+    pub default_status: String,
+    #[serde(default)]
+    pub terminal_statuses: Vec<String>,
+    #[serde(default)]
+    pub tags_required: bool,
+    #[serde(default)]
+    pub requires_link: Option<LinkReq>,
+    #[serde(default)]
+    pub fields: BTreeMap<String, FieldSpec>,
+    #[serde(default)]
+    pub sections: Vec<SectionSpec>,
+}
+
+impl DocType {
+    /// The `{type}` layout segment for this type: its `dir`, or the default
+    /// (empty → flat at the base).
+    pub fn resolved_dir(&self) -> &str {
+        self.dir.as_deref().unwrap_or(DEFAULT_DOC_DIR)
+    }
+
+    /// The `{status}` layout segment for the given status (empty if unmapped).
+    pub fn status_dir(&self, status: &str) -> &str {
+        self.status_dirs.get(status).map_or("", String::as_str)
+    }
+}
+
+/// A rule's match guard. Both fields optional: omitting both means "always".
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct When {
+    #[serde(default, rename = "type")]
+    pub doc_type: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Applies only to documents carrying this tag (exact tag or tag key — see
+    /// [`Frontmatter::has_tag`](crate::frontmatter::Frontmatter::has_tag)).
+    #[serde(default)]
+    pub tag: Option<String>,
+}
+
+/// One term of a `require_any` (exactly one of the three is set).
+#[derive(Debug, Clone, Deserialize)]
+pub struct AnyTerm {
+    #[serde(default)]
+    pub field: Option<String>,
+    #[serde(default)]
+    pub link: Option<String>,
+    #[serde(default)]
+    pub section: Option<String>,
+    /// Holds when the document carries this tag (exact tag or tag key).
+    #[serde(default)]
+    pub tag: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FieldMatch {
+    pub field: String,
+    pub pattern: String,
+}
+
+/// A conditional validation rule: a `when` guard plus exactly one assertion
+/// from the closed set below.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Rule {
+    #[serde(default)]
+    pub when: When,
+    #[serde(default)]
+    pub require_field: Option<String>,
+    #[serde(default)]
+    pub require_section: Option<String>,
+    #[serde(default)]
+    pub require_checked_section: Option<String>,
+    #[serde(default)]
+    pub require_link: Option<LinkReq>,
+    #[serde(default)]
+    pub require_any: Option<Vec<AnyTerm>>,
+    #[serde(default)]
+    pub field_matches: Option<FieldMatch>,
+}
+
+impl Rule {
+    /// How many assertions this rule sets (must be exactly one).
+    fn assertion_count(&self) -> usize {
+        [
+            self.require_field.is_some(),
+            self.require_section.is_some(),
+            self.require_checked_section.is_some(),
+            self.require_link.is_some(),
+            self.require_any.is_some(),
+            self.field_matches.is_some(),
+        ]
+        .iter()
+        .filter(|b| **b)
+        .count()
+    }
+}
+
+/// `[file_refs]` — how document ids are mentioned in code, for `opys show <id>
+/// --refs` and the post-`renumber` reference warning. This is about textual
+/// mentions of an id (e.g. `FEAT-0123`) in source files, distinct from the
+/// `references` relation maps *between documents* (see [`crate::refs`]).
+#[derive(Debug, Clone, Deserialize)]
+pub struct FileRefs {
+    /// Directories to scan, project-root relative. Defaults to the whole project
+    /// (`["."]`). The inventory `base`, `.git`, `target`, `node_modules`, and
+    /// hidden directories are always skipped.
+    #[serde(default = "default_roots")]
+    pub roots: Vec<String>,
+    /// The textual forms an id may take in code. When empty, a single canonical
+    /// `{id}` word-boundary format is assumed (see [`FileRefs::effective_formats`]).
+    #[serde(default)]
+    pub formats: Vec<RefFormat>,
+}
+
+impl Default for FileRefs {
+    fn default() -> Self {
+        FileRefs {
+            roots: default_roots(),
+            formats: Vec::new(),
+        }
+    }
+}
+
+impl FileRefs {
+    /// The configured formats, or a single canonical `{id}` word-boundary format
+    /// when none are configured (so the feature works without any config).
+    pub fn effective_formats(&self) -> Vec<RefFormat> {
+        if self.formats.is_empty() {
+            vec![RefFormat {
+                template: "{id}".to_string(),
+                word: true,
+            }]
+        } else {
+            self.formats.clone()
+        }
+    }
+}
+
+/// One way a document id may appear in code. `template` is rendered for a given
+/// id with these placeholders: `{id}` (the full `PREFIX-NNNN`), `{prefix}` /
+/// `{prefix_lower}`, `{num}` (the unpadded number), and `{padded}` (zero-padded
+/// to `pad`). With `word` (the default) the match must fall on word boundaries;
+/// set `word = false` to match anywhere (substring).
+#[derive(Debug, Clone, Deserialize)]
+pub struct RefFormat {
+    pub template: String,
+    #[serde(default = "default_true")]
+    pub word: bool,
+}
+
+/// The placeholder names `{id}` / `{prefix}` / `{prefix_lower}` / `{num}` /
+/// `{padded}` that a [`RefFormat`] template may use.
+pub const REF_PLACEHOLDERS: [&str; 5] = ["id", "prefix", "prefix_lower", "num", "padded"];
+
+/// One custom stats section for `opys stats`. `sql` is a single SQL query run
+/// against an in-memory relational view of the corpus (tables `docs`, `tags`,
+/// `sections`, `fields` — see [`crate::commands::stats`]). Without `template`
+/// the result set renders as a markdown table headed by `name`; with `template`,
+/// each result row is rendered through it (`{column}` placeholders, `{{`/`}}` for
+/// literal braces) and the rendered rows are joined under the `name` heading.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StatSpec {
+    pub name: String,
+    pub sql: String,
+    #[serde(default)]
+    pub template: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProjectConfig {
+    /// Inventory base directory, relative to the project root (the dir holding
+    /// `opys.toml`). Defaults to `opys`.
+    #[serde(default = "default_base")]
+    pub base: String,
+    #[serde(default = "default_pad")]
+    pub pad: usize,
+    #[serde(default)]
+    pub layout: Layout,
+    #[serde(default)]
+    pub types: BTreeMap<String, DocType>,
+    #[serde(default)]
+    pub rules: Vec<Rule>,
+    /// Custom stats sections rendered by `opys stats`. Each is a single `sql`
+    /// query over the corpus view, rendered as a markdown table.
+    #[serde(default)]
+    pub stats: Vec<StatSpec>,
+    /// How document ids are mentioned in code, for `show --refs` and the
+    /// post-`renumber` reference warning. See [`FileRefs`].
+    #[serde(default)]
+    pub file_refs: FileRefs,
+}
+
+impl ProjectConfig {
+    /// Load `opys.toml`, or a usage error pointing at `config init` when absent.
+    pub fn load(path: &Path) -> Result<ProjectConfig> {
+        if !path.exists() {
+            return Err(usage(format!(
+                "no opys.toml at {} — run `opys config init`",
+                path.display()
+            )));
+        }
+        let text = std::fs::read_to_string(path)?;
+        toml::from_str(&text).map_err(|source| OpysError::Toml {
+            path: path.to_path_buf(),
+            source,
+        })
+    }
+
+    /// The distinct directories (under the base) that hold documents — the set
+    /// generic discovery scans. Multiple types may share a dir (assigned by id
+    /// prefix at load).
+    pub fn doc_dirs(&self) -> Vec<&str> {
+        let mut dirs: Vec<&str> = self.types.values().map(DocType::resolved_dir).collect();
+        dirs.sort_unstable();
+        dirs.dedup();
+        dirs
+    }
+
+    /// The directory holding the type whose prefix matches `id` (the default dir
+    /// when the prefix matches no type).
+    pub fn dir_for_id(&self, id: &str) -> &str {
+        self.type_name_for_id(id)
+            .and_then(|n| self.types.get(n))
+            .map(DocType::resolved_dir)
+            .unwrap_or(DEFAULT_DOC_DIR)
+    }
+
+    /// The canonical file path for a document, relative to the inventory base:
+    /// the `layout.path` template with `{type}`/`{status}`/`{id}` substituted and
+    /// empty path segments collapsed. The `{type}`/`{status}` segments come from
+    /// the type matching `id`'s prefix (empty for an unknown prefix).
+    pub fn doc_relpath(&self, id: &str, status: &str) -> PathBuf {
+        let t = self.type_name_for_id(id).and_then(|n| self.types.get(n));
+        let type_seg = t.map_or(DEFAULT_DOC_DIR, DocType::resolved_dir);
+        let status_seg = t.map_or("", |t| t.status_dir(status));
+        let rendered = self
+            .layout
+            .path
+            .replace("{type}", type_seg)
+            .replace("{status}", status_seg)
+            .replace("{id}", id);
+        // Collapse empty segments so unset `{type}`/`{status}` don't leave `//`.
+        rendered.split('/').filter(|seg| !seg.is_empty()).collect()
+    }
+
+    /// The name of the type whose prefix matches `id`'s prefix, if any. (A doc's
+    /// type is derived from its ID prefix — the ID is the single source of truth.)
+    pub fn type_name_for_id(&self, id: &str) -> Option<&str> {
+        let prefix = id.split_once('-')?.0;
+        self.types
+            .iter()
+            .find(|(_, t)| t.prefix == prefix)
+            .map(|(name, _)| name.as_str())
+    }
+
+    /// Check the config is well-formed, returning all problems (empty == OK).
+    /// These are content problems (verify-style), not hard errors.
+    pub fn validate(&self) -> Vec<String> {
+        let mut errs = Vec::new();
+        if self.types.is_empty() {
+            errs.push("no document types defined ([types.<name>])".into());
+        }
+
+        // The layout template must place each document at a unique path: it must
+        // contain `{id}` and use only the known placeholders.
+        if !self.layout.path.contains("{id}") {
+            errs.push("layout.path must contain the {id} placeholder".into());
+        }
+        for unknown in unknown_placeholders(&self.layout.path) {
+            errs.push(format!(
+                "layout.path: unknown placeholder '{{{unknown}}}' (use type/status/id)"
+            ));
+        }
+
+        let prefix_re = Regex::new(r"^[A-Z][A-Z0-9]*$").unwrap();
+        let type_names: HashSet<&str> = self.types.keys().map(String::as_str).collect();
+        let mut seen_prefix: BTreeMap<&str, &str> = BTreeMap::new();
+
+        for (name, t) in &self.types {
+            if !prefix_re.is_match(&t.prefix) {
+                errs.push(format!(
+                    "type '{name}': prefix '{}' must match ^[A-Z][A-Z0-9]*$",
+                    t.prefix
+                ));
+            }
+            if let Some(prev) = seen_prefix.insert(&t.prefix, name) {
+                errs.push(format!(
+                    "type '{name}': prefix '{}' already used by type '{prev}'",
+                    t.prefix
+                ));
+            }
+            if t.statuses.is_empty() {
+                errs.push(format!("type '{name}': statuses must be non-empty"));
+            }
+            if t.default_status.is_empty() {
+                errs.push(format!("type '{name}': default_status is required"));
+            } else if !t.statuses.contains(&t.default_status) {
+                errs.push(format!(
+                    "type '{name}': default_status '{}' not in statuses",
+                    t.default_status
+                ));
+            }
+            for s in &t.terminal_statuses {
+                if !t.statuses.contains(s) {
+                    errs.push(format!(
+                        "type '{name}': terminal_status '{s}' not in statuses"
+                    ));
+                }
+            }
+            for s in t.status_dirs.keys() {
+                if !t.statuses.contains(s) {
+                    errs.push(format!(
+                        "type '{name}': status_dirs key '{s}' is not a status"
+                    ));
+                }
+            }
+            if let Some(lr) = &t.requires_link {
+                if !type_names.contains(lr.to.as_str()) {
+                    errs.push(format!(
+                        "type '{name}': requires_link.to '{}' is not a defined type",
+                        lr.to
+                    ));
+                }
+            }
+            for (fname, spec) in &t.fields {
+                if spec.field_type == FieldType::Enum && spec.values.is_empty() {
+                    errs.push(format!(
+                        "type '{name}' field '{fname}': enum declares no values"
+                    ));
+                }
+                if let Some(p) = &spec.pattern {
+                    if Regex::new(p).is_err() {
+                        errs.push(format!(
+                            "type '{name}' field '{fname}': pattern is not a valid regex"
+                        ));
+                    }
+                }
+            }
+            let mut seen_section: HashSet<&str> = HashSet::new();
+            for sec in &t.sections {
+                if !seen_section.insert(sec.heading.as_str()) {
+                    errs.push(format!(
+                        "type '{name}': duplicate section heading '{}'",
+                        sec.heading
+                    ));
+                }
+                for (ci, chk) in sec.checks.iter().enumerate() {
+                    validate_check(name, &sec.heading, sec.kind, ci + 1, chk, &mut errs);
+                }
+                validate_structure(name, sec, &mut errs);
+            }
+        }
+
+        for (i, rule) in self.rules.iter().enumerate() {
+            self.validate_rule(i + 1, rule, &type_names, &mut errs);
+        }
+
+        self.validate_file_refs(&mut errs);
+        self.validate_stats(&mut errs);
+        errs
+    }
+
+    /// Validate `[[stats]]`: each `sql` must run against the corpus schema. We
+    /// execute it over an empty corpus, which surfaces parse errors and unknown
+    /// columns/tables at config time (a valid query just returns no rows).
+    fn validate_stats(&self, errs: &mut Vec<String>) {
+        let empty = serde_json::json!([]);
+        for s in &self.stats {
+            if let Err(e) = crate::commands::stats::render_stat(s, &empty) {
+                errs.push(e);
+            }
+        }
+    }
+
+    /// Validate `[file_refs].formats`: every placeholder must be known, and each
+    /// template must include a number placeholder (`{id}`/`{num}`/`{padded}`) so
+    /// two ids sharing a prefix can't render to the same text.
+    fn validate_file_refs(&self, errs: &mut Vec<String>) {
+        for (i, f) in self.file_refs.formats.iter().enumerate() {
+            for ph in placeholder_names(&f.template) {
+                if !REF_PLACEHOLDERS.contains(&ph) {
+                    errs.push(format!(
+                        "file_refs.formats[{i}]: unknown placeholder '{{{ph}}}' (use {})",
+                        REF_PLACEHOLDERS.join("/")
+                    ));
+                }
+            }
+            let numbered = ["{id}", "{num}", "{padded}"]
+                .iter()
+                .any(|p| f.template.contains(p));
+            if !numbered {
+                errs.push(format!(
+                    "file_refs.formats[{i}]: template '{}' must include a number placeholder ({{id}}, {{num}}, or {{padded}})",
+                    f.template
+                ));
+            }
+        }
+    }
+
+    fn validate_rule(&self, n: usize, r: &Rule, types: &HashSet<&str>, errs: &mut Vec<String>) {
+        let tag = format!("rule #{n}");
+        match r.assertion_count() {
+            1 => {}
+            0 => errs.push(format!("{tag}: has no assertion")),
+            _ => errs.push(format!("{tag}: has more than one assertion")),
+        }
+
+        // `when` guard resolves.
+        if let Some(t) = &r.when.doc_type {
+            if !types.contains(t.as_str()) {
+                errs.push(format!("{tag}: when.type '{t}' is not a defined type"));
+            } else if let Some(s) = &r.when.status {
+                if !self.types[t].statuses.contains(s) {
+                    errs.push(format!(
+                        "{tag}: when.status '{s}' is not a status of type '{t}'"
+                    ));
+                }
+            }
+        }
+
+        // `require_link.to` is a type.
+        if let Some(lr) = &r.require_link {
+            if !types.contains(lr.to.as_str()) {
+                errs.push(format!(
+                    "{tag}: require_link.to '{}' is not a defined type",
+                    lr.to
+                ));
+            }
+        }
+
+        // `require_any` terms: exactly one key each; a `link` is a relation field.
+        if let Some(terms) = &r.require_any {
+            if terms.is_empty() {
+                errs.push(format!("{tag}: require_any is empty"));
+            }
+            for term in terms {
+                let count = [
+                    term.field.is_some(),
+                    term.link.is_some(),
+                    term.section.is_some(),
+                    term.tag.is_some(),
+                ]
+                .iter()
+                .filter(|b| **b)
+                .count();
+                if count != 1 {
+                    errs.push(format!(
+                        "{tag}: each require_any term needs exactly one of field/link/section/tag"
+                    ));
+                }
+                if let Some(l) = &term.link {
+                    if !refs::RELATION_FIELDS.contains(&l.as_str()) {
+                        errs.push(format!(
+                            "{tag}: require_any link '{l}' is not a relation field (references/blocked_by/blocks)"
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Field/section assertions are resolvable against the named type.
+        if let Some(t) = &r.when.doc_type {
+            if let Some(dt) = self.types.get(t) {
+                if let Some(f) = &r.require_field {
+                    if !dt.fields.contains_key(f) {
+                        errs.push(format!(
+                            "{tag}: require_field '{f}' is not a field of type '{t}'"
+                        ));
+                    }
+                }
+                if let Some(sec) = &r.require_section {
+                    if !dt.sections.iter().any(|s| &s.heading == sec) {
+                        errs.push(format!(
+                            "{tag}: require_section '{sec}' is not a section of type '{t}'"
+                        ));
+                    }
+                }
+                if let Some(sec) = &r.require_checked_section {
+                    match dt.sections.iter().find(|s| &s.heading == sec) {
+                        None => errs.push(format!(
+                            "{tag}: require_checked_section '{sec}' is not a section of type '{t}'"
+                        )),
+                        Some(s) if !s.kind.is_checkable() => errs.push(format!(
+                            "{tag}: require_checked_section '{sec}' targets a non-checklist section"
+                        )),
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // A `field_matches.pattern` must always compile.
+        if let Some(fm) = &r.field_matches {
+            if Regex::new(&fm.pattern).is_err() {
+                errs.push(format!("{tag}: field_matches.pattern is not a valid regex"));
+            }
+            if let Some(t) = &r.when.doc_type {
+                if let Some(dt) = self.types.get(t) {
+                    if !dt.fields.contains_key(&fm.field) {
+                        errs.push(format!(
+                            "{tag}: field_matches.field '{}' is not a field of type '{t}'",
+                            fm.field
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Validate a section's `structure`: only a `structured` section may declare it,
+/// and then it is required and must parse as an [`mdprism`] schema.
+fn validate_structure(type_name: &str, sec: &SectionSpec, errs: &mut Vec<String>) {
+    let tag = format!("type '{type_name}' section '{}'", sec.heading);
+    if sec.kind != SectionKind::Structured {
+        if sec.structure.is_some() {
+            errs.push(format!(
+                "{tag}: 'structure' is only allowed on a 'structured' section"
+            ));
+        }
+        return;
+    }
+    match &sec.structure {
+        None => errs.push(format!("{tag}: a 'structured' section needs a 'structure'")),
+        Some(src) => {
+            if let Err(e) = crate::mdprism::parse_schema(src) {
+                errs.push(format!("{tag}: invalid structure ({e})"));
+            }
+        }
+    }
+}
+
+/// Validate one [`SectionCheck`]: its `pattern` compiles, `file` / every
+/// `${group}` reference name real capture groups, at least one of `file` /
+/// `must_match` is set, `must_match` compiles, and `scope = "checked"` only
+/// targets a checklist section.
+fn validate_check(
+    type_name: &str,
+    heading: &str,
+    kind: SectionKind,
+    n: usize,
+    chk: &SectionCheck,
+    errs: &mut Vec<String>,
+) {
+    let tag = format!("type '{type_name}' section '{heading}' check #{n}");
+    let names: HashSet<String> = match Regex::new(&chk.pattern) {
+        Ok(re) => re
+            .capture_names()
+            .flatten()
+            .map(|s| s.to_string())
+            .collect(),
+        Err(_) => {
+            errs.push(format!("{tag}: pattern is not a valid regex"));
+            return;
+        }
+    };
+
+    if let Some(f) = &chk.file {
+        if !names.contains(f) {
+            errs.push(format!(
+                "{tag}: file '{f}' is not a named capture group of pattern"
+            ));
+        }
+    }
+    if chk.file.is_none() && chk.must_match.is_none() {
+        errs.push(format!("{tag}: needs at least one of file / must_match"));
+    }
+
+    let group_re = Regex::new(r"\$\{(\w+)\}").unwrap();
+    for tmpl in [chk.must_match.as_deref(), chk.message.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        for c in group_re.captures_iter(tmpl) {
+            let g = &c[1];
+            if !names.contains(g) {
+                errs.push(format!(
+                    "{tag}: ${{{g}}} is not a named capture group of pattern"
+                ));
+            }
+        }
+    }
+    if let Some(mm) = &chk.must_match {
+        let probe = group_re.replace_all(mm, "x");
+        if Regex::new(&probe).is_err() {
+            errs.push(format!("{tag}: must_match is not a valid regex"));
+        }
+    }
+    if chk.scope == CheckScope::Checked && !kind.is_checkable() {
+        errs.push(format!(
+            "{tag}: scope = \"checked\" requires a checklist section"
+        ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::templates::DEFAULT_OPYS_CONFIG;
+
+    #[test]
+    fn default_config_validates_clean() {
+        let cfg: ProjectConfig = toml::from_str(DEFAULT_OPYS_CONFIG).unwrap();
+        let problems = cfg.validate();
+        assert!(
+            problems.is_empty(),
+            "default config has problems: {problems:?}"
+        );
+        assert_eq!(cfg.types.len(), 4);
+    }
+
+    #[test]
+    fn flags_structured_structure_problems() {
+        // A structured section with no structure, a structured section with an
+        // invalid structure, and a `structure` on a non-structured section are
+        // all rejected.
+        let cfg: ProjectConfig = toml::from_str(
+            r#"
+[types.feature]
+prefix = "FEAT"
+statuses = ["planned"]
+default_status = "planned"
+
+[[types.feature.sections]]
+heading = "Empty"
+kind = "structured"
+
+[[types.feature.sections]]
+heading = "Bad"
+kind = "structured"
+structure = "this is not a marker"
+
+[[types.feature.sections]]
+heading = "Notes"
+kind = "prose"
+structure = "- @x"
+"#,
+        )
+        .unwrap();
+        let joined = cfg.validate().join("\n");
+        assert!(
+            joined.contains("section 'Empty': a 'structured' section needs a 'structure'"),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("section 'Bad': invalid structure"),
+            "{joined}"
+        );
+        assert!(
+            joined
+                .contains("section 'Notes': 'structure' is only allowed on a 'structured' section"),
+            "{joined}"
+        );
+    }
+
+    #[test]
+    fn flags_bad_default_status_and_duplicate_prefix_and_unknown_rule_type() {
+        let cfg: ProjectConfig = toml::from_str(
+            r#"
+[types.feature]
+prefix = "FEAT"
+statuses = ["planned"]
+default_status = "nope"
+
+[types.bug]
+prefix = "FEAT"
+statuses = ["todo"]
+default_status = "todo"
+
+[[rules]]
+when = { type = "ghost" }
+require_field = "x"
+"#,
+        )
+        .unwrap();
+        let problems = cfg.validate();
+        let joined = problems.join("\n");
+        assert!(
+            joined.contains("default_status 'nope' not in statuses"),
+            "{joined}"
+        );
+        assert!(joined.contains("already used by type"), "{joined}");
+        assert!(
+            joined.contains("when.type 'ghost' is not a defined type"),
+            "{joined}"
+        );
+    }
+}

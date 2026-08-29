@@ -1,0 +1,52 @@
+[package]
+name = "opys-server"
+version.workspace = true
+edition = "2021"
+rust-version = "1.88"
+description = "Always-on opys node: watcher, HTTP/WS API, and web UI over local inventories"
+license = "Apache-2.0"
+repository = "https://github.com/BohdanTkachenko/opys"
+readme = "README.md"
+keywords = ["opys", "server", "inventory", "api", "daemon"]
+categories = ["development-tools", "web-programming::http-server"]
+# Published like the rest of the workspace: `opys` depends on this crate for
+# `opys web` (ADR-0077), and a published crate cannot depend on an unpublished
+# one. Release order falls out of the dependency graph.
+
+# A library as well as a binary: ADR-0077 makes `opys web` a subcommand of the
+# CLI, which means the CLI links this crate. The binary stays for `opys-server`
+# on its own and for the systemd unit.
+[lib]
+name = "opys_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "opys-server"
+path = "src/main.rs"
+
+[dependencies]
+opys-engine = { path = "..", version = "0.12.0" }
+opys-backend-markdown-local = { path = "../opys-backend-markdown-local", version = "0.12.0" }
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+notify = "8"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+comrak = "0.52"
+# The allowlist registry is TOML; discovery walks the filesystem. Same versions
+# as the engine uses, so neither widens the dependency tree.
+toml = "0.8"
+walkdir = "2"
+# The allowlist's read-modify-write lock. Same crate (and version) the backend
+# locks an inventory with, so this adds nothing to the dependency tree.
+fs4 = "0.13"
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+# A real WebSocket client for the end-to-end event test. Pinned to the version
+# axum's `ws` feature already resolves, so this adds no crates to the lock.
+tokio-tungstenite = "0.29"
+futures-util = "0.3"
