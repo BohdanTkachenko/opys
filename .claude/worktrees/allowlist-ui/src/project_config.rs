@@ -17,6 +17,31 @@ use crate::config::{FieldSpec, FieldType};
 use crate::error::{usage, OpysError, Result};
 use crate::refs;
 
+/// Why this `base` may not be used, or `None` if it is a fine relative path.
+///
+/// Purely lexical, so it works on a base that does not exist yet and can be
+/// reported by `validate` as well as enforced by
+/// [`ProjectConfig::resolve_base`]. `.` is allowed: an inventory *at* the
+/// project root is inside it.
+fn base_escape(base: &str) -> Option<&'static str> {
+    use std::path::Component;
+    if base.is_empty() {
+        return Some("is empty");
+    }
+    let p = Path::new(base);
+    if p.is_absolute() {
+        return Some("is an absolute path");
+    }
+    for c in p.components() {
+        match c {
+            Component::ParentDir => return Some("climbs out of the project with `..`"),
+            Component::Prefix(_) | Component::RootDir => return Some("is an absolute path"),
+            Component::CurDir | Component::Normal(_) => {}
+        }
+    }
+    None
+}
+
 fn default_pad() -> usize {
     4
 }
@@ -426,6 +451,50 @@ impl ProjectConfig {
             .unwrap_or(DEFAULT_DOC_DIR)
     }
 
+    /// The inventory base as an absolute path under `root`, or an error.
+    ///
+    /// `base` is documented as *relative to the project root*, and an inventory
+    /// that lives outside its own project has no meaning: every path the tool
+    /// writes is `base`-relative, so a `base` that climbs out simply aims the
+    /// whole corpus somewhere else. There is no use for it, and allowing it lets
+    /// a config decide where the tool reads and writes — which matters most for
+    /// a caller that did not author the config, like the node opening a project
+    /// it was handed. So it is refused outright rather than made configurable.
+    ///
+    /// Two checks, because one is not enough. Lexically, `base` must be relative
+    /// and free of `..`; that alone would still be fooled by a symlink, so when
+    /// the directory already exists the resolved path is canonicalized and
+    /// required to sit under the canonicalized root. A base that does not exist
+    /// yet (the `init` path) gets the lexical check only — there is no symlink to
+    /// resolve, and it will be checked the next time it is opened.
+    ///
+    /// Returns `root.join(base)` uncanonicalized, so paths the tool prints are
+    /// spelled the way the user spelled them.
+    pub fn resolve_base(&self, root: &Path) -> Result<PathBuf> {
+        if let Some(problem) = base_escape(&self.base) {
+            return Err(usage(format!(
+                "opys.toml: base {:?} {problem} — the inventory must live inside the project (at or below {})",
+                self.base,
+                root.display()
+            )));
+        }
+        let joined = root.join(&self.base);
+        // Only meaningful once it exists; `canonicalize` fails otherwise.
+        if joined.exists() {
+            let real_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+            let real_base = std::fs::canonicalize(&joined).unwrap_or_else(|_| joined.clone());
+            if !real_base.starts_with(&real_root) {
+                return Err(usage(format!(
+                    "opys.toml: base {:?} resolves to {}, outside the project at {} — the inventory must live inside the project",
+                    self.base,
+                    real_base.display(),
+                    real_root.display()
+                )));
+            }
+        }
+        Ok(joined)
+    }
+
     /// The canonical file path for a document, relative to the inventory base:
     /// the `layout.path` template with `{type}`/`{status}`/`{id}` substituted and
     /// empty path segments collapsed. The `{type}`/`{status}` segments come from
@@ -460,6 +529,15 @@ impl ProjectConfig {
         let mut errs = Vec::new();
         if self.types.is_empty() {
             errs.push("no document types defined ([types.<name>])".into());
+        }
+
+        // The same rule `resolve_base` enforces at open time, reported here so
+        // `config validate` names it before anything tries to use it.
+        if let Some(problem) = base_escape(&self.base) {
+            errs.push(format!(
+                "base {:?} {problem} — the inventory must live inside the project",
+                self.base
+            ));
         }
 
         // The layout template must place each document at a unique path: it must
@@ -885,5 +963,83 @@ require_field = "x"
             joined.contains("when.type 'ghost' is not a defined type"),
             "{joined}"
         );
+    }
+
+    #[test]
+    fn base_must_stay_inside_the_project() {
+        // Fine: a child dir, a nested child, and the root itself.
+        assert!(base_escape("inventory").is_none());
+        assert!(base_escape("docs/inventory").is_none());
+        assert!(base_escape(".").is_none());
+        assert!(base_escape("./inventory").is_none());
+
+        // Refused: climbing out, absolute, or nothing at all.
+        assert!(base_escape("..").is_some());
+        assert!(base_escape("../victim").is_some());
+        assert!(base_escape("inventory/../../victim").is_some());
+        assert!(base_escape("/etc").is_some());
+        assert!(base_escape("").is_some());
+    }
+
+    #[test]
+    fn validate_reports_an_escaping_base() {
+        let cfg: ProjectConfig = toml::from_str(
+            r#"
+base = "../victim"
+
+[types.feature]
+prefix = "FEAT"
+statuses = ["todo"]
+default_status = "todo"
+"#,
+        )
+        .unwrap();
+        let joined = cfg.validate().join("\n");
+        assert!(joined.contains("must live inside the project"), "{joined}");
+    }
+
+    #[test]
+    fn resolve_base_refuses_a_symlink_that_escapes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        let outside = tmp.path().join("victim");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        // Lexically innocent — a single normal component — but it points out.
+        std::os::unix::fs::symlink(&outside, root.join("inventory")).unwrap();
+
+        let cfg: ProjectConfig = toml::from_str(
+            r#"
+base = "inventory"
+
+[types.feature]
+prefix = "FEAT"
+statuses = ["todo"]
+default_status = "todo"
+"#,
+        )
+        .unwrap();
+        assert!(base_escape(&cfg.base).is_none(), "lexically fine");
+        let err = cfg.resolve_base(&root).unwrap_err().to_string();
+        assert!(err.contains("outside the project"), "{err}");
+    }
+
+    #[test]
+    fn resolve_base_allows_a_base_that_does_not_exist_yet() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg: ProjectConfig = toml::from_str(
+            r#"
+base = "inventory"
+
+[types.feature]
+prefix = "FEAT"
+statuses = ["todo"]
+default_status = "todo"
+"#,
+        )
+        .unwrap();
+        // `init` writes the config before the directory exists.
+        let got = cfg.resolve_base(tmp.path()).unwrap();
+        assert_eq!(got, tmp.path().join("inventory"));
     }
 }
