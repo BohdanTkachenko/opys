@@ -59,7 +59,7 @@ impl Project {
             ))
         })?;
         let pcfg = ProjectConfig::load(&root.join("opys.toml"))?;
-        let base = root.join(&pcfg.base);
+        let base = pcfg.resolve_base(&root)?;
         Ok(Project { base, root, pcfg })
     }
 

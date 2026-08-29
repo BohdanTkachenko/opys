@@ -205,12 +205,17 @@ pub fn display_name(path: &Path) -> String {
 
 /// Build a [`Corpus`] for a project root, reading its config for `base`.
 fn corpus(root: &Path, group: String, branch: Option<String>, is_primary: bool) -> Corpus {
-    let (base, error) = match ProjectConfig::load(&root.join("opys.toml")) {
-        Ok(cfg) => (root.join(cfg.base), None),
-        // A config that will not parse leaves the project visible with the
-        // reason attached, rather than silently absent.
-        Err(e) => (root.to_path_buf(), Some(e.to_string())),
-    };
+    // `resolve_base` rather than a bare join: a base that climbs out of its
+    // project is refused here too, and for the node it matters more than for the
+    // CLI — it opens projects it did not author.
+    let (base, error) =
+        match ProjectConfig::load(&root.join("opys.toml")).and_then(|cfg| cfg.resolve_base(root)) {
+            Ok(base) => (base, None),
+            // A config that will not parse (or points outside its project) leaves
+            // the project visible with the reason attached, rather than silently
+            // absent.
+            Err(e) => (root.to_path_buf(), Some(e.to_string())),
+        };
     Corpus {
         cid: id_for(root),
         root: root.to_path_buf(),
