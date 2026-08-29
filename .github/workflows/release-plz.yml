@@ -33,6 +33,23 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # The single most load-bearing step in this file. opys-server/ui/dist is
+      # gitignored (ADR-0086) and reaches crates.io only inside the published
+      # tarball, so publishing without building it first would ship an
+      # opys-server whose build.rs finds no bundle — breaking `cargo install
+      # opys` for everyone, with nothing in this workflow to notice. Keep
+      # node-version aligned with nodejs_22 in flake.nix.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: opys-server/ui/package-lock.json
+      - name: Build the web UI bundle
+        run: scripts/ui-build.sh
+      - name: The bundle is present before publishing
+        run: |
+          test -f opys-server/ui/dist/index.html \
+            || { echo "::error::refusing to publish: opys-server/ui/dist was not built"; exit 1; }
       - name: Run release-plz
         uses: release-plz/action@v0.5
         with:

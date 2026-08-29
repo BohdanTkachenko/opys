@@ -197,6 +197,35 @@ async fn health_reports_ok_and_version() {
     assert!(body["started"].is_string(), "{body}");
 }
 
+/// The `--no-default-features` build's half of the UI-route contract: the API
+/// is untouched, and the two UI routes say *why* they have nothing to serve.
+///
+/// 501 rather than 404 on purpose. A 404 would send an operator looking for a
+/// typo in their URL; the URL is fine, and the answer is that this binary was
+/// built without a UI. `tests/assets.rs` covers the feature-on side.
+#[cfg(not(feature = "web-ui"))]
+#[tokio::test]
+async fn the_ui_routes_explain_a_build_without_the_web_ui_feature() {
+    let fx = Fixture::new();
+
+    let (status, body) = fx.get("/").await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    let message = body["error"].as_str().unwrap_or_default();
+    assert!(message.contains("web-ui"), "{body}");
+
+    let (status, body) = fx.get("/ui/index.js").await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("web-ui"));
+
+    // The point of the feature: everything that is not the UI still works.
+    let (status, body) = fx.get("/api/health").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ok"], true);
+}
+
 #[tokio::test]
 async fn projects_carry_counts_and_surface_a_broken_config() {
     let fx = Fixture::new();

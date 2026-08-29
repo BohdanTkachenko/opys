@@ -10,6 +10,15 @@ git_tag_enable = false
 git_tag_name = "v{{ version }}"
 git_release_name = "v{{ version }}"
 
+# opys-server/ui/dist is gitignored and built by the release job before this runs
+# (ADR-0086). Cargo refuses to package files named by `include` that git does not
+# track — even with an otherwise clean tree — so publishing needs --allow-dirty.
+#
+# This is narrower than it looks: the only untracked thing the tarball can pick
+# up is the bundle, because `include` is an explicit, anchored allowlist. CI
+# asserts that list (`cargo package --list -p opys-server`) on every PR.
+publish_allow_dirty = true
+
 [[package]]
 name = "opys"
 git_release_enable = true

@@ -26,6 +26,11 @@ target
 # local dev loop would notice. Only the toolchain's working files belong here.
 opys-server/ui/node_modules/
 opys-server/ui/.vite/
+# The built bundle is a generated artifact and is not committed (ADR-0086).
+# It reaches crates.io consumers through `include` in opys-server/Cargo.toml,
+# which overrides this ignore when cargo packages the crate; every build from
+# source regenerates it with `ui-build`.
+opys-server/ui/dist/
 
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

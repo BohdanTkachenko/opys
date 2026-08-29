@@ -13,6 +13,37 @@ categories = ["development-tools", "web-programming::http-server"]
 # `opys web` (ADR-0077), and a published crate cannot depend on an unpublished
 # one. Release order falls out of the dependency graph.
 
+# ui/dist is a build product that is NOT committed (ADR-0086). It reaches
+# crates.io consumers *here*: `include` overrides .gitignore when cargo packages
+# the crate, so the release job builds the bundle and `cargo publish` ships it.
+# That is what keeps `cargo install opys` and docs.rs — neither of which can run
+# npm — working from a tree that carries no generated files.
+#
+# Naming `include` at all switches cargo off its default "everything git
+# tracks", so this list is now the whole tarball. Anything the crate reads at
+# build time must appear here; `cargo package --list -p opys-server` is the
+# check, and CI runs it.
+# Every pattern is anchored with a leading `/`. These are gitignore-style, so a
+# bare `README.md` would match at *any* depth and drag in one from every package
+# under ui/node_modules — a developer's untracked npm tree, published to
+# crates.io. `cargo package --list -p opys-server` is what catches that, which is
+# why CI runs it.
+include = [
+    "/src/**",
+    "/build.rs",
+    "/ui/dist/**",
+    "/README.md",
+    "/Cargo.toml",
+]
+
+[features]
+default = ["web-ui"]
+# Embeds the built bundle. On by default, so `cargo install opys`, docs.rs and
+# the Nix package all ship a node with its UI. A contributor who does not want a
+# Node toolchain builds with `--no-default-features`: the node still serves its
+# API, and the UI routes answer a 501 that says exactly why.
+web-ui = []
+
 # A library as well as a binary: ADR-0077 makes `opys web` a subcommand of the
 # CLI, which means the CLI links this crate. The binary stays for `opys-server`
 # on its own and for the systemd unit.

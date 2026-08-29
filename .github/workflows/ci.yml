@@ -18,6 +18,17 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      # opys-server/ui/dist is generated and not committed (ADR-0086), and
+      # build.rs embeds it, so every cargo job that compiles with the default
+      # `web-ui` feature has to build the bundle first. Keep node-version
+      # aligned with nodejs_22 in flake.nix.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: opys-server/ui/package-lock.json
+      - name: Build the web UI bundle
+        run: scripts/ui-build.sh
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
@@ -28,8 +39,43 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test (all features)
         run: cargo test --all --all-features
+      # The bundle is gitignored, so the only thing standing between it and a
+      # published crate without a UI is `include` in opys-server/Cargo.toml.
+      # Assert the built files are actually in the tarball — and that nothing
+      # else is, because these patterns are gitignore-style and an unanchored
+      # one matches at any depth (a bare `README.md` pulls one from every
+      # package under ui/node_modules).
+      - name: Bundle is in the crate tarball
+        run: |
+          list=$(cargo package --list -p opys-server --allow-dirty)
+          echo "$list"
+          echo "$list" | grep -qx 'ui/dist/index.html' \
+            || { echo "::error::ui/dist is missing from the opys-server tarball"; exit 1; }
+          if echo "$list" | grep -q 'node_modules'; then
+            echo "::error::node_modules leaked into the tarball — anchor the include patterns"
+            exit 1
+          fi
       - name: Packaging manifest versions in sync
         run: scripts/sync-versions.sh --check
+
+  # The contributor-without-Node path (ADR-0086). No setup-node and no bundle
+  # build on purpose: if this job ever needs one, the feature has stopped doing
+  # its job. Runs the tests too, not just the build — the UI-less code paths
+  # (the 501 routes, the empty asset table) only exist in this configuration,
+  # so this is the only job that can prove them.
+  no-web-ui:
+    name: Test (--no-default-features, no Node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+      - name: Test
+        run: cargo test --all --no-default-features
 
   msrv:
     name: Build (MSRV 1.88)
@@ -38,23 +84,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88.0
       - uses: Swatinem/rust-cache@v2
-      - name: Build
-        run: cargo build --workspace --all-targets
-
-  # opys-server/ui/dist is a committed build product embedded by build.rs
-  # (ADR-0078), so nothing else would notice it going stale. A job of its own,
-  # not a step in `test`: that job is the long pole and has no Node, and Node
-  # must stay out of every cargo job — the crate build never runs it.
-  # Keep node-version aligned with nodejs_22 in flake.nix.
-  ui:
-    name: Web UI bundle in sync
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: opys-server/ui/package-lock.json
-      - name: Bundle matches its sources
-        run: scripts/ui-build.sh --check
+      - name: Build the web UI bundle
+        run: scripts/ui-build.sh
+      - name: Build
+        run: cargo build --workspace --all-targets
