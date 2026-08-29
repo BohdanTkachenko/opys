@@ -44,6 +44,10 @@ function parse(hash) {
     return { view: 'union', key: parts[1], query };
   }
 
+  if (parts[0] === 'setup' && parts.length === 1) {
+    return { view: 'setup', query };
+  }
+
   return { view: 'unknown', path: pathname, query };
 }
 

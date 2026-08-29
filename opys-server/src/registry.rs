@@ -80,6 +80,43 @@ impl Entry {
     }
 }
 
+/// What the periodic scan does with what it finds (FEAT-0083).
+///
+/// There is deliberately no auto-add. Allowlisting a project is what causes it
+/// to be *opened*, and opening it reads whatever its `opys.toml` points `base`
+/// at — so a mode that allowlisted without a person in the loop would also read
+/// without one. Once suggestions reach the UI, auto-add saves a single click and
+/// costs the explicit-allowlist property ADR-0077 exists to hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScanMode {
+    /// Never walk. For a large `$HOME`, or a user who wants the allowlist to be
+    /// exactly what they wrote.
+    Off,
+    /// Walk, and offer what is found for approval. Nothing is served until
+    /// accepted. The default, and what every config predating this setting gets.
+    #[default]
+    Suggest,
+}
+
+impl ScanMode {
+    fn parse(s: &str) -> Option<ScanMode> {
+        match s {
+            "off" => Some(ScanMode::Off),
+            "suggest" => Some(ScanMode::Suggest),
+            _ => None,
+        }
+    }
+
+    /// The spelling written back to the file.
+    pub fn key(self) -> &'static str {
+        match self {
+            ScanMode::Off => "off",
+            ScanMode::Suggest => "suggest",
+        }
+    }
+}
+
 /// The parsed allowlist, plus the raw table it came from so edits preserve keys
 /// this version does not know about.
 #[derive(Debug, Clone)]
@@ -87,6 +124,12 @@ pub struct Registry {
     /// Where this was loaded from (and where `save` writes).
     pub path: PathBuf,
     pub bind: Option<String>,
+    /// What the scan does with what it finds. Absent in the file means
+    /// [`ScanMode::Suggest`] — today's behaviour, so an existing config keeps it.
+    pub mode: ScanMode,
+    /// Where suggestion scans start. `None` means "no preference": callers fall
+    /// back to their own default rather than assuming `$HOME` here.
+    pub scan_root: Option<PathBuf>,
     pub entries: Vec<Entry>,
     raw: toml::Table,
 }
@@ -126,6 +169,68 @@ pub fn expand_tilde(s: &str) -> PathBuf {
         }
     }
     PathBuf::from(s)
+}
+
+/// Vet a path the *UI* supplied, before it can reach the allowlist (ADR-0082).
+///
+/// This is the whole security boundary for browser-driven allowlisting, so it is
+/// written to be read rather than to be clever. Three rules, in this order:
+///
+/// 1. **Canonicalize first.** Resolving `..` and symlinks before any comparison
+///    is what makes the rest meaningful — a link inside `$HOME` pointing out of
+///    it must fail on where it *lands*, not on how it is spelled.
+/// 2. **Under `$HOME`.** `$HOME` is canonicalized too: on a system where `/home`
+///    is itself a symlink, comparing a resolved path against an unresolved home
+///    rejects everything.
+/// 3. **No dot-components, at any depth.** `~/.ssh` and `~/.config` are out of
+///    reach, and so is `~/projects/.hidden/x`. The predicate is
+///    [`crate::discover::is_skipped`]'s leading-dot half, so the scan and the UI
+///    cannot drift on what "hidden" means.
+///
+/// Serving a path outside `$HOME` stays possible by editing `server.toml`
+/// directly. That is the escape hatch, and deliberately the only one: the file
+/// is reachable by someone with a shell, which is a different threat model from
+/// a request arriving at a socket.
+///
+/// The path must exist — a directory that is not there cannot be canonicalized,
+/// and allowlisting one would only produce an entry that never resolves.
+pub fn vet_ui_path(raw: &str) -> Result<PathBuf> {
+    let refused = |why: &str| usage(format!("refusing {raw:?}: {why}"));
+    if raw.trim().is_empty() {
+        return Err(refused("no path given"));
+    }
+    let expanded = expand_tilde(raw.trim());
+    let path = std::fs::canonicalize(&expanded)
+        .map_err(|e| refused(&format!("cannot resolve {}: {e}", expanded.display())))?;
+    if !path.is_dir() {
+        return Err(refused("not a directory"));
+    }
+
+    let home = home_dir().ok_or_else(|| usage("HOME is not set, so nothing can be vetted"))?;
+    let home = std::fs::canonicalize(&home).unwrap_or(home);
+    if !path.starts_with(&home) {
+        return Err(refused(&format!(
+            "it resolves to {}, outside your home directory ({}). Paths outside \
+             $HOME can only be added by editing the allowlist file",
+            path.display(),
+            home.display()
+        )));
+    }
+
+    // Only the part below `$HOME`: the home directory's own ancestors are not
+    // the user's to be judged on (`/home`, `/Users/...`), and on some systems
+    // one of them legitimately begins with a dot.
+    let rest = path.strip_prefix(&home).unwrap_or(&path);
+    for c in rest.components() {
+        let name = c.as_os_str().to_string_lossy();
+        if name.starts_with('.') {
+            return Err(refused(&format!(
+                "{name:?} is a hidden directory. Hidden paths cannot be added \
+                 from the browser"
+            )));
+        }
+    }
+    Ok(path)
 }
 
 /// An exclusive lock over one allowlist file, held for the whole of a
@@ -240,6 +345,17 @@ fn check_shape(raw: &toml::Table, path: &Path) -> Result<()> {
             }
         }
     }
+    // A `mode` this version cannot read must not fall back to the default:
+    // someone who wrote `mode = "auto-add"` expecting no prompts should be told
+    // it does not exist, not quietly given the mode that prompts.
+    match raw.get("mode") {
+        None => {}
+        Some(v) if v.as_str().is_some_and(|m| ScanMode::parse(m).is_some()) => {}
+        Some(v) => return Err(bad(format!("`mode` is not one of `off` or `suggest`: {v}"))),
+    }
+    if raw.get("scan_root").is_some_and(|v| v.as_str().is_none()) {
+        return Err(bad("`scan_root` is not a string".to_string()));
+    }
     Ok(())
 }
 
@@ -270,6 +386,8 @@ impl Registry {
         let mut reg = Registry {
             path: path.to_path_buf(),
             bind: None,
+            mode: ScanMode::default(),
+            scan_root: None,
             entries: Vec::new(),
             raw,
         };
@@ -285,6 +403,17 @@ impl Registry {
             .get("bind")
             .and_then(toml::Value::as_str)
             .map(str::to_string);
+        self.mode = self
+            .raw
+            .get("mode")
+            .and_then(toml::Value::as_str)
+            .and_then(ScanMode::parse)
+            .unwrap_or_default();
+        self.scan_root = self
+            .raw
+            .get("scan_root")
+            .and_then(toml::Value::as_str)
+            .map(expand_tilde);
         self.entries.clear();
         for kind in [EntryKind::Project, EntryKind::Prefix] {
             let Some(items) = self.raw.get(kind.key()).and_then(toml::Value::as_array) else {
@@ -424,6 +553,34 @@ impl Registry {
     /// watches this file, and `fs::write` leaves a window in which a rescan
     /// reads half an allowlist. A rename within the same directory is atomic, so
     /// a reader sees either the old file or the new one.
+    /// Set the scan mode, writing through `raw` so `save` renders it.
+    pub fn set_mode(&mut self, mode: ScanMode) {
+        self.raw.insert(
+            "mode".to_string(),
+            toml::Value::String(mode.key().to_string()),
+        );
+        self.reparse();
+    }
+
+    /// Set (or clear) where suggestion scans start.
+    ///
+    /// Stored with `~` contracted back, like entry paths: the file stays legible
+    /// and portable between machines whose home directories differ.
+    pub fn set_scan_root(&mut self, root: Option<&Path>) {
+        match root {
+            Some(p) => {
+                self.raw.insert(
+                    "scan_root".to_string(),
+                    toml::Value::String(contract_tilde(p)),
+                );
+            }
+            None => {
+                self.raw.remove("scan_root");
+            }
+        }
+        self.reparse();
+    }
+
     pub fn save(&self) -> Result<()> {
         let text = self.render()?;
         let dir = self.path.parent().unwrap_or_else(|| Path::new("."));

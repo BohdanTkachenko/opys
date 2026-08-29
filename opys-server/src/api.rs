@@ -34,6 +34,7 @@
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -61,6 +62,7 @@ use crate::actor::{
 };
 use crate::discover::Corpus;
 use crate::manager::Manager;
+use crate::registry;
 use crate::union::{contested_numbers, union, CorpusDocs, UnionView};
 
 /// How often the server pings an idle WebSocket client.
@@ -266,6 +268,12 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/projects", get(projects))
+        // Allowlist management from the browser (ADR-0082). Every path these
+        // accept goes through `registry::vet_ui_path` first; none of them can
+        // reach outside `$HOME` or into a hidden directory.
+        .route("/api/setup", get(setup).post(save_setup))
+        .route("/api/suggestions", get(suggestions))
+        .route("/api/allowlist", post(allowlist))
         // axum 0.8 path captures are `{name}`; the 0.7 `:name` form panics.
         .route("/api/group/{key}/union", get(group_union))
         .route("/api/corpus/{cid}/docs", get(docs))
@@ -510,6 +518,235 @@ async fn health(State(state): State<AppState>) -> Json<Health> {
         started: state.started,
         scanned,
     })
+}
+
+/// The allowlist as the setup screen needs it.
+#[derive(Serialize)]
+struct Setup {
+    /// Whether the allowlist file exists at all. False means nobody has ever
+    /// been asked — which is what triggers onboarding. An *empty* file is a
+    /// decision already made, and does not.
+    configured: bool,
+    mode: registry::ScanMode,
+    /// Where suggestion scans start, resolved: the configured root, else
+    /// `~/Projects` when it exists, else `$HOME`.
+    scan_root: String,
+    /// Shown so the user can see the boundary they are working inside.
+    home: String,
+    /// What is allowlisted now, as written in the file.
+    entries: Vec<EntryOut>,
+    /// The file itself, so the UI can name it when it says "edit this by hand".
+    path: String,
+}
+
+#[derive(Serialize)]
+struct EntryOut {
+    path: String,
+    kind: &'static str,
+    /// Present when the entry does not resolve — a project that moved away.
+    error: Option<String>,
+}
+
+/// The root a scan should start from, given the registry.
+///
+/// `~/Projects` when it exists, because a narrower root is a shorter walk and a
+/// shorter list, and most people keep their work in one place. `$HOME`
+/// otherwise. An explicit `scan_root` always wins.
+fn default_scan_root(reg: &registry::Registry) -> PathBuf {
+    if let Some(root) = &reg.scan_root {
+        return root.clone();
+    }
+    let home = registry::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let projects = home.join("Projects");
+    if projects.is_dir() {
+        projects
+    } else {
+        home
+    }
+}
+
+fn read_registry(state: &AppState) -> Result<(PathBuf, registry::Registry), ApiError> {
+    let path = {
+        let manager = lock(&state.manager);
+        manager.registry_path().to_path_buf()
+    };
+    let reg = registry::Registry::load_from(&path)
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok((path, reg))
+}
+
+async fn setup(State(state): State<AppState>) -> Result<Json<Setup>, ApiError> {
+    let (path, reg) = read_registry(&state)?;
+    let home = registry::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    Ok(Json(Setup {
+        configured: path.exists(),
+        mode: reg.mode,
+        scan_root: default_scan_root(&reg).display().to_string(),
+        home: home.display().to_string(),
+        entries: reg
+            .entries
+            .iter()
+            .map(|e| EntryOut {
+                path: e.raw_path.clone(),
+                kind: e.kind.key(),
+                error: e.error.clone(),
+            })
+            .collect(),
+        path: path.display().to_string(),
+    }))
+}
+
+/// What onboarding submits.
+#[derive(Deserialize)]
+struct SetupIn {
+    mode: String,
+    /// Optional: omitted leaves the resolved default in place rather than
+    /// pinning it, so a home directory that later grows a `Projects` is picked
+    /// up.
+    #[serde(default)]
+    scan_root: Option<String>,
+}
+
+async fn save_setup(
+    State(state): State<AppState>,
+    body: Result<Json<SetupIn>, JsonRejection>,
+) -> Result<Json<Setup>, ApiError> {
+    let Json(input) = body?;
+    let mode = match input.mode.as_str() {
+        "off" => registry::ScanMode::Off,
+        "suggest" => registry::ScanMode::Suggest,
+        other => {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("unknown mode {other:?} (expected `off` or `suggest`)"),
+            ))
+        }
+    };
+    // The scan root is a path from the browser like any other, so it is vetted
+    // the same way: a setup screen is not a way around the rules.
+    let root = match input.scan_root.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(raw) => Some(
+            registry::vet_ui_path(raw)
+                .map_err(|e| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?,
+        ),
+        None => None,
+    };
+
+    let (path, _) = read_registry(&state)?;
+    let _lock = registry::lock(&path)
+        .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
+    // Re-read under the lock: another writer may have moved between the check
+    // and the edit.
+    let mut reg = registry::Registry::load_from(&path)
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    reg.set_mode(mode);
+    reg.set_scan_root(root.as_deref());
+    reg.save()
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    drop(_lock);
+    setup(State(state)).await
+}
+
+#[derive(Serialize)]
+struct SuggestionOut {
+    path: String,
+    name: String,
+    already_allowlisted: bool,
+}
+
+/// Projects the scan found that are not allowlisted yet.
+///
+/// **Paths only.** No document count, no verify dot, no title: rendering any of
+/// those means opening the project, and opening it reads whatever its
+/// `opys.toml` points `base` at. Keeping a person between "found" and "opened"
+/// is the entire reason there is no auto-add mode.
+async fn suggestions(State(state): State<AppState>) -> Result<Json<Vec<SuggestionOut>>, ApiError> {
+    let (_, reg) = read_registry(&state)?;
+    if reg.mode == registry::ScanMode::Off {
+        return Ok(Json(Vec::new()));
+    }
+    let root = default_scan_root(&reg);
+    // The walk blocks, so it never runs on the reactor.
+    let found = tokio::task::spawn_blocking(move || {
+        crate::discover::suggest(&root, registry::DEFAULT_DEPTH, &reg)
+    })
+    .await
+    .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(
+        found
+            .into_iter()
+            .filter(|s| !s.already_allowlisted)
+            .map(|s| SuggestionOut {
+                path: s.path.display().to_string(),
+                name: s.name,
+                already_allowlisted: s.already_allowlisted,
+            })
+            .collect(),
+    ))
+}
+
+/// Add or remove one allowlist entry.
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "lowercase")]
+enum AllowlistIn {
+    Add {
+        path: String,
+        /// `project` (default) or `prefix`.
+        #[serde(default)]
+        kind: Option<String>,
+    },
+    Remove {
+        path: String,
+    },
+}
+
+async fn allowlist(
+    State(state): State<AppState>,
+    body: Result<Json<AllowlistIn>, JsonRejection>,
+) -> Result<Json<Setup>, ApiError> {
+    let Json(input) = body?;
+    let unprocessable =
+        |e: OpysError| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, e.to_string());
+
+    let (path, _) = read_registry(&state)?;
+    let _lock = registry::lock(&path)
+        .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
+    let mut reg = registry::Registry::load_from(&path)
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    match input {
+        AllowlistIn::Add { path: raw, kind } => {
+            // Vetted before anything else touches it.
+            let dir = registry::vet_ui_path(&raw).map_err(unprocessable)?;
+            let kind = match kind.as_deref() {
+                None | Some("project") => registry::EntryKind::Project,
+                Some("prefix") => registry::EntryKind::Prefix,
+                Some(other) => {
+                    return Err(ApiError::new(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        format!("unknown kind {other:?} (expected `project` or `prefix`)"),
+                    ))
+                }
+            };
+            reg.add(&dir, kind).map_err(unprocessable)?;
+        }
+        AllowlistIn::Remove { path: raw } => {
+            // Removal takes the path as written, not as vetted: an entry that no
+            // longer resolves, or one added by hand from outside `$HOME`, must
+            // still be removable from the UI that is showing it.
+            let target = registry::expand_tilde(raw.trim());
+            if !reg.remove(&target).map_err(unprocessable)? {
+                return Err(ApiError::new(
+                    StatusCode::NOT_FOUND,
+                    format!("{raw:?} is not in the allowlist"),
+                ));
+            }
+        }
+    }
+    reg.save()
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    drop(_lock);
+    setup(State(state)).await
 }
 
 /// One project (a repository and its worktrees) as the UI presents it.
