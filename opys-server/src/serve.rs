@@ -10,6 +10,7 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -107,7 +108,28 @@ pub async fn run(config: PathBuf, bind: SocketAddr) -> Result<()> {
         events.clone(),
         backend,
     )));
-    rescan_and_report(&manager, &config)?;
+    // Bind *before* the first rescan. Expanding a `[[prefix]]` entry walks the
+    // filesystem, which ADR-0077 bounds but does not make free, and a startup
+    // that scans first leaves the socket refusing connections for the length of
+    // the walk — the exact shape that ADR refused. A malformed allowlist is
+    // still fatal before this point: `bind_address` loaded and parsed the file
+    // to find the port.
+    let listener = tokio::net::TcpListener::bind(bind)
+        .await
+        .map_err(|e| usage(format!("cannot bind {bind}: {e}")))?;
+    eprintln!("opys-server listening on http://{bind}");
+
+    // Reads before the first rescan lands see an empty node, not an error: no
+    // project is a real state (a fresh install looks exactly like this), while a
+    // 500 would be a lie about a node that is working. `/api/health` carries
+    // `scanned` so a client can tell "nothing allowlisted" from "not yet
+    // looked".
+    let scanned = Arc::new(AtomicBool::new(false));
+    tokio::spawn(initial_rescan(
+        Arc::clone(&manager),
+        config.clone(),
+        Arc::clone(&scanned),
+    ));
 
     // Both passes take `&mut Manager` and block — `rescan` joins actor threads —
     // so they live on the blocking pool, never on the reactor.
@@ -124,17 +146,32 @@ pub async fn run(config: PathBuf, bind: SocketAddr) -> Result<()> {
         Manager::rescan,
     ));
 
-    let listener = tokio::net::TcpListener::bind(bind)
-        .await
-        .map_err(|e| usage(format!("cannot bind {bind}: {e}")))?;
-    eprintln!("opys-server listening on http://{bind}");
     // The state is told where it listens so it can refuse requests addressed to
     // some other name — a page the user visits cannot be stopped from calling a
     // loopback URL, only from being answered.
-    let state = AppState::new(manager, events).with_bind(bind);
+    let state = AppState::new(manager, events)
+        .with_bind(bind)
+        .with_scanned(scanned);
     axum::serve(listener, api::router(state))
         .await
         .map_err(OpysError::Io)
+}
+
+/// The first rescan, off the reactor and after the socket is up.
+///
+/// A failure here is logged, not fatal: the node is already serving, and the
+/// periodic rescan will try again. Startup used to propagate this, but that was
+/// only reachable when the rescan ran before `bind`.
+async fn initial_rescan(manager: Arc<Mutex<Manager>>, config: PathBuf, scanned: Arc<AtomicBool>) {
+    let result = tokio::task::spawn_blocking(move || rescan_and_report(&manager, &config)).await;
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => eprintln!("warning: startup rescan failed: {e}"),
+        Err(e) => eprintln!("warning: startup rescan task failed: {e}"),
+    }
+    // Set either way: the question it answers is "has the first pass run", not
+    // "did it succeed". A client that never saw this flip would wait forever.
+    scanned.store(true, Ordering::Release);
 }
 
 /// The startup rescan, plus a line about what came of it.

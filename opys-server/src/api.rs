@@ -34,6 +34,7 @@
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -120,6 +121,10 @@ pub struct AppState {
     /// Where the node listens, when it is known. `None` means "assume the
     /// loopback default", which is the safe way to be wrong.
     bind: Option<SocketAddr>,
+    /// Whether the first rescan has finished. The node binds before it scans
+    /// (BUG-0079), so an empty project list early on means "not yet looked",
+    /// not "nothing allowlisted" — and only this tells the two apart.
+    scanned: Option<Arc<AtomicBool>>,
     ping: PingConfig,
 }
 
@@ -131,6 +136,7 @@ impl AppState {
             events,
             started: now_rfc3339(),
             bind: None,
+            scanned: None,
             ping: PingConfig::default(),
         }
     }
@@ -139,6 +145,15 @@ impl AppState {
     /// `Host` guard applies (see [`AppState::check_local`]).
     pub fn with_bind(mut self, bind: SocketAddr) -> AppState {
         self.bind = Some(bind);
+        self
+    }
+
+    /// Share the flag the startup rescan sets when it finishes.
+    ///
+    /// Absent means "assume scanned": a state built without one (every test that
+    /// wires the manager directly) has no pending first pass to wait for.
+    pub fn with_scanned(mut self, scanned: Arc<AtomicBool>) -> AppState {
+        self.scanned = Some(scanned);
         self
     }
 
@@ -477,14 +492,23 @@ struct Health {
     ok: bool,
     version: &'static str,
     started: String,
+    /// False only in the window between binding the socket and the first
+    /// rescan finishing. An empty `/api/projects` while this is false means the
+    /// node has not looked yet.
+    scanned: bool,
 }
 
 /// Liveness, plus enough to notice a restart.
 async fn health(State(state): State<AppState>) -> Json<Health> {
+    let scanned = state
+        .scanned
+        .as_ref()
+        .is_none_or(|f| f.load(Ordering::Acquire));
     Json(Health {
         ok: true,
         version: env!("CARGO_PKG_VERSION"),
         started: state.started,
+        scanned,
     })
 }
 

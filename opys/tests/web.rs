@@ -609,6 +609,10 @@ fn install_writes_the_unit_and_prints_the_enable_commands() {
 
     let text = std::fs::read_to_string(fx.unit()).unwrap();
     let exe = std::fs::canonicalize(assert_cmd::cargo::cargo_bin("opys")).unwrap();
+    // The unit carries the PATH the install ran under (BUG-0085): a user unit
+    // otherwise inherits the user manager's, which has no `git`, and the node
+    // shells out to git to find a project's worktrees.
+    let path_line = format!("Environment=PATH={}\n", std::env::var("PATH").unwrap());
     assert_eq!(
         text,
         format!(
@@ -619,6 +623,7 @@ fn install_writes_the_unit_and_prints_the_enable_commands() {
              \n\
              [Service]\n\
              Type=simple\n\
+             {path_line}\
              ExecStart={} web start --bind 127.0.0.1:6797\n\
              Restart=on-failure\n\
              RestartSec=2\n\

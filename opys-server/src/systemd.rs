@@ -62,12 +62,29 @@ pub fn is_installed(dir: &Path) -> bool {
 /// service listening on that file's port and serving a different file's
 /// projects.
 ///
+/// `path_env` is baked in as `Environment=PATH=`. A systemd *user* unit
+/// inherits the user manager's environment, which on most systems is a single
+/// entry and has no `git` — and the node shells out to git to find a project's
+/// worktrees. Without this the node starts, serves, and reports every
+/// worktree-bearing project as one lone corpus, with nothing anywhere saying
+/// why. Passing `None` omits the line, for a caller that has no PATH worth
+/// recording.
+///
 /// Pure — no environment, no filesystem — so the shape the user gets is pinned
 /// by a test rather than by a live install.
-pub fn unit_text(exe: &Path, bind: SocketAddr, config: Option<&Path>) -> String {
+pub fn unit_text(
+    exe: &Path,
+    bind: SocketAddr,
+    config: Option<&Path>,
+    path_env: Option<&str>,
+) -> String {
     let config = match config {
         Some(path) => format!(" --config {}", path.display()),
         None => String::new(),
+    };
+    let path_line = match path_env {
+        Some(p) if !p.is_empty() => format!("Environment=PATH={p}\n"),
+        _ => String::new(),
     };
     format!(
         "[Unit]\n\
@@ -77,6 +94,7 @@ pub fn unit_text(exe: &Path, bind: SocketAddr, config: Option<&Path>) -> String 
          \n\
          [Service]\n\
          Type=simple\n\
+         {path_line}\
          ExecStart={} web start --bind {bind}{config}\n\
          Restart=on-failure\n\
          RestartSec=2\n\
@@ -121,7 +139,11 @@ pub fn install(
     // errno leaves the user guessing which of the unit dir, the unit file and
     // the allowlist was at fault.
     std::fs::create_dir_all(dir).map_err(|e| usage(format!("{}: {e}", dir.display())))?;
-    std::fs::write(&path, unit_text(exe, bind, config))
+    // The PATH the user installed from: the one shell where `opys` and `git`
+    // are both known to work. Captured here rather than inside `unit_text` so
+    // that function stays pure and testable.
+    let path_env = std::env::var("PATH").ok();
+    std::fs::write(&path, unit_text(exe, bind, config, path_env.as_deref()))
         .map_err(|e| usage(format!("{}: {e}", path.display())))?;
     Ok(path)
 }
@@ -157,7 +179,7 @@ mod tests {
 
     #[test]
     fn unit_text_is_exactly_the_documented_shape() {
-        let text = unit_text(Path::new("/home/u/.cargo/bin/opys"), bind(), None);
+        let text = unit_text(Path::new("/home/u/.cargo/bin/opys"), bind(), None, None);
         assert_eq!(
             text,
             "[Unit]\n\
@@ -186,6 +208,7 @@ mod tests {
             Path::new("/bin/opys"),
             bind(),
             Some(Path::new("/home/u/alt/server.toml")),
+            None,
         );
         assert!(
             text.contains(
@@ -196,11 +219,44 @@ mod tests {
         );
     }
 
+    /// A systemd user unit inherits the user manager's environment, which is
+    /// typically one entry and has no `git`. The node shells out to git for a
+    /// project's worktrees, so a unit without a usable PATH serves a silently
+    /// narrowed view. The PATH the user installed from is the one shell where
+    /// `opys` and `git` both demonstrably work.
+    #[test]
+    fn a_path_is_baked_into_the_unit_when_given() {
+        let text = unit_text(
+            Path::new("/bin/opys"),
+            bind(),
+            None,
+            Some("/usr/bin:/usr/local/bin"),
+        );
+        assert!(
+            text.contains("Environment=PATH=/usr/bin:/usr/local/bin\n"),
+            "got: {text}"
+        );
+        // It has to precede ExecStart to be in scope for it.
+        let path_at = text.find("Environment=PATH=").unwrap();
+        let exec_at = text.find("ExecStart=").unwrap();
+        assert!(path_at < exec_at, "PATH must come before ExecStart");
+    }
+
+    /// No PATH, no line — an empty `Environment=PATH=` would be worse than the
+    /// inherited default, because it would leave the unit with nothing at all.
+    #[test]
+    fn no_path_line_when_there_is_no_path() {
+        for p in [None, Some("")] {
+            let text = unit_text(Path::new("/bin/opys"), bind(), None, p);
+            assert!(!text.contains("Environment=PATH="), "got: {text}");
+        }
+    }
+
     /// Whichever binary writes the unit, the `ExecStart` it writes is a command
     /// that binary can parse — `opys-server` mounts `web` too for this reason.
     #[test]
     fn exec_start_uses_the_web_start_form() {
-        let text = unit_text(Path::new("/usr/bin/opys-server"), bind(), None);
+        let text = unit_text(Path::new("/usr/bin/opys-server"), bind(), None, None);
         assert!(
             text.contains("ExecStart=/usr/bin/opys-server web start --bind 127.0.0.1:6797\n"),
             "got: {text}"
@@ -215,7 +271,13 @@ mod tests {
         assert_eq!(path, dir.join(UNIT_NAME));
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            unit_text(Path::new("/bin/opys"), bind(), None)
+            // `install` bakes the live PATH; this is the same text it built.
+            unit_text(
+                Path::new("/bin/opys"),
+                bind(),
+                None,
+                std::env::var("PATH").ok().as_deref()
+            )
         );
 
         let err = install(&dir, Path::new("/bin/other"), bind(), None, false).unwrap_err();
