@@ -10,13 +10,33 @@
   // The verify dot comes from `/api/projects`, which already carries each
   // corpus's cached problem count. Asking `/api/corpus/{cid}/verify` per corpus
   // would be one request per project for a number the list just delivered.
+  //
+  // On a narrow screen the shell stacks and this becomes a one-line bar —
+  // wordmark, live dot, a projects toggle — that opens into the list on
+  // demand. A phone that gave a third of every screen to a corpus list would
+  // put the first card of every board below the fold.
 
+  import Icon from './lib/Icon.svelte';
   import { corpora } from './lib/corpora.svelte.js';
   import { events } from './lib/events.svelte.js';
   import { corpusLabel, shortTime } from './lib/format.js';
   import { boardPath, href, unionPath } from './lib/router.svelte.js';
 
   let { activeCid = null, activeKey = null } = $props();
+
+  /** The narrow-screen list, opened by the toggle and closed by navigating. */
+  let open = $state(false);
+
+  $effect(() => {
+    // Reading the props subscribes to them: any navigation folds the list
+    // back into the bar, so a tap on a corpus lands on its board, not on the
+    // list that led there.
+    void activeCid;
+    void activeKey;
+    open = false;
+  });
+
+  const served = $derived(corpora.groups.reduce((n, group) => n + group.corpora.length, 0));
 
   /**
    * How healthy a corpus is, in three states.
@@ -42,11 +62,16 @@
   }
 </script>
 
-<aside class="sidebar">
+<aside class="sidebar" class:open>
   <header>
-    <a class="wordmark" href="#/">opys</a>
+    <a class="wordmark mono" href="#/">
+      <span class="prompt" aria-hidden="true">❯</span><span class="grad-text">opys</span><span
+        class="cursor"
+        aria-hidden="true">▌</span
+      >
+    </a>
     <span
-      class="live"
+      class="live mono"
       class:down={!events.live}
       title={events.live
         ? 'Live: the node is streaming changes to this page.'
@@ -61,86 +86,102 @@
         reconnecting…
       {/if}
     </span>
+    <!-- Narrow screens only (hidden by CSS elsewhere): the list behind it. -->
+    <button
+      class="menu"
+      type="button"
+      aria-expanded={open}
+      aria-controls="projects"
+      title={open ? 'hide the project list' : 'show the project list'}
+      onclick={() => (open = !open)}
+    >
+      <Icon name={open ? 'x' : 'menu'} size={15} />
+      {#if !open && served > 0}
+        <span class="mono">{served}</span>
+      {/if}
+    </button>
   </header>
 
-  {#if corpora.error && corpora.groups.length === 0}
-    <div class="notice bad">
-      <p>{corpora.error.message}</p>
-      <p class="why">
-        {#if corpora.error.offline}
-          The node is not answering. It may have stopped, or this page may have
-          been left open past a restart.
-        {:else}
-          The node answered, but not with the project list.
-        {/if}
-      </p>
-      <p><button class="btn small" onclick={() => corpora.reload()}>Try again</button></p>
-    </div>
-  {:else if !corpora.settled}
-    <p class="muted small pad">Loading projects…</p>
-  {:else if corpora.empty}
-    <div class="notice">
-      <p>No projects.</p>
-      <p class="why">
-        This node serves an allowlist. <a href={href('/setup')}>Add a project</a>
-        to get started.
-      </p>
-    </div>
-  {:else}
-    <nav>
-      {#each corpora.groups as group (group.key)}
-        <section>
-          <h2 title={group.key}>{group.name}</h2>
-          <ul>
-            {#each group.corpora as corpus (corpus.cid)}
-              {@const state = health(corpus)}
-              <li>
-                <a
-                  class="corpus"
-                  class:active={corpus.cid === activeCid}
-                  href={href(boardPath(corpus.cid))}
-                  title={corpus.root}
-                >
-                  <span
-                    class="dot"
-                    class:good={state.kind === 'good'}
-                    class:bad={state.kind === 'bad'}
-                    title={state.label}
-                  ></span>
-                  <span class="name">{corpusLabel(corpus)}</span>
-                  {#if corpus.is_primary}
-                    <!-- The main worktree: the one a branch's changes are
-                         eventually for. Worth marking, because every other
-                         column in a union view is measured against it. -->
-                    <span class="primary" title="the primary worktree">primary</span>
-                  {/if}
-                  {#if corpus.doc_count !== null && corpus.doc_count !== undefined}
-                    <span class="count muted">{corpus.doc_count}</span>
-                  {/if}
-                </a>
-                {#if state.kind === 'bad'}
-                  <p class="problem small">{state.label}</p>
-                {/if}
-              </li>
-            {/each}
-          </ul>
-          {#if group.corpora.length > 1}
-            <!-- Offered only for a group with something to compare. One worktree
-                 makes a valid one-column union — the node builds it happily —
-                 but a link promising a comparison that cannot exist is noise in
-                 the one place that has to stay scannable. -->
-            <a
-              class="union"
-              class:active={group.key === activeKey}
-              href={href(unionPath(group.key))}
-            >
-              compare {group.corpora.length} worktrees
-            </a>
+  <div class="list" id="projects">
+    {#if corpora.error && corpora.groups.length === 0}
+      <div class="notice bad">
+        <p>{corpora.error.message}</p>
+        <p class="why">
+          {#if corpora.error.offline}
+            The node is not answering. It may have stopped, or this page may have
+            been left open past a restart.
+          {:else}
+            The node answered, but not with the project list.
           {/if}
-        </section>
-      {/each}
-    </nav>
-  {/if}
+        </p>
+        <p><button class="btn small" onclick={() => corpora.reload()}>Try again</button></p>
+      </div>
+    {:else if !corpora.settled}
+      <p class="muted small pad">Loading projects…</p>
+    {:else if corpora.empty}
+      <div class="notice">
+        <p>No projects.</p>
+        <p class="why">
+          This node serves an allowlist. <a href={href('/setup')}>Add a project</a>
+          to get started.
+        </p>
+      </div>
+    {:else}
+      <nav>
+        {#each corpora.groups as group (group.key)}
+          <section>
+            <h2 title={group.key}>{group.name}</h2>
+            <ul>
+              {#each group.corpora as corpus (corpus.cid)}
+                {@const state = health(corpus)}
+                <li>
+                  <a
+                    class="corpus"
+                    class:active={corpus.cid === activeCid}
+                    href={href(boardPath(corpus.cid))}
+                    title={corpus.root}
+                  >
+                    <span
+                      class="dot"
+                      class:good={state.kind === 'good'}
+                      class:bad={state.kind === 'bad'}
+                      title={state.label}
+                    ></span>
+                    <span class="name">{corpusLabel(corpus)}</span>
+                    {#if corpus.is_primary}
+                      <!-- The main worktree: the one a branch's changes are
+                           eventually for. Worth marking, because every other
+                           column in a union view is measured against it. -->
+                      <span class="primary" title="the primary worktree">primary</span>
+                    {/if}
+                    {#if corpus.doc_count !== null && corpus.doc_count !== undefined}
+                      <span class="count muted">{corpus.doc_count}</span>
+                    {/if}
+                  </a>
+                  {#if state.kind === 'bad'}
+                    <p class="problem small">{state.label}</p>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+            {#if group.corpora.length > 1}
+              <!-- Offered only for a group with something to compare. One worktree
+                   makes a valid one-column union — the node builds it happily —
+                   but a link promising a comparison that cannot exist is noise in
+                   the one place that has to stay scannable. -->
+              <a
+                class="union"
+                class:active={group.key === activeKey}
+                href={href(unionPath(group.key))}
+              >
+                <Icon name="compare" size={13} /> compare {group.corpora.length} worktrees
+              </a>
+            {/if}
+          </section>
+        {/each}
+      </nav>
+    {/if}
+  </div>
 
   <footer>
     {#if events.version}
@@ -165,27 +206,41 @@
 <style>
   .sidebar {
     border-right: 1px solid var(--border);
+    /* Glass: translucent over the page's corner glows, so the sidebar reads as
+       a pane in front of the room rather than a column painted beside it. The
+       solid `background` first is the fallback where backdrop-filter is not
+       supported — translucency without blur is mud. */
     background: var(--panel);
-    padding: 0.9rem 0.75rem 1rem;
+    padding: 0.95rem 0.8rem 1rem;
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 0.8rem;
     /* The list stays put while the main column scrolls; on a narrow screen the
        shell stacks and this becomes a normal block. */
     position: sticky;
     top: 0;
     align-self: start;
+    /* min as well as max: without a floor the sidebar shrinks to its content
+       and the footer floats mid-air instead of pinning to the bottom. */
+    min-height: 100vh;
     max-height: 100vh;
     overflow-y: auto;
   }
 
-  @media (max-width: 46rem) {
+  @supports (backdrop-filter: blur(1px)) {
     .sidebar {
-      position: static;
-      max-height: none;
-      border-right: none;
-      border-bottom: 1px solid var(--border);
+      background: var(--overlay);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
     }
+  }
+
+  .list {
+    display: contents;
+  }
+
+  .menu {
+    display: none;
   }
 
   header {
@@ -196,18 +251,40 @@
   }
 
   .wordmark {
-    font-weight: 600;
-    letter-spacing: 0.06em;
+    display: inline-flex;
+    align-items: baseline;
+    font-weight: 700;
+    font-size: 1.05rem;
+    letter-spacing: 0.04em;
     text-decoration: none;
     color: inherit;
+  }
+
+  .wordmark .prompt {
+    color: var(--accent);
+    margin-right: 0.35rem;
+    font-weight: 400;
+  }
+
+  /* The block cursor after the wordmark. It blinks — slowly, and not at all
+     under reduced motion, where it stays lit. */
+  .wordmark .cursor {
+    color: var(--accent-2);
+    margin-left: 0.1rem;
+    animation: blink 1.4s step-end infinite;
   }
 
   .live {
     display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
-    font-size: 0.75em;
+    gap: 0.35rem;
+    font-size: 0.72em;
     color: var(--muted);
+  }
+
+  /* Streaming: the dot breathes. Down: it holds still and the label warns. */
+  .live:not(.down) .dot.good {
+    animation: pulse 2.6s ease-in-out infinite;
   }
 
   .live.down {
@@ -222,9 +299,10 @@
 
   h2 {
     margin: 0 0 0.3rem;
-    font-size: 0.75rem;
+    font-size: 0.68rem;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.09em;
     color: var(--muted);
     overflow-wrap: anywhere;
   }
@@ -240,11 +318,13 @@
   .corpus {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    padding: 0.25rem 0.4rem;
-    border-radius: 4px;
+    gap: 0.45rem;
+    padding: 0.28rem 0.5rem;
+    border-radius: 6px;
+    font-size: 0.9rem;
     text-decoration: none;
     color: inherit;
+    transition: background-color 120ms ease;
   }
 
   .corpus:hover {
@@ -252,8 +332,12 @@
   }
 
   .corpus.active {
-    background: var(--raised);
+    background: color-mix(in srgb, var(--accent) 9%, var(--raised));
     box-shadow: inset 2px 0 0 var(--accent);
+  }
+
+  .corpus.active .name {
+    font-weight: 600;
   }
 
   .name {
@@ -263,23 +347,26 @@
   }
 
   .primary {
-    font-size: 0.65em;
+    font-size: 0.62em;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    border: 1px solid var(--border);
+    border: 1px solid color-mix(in srgb, var(--accent-2) 45%, var(--border));
     border-radius: 3px;
     padding: 0 0.25rem;
-    color: var(--muted);
+    color: var(--accent-2);
   }
 
   .count {
     margin-left: auto;
-    font-size: 0.8em;
+    font-family: var(--font-mono);
+    font-size: 0.75em;
     font-variant-numeric: tabular-nums;
   }
 
   .union {
-    display: block;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
     margin: 0.2rem 0 0 0.4rem;
     padding: 0.1rem 0.3rem;
     border-radius: 4px;
@@ -314,5 +401,52 @@
     border-top: 1px solid var(--border);
     padding-top: 0.6rem;
     color: var(--muted);
+    font-size: 0.9em;
+  }
+
+  /* The bar. Everything but the header folds away until the toggle opens it;
+     the footer (version, last load) is desktop furniture and stays hidden.
+     Last in the sheet on purpose: these override rules of equal specificity
+     above, and the cascade settles ties by order. */
+  @media (max-width: 46rem) {
+    .sidebar {
+      position: static;
+      min-height: 0;
+      max-height: none;
+      padding: 0.5rem 0.8rem;
+      gap: 0.6rem;
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .sidebar:not(.open) .list,
+    footer {
+      display: none;
+    }
+
+    .sidebar.open .list {
+      display: block;
+      padding-bottom: 0.4rem;
+    }
+
+    .menu {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      min-height: 1.9rem;
+      padding: 0.15rem 0.5rem;
+      font-size: 0.8rem;
+      color: var(--muted);
+      cursor: pointer;
+    }
+
+    .menu .mono {
+      font-size: 0.75rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .live {
+      margin-left: auto;
+    }
   }
 </style>

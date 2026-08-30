@@ -86,6 +86,17 @@ pub struct DocSummary {
     /// Relative to the project root.
     pub path: String,
     pub updated: Option<String>,
+    /// How many *live* documents block this one — struck tombstones are closed
+    /// blockers and do not count. Counts, not maps: the board renders a badge,
+    /// and the full relation is one click away on the document view.
+    pub blocked_by: usize,
+    /// The mirror: how many live documents this one is blocking.
+    pub blocks: usize,
+    /// The `priority` frontmatter field, when it is an integer (ADR-0095:
+    /// priority is an opt-in declared field, lower = higher). Lifted here
+    /// because the board orders a column by it; anything non-integer is `None`,
+    /// which sorts last exactly like an absent priority.
+    pub priority: Option<i64>,
 }
 
 /// One document, opened.
@@ -131,11 +142,36 @@ pub struct DocView {
     pub blocks: BTreeMap<String, String>,
     /// Every frontmatter key, as JSON.
     pub fields: BTreeMap<String, serde_json::Value>,
+    /// The type's declared custom fields (`[fields.*]` in `opys.toml`), set or
+    /// not. Same reasoning as [`DocView::allowed_statuses`]: the UI's field
+    /// editor needs the vocabulary — which keys exist, which are enums and of
+    /// what, which are required — and reading `opys.toml` from a client would
+    /// be a second interpretation of the config. Empty when the id's prefix
+    /// matches no configured type.
+    pub declared_fields: Vec<FieldView>,
     /// The markdown body, verbatim.
     pub body: String,
     /// The body rendered. Raw HTML in the source stays escaped — comrak's
     /// `unsafe_` is off, and must stay off: bodies are user content.
     pub body_html: String,
+}
+
+/// One declared custom field of a document's type, as the field editor needs
+/// it: enough to choose the right input (an enum gets a select of `values`, a
+/// string gets text with `pattern` as the hint) and to know what must not be
+/// removed (`required`). The constraint itself is still enforced server-side —
+/// every field write is verify-gated — so this is affordance, not authority.
+#[derive(Debug, Clone, Serialize)]
+pub struct FieldView {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub field_type: &'static str,
+    pub required: bool,
+    /// Allowed values for an `enum` field; empty otherwise.
+    pub values: Vec<String>,
+    pub description: Option<String>,
+    /// The regex a `string` value must fully match, when one is declared.
+    pub pattern: Option<String>,
 }
 
 /// Which documents a caller wants. Every field is an equality filter; `None`
@@ -638,8 +674,19 @@ fn summary(prj: &Project, doc: &Doc) -> Option<DocSummary> {
         tags: doc.frontmatter.tags().unwrap_or_default(),
         path: rel_path(prj, doc),
         updated: doc.frontmatter.get_str("updated").map(str::to_string),
+        blocked_by: live_relations(doc, refs::BLOCKED_BY),
+        blocks: live_relations(doc, refs::BLOCKS),
+        priority: doc.frontmatter.get("priority").and_then(|v| v.as_i64()),
         id,
     })
+}
+
+/// How many entries of a relation map point at documents that still exist.
+fn live_relations(doc: &Doc, field: &str) -> usize {
+    refs::parse_in(&doc.frontmatter, field)
+        .into_iter()
+        .filter(|(_, title)| !refs::is_struck(title))
+        .count()
 }
 
 fn view(prj: &Project, doc: &Doc) -> DocView {
@@ -672,6 +719,21 @@ fn view(prj: &Project, doc: &Doc) -> DocView {
             })
             .unwrap_or_default(),
         closable: doc_type.is_some_and(|t| !t.terminal_statuses.is_empty()),
+        declared_fields: doc_type
+            .map(|t| {
+                t.fields
+                    .iter()
+                    .map(|(name, spec)| FieldView {
+                        name: name.clone(),
+                        field_type: spec.field_type.as_str(),
+                        required: spec.required,
+                        values: spec.values.clone(),
+                        description: spec.description.clone(),
+                        pattern: spec.pattern.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         title: doc.title.clone(),
         path: rel_path(prj, doc),
         tags: doc.frontmatter.tags().unwrap_or_default(),
@@ -786,6 +848,9 @@ mod tests {
             tags: vec!["server".into(), "core".into()],
             path: "inventory/FEAT-0001.md".into(),
             updated: None,
+            blocked_by: 0,
+            blocks: 0,
+            priority: None,
         };
         assert!(DocFilter::default().matches(&d));
         assert!(DocFilter {

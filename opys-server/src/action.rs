@@ -28,7 +28,7 @@
 use std::path::Path;
 
 use opys_engine::backend::Backend;
-use opys_engine::commands::{block, close, new, set_status, sync, tag};
+use opys_engine::commands::{block, close, edit, new, set_status, sync, tag};
 use opys_engine::error::OpysError;
 use opys_engine::project::Project;
 use opys_engine::store::Store;
@@ -98,6 +98,27 @@ pub enum Action {
         #[serde(default)]
         force: bool,
     },
+    /// Replace the document's whole markdown body (the web UI's edit-in-place).
+    /// Verify-gated in the engine: the edit lands only if it introduces no new
+    /// verify problems, and a refusal flushes nothing.
+    EditBody { id: String, body: String },
+    /// Set one custom frontmatter field, verify-gated like `edit-body` — the
+    /// closed-frontmatter invariant, declared types, and enum/pattern
+    /// constraints are all the gate's findings, refused with their own
+    /// messages. `value` is parsed as the CLI parses `--field key=value`:
+    /// a YAML scalar if it reads as one, a bare string otherwise.
+    ///
+    /// Removal is deliberately its own action rather than a nullable `value`
+    /// here: with an `Option`, a client that *forgot* the field would silently
+    /// delete one instead of being told.
+    SetField {
+        id: String,
+        key: String,
+        value: String,
+    },
+    /// Remove one custom frontmatter field, verify-gated like `set-field` (so
+    /// removing a required field is refused by name).
+    RemoveField { id: String, key: String },
 }
 
 impl Action {
@@ -112,6 +133,9 @@ impl Action {
             Action::Block { .. } => "block",
             Action::Unblock { .. } => "unblock",
             Action::Close { .. } => "close",
+            Action::EditBody { .. } => "edit-body",
+            Action::SetField { .. } => "set-field",
+            Action::RemoveField { .. } => "remove-field",
         }
     }
 }
@@ -251,7 +275,7 @@ pub fn perform(root: &Path, backend: &dyn Backend, action: &Action) -> Attempt {
     // Unparsable documents come back here as messages rather than as a failure,
     // and the CLI drops them at exactly this point: they are the corpus's
     // problem, reported by `verify`, not this write's.
-    let (mut store, _parse_errors) = backend.load(&prj).map_err(ActionError::from_load)?;
+    let (mut store, parse_errors) = backend.load(&prj).map_err(ActionError::from_load)?;
     match action {
         Action::New {
             type_name,
@@ -313,6 +337,35 @@ pub fn perform(root: &Path, backend: &dyn Backend, action: &Action) -> Attempt {
                 .map(|()| ActionOutcome::new(id, format!("{id} no longer blocked by {by}")))
                 .map_err(ActionError::Refused);
             finish(&prj, backend, store, done)
+        }
+        Action::EditBody { id, body } => {
+            // Like `new`, not like the other five: a refused edit propagates
+            // *before* the flush, because the whole point of the verify gate is
+            // that a rejected body never reaches disk.
+            edit::body_core(&prj, &mut store, id, body, &parse_errors)
+                .map_err(ActionError::Refused)?;
+            let mut outcome = ActionOutcome::new(id, format!("{id} body updated (verified)"));
+            backend.flush(&prj, store).map_err(ActionError::Refused)?;
+            outcome.sync_skipped = auto_sync(&prj, backend);
+            Ok(outcome)
+        }
+        Action::SetField { id, key, value } => {
+            // Verify-gated like `edit-body`: a refusal propagates before the
+            // flush, so a rejected field never reaches disk.
+            edit::field_core(&prj, &mut store, id, key, Some(value), &parse_errors)
+                .map_err(ActionError::Refused)?;
+            let mut outcome = ActionOutcome::new(id, format!("{id} {key} set (verified)"));
+            backend.flush(&prj, store).map_err(ActionError::Refused)?;
+            outcome.sync_skipped = auto_sync(&prj, backend);
+            Ok(outcome)
+        }
+        Action::RemoveField { id, key } => {
+            edit::field_core(&prj, &mut store, id, key, None, &parse_errors)
+                .map_err(ActionError::Refused)?;
+            let mut outcome = ActionOutcome::new(id, format!("{id} {key} removed (verified)"));
+            backend.flush(&prj, store).map_err(ActionError::Refused)?;
+            outcome.sync_skipped = auto_sync(&prj, backend);
+            Ok(outcome)
         }
         Action::Close { id, force } => {
             let done = close::core(&prj, &mut store, id, *force)
@@ -427,6 +480,16 @@ mod tests {
         assert!(matches!(close, Action::Close { force: false, .. }));
     }
 
+    /// Why removal is its own action: a `set-field` with no `value` must be a
+    /// request error, not a silent field deletion.
+    #[test]
+    fn set_field_without_a_value_is_rejected_not_a_removal() {
+        let missing =
+            parse(serde_json::json!({"action": "set-field", "id": "N-1", "key": "priority"}))
+                .expect_err("value is required");
+        assert!(missing.contains("value"), "{missing}");
+    }
+
     /// Lock contention is retryable and its message names the inventory
     /// directory and the lock file; both facts make it the one load failure that
     /// must not be delivered as a permanent, path-carrying refusal. The input
@@ -507,6 +570,14 @@ mod tests {
                 "unblock",
             ),
             (serde_json::json!({"action": "close", "id": "N-1"}), "close"),
+            (
+                serde_json::json!({"action": "set-field", "id": "N-1", "key": "k", "value": "v"}),
+                "set-field",
+            ),
+            (
+                serde_json::json!({"action": "remove-field", "id": "N-1", "key": "k"}),
+                "remove-field",
+            ),
         ];
         for (body, name) in cases {
             let action = parse(body.clone()).unwrap_or_else(|e| panic!("{body}: {e}"));

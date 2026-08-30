@@ -13,7 +13,9 @@ required sections, and validation rules — are configured in one
 for in-flight work, deleted on `close`. Writes go through the CLI so invariants
 hold at write time and parallel agents don't collide; reads are plain `grep` +
 targeted file reads. A `verify` subcommand is the CI gate. It is deliberately
-*not* a task board — no sprints, assignees, or priorities.
+*not* a task board — no sprints or assignees; priority exists only as an
+opt-in declared int field (`[types.X.fields.priority]`) that the web UI's
+board orders and reorders by.
 
 Need a different lifecycle — an `epic`, an `adr`, a `risk`? Add a `[types.<name>]`
 block to `opys.toml` and the whole tool (create, verify, index) works for

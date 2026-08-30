@@ -15,7 +15,7 @@
   import Union from './Union.svelte';
   import { corpora } from './lib/corpora.svelte.js';
   import { events } from './lib/events.svelte.js';
-  import { corpusLabel } from './lib/format.js';
+  import { corpusLabel, middlePath } from './lib/format.js';
   import { notice } from './lib/notice.svelte.js';
   import { boardPath, href, nav } from './lib/router.svelte.js';
 
@@ -85,20 +85,42 @@
              plain management panel once one does. -->
         <Setup />
       {:else if served.length > 0}
-        <h1>opys</h1>
-        <p class="lede">
-          {served.length}
-          {served.length === 1 ? 'corpus' : 'corpora'} served. Pick one on the left,
-          or start here:
-        </p>
+        <div class="home">
+        <div class="hero">
+          <h1 class="mono">
+            <span class="prompt" aria-hidden="true">❯</span><span class="grad-text">opys</span>
+          </h1>
+          <p class="lede muted">
+            {served.length}
+            {served.length === 1 ? 'corpus' : 'corpora'} served — every document a
+            markdown file, every write through the engine.
+          </p>
+        </div>
         <ul class="jump">
           {#each served as corpus (corpus.cid)}
             <li>
-              <a href={href(boardPath(corpus.cid))}>{corpusLabel(corpus)}</a>
-              <span class="muted small mono">{corpus.root}</span>
+              <a class="panel jumpcard" href={href(boardPath(corpus.cid))}>
+                <span class="jumphead">
+                  <span
+                    class="dot"
+                    class:good={!('error' in corpus) && corpus.verify_problems === 0}
+                    class:bad={'error' in corpus ||
+                      (corpus.verify_problems ?? 0) > 0}
+                  ></span>
+                  <span class="jumpname">{corpusLabel(corpus)}</span>
+                  {#if corpus.doc_count !== null && corpus.doc_count !== undefined}
+                    <span class="muted small mono jumpcount">
+                      {corpus.doc_count}
+                      {corpus.doc_count === 1 ? 'doc' : 'docs'}
+                    </span>
+                  {/if}
+                </span>
+                <span class="muted small mono jumppath" title={corpus.root}>{middlePath(corpus.root, 40)}</span>
+              </a>
             </li>
           {/each}
         </ul>
+        </div>
       {:else if corpora.error}
         <h1>opys</h1>
         <!-- Without this the column below claims a load is in progress that
@@ -133,14 +155,43 @@
 </div>
 
 <style>
+  .home {
+    max-width: 58rem;
+    margin-inline: auto;
+  }
+
+  .hero {
+    padding: 1.5rem 0 0.5rem;
+  }
+
   h1 {
-    margin: 0 0 0.75rem;
-    font-size: 1.4rem;
+    margin: 0 0 0.5rem;
+    font-size: 2.8rem;
     letter-spacing: 0.01em;
+    line-height: 1.1;
+  }
+
+  h1 .prompt {
+    color: var(--accent);
+    font-weight: 400;
+    margin-right: 0.4rem;
+    font-size: 0.7em;
+    vertical-align: 0.12em;
   }
 
   .lede {
-    margin: 0 0 1rem;
+    margin: 0 0 1.5rem;
+    max-width: 34rem;
+  }
+
+  .jumphead {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+  }
+
+  .jumpcount {
+    margin-left: auto;
   }
 
   .jump {
@@ -148,13 +199,36 @@
     margin: 0;
     padding: 0;
     display: grid;
-    gap: 0.4rem;
+    grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+    gap: 0.6rem;
+    max-width: 56rem;
   }
 
-  .jump li {
-    display: flex;
-    gap: 0.6rem;
-    align-items: baseline;
-    flex-wrap: wrap;
+  .jumpcard {
+    display: grid;
+    gap: 0.2rem;
+    padding: 0.7rem 0.8rem;
+    text-decoration: none;
+    color: inherit;
+    transition:
+      border-color 120ms ease,
+      transform 120ms ease,
+      box-shadow 120ms ease;
+  }
+
+  .jumpcard:hover {
+    border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px color-mix(in srgb, var(--accent) calc(10% * var(--glow)), transparent);
+  }
+
+  .jumpname {
+    font-weight: 600;
+  }
+
+  .jumppath {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

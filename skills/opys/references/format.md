@@ -564,8 +564,10 @@ nothing on disk.
 
 ## What never goes in feature files
 
-Test results, execution dates, completion claims, assignees, priorities, or
-sprint metadata. CI owns automated results; this system owns intent only.
+Test results, execution dates, completion claims, assignees, or sprint
+metadata. CI owns automated results; this system owns intent only. (Priority
+is the one carve-out: a project may declare a `priority` int *field* —
+lower = higher — and tools may order by it. It is frontmatter, never prose.)
 
 Implementation logs, task checklists, and branch/PR links also do not belong
 here — they go in an ephemeral document (a `task`/`bug`/`chore`), which is

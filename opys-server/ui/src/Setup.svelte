@@ -229,6 +229,7 @@
 <style>
   .setup {
     max-width: 46rem;
+    margin-inline: auto;
     padding: 1.5rem;
   }
   h1 {
@@ -257,7 +258,7 @@
     gap: 0.25rem;
     padding: 0.75rem;
     text-align: left;
-    border: 1px solid var(--line);
+    border: 1px solid var(--border);
     border-radius: 6px;
     background: none;
     color: inherit;
@@ -265,8 +266,8 @@
     font: inherit;
   }
   .mode.on {
-    border-color: var(--accent, #6ea8fe);
-    background: color-mix(in srgb, var(--accent, #6ea8fe) 10%, transparent);
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
   }
   .mode span {
     font-size: 0.82rem;
@@ -286,7 +287,7 @@
     justify-content: space-between;
     gap: 1rem;
     padding: 0.5rem 0.65rem;
-    border: 1px solid var(--line);
+    border: 1px solid var(--border);
     border-radius: 6px;
   }
   .what {
@@ -306,7 +307,7 @@
   }
   .bad {
     font-size: 0.78rem;
-    color: var(--bad, #e5534b);
+    color: var(--bad);
   }
   form {
     display: flex;
@@ -315,7 +316,7 @@
   input {
     flex: 1;
     padding: 0.45rem 0.6rem;
-    border: 1px solid var(--line);
+    border: 1px solid var(--border);
     border-radius: 6px;
     background: none;
     color: inherit;

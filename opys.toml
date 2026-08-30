@@ -39,6 +39,9 @@ terminal_statuses = []               # features are never closed/deleted
 tags_required = true
 status_dirs = { archived = "_archived" }   # archived features move to opys/_archived/
 
+[types.feature.fields.priority]
+type = "int"                         # opt-in ordering (ADR-0095): lower = higher, board top = take next
+
 [types.feature.fields.spec]
 type = "string"
 pattern = '^\S.*$'                   # non-empty, single line
@@ -117,6 +120,9 @@ terminal_statuses = ["done"]         # "done" reached only via `close`
 tags_required = false
 requires_link = { to = "feature", min = 1 }
 
+[types.task.fields.priority]
+type = "int"                         # opt-in ordering (ADR-0095): lower = higher, board top = take next
+
 [types.task.fields.blocked_reason]
 type = "string"
 
@@ -139,6 +145,9 @@ default_status = "todo"
 terminal_statuses = ["done"]
 tags_required = false
 requires_link = { to = "feature", min = 1 }
+
+[types.bug.fields.priority]
+type = "int"                         # opt-in ordering (ADR-0095): lower = higher, board top = take next
 
 [types.bug.fields.blocked_reason]
 type = "string"
@@ -167,6 +176,9 @@ default_status = "todo"
 terminal_statuses = ["done"]
 tags_required = false
 requires_link = { to = "feature", min = 1 }
+
+[types.chore.fields.priority]
+type = "int"                         # opt-in ordering (ADR-0095): lower = higher, board top = take next
 
 [types.chore.fields.blocked_reason]
 type = "string"

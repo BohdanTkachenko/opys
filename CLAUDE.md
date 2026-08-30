@@ -10,7 +10,8 @@ frontmatter (a stable `PREFIX-NNNN` id, status, tags, relation maps) plus a
 markdown body. All writes go through the CLI so invariants hold at write time and
 parallel agents don't collide; reads are plain `grep` + targeted file reads.
 `verify` is the CI gate. The inventory base dir defaults to `opys/`. It is
-deliberately *not* a task board — no sprints, assignees, or priorities.
+deliberately *not* a task board — no sprints or assignees; priority exists
+only as an opt-in declared field the board can order by (ADR-0095).
 
 Everything is driven by **one config, `opys.toml`** (parsed into `ProjectConfig`,
 `src/project_config.rs`), which lives at the **project root** — `Project::open`
