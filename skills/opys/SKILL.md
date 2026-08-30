@@ -10,7 +10,7 @@ A version-controlled inventory of typed markdown documents — what a product do
 changing it (ephemeral `task`/`bug`/`chore` documents) — one markdown file per
 item, managed by the `opys` CLI, verified in CI. Document types are configured in
 `opys.toml`; projects add their own. Deliberately not a task board (no
-sprints, assignees, priorities).
+sprints or assignees; a `priority` int field is opt-in config, lower = higher).
 
 Read `references/format.md` before authoring or editing documents or the
 `opys.toml` config — it is the normative file-format spec and design rationale.

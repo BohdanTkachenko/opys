@@ -108,6 +108,7 @@
   }
 </script>
 
+<div class="queryview">
 <p class="crumb small">
   <a href={href(boardPath(cid))}>← board</a>
   <span class="muted">{corpus ? corpusLabel(corpus) : cid}</span>
@@ -131,7 +132,14 @@
   {/each}
 </div>
 
-<div class="editor">
+<div class="editor panel">
+  <div class="termbar mono">
+    <span class="prompt" aria-hidden="true">❯</span>
+    <span class="termtitle">sql · read-only</span>
+    <span class="tables muted" title="the tables this corpus decomposes into">
+      docs · tags · relations · fm_fields · retired · fields · sections · blocks
+    </span>
+  </div>
   <textarea
     bind:value={sql}
     {onkeydown}
@@ -147,12 +155,7 @@
     <button class="btn primary" disabled={!runnable} onclick={run}>
       {result.loading ? 'Running…' : 'Run'}
     </button>
-    <span class="small muted">
-      ⌘/Ctrl + Enter. Tables:
-      <code>docs</code>, <code>tags</code>, <code>relations</code>,
-      <code>fm_fields</code>, <code>retired</code>, <code>fields</code>,
-      <code>sections</code>, <code>blocks</code>.
-    </span>
+    <span class="small muted"><kbd>⌘</kbd>/<kbd>Ctrl</kbd> + <kbd>Enter</kbd></span>
   </div>
 </div>
 
@@ -224,8 +227,14 @@
     {/if}
   </section>
 {/if}
+</div>
 
 <style>
+  .queryview {
+    max-width: 62rem;
+    margin-inline: auto;
+  }
+
   .head {
     margin-bottom: 0.75rem;
   }
@@ -248,15 +257,63 @@
     margin-bottom: 0.5rem;
   }
 
+  /* Each example runs on click; the marker says so without a verb. */
+  .examples :global(.btn)::before {
+    content: '\25B8';
+    color: var(--accent);
+    font-size: 0.8em;
+  }
+
+  /* The console is dressed as what it is: a terminal. A slim title bar, the
+     statement area below it, the run button in a footer row. One frame — the
+     textarea drops its own border and melts into the panel. */
   .editor {
     display: grid;
-    gap: 0.5rem;
     margin-bottom: 1rem;
+    overflow: hidden;
+  }
+
+  .termbar {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.4rem 0.7rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--raised);
+    font-size: 0.78rem;
+  }
+
+  .termbar .prompt {
+    color: var(--accent);
+    font-weight: 700;
+  }
+
+  .termbar .termtitle {
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+
+  @media (max-width: 46rem) {
+    .termbar .tables {
+      display: none;
+    }
+  }
+
+  .termbar .tables {
+    margin-left: auto;
+    font-size: 0.9em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   textarea {
     width: 100%;
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    border: none;
+    border-radius: 0;
+    background: var(--panel);
+    padding: 0.6rem 0.7rem;
+    font-family: var(--font-mono);
     font-size: 0.9em;
     resize: vertical;
     /* Tabs and leading spaces are meaningful in a pasted statement. */
@@ -265,11 +322,20 @@
     overflow-x: auto;
   }
 
+  textarea:focus-visible {
+    /* The panel is the frame; a ring inside it would double-border. */
+    outline: none;
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+
   .controls {
     display: flex;
     align-items: center;
     gap: 0.6rem;
     flex-wrap: wrap;
+    padding: 0.45rem 0.7rem;
+    border-top: 1px solid var(--border);
+    background: var(--raised);
   }
 
   .results p {
@@ -287,6 +353,9 @@
     border-collapse: collapse;
     width: 100%;
     font-size: 0.9em;
+    /* Query results are rows from a database; they read as one. */
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
   }
 
   th,
@@ -315,6 +384,10 @@
 
   tbody tr:last-child td {
     border-bottom: none;
+  }
+
+  tbody tr:nth-child(even) {
+    background: color-mix(in srgb, var(--raised) 40%, transparent);
   }
 
   tbody tr:hover {

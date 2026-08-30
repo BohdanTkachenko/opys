@@ -33,6 +33,9 @@ statuses = ["todo", "doing", "done"]
 default_status = "todo"
 terminal_statuses = ["done"]
 tags_required = false
+
+[types.task.fields.priority]
+type = "int"
 "#;
 
 fn backend() -> Box<dyn Backend + Send> {
@@ -63,6 +66,7 @@ fn project(root: &Path) -> PathBuf {
          id: TASK-0002\n\
          status: doing\n\
          tags: [shared]\n\
+         priority: 5\n\
          references:\n  NOTE-0001: Note one\n\
          blocked_by:\n  NOTE-0001: Note one\n\
          ---\n\n# Do the thing\n\nWork.\n",
@@ -287,6 +291,17 @@ async fn docs_filters_are_optional_and_and_combined() {
     assert_eq!(note["tags"], json!(["alpha", "shared"]));
     assert_eq!(note["path"], "inventory/NOTE-0001.md");
     assert_eq!(note["updated"], "2026-01-01T00:00:00Z");
+    // The board's relation badges: live counts, from the summary itself. The
+    // fixture's note blocks the task and nothing blocks the note.
+    assert_eq!(note["blocked_by"], 0);
+    assert_eq!(note["blocks"], 1);
+    // Priority rides along when the frontmatter has one (the board orders a
+    // column by it); a document without one says null, which sorts last.
+    assert_eq!(note["priority"], json!(null));
+    let task = all.iter().find(|d| d["id"] == "TASK-0002").unwrap();
+    assert_eq!(task["blocked_by"], 1);
+    assert_eq!(task["blocks"], 0);
+    assert_eq!(task["priority"], 5);
 
     let (_, by_type) = fx
         .get(&format!("/api/corpus/{}/docs?type=task", fx.cid))

@@ -53,6 +53,24 @@ statuses = ["todo", "doing", "blocked", "done"]
 default_status = "todo"
 terminal_statuses = ["done"]
 tags_required = false
+
+[types.spec]
+prefix = "SPEC"
+statuses = ["open"]
+default_status = "open"
+tags_required = false
+
+[types.spec.fields.priority]
+type = "enum"
+values = ["low", "high"]
+
+[types.spec.fields.estimate]
+type = "int"
+
+[[types.spec.sections]]
+heading = "Plan"
+kind = "prose"
+required = true
 "#;
 
 /// Process-global settings every test in this binary needs, set once and to the
@@ -911,5 +929,232 @@ async fn the_completion_event_serializes_like_every_other_event() {
             "action": "set-status",
             "id": "TASK-0002",
         })
+    );
+}
+
+/// A document of the section-requiring type, written into one tree.
+///
+/// Written directly rather than through the fixture, so the shared fixture's
+/// id allocation — which other tests pin — never changes.
+fn write_spec(root: &Path) {
+    std::fs::write(
+        root.join("inventory/SPEC-0003.md"),
+        "---\n\
+         id: SPEC-0003\n\
+         status: open\n\
+         tags: []\n\
+         created: \"2026-01-01T00:00:00Z\"\n\
+         updated: \"2026-01-01T00:00:00Z\"\n\
+         ---\n\n# The spec\n\nIntro.\n\n## Plan\n\nSteps.\n",
+    )
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_body_replaces_the_body_and_rederives_the_title() {
+    init();
+    let fx = Fixture::new();
+    write_spec(&fx.live);
+
+    let answer = fx
+        .action(json!({
+            "action": "edit-body",
+            "id": "SPEC-0003",
+            "body": "# The spec, renamed\n\nBetter intro.\n\n## Plan\n\nSharper steps.\n"
+        }))
+        .await;
+    assert_eq!(answer["id"], "SPEC-0003");
+
+    let written = std::fs::read_to_string(fx.live.join("inventory/SPEC-0003.md")).unwrap();
+    assert!(written.contains("# The spec, renamed"), "{written}");
+    assert!(written.contains("Sharper steps."), "{written}");
+    assert!(
+        !written.contains("Intro."),
+        "the old body must be gone: {written}"
+    );
+    // The title the API now reports is the new heading, not the old one.
+    let (status, doc) = fx
+        .get(&format!("/api/corpus/{}/doc/SPEC-0003", fx.cid))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(doc["title"], "The spec, renamed");
+    // The write stamped `updated` (OPYS_NOW pins the clock for this binary).
+    assert!(
+        written.contains("updated: \"2026-02-03T04:05:06Z\""),
+        "{written}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_body_that_breaks_verify_is_refused_and_writes_nothing() {
+    init();
+    let fx = Fixture::new();
+    write_spec(&fx.live);
+    let before = snapshot(&fx.live);
+
+    // The new body drops the required `## Plan` section, which is a *new*
+    // verify problem — the gate's whole contract.
+    let (status, answer) = fx
+        .try_action(json!({
+            "action": "edit-body",
+            "id": "SPEC-0003",
+            "body": "# The spec\n\nAll plan, no Plan.\n"
+        }))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+    let message = answer["error"].as_str().unwrap_or_default();
+    assert!(message.contains("verify problem"), "{answer}");
+    assert!(
+        message.contains("Plan"),
+        "the refusal names the missing section: {answer}"
+    );
+
+    // Refused means *nothing* changed on disk — not the edited file, not the
+    // sync pass, not the ledger.
+    assert_eq!(
+        snapshot(&fx.live),
+        before,
+        "a refused edit must write nothing"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn set_field_writes_declared_fields_with_the_cli_value_coercion() {
+    init();
+    let fx = Fixture::new();
+    write_spec(&fx.live);
+
+    let answer = fx
+        .action(json!({
+            "action": "set-field", "id": "SPEC-0003", "key": "priority", "value": "high"
+        }))
+        .await;
+    assert_eq!(answer["id"], "SPEC-0003");
+    fx.action(json!({
+        "action": "set-field", "id": "SPEC-0003", "key": "estimate", "value": "3"
+    }))
+    .await;
+
+    let written = std::fs::read_to_string(fx.live.join("inventory/SPEC-0003.md")).unwrap();
+    assert!(written.contains("priority: high"), "{written}");
+    // The `--field key=value` coercion: `3` for an int field is the int 3,
+    // not the string "3" (which the verify gate would refuse).
+    assert!(written.contains("estimate: 3"), "{written}");
+    assert!(
+        written.contains("updated: \"2026-02-03T04:05:06Z\""),
+        "a field write stamps updated: {written}"
+    );
+
+    // The doc payload exposes the type's declared fields, so the UI can offer
+    // them without reading opys.toml itself.
+    let (status, doc) = fx
+        .get(&format!("/api/corpus/{}/doc/SPEC-0003", fx.cid))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let declared = doc["declared_fields"].as_array().expect("declared_fields");
+    let priority = declared
+        .iter()
+        .find(|f| f["name"] == "priority")
+        .expect("priority is declared");
+    assert_eq!(priority["type"], "enum");
+    assert_eq!(priority["values"], json!(["low", "high"]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn set_field_that_breaks_verify_is_refused_and_writes_nothing() {
+    init();
+    let fx = Fixture::new();
+    write_spec(&fx.live);
+    let before = snapshot(&fx.live);
+
+    // An undeclared key is a *new* verify problem — the closed-frontmatter
+    // invariant, enforced by the gate with verify's own message.
+    let (status, answer) = fx
+        .try_action(json!({
+            "action": "set-field", "id": "SPEC-0003", "key": "velocity", "value": "9"
+        }))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+    let message = answer["error"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("unknown frontmatter field"),
+        "the refusal is verify's own closed-frontmatter message: {answer}"
+    );
+
+    // A declared enum refuses a value outside its set, by name.
+    let (status, answer) = fx
+        .try_action(json!({
+            "action": "set-field", "id": "SPEC-0003", "key": "priority", "value": "medium"
+        }))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+    let message = answer["error"].as_str().unwrap_or_default();
+    assert!(message.contains("not one of"), "{answer}");
+
+    assert_eq!(
+        snapshot(&fx.live),
+        before,
+        "a refused field write must write nothing"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn set_field_refuses_keys_a_dedicated_action_owns() {
+    init();
+    let fx = Fixture::new();
+    let before = snapshot(&fx.live);
+
+    for (key, redirect) in [
+        ("status", "set-status"),
+        ("tags", "tag"),
+        ("blocked_by", "block"),
+        ("updated", "auto-maintained"),
+    ] {
+        let (status, answer) = fx
+            .try_action(json!({
+                "action": "set-field", "id": "NOTE-0001", "key": key, "value": "x"
+            }))
+            .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{key}: {answer}");
+        let message = answer["error"].as_str().unwrap_or_default();
+        assert!(
+            message.contains(redirect),
+            "'{key}' should point at its owner: {answer}"
+        );
+    }
+    assert_eq!(snapshot(&fx.live), before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remove_field_removes_and_a_missing_field_is_named() {
+    init();
+    let fx = Fixture::new();
+    write_spec(&fx.live);
+    fx.action(json!({
+        "action": "set-field", "id": "SPEC-0003", "key": "priority", "value": "low"
+    }))
+    .await;
+
+    fx.action(json!({
+        "action": "remove-field", "id": "SPEC-0003", "key": "priority"
+    }))
+    .await;
+    let written = std::fs::read_to_string(fx.live.join("inventory/SPEC-0003.md")).unwrap();
+    assert!(!written.contains("priority"), "{written}");
+
+    // Removing what is not there is a refusal, not a silent no-op: it is how a
+    // typo in the key announces itself.
+    let (status, answer) = fx
+        .try_action(json!({
+            "action": "remove-field", "id": "SPEC-0003", "key": "priority"
+        }))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+    assert!(
+        answer["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no field 'priority'"),
+        "{answer}"
     );
 }

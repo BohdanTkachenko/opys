@@ -24,7 +24,7 @@
   import { api } from './lib/api.js';
   import { corpora } from './lib/corpora.svelte.js';
   import { affects, events } from './lib/events.svelte.js';
-  import { shortDate } from './lib/format.js';
+  import { shortDate, statusTone } from './lib/format.js';
   import { createResource } from './lib/resource.svelte.js';
   import { docPath, go, href, unionPath } from './lib/router.svelte.js';
 
@@ -102,7 +102,7 @@
   }
 </script>
 
-<header class="head">
+<header class="head topbar">
   <div class="title">
     <h1>{group ? group.name : key}</h1>
     {#if view}
@@ -143,15 +143,15 @@
 
   <form class="filters" onsubmit={apply}>
     <label>
-      <span class="small muted">Type</span>
+      <span class="microlabel">Type</span>
       <input bind:value={type} placeholder="task" spellcheck="false" autocomplete="off" />
     </label>
     <label>
-      <span class="small muted">Status</span>
+      <span class="microlabel">Status</span>
       <input bind:value={status} placeholder="in-progress" spellcheck="false" autocomplete="off" />
     </label>
     <label>
-      <span class="small muted">Tag</span>
+      <span class="microlabel">Tag</span>
       <input bind:value={tag} placeholder="server" spellcheck="false" autocomplete="off" />
     </label>
     <button class="btn" type="submit">Filter</button>
@@ -289,8 +289,14 @@
                     <span class="small">not here</span>
                   </td>
                 {:else}
+                  {@const tone = statusTone(cell.status)}
                   <td class="cell">
-                    <a class="chip" href={href(docPath(cell.cid, row.id))}>
+                    <a
+                      class="chip status"
+                      style:--tone={tone}
+                      class:neutral={tone === null}
+                      href={href(docPath(cell.cid, row.id))}
+                    >
                       {statusText(cell)}
                     </a>
                     {#if cell.title && cell.title !== row.title}
@@ -325,9 +331,7 @@
 {/if}
 
 <style>
-  .head {
-    margin-bottom: 0.75rem;
-  }
+
 
   .title {
     display: flex;
@@ -534,6 +538,7 @@
 
   .legend dd {
     margin: 0;
+    flex: 1 1 18rem;
   }
 
   .swatch {

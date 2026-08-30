@@ -144,7 +144,14 @@ pub fn parse_field(arg: &str) -> Result<(String, serde_norway::Value)> {
     let (k, v) = arg
         .split_once('=')
         .ok_or_else(|| usage(format!("--field expects key=value, got {arg:?}")))?;
-    let value: serde_norway::Value = serde_norway::from_str(v.trim())
-        .unwrap_or_else(|_| serde_norway::Value::String(v.trim().to_string()));
-    Ok((k.trim().to_string(), value))
+    Ok((k.trim().to_string(), parse_field_value(v)))
+}
+
+/// The one convention for reading field text into a frontmatter value: a YAML
+/// scalar if it parses as one (`3`, `true`, `[a, b]`), a bare string otherwise.
+/// `--field key=value` and the node's `set-field` action both come through
+/// here, so quoting (`"3"`) is always the way to force a string.
+pub fn parse_field_value(v: &str) -> serde_norway::Value {
+    serde_norway::from_str(v.trim())
+        .unwrap_or_else(|_| serde_norway::Value::String(v.trim().to_string()))
 }

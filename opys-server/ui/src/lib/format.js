@@ -46,6 +46,42 @@ export function shortDate(iso) {
 }
 
 /**
+ * How long ago a timestamp was, compactly: `now`, `5m ago`, `3h ago`, `2d
+ * ago`, and past a week the date itself.
+ *
+ * For a card or a header, where "how fresh" is the question and the absolute
+ * time belongs in a tooltip ([`shortTime`]). `now` is a parameter so a view
+ * that re-renders on a ticker ages every timestamp together, rather than each
+ * one freezing at whatever the clock said when it was rendered.
+ */
+export function relativeTime(iso, now = Date.now()) {
+  if (typeof iso !== 'string' || iso.length === 0) return null;
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return iso;
+  const seconds = Math.round((now - then) / 1000);
+  if (seconds < 45) return 'now';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return shortDate(iso);
+}
+
+/**
+ * Whether a frontmatter value is an RFC3339 timestamp — `created`, or a
+ * hand-written date field. Shown formatted, edited raw.
+ */
+export function isTimestamp(value) {
+  return (
+    typeof value === 'string' &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value) &&
+    !Number.isNaN(new Date(value).getTime())
+  );
+}
+
+/**
  * A relation map's title, split into text and whether it is a tombstone.
  *
  * The node keeps the `~~strikethrough~~` markers of a closed document on
@@ -121,6 +157,131 @@ export function fieldText(value) {
       : JSON.stringify(value);
   }
   return JSON.stringify(value);
+}
+
+/**
+ * A hue for a status name, or `null` for the ones that should recede.
+ *
+ * Statuses are project vocabulary — `opys.toml` can declare anything — so this
+ * deliberately does not rank or order them (the board learned that lesson; see
+ * its column comment). Colour is annotation, not lifecycle: a handful of
+ * near-universal words get their semantic hue, the "this word is retired"
+ * family gets neutral grey, and anything else gets a deterministic hue hashed
+ * from its own name — the same status is the same colour on every screen, in
+ * every corpus, forever, without this file having opinions about it.
+ */
+// Finished things: green. Named because [`statusSettled`] reuses it — the
+// words that earn the green are exactly the words the board's focus mode may
+// hide.
+const DONE_TONES =
+  /^(done|implemented|accepted|fixed|closed|complete(d)?|merged|resolved|shipped|released)$/;
+
+const SEMANTIC_TONES = [
+  [DONE_TONES, 152],
+  // Underway: cyan, the accent family.
+  [/^(in-progress|doing|active|partial|in-review|review|testing|wip)$/, 195],
+  // Stuck: red.
+  [/^(blocked|stuck|failed)$/, 3],
+  // Queued: blue.
+  [/^(todo|open|planned|proposed|new|backlog|triage|draft|idea)$/, 226],
+];
+
+const NEUTRAL_TONES =
+  /^(wontfix|won't-fix|superseded|archived|retired|rejected|obsolete|deprecated|cancelled|canceled|abandoned|invalid|duplicate)$/;
+
+/**
+ * Whether a status names *settled* work — the done family or the retired
+ * family, exactly as the tone engine already classifies them. The board's
+ * focus mode hides these columns; a status this file has never heard of is
+ * never settled, so an unknown vocabulary always stays visible.
+ */
+export function statusSettled(status) {
+  const name = String(status ?? '')
+    .trim()
+    .toLowerCase();
+  return DONE_TONES.test(name) || NEUTRAL_TONES.test(name);
+}
+
+/**
+ * FNV-1a, folded onto the wheel but kept out of the red band (±18° around 3),
+ * so only the words that mean alarm read as alarm.
+ */
+function hashHue(name) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < name.length; i += 1) {
+    hash ^= name.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return 21 + ((hash >>> 0) % 325);
+}
+
+export function statusTone(status) {
+  const name = String(status ?? '')
+    .trim()
+    .toLowerCase();
+  if (name.length === 0 || NEUTRAL_TONES.test(name)) return null;
+  for (const [pattern, hue] of SEMANTIC_TONES) {
+    if (pattern.test(name)) return hue;
+  }
+  return hashHue(name);
+}
+
+/**
+ * A hue for a document *type* — the card's colour on the board, where the
+ * column already carries the status. Within a column every card shares a
+ * status, so type is the axis that tells thirty cards apart.
+ *
+ * The same rules as [`statusTone`]: a few near-universal names get their
+ * semantic hue, `chore` and friends recede to neutral (their whole identity is
+ * being unremarkable), and any project-specific type gets a deterministic hue
+ * from its own name. Both the type name and its likely id prefix are matched
+ * (`feature` and `feat`), so a view that only has the prefix agrees with one
+ * that has the type.
+ */
+const TYPE_TONES = [
+  [/^(bug|defect|fix)$/, 355],
+  [/^(feat|feature)$/, 262],
+  [/^(task)$/, 210],
+  [/^(adr|decision|rfc)$/, 40],
+  [/^(epic|initiative)$/, 300],
+  [/^(risk)$/, 25],
+];
+
+const NEUTRAL_TYPES = /^(chore|maintenance|misc)$/;
+
+export function typeTone(type) {
+  const name = String(type ?? '')
+    .trim()
+    .toLowerCase();
+  if (name.length === 0 || NEUTRAL_TYPES.test(name)) return null;
+  for (const [pattern, hue] of TYPE_TONES) {
+    if (pattern.test(name)) return hue;
+  }
+  return hashHue(name);
+}
+
+/**
+ * A filesystem path shortened from the middle: first segment, an ellipsis,
+ * and the tail that still fits. The *end* of a path is the part that names
+ * things, so end-truncation (`/home/dan/projects/ne…`) throws away exactly the
+ * information a reader came for; this keeps it (`/home/…/nebula/opys`).
+ */
+export function middlePath(path, max = 42) {
+  const text = typeof path === 'string' ? path : '';
+  if (text.length <= max) return text;
+  const parts = text.split('/');
+  // Take segments from the end until the budget is spent, then prepend the
+  // root segment and one ellipsis. Degenerate cases (one huge segment) fall
+  // back to a plain end-truncate so something readable always comes back.
+  const head = parts.slice(0, 2).join('/');
+  let tail = '';
+  for (let i = parts.length - 1; i >= 2; i -= 1) {
+    const candidate = `/${parts[i]}${tail}`;
+    if (head.length + 1 + candidate.length > max) break;
+    tail = candidate;
+  }
+  if (tail.length === 0) return `${text.slice(0, max - 1)}…`;
+  return `${head}/…${tail}`;
 }
 
 /** Split a comma-separated input the way the node's actions expect it. */

@@ -1,53 +1,107 @@
-/* Global styles. Deliberately minimal: correctness and readability first, and a
-   system font stack rather than a webfont, because the page must render with the
-   machine offline. Dark mode follows the OS via `color-scheme` plus the
-   variables below — no toggle, no stored preference.
+/* Global styles: the design system.
 
-   Only two kinds of rule live here. Element defaults (form controls, links), and
-   the handful of classes more than one component needs — buttons, chips,
-   notices, the app shell's grid. Everything else is scoped inside its component,
-   which is where a style belongs when exactly one thing uses it. */
+   The look is "terminal-modern": dark-first, a deep blue-black room lit by an
+   electric cyan→violet pair, monospace wherever the content is data (ids,
+   statuses, counts, paths, query results), and a machined material language —
+   layered shadows, hairline top-lights, a faint dot grid in the void — so the
+   surfaces read as built, not painted. The light theme is the same machine in
+   a daylit shop: paper surfaces, the same hues held down to AA contrast. Both
+   follow the OS via `color-scheme`; no toggle, no stored preference.
+
+   Two hard rules survive any restyle. Zero external requests: every font stack
+   is a system stack (a machine with JetBrains Mono or Fira Code gets them,
+   everyone else gets their platform mono), every icon is inline SVG
+   (lib/Icon.svelte), every texture is CSS — nothing here may fetch. And
+   `prefers-reduced-motion` is honoured: one kill switch at the bottom stops
+   every animation and transition, so nothing may communicate only by moving.
+
+   Only two kinds of rule live here. Element defaults (form controls, links),
+   and the classes more than one component needs — buttons, chips, notices,
+   toolbars, the status-tone engine, the app shell. Everything else is scoped
+   inside its component, which is where a style belongs when exactly one thing
+   uses it. */
 
 :root {
-  --bg: #fbfbfa;
+  /* Light: paper surfaces, ink text, the accent hues darkened to keep AA. */
+  --bg: #f4f5f8;
   --panel: #ffffff;
-  --raised: #f3f2ef;
-  --fg: #1c1c1a;
-  --muted: #6b6b66;
-  --border: #dedcd6;
-  --accent: #2f6f4e;
+  --raised: #eceef3;
+  --overlay: rgba(255, 255, 255, 0.72);
+  --fg: #151c28;
+  --muted: #5c6a7e;
+  --border: #dbe0e9;
+  --border-strong: #bfc8d6;
+  --accent: #0278b8;
+  --accent-2: #7239e0;
   --accent-fg: #ffffff;
-  --bad: #b3261e;
-  --good: #2f6f4e;
-  --warn: #8a6100;
-  --unknown: #9a978f;
+  --bad: #c93a3a;
+  --good: #0d8f5e;
+  --warn: #8f6407;
+  --unknown: #98a2b3;
+
+  /* Depth. Light theme carries it with shadow; dark carries it with light. */
+  --shadow-1: 0 1px 2px rgba(21, 28, 40, 0.06), 0 1px 1px rgba(21, 28, 40, 0.04);
+  --shadow-2: 0 2px 4px rgba(21, 28, 40, 0.05), 0 8px 24px rgba(21, 28, 40, 0.07);
+  --top-light: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  --grid-dot: rgba(21, 28, 40, 0.045);
+
+  /* The status-tone engine (see `statusTone` in lib/format.js): components set
+     `--tone` to a hue and these decide how loud it is per scheme. */
+  --tone-text: 30%;
+  --tone-border: 45% / 0.45;
+  --tone-wash: 42% / 0.08;
+
+  /* How strongly the accent is allowed to glow. Light theme: barely. */
+  --glow: 0.3;
 
   color-scheme: light dark;
   font-family:
+    'Inter var',
+    Inter,
     system-ui,
     -apple-system,
     'Segoe UI',
     Roboto,
     'Helvetica Neue',
     sans-serif;
+  --font-mono:
+    ui-monospace, 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono',
+    Menlo, Consolas, 'DejaVu Sans Mono', monospace;
   font-size: 15px;
-  line-height: 1.5;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #16171a;
-    --panel: #1e2024;
-    --raised: #26292f;
-    --fg: #e6e4df;
-    --muted: #9a978f;
-    --border: #34373d;
-    --accent: #6fbf94;
-    --accent-fg: #10231a;
-    --bad: #ef8c84;
-    --good: #6fbf94;
-    --warn: #d8ad5a;
-    --unknown: #6e6b64;
+    /* Dark: deep blue-black, not gray — the blue cast is what keeps a wall of
+       panels from reading as sludge — and brighter, cooler accents. */
+    --bg: #090d14;
+    --panel: #0f141d;
+    --raised: #151b27;
+    --overlay: rgba(13, 17, 26, 0.7);
+    --fg: #d5deea;
+    --muted: #8391a6;
+    --border: #1d2533;
+    --border-strong: #2b3649;
+    --accent: #40c8ff;
+    --accent-2: #a689fa;
+    --accent-fg: #04121d;
+    --bad: #ff7a76;
+    --good: #3ddc97;
+    --warn: #fdc24e;
+    --unknown: #48556b;
+
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-2: 0 2px 6px rgba(0, 0, 0, 0.35), 0 12px 32px rgba(0, 0, 0, 0.35);
+    --top-light: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+    --grid-dot: rgba(213, 222, 234, 0.05);
+
+    --tone-text: 74%;
+    --tone-border: 55% / 0.45;
+    --tone-wash: 60% / 0.1;
+
+    --glow: 1;
   }
 }
 
@@ -57,8 +111,32 @@
 
 body {
   margin: 0;
-  background: var(--bg);
   color: var(--fg);
+  /* The room: two soft accent glows bleeding in from the corners, over a
+     faint dot grid that gives the void a surface. All background — it costs
+     nothing and can never sit on top of content. */
+  background:
+    radial-gradient(
+      70rem 34rem at 80% -12%,
+      color-mix(in srgb, var(--accent) calc(7% * var(--glow)), transparent),
+      transparent 65%
+    ),
+    radial-gradient(
+      54rem 28rem at -8% 4%,
+      color-mix(in srgb, var(--accent-2) calc(6% * var(--glow)), transparent),
+      transparent 60%
+    ),
+    radial-gradient(circle at 1px 1px, var(--grid-dot) 1px, transparent 1.5px),
+    var(--bg);
+  background-size:
+    auto,
+    auto,
+    26px 26px,
+    auto;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 a {
@@ -66,13 +144,50 @@ a {
 }
 
 code,
-pre {
-  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+pre,
+kbd {
+  font-family: var(--font-mono);
   font-size: 0.9em;
 }
 
+kbd {
+  display: inline-block;
+  padding: 0 0.35em;
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--raised);
+  font-size: 0.78em;
+  line-height: 1.5;
+}
+
+/* Scrollbars, thin and theme-coloured. A detail nobody praises and everybody
+   notices. (`scrollbar-width` for Firefox, the pseudo-elements for the rest.) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 /* Form controls inherit nothing useful by default, and the app has enough of
-   them that restating this per component would be the bulk of its CSS. */
+   them that restating this per component would be the bulk of its CSS. One
+   height (2rem) for every control in a row, so toolbars align without every
+   view relitigating vertical rhythm. */
 button,
 input,
 select,
@@ -81,48 +196,132 @@ textarea {
   color: inherit;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0.3rem 0.5rem;
+  border-radius: 7px;
+  padding: 0.25rem 0.6rem;
+  min-height: 2rem;
 }
 
+input,
+select {
+  box-shadow: var(--top-light);
+}
+
+/* The native select chrome differs per platform; a drawn chevron does not.
+   The image is a data: URI (zero external requests) in a neutral gray that
+   holds up on both schemes. */
+select {
+  appearance: none;
+  padding-right: 1.7rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23808da1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.5rem center;
+  background-size: 0.85rem;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--muted);
+  opacity: 0.65;
+}
+
+/* Focus is a glow ring, not a hard outline — but never nothing: the outline is
+   kept transparent so forced-colors/high-contrast modes still paint one. */
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
 button:focus-visible,
 a:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid transparent;
   outline-offset: 1px;
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent),
+    var(--top-light);
+}
+
+a:focus-visible {
+  border-radius: 4px;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  justify-content: center;
   cursor: pointer;
-  padding: 0.3rem 0.75rem;
+  padding: 0.25rem 0.8rem;
   white-space: nowrap;
+  font-size: 0.875rem;
+  font-weight: 500;
+  box-shadow: var(--shadow-1), var(--top-light);
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease,
+    color 120ms ease,
+    box-shadow 120ms ease,
+    transform 80ms ease;
 }
 
 .btn:hover:not(:disabled) {
-  border-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  color: var(--accent);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: none;
 }
 
 .btn:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+  box-shadow: none;
 }
 
 .btn.primary:not(:disabled) {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 88%, #ffffff),
+    var(--accent)
+  );
+  border-color: color-mix(in srgb, var(--accent) 80%, #000000);
   color: var(--accent-fg);
+  font-weight: 600;
+}
+
+.btn.primary:hover:not(:disabled) {
+  color: var(--accent-fg);
+  box-shadow:
+    0 0 16px color-mix(in srgb, var(--accent) calc(45% * var(--glow)), transparent),
+    var(--top-light);
 }
 
 .btn.danger:not(:disabled) {
-  border-color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 55%, var(--border));
   color: var(--bad);
 }
 
+.btn.danger:hover:not(:disabled) {
+  border-color: var(--bad);
+  color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 10%, transparent);
+}
+
 .btn.small {
-  padding: 0.15rem 0.45rem;
+  padding: 0.1rem 0.55rem;
   font-size: 0.85em;
+  min-height: 1.65rem;
+}
+
+/* Text drawn with the accent pair. The wordmark, the landing headline — used
+   at most once per screen, or it stops being a signature. */
+.grad-text {
+  background: linear-gradient(120deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
 }
 
 /* The line above a view that is one level down: a way back, plus where you are.
@@ -133,14 +332,25 @@ a:focus-visible {
   gap: 0.75rem;
   align-items: baseline;
   flex-wrap: wrap;
-  margin: 0 0 0.5rem;
+  margin: 0 0 0.6rem;
 }
 
-/* A bordered surface. Used for cards, panels and every framed block. */
+.crumb a {
+  text-decoration: none;
+}
+
+.crumb a:hover {
+  text-decoration: underline;
+}
+
+/* A bordered surface. Used for cards, panels and every framed block. The
+   top-light hairline is what makes it read as material instead of a wireframe
+   rectangle — in dark it is the lit upper edge, in light a bevel. */
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 10px;
+  box-shadow: var(--shadow-1), var(--top-light);
 }
 
 /* A message about the state of things: neutral by default, coloured by the kind
@@ -149,9 +359,10 @@ a:focus-visible {
 .notice {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-left: 4px solid var(--muted);
-  border-radius: 4px;
-  padding: 0.6rem 0.8rem;
+  border-left: 3px solid var(--muted);
+  border-radius: 8px;
+  box-shadow: var(--shadow-1);
+  padding: 0.6rem 0.85rem;
   margin: 0 0 1rem;
 }
 
@@ -176,20 +387,141 @@ a:focus-visible {
   font-size: 0.9em;
 }
 
-/* A small label: a tag, a status, a relation. */
+/* Nothing here — said properly. An icon held in a soft tinted ring, a short
+   heading, and the command that changes the situation. Empty states are where
+   a tool spends the most time with a new user; they get real design, not a
+   grey sentence. */
+.empty {
+  display: grid;
+  justify-items: center;
+  text-align: center;
+  gap: 0.35rem;
+  padding: 3rem 1rem 3.5rem;
+  color: var(--muted);
+}
+
+.empty .halo {
+  display: grid;
+  place-items: center;
+  width: 3rem;
+  height: 3rem;
+  border-radius: 50%;
+  margin-bottom: 0.4rem;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow: 0 0 24px color-mix(in srgb, var(--accent) calc(18% * var(--glow)), transparent);
+}
+
+.empty h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.empty p {
+  margin: 0;
+  max-width: 28rem;
+  font-size: 0.875rem;
+}
+
+.empty code {
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.05em 0.4em;
+}
+
+/* The row of controls above a view's content: filters, a search box, actions.
+   One height, one gap, aligned on centre — the difference between "some inputs"
+   and a toolbar. */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+/* A search input with its magnifier inside. The wrapper owns the frame; the
+   input inside melts into it. */
+.searchbox {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  box-shadow: var(--top-light);
+  padding: 0 0.6rem;
+  min-height: 2rem;
+  color: var(--muted);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.searchbox:focus-within {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent),
+    var(--top-light);
+  color: var(--accent);
+}
+
+.searchbox input {
+  flex: 1;
+  min-width: 6rem;
+  border: none;
+  background: none;
+  box-shadow: none;
+  padding: 0;
+  min-height: 0;
+  color: var(--fg);
+}
+
+.searchbox input:focus-visible {
+  outline: none;
+  box-shadow: none;
+  border: none;
+}
+
+.searchbox kbd {
+  color: var(--muted);
+}
+
+/* A small label: a tag, a status, a relation. Quiet by default — a card with
+   four of these should read as one card, not five boxes. */
 .chip {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  background: var(--raised);
-  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--raised) 75%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
   border-radius: 999px;
-  padding: 0.05rem 0.55rem;
-  font-size: 0.85em;
+  padding: 0.02rem 0.5rem;
+  font-size: 0.8em;
   white-space: nowrap;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* A status, coloured by its tone (`statusTone` in lib/format.js sets `--tone`
+   on the element). Monospace: a status is config vocabulary, not prose. The
+   neutral variant is for the tones that mean "this word is retired" —
+   wontfix, superseded, archived — which should recede, not glow. */
+.chip.status {
+  font-family: var(--font-mono);
+  font-size: 0.8em;
+  color: hsl(var(--tone) 65% var(--tone-text));
+  border-color: hsl(var(--tone) var(--tone-border));
+  background: hsl(var(--tone) var(--tone-wash));
+}
+
+.chip.status.neutral {
+  color: var(--muted);
+  border-color: var(--border);
+  background: var(--raised);
 }
 
 /* A closed document's tombstone. Not a link: the document is gone. */
@@ -200,6 +532,7 @@ a:focus-visible {
 
 a.chip {
   text-decoration: none;
+  transition: border-color 120ms ease;
 }
 
 a.chip:hover {
@@ -214,7 +547,8 @@ a.chip:hover {
 }
 
 .mono {
-  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 .muted {
@@ -225,13 +559,24 @@ a.chip:hover {
   font-size: 0.85em;
 }
 
+/* The uppercase micro-label above filters and panel rows. One shared shape so
+   every view's furniture whispers at the same volume. */
+.microlabel {
+  font-size: 0.66rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+
 /* A status dot: green when a corpus verifies, red when it does not, grey when
    nobody has managed to load it yet — three states, because "unknown" and
-   "clean" must not look the same. */
+   "clean" must not look the same. The good and bad states glow; grey does not,
+   because "unknown" has nothing to be confident about. */
 .dot {
   display: inline-block;
-  width: 0.55rem;
-  height: 0.55rem;
+  width: 0.5rem;
+  height: 0.5rem;
   border-radius: 50%;
   flex: none;
   background: var(--unknown);
@@ -239,10 +584,25 @@ a.chip:hover {
 
 .dot.good {
   background: var(--good);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--good) calc(70% * var(--glow)), transparent);
 }
 
 .dot.bad {
   background: var(--bad);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--bad) calc(70% * var(--glow)), transparent);
+}
+
+/* A write in flight. Small, next to the words that say what is being
+   written; the shared reduced-motion kill switch below stops it. */
+.spinner {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: -0.1em;
 }
 
 /* The shell: a sidebar that stays put and a scrolling main column. */
@@ -254,7 +614,42 @@ a.chip:hover {
 
 .shell > main {
   min-width: 0;
-  padding: 1.25rem 1.5rem 4rem;
+  /* The horizontal gutter scales with the viewport (a 5K monitor deserves more
+     than a laptop's inch), and is a variable so the topbar can bleed across it
+     with margins that always agree. */
+  --main-px: clamp(1.75rem, 3vw, 4rem);
+  padding: 1.4rem var(--main-px) 4rem;
+}
+
+/* A view's persistent header: full-bleed across the main column, sticky, and
+   glassed so content slides beneath it. The negative margins undo main's
+   padding; the same variable puts it back inside, so the bar's content stays
+   aligned with everything below it. */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  margin: -1.4rem calc(-1 * var(--main-px)) 1rem;
+  padding: 0.75rem var(--main-px);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+@supports (backdrop-filter: blur(1px)) {
+  .topbar {
+    background: var(--overlay);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+  }
+}
+
+/* A reading column: full width until the view's measure (`--page-w`), then
+   centered. Working surfaces (the board, the union table) stay fluid; prose
+   and forms do not — a paragraph the width of a 5K monitor is unreadable. */
+.page {
+  width: 100%;
+  max-width: var(--page-w, 100%);
+  margin-inline: auto;
 }
 
 @media (max-width: 46rem) {
@@ -263,6 +658,45 @@ a.chip:hover {
   }
 
   .shell > main {
-    padding: 1rem 0.9rem 3rem;
+    --main-px: 0.9rem;
+    padding: 1rem var(--main-px) 3rem;
+  }
+}
+
+/* The shared animations. Declared once, killed once: under reduced motion every
+   name below stops, so no component may say something only by moving. */
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@keyframes blink {
+  0%,
+  55% {
+    opacity: 1;
+  }
+  56%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
   }
 }
