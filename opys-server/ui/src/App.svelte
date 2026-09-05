@@ -9,6 +9,7 @@
 
   import Board from './Board.svelte';
   import Doc from './Doc.svelte';
+  import Omni from './Omni.svelte';
   import Query from './Query.svelte';
   import Setup from './Setup.svelte';
   import Sidebar from './Sidebar.svelte';
@@ -17,9 +18,30 @@
   import { events } from './lib/events.svelte.js';
   import { corpusLabel, middlePath } from './lib/format.js';
   import { notice } from './lib/notice.svelte.js';
+  import { omni } from './lib/omni.svelte.js';
   import { boardPath, href, nav } from './lib/router.svelte.js';
 
   const route = $derived(nav.route);
+
+  /**
+   * The global shortcuts: Ctrl/⌘+P and `/` open the omnibox from any view,
+   * scoped to the corpus on screen. Ctrl+P is the browser's print key, so it
+   * is always claimed — even while the box is open, where it doubles as
+   * "up" (the fzf habit) — or a slip would print the dashboard.
+   */
+  function onkeydown(event) {
+    const mod = event.ctrlKey || event.metaKey;
+    if (mod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'p') {
+      event.preventDefault();
+      if (!omni.open) omni.show(route.cid ?? null);
+      return;
+    }
+    if (omni.open || event.key !== '/' || mod || event.altKey) return;
+    const target = event.target;
+    if (target instanceof HTMLElement && target.closest('input, textarea, select, [contenteditable]')) return;
+    event.preventDefault();
+    omni.show(route.cid ?? null);
+  }
 
   // Effects return their teardown, so the socket closes and the subscription
   // drops if the app is ever unmounted (a dev-server hot reload, mostly).
@@ -29,6 +51,8 @@
   /** Every corpus the node serves, flattened — the landing page's shortcut. */
   const served = $derived(corpora.groups.flatMap((group) => group.corpora));
 </script>
+
+<svelte:window {onkeydown} />
 
 <div class="shell">
   <Sidebar activeCid={route.cid ?? null} activeKey={route.key ?? null} />
@@ -153,6 +177,8 @@
     {/if}
   </main>
 </div>
+
+<Omni />
 
 <style>
   .home {

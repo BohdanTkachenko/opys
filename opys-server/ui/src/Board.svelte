@@ -28,22 +28,98 @@
     statusTone,
     typeTone,
   } from './lib/format.js';
+  import { MOD, omni } from './lib/omni.svelte.js';
   import { createResource } from './lib/resource.svelte.js';
   import { boardPath, docPath, go, href, queryPath } from './lib/router.svelte.js';
 
   let { cid, filters = {} } = $props();
 
-  /** The find box, so `/` can focus it from anywhere on the board. */
-  let findbox = $state(null);
+  // Keyboard (FEAT-0097). The cursor is real focus on a card: arrow keys move
+  // it between columns and cards, Home/End to a column's ends, PageUp/PageDown
+  // to the previous/next project, and Enter is the link's own. Focus rather
+  // than a selection this component keeps for itself, so Tab, screen readers
+  // and Enter all agree about what is selected, and a reload that keeps the
+  // card keeps the cursor. (Ctrl/⌘+P and `/` are the shell's: they open the
+  // omnibox from every view.)
+  let boardEl = $state(null);
+  /** Where the cursor was last, so the keys resume there after focus left. */
+  let cursor = { col: 0, row: 0 };
+
+  function remember(event) {
+    const card = event.target?.closest?.('.card');
+    const column = card?.closest('.column');
+    if (!card || !column || !boardEl) return;
+    cursor = {
+      col: [...boardEl.querySelectorAll('.column')].indexOf(column),
+      row: [...column.querySelectorAll('.card')].indexOf(card),
+    };
+  }
+
+  function typing(target) {
+    return target instanceof HTMLElement && target.closest('input, textarea, select, [contenteditable]');
+  }
 
   function onwindowkeydown(event) {
-    // The grep reflex. Only when nothing else is being typed into, and never
-    // with a modifier held — Cmd+/ and friends belong to the browser.
-    if (event.key !== '/' || event.metaKey || event.ctrlKey || event.altKey) return;
-    const target = event.target;
-    if (target instanceof HTMLElement && target.closest('input, textarea, select')) return;
+    if (omni.open || event.metaKey || event.ctrlKey || event.altKey || typing(event.target)) return;
+    switch (event.key) {
+      case 'ArrowLeft':
+        step(event, -1, 0);
+        break;
+      case 'ArrowRight':
+        step(event, 1, 0);
+        break;
+      case 'ArrowUp':
+        step(event, 0, -1);
+        break;
+      case 'ArrowDown':
+        step(event, 0, 1);
+        break;
+      case 'Home':
+        step(event, 0, -Infinity);
+        break;
+      case 'End':
+        step(event, 0, Infinity);
+        break;
+      case 'PageUp':
+        page(event, -1);
+        break;
+      case 'PageDown':
+        page(event, 1);
+        break;
+      default:
+    }
+  }
+
+  const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
+
+  /** Move the cursor by `dc` columns and `dr` rows (±Infinity: a column's ends). */
+  function step(event, dc, dr) {
+    const cols = boardEl ? [...boardEl.querySelectorAll('.column')] : [];
+    if (cols.length === 0) return;
     event.preventDefault();
-    findbox?.focus();
+    // A card has focus: move from it. None does: the first press only *shows*
+    // the cursor, where it last was, rather than moving away from a card
+    // nobody could see was selected.
+    const held = document.activeElement?.closest?.('.board .card');
+    if (held) remember({ target: held });
+    let { col, row } = cursor;
+    col = clamp(col + (held ? dc : 0), 0, cols.length - 1);
+    const cards = [...cols[col].querySelectorAll('.card')];
+    if (cards.length === 0) return;
+    if (dr === -Infinity) row = 0;
+    else if (dr === Infinity) row = cards.length - 1;
+    else row = clamp(row + (held ? dr : 0), 0, cards.length - 1);
+    cursor = { col, row };
+    cards[row].focus({ preventScroll: true });
+    cards[row].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
+  /** The previous/next project, in the sidebar's order. */
+  function page(event, dir) {
+    event.preventDefault();
+    const served = corpora.groups.flatMap((group) => group.corpora);
+    const next = served[served.findIndex((c) => c.cid === cid) + dir];
+    if (next) go(boardPath(next.cid));
   }
 
   const docs = createResource();
@@ -107,12 +183,11 @@
   const types = $derived([...new Set(all.map((d) => d.type).filter(Boolean))].sort());
   const tags = $derived([...new Set(all.flatMap((d) => d.tags))].sort());
 
-  // The text box is local, not part of the route: it is a find-as-you-type
-  // scratch filter, and putting every keystroke in the hash would fill the back
-  // button with them. Type and tag *are* in the route, so a filtered board
-  // survives a click into a document and back.
-  let text = $state('');
-  const needle = $derived(text.trim().toLowerCase());
+  // The text filter lives in the route with type and tag (`?q=`), so a
+  // narrowed board survives a click into a document and back. It is set from
+  // the omnibox's last row — the box replaced the toolbar's search field, and
+  // this is that field's other job.
+  const needle = $derived(String(filters.q ?? '').trim().toLowerCase());
 
   function matches(doc) {
     if (filters.type && doc.type !== filters.type) return false;
@@ -392,7 +467,6 @@
   }
 
   function clearFilters() {
-    text = '';
     go(boardPath(cid));
   }
 </script>
@@ -407,6 +481,13 @@
     {/if}
   </div>
   <div class="headside">
+    <!-- Looks like a search field, is the omnibox's doorbell: typing happens
+         in the box, not here. -->
+    <button class="jump" type="button" onclick={() => omni.show(cid)} title={`jump to a ticket (${MOD}+P)`}>
+      <Icon name="search" size={14} />
+      <span class="jumptext">Jump to a ticket…</span>
+      <kbd>{MOD}</kbd><kbd>P</kbd>
+    </button>
     {#if docs.data}
       <span class="mono small muted">
         {shown.length === all.length
@@ -469,18 +550,6 @@
   <p class="muted">Loading documents…</p>
 {:else}
   <div class="toolbar">
-    <label class="searchbox grow" aria-label="Find a document">
-      <Icon name="search" size={14} />
-      <input
-        type="search"
-        bind:this={findbox}
-        bind:value={text}
-        placeholder="Find by id, title, tag or path…"
-        autocomplete="off"
-      />
-      <kbd>/</kbd>
-    </label>
-
     <select
       aria-label="Filter by type"
       value={filters.type ?? ''}
@@ -525,11 +594,22 @@
       </button>
     {/if}
 
+    {#if needle.length > 0}
+      <span class="chip matching">
+        matching “{filters.q}”
+        <button class="x" title="drop the text filter" aria-label="drop the text filter" onclick={() => setFilter('q', '')}>×</button>
+      </span>
+    {/if}
+
     {#if filtered}
       <button class="btn small" onclick={clearFilters}>
         <Icon name="x" size={12} /> Clear
       </button>
     {/if}
+
+    <span class="keys mono muted" aria-hidden="true">
+      <kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>↵</kbd> open · <kbd>PgUp</kbd><kbd>PgDn</kbd> project
+    </span>
   </div>
 
   {#if all.length === 0}
@@ -582,7 +662,7 @@
     {/if}
 
     <div class="boardwrap" class:more-left={edges.left} class:more-right={edges.right}>
-    <div class="board" use:scrollEdges>
+    <div class="board" use:scrollEdges bind:this={boardEl} onfocusin={remember}>
       {#each columns as column (column.status)}
         {@const tone = statusTone(column.status)}
         <!-- A drop target, not a control: the cards inside are the links, and
@@ -749,8 +829,43 @@
     color: inherit;
   }
 
-  .toolbar .grow {
-    flex: 1 1 16rem;
+  .toolbar .matching {
+    gap: 0.35rem;
+    font-size: 0.8rem;
+  }
+
+  .toolbar .x {
+    border: none;
+    background: none;
+    padding: 0;
+    margin: 0;
+    min-height: 0;
+    line-height: 1;
+    cursor: pointer;
+    color: var(--muted);
+  }
+
+  .toolbar .x:hover {
+    color: var(--bad);
+  }
+
+  /* The key legend: at the toolbar's far end, and only where there is a
+     keyboard worth the space. */
+  .keys {
+    margin-left: auto;
+    font-size: 0.7rem;
+    white-space: nowrap;
+  }
+
+  .keys kbd {
+    font-size: 0.85em;
+    margin-right: 0.1rem;
+  }
+
+  @media (max-width: 62rem) {
+    .keys {
+      display: none;
+    }
   }
 
   /* The focus toggle, pressed: lit in the accent, like an active mode. */
@@ -1007,6 +1122,18 @@
 
   .card.neutral:hover {
     border-left-color: var(--border-strong);
+  }
+
+  /* The keyboard cursor. The ring *is* the selection: the arrow keys move
+     real focus, so Enter opens and Tab agrees. The radius restates the
+     panel's, which the shared link-focus rule would otherwise shrink. */
+  .card:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 10px;
+    box-shadow:
+      0 0 0 6px color-mix(in srgb, var(--accent) 18%, transparent),
+      var(--shadow-2);
   }
 
   /* The card being dragged stays as a ghost in its slot; the one whose write

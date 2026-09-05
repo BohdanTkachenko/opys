@@ -305,18 +305,27 @@ branch, with the primary worktree marked, and a dot per corpus for its verify
 state (clean, *N* problems, or not read yet). Pick one and you get:
 
 - **the board** — every document in that corpus, in a column per status, with
-  filters for type, tag and free text;
-- **a document** — its frontmatter and rendered body, plus the writes the node
-  accepts: set status, add or remove tags, add or remove a blocker, close. Each
-  button is a typed action taking the same write path as the equivalent `opys`
-  command, so a write the CLI would refuse — a status change whose rule is
-  unmet, say — is refused here too, with the same message. Creating documents
-  stays a CLI job.
+  filters for type and tag, a text filter set from the omnibox, and drag and
+  drop: onto another column to change status, within a column to set priority
+  (an opt-in field; see ADR-0095). The keyboard drives it too — arrows move
+  between columns and cards, Enter opens, Home/End jump within a column,
+  PageUp/PageDown switch projects;
+- **a document** — its frontmatter and rendered body, both edited in place:
+  status, tags, blockers and custom fields on the panel, the markdown body by
+  clicking into it, and close behind a confirmation. Every write is a typed
+  action taking the same write path as the equivalent `opys` command, so a
+  write the CLI would refuse — a status change whose rule is unmet, say — is
+  refused here too, with the same message. Creating documents stays a CLI job.
 - **the query console** — the same SQL over the corpus that `opys query` runs,
   read-only;
 - **the union view** — every worktree of one project side by side, so you can
   see where two branches disagree about a document. It shows the drift and
   nothing else: nothing here merges anything, because git is the merger.
+
+**Ctrl+P** (⌘P on a Mac) or `/` opens the omnibox from any view: a fuzzy
+finder over the corpus's tickets — or every served corpus, from the home page
+— that opens a ticket on Enter or, from a board, applies the text as its
+filter.
 
 Everything updates live: the node watches each inventory and pushes events over
 a WebSocket, so an edit you make in your editor — or a write from `opys` in
