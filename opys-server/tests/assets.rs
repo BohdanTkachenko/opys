@@ -162,14 +162,16 @@ async fn the_asset_route_cannot_escape_the_bundle() {
 /// The bundle rides inside every copy of the binary, so its size is a number
 /// worth failing on rather than noticing years later.
 ///
-/// The ceiling is set near the real figure (~103 kB: the Svelte runtime plus
-/// seven eagerly-loaded views) rather than at a round number far above it. A
-/// 512 kB ceiling would catch a webfont, but it would also let the bundle
-/// quintuple first — and growth is cheapest to reverse while it is small. Raise
-/// it deliberately, with the reason, when a view genuinely needs the room.
+/// The ceiling is set near the real figure rather than at a round number far
+/// above it. A 512 kB ceiling would catch a webfont, but it would also let the
+/// bundle quintuple first — and growth is cheapest to reverse while it is
+/// small. Raise it deliberately, with the reason, when a view genuinely needs
+/// the room. Raised to 192 kB for the omnibox (FEAT-0098: the finder, its
+/// fuzzy scorer) and the board's keyboard cursor (FEAT-0097), which took the
+/// bundle from ~152 kB to ~165 kB.
 #[test]
 fn the_bundle_stays_small() {
-    const CEILING: usize = 160 * 1024;
+    const CEILING: usize = 192 * 1024;
     let total: usize = assets::all().map(|a| a.bytes.len()).sum();
     assert!(
         total <= CEILING,

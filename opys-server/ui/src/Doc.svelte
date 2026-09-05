@@ -39,6 +39,7 @@
     typeTone,
   } from './lib/format.js';
   import { notice } from './lib/notice.svelte.js';
+  import { MOD, omni } from './lib/omni.svelte.js';
   import { createResource } from './lib/resource.svelte.js';
   import { boardPath, docPath, go, href } from './lib/router.svelte.js';
 
@@ -538,24 +539,27 @@
     <p class="crumb small page">
       <a href={href(boardPath(cid))}>← board</a>
       <span class="muted mono">{d.path}</span>
-      {#if pending}
-        <!-- The one place a write in flight is announced, so the whole panel
-             below stays put while it waits. -->
-        <span
-          class="pendingtag tbside"
-          title="a write waits for the inventory lock, which can take a few seconds if another opys command is running"
-        >
-          <span class="spinner" aria-hidden="true"></span>
-          {pending}…
-        </span>
-      {:else if d.status}
-        {@const tbtone = statusTone(d.status)}
-        <span
-          class="chip status tbside"
-          style:--tone={tbtone}
-          class:neutral={tbtone === null}>{d.status}</span
-        >
-      {/if}
+      <span class="tbside">
+        <button class="jump compact" type="button" onclick={() => omni.show(cid)} title={`jump to a ticket (${MOD}+P)`}>
+          <Icon name="search" size={13} />
+          <span class="jumptext">Jump…</span>
+          <kbd>{MOD}</kbd><kbd>P</kbd>
+        </button>
+        {#if pending}
+          <!-- The one place a write in flight is announced, so the whole
+               panel below stays put while it waits. -->
+          <span
+            class="pendingtag"
+            title="a write waits for the inventory lock, which can take a few seconds if another opys command is running"
+          >
+            <span class="spinner" aria-hidden="true"></span>
+            {pending}…
+          </span>
+        {:else if d.status}
+          {@const tbtone = statusTone(d.status)}
+          <span class="chip status" style:--tone={tbtone} class:neutral={tbtone === null}>{d.status}</span>
+        {/if}
+      </span>
     </p>
   </div>
 
@@ -959,6 +963,9 @@
 
   .tbside {
     margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
   }
 
   .pendingtag {
