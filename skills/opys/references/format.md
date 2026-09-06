@@ -315,7 +315,7 @@ tombstone is presentation, the ledger is the reservation of record). Bare
 `PREFIX-NNNN` ID mentions
 in body prose are rewritten into markdown links on sync; text already inside
 markdown link syntax (label or destination, including labels that themselves
-contain `[…]`) is never re-linkified, and an existing link whose label starts
+contain `[…]` or inline code) is never re-linkified, and an existing link whose label starts
 with a live ID has its title and path refreshed. A nested markdown link (a
 complete link inside another link's label — invalid markdown, typically the
 footprint of a bad edit) fails verify.

@@ -211,15 +211,8 @@ pub fn linkify(
             out.push_str(line);
             continue;
         }
-        // Prose line: linkify the prose runs, leaving inline code spans (of any
-        // backtick-run length) untouched.
-        for (seg, is_code) in code_aware_segments(line) {
-            if is_code {
-                out.push_str(seg);
-            } else {
-                out.push_str(&linkify_prose(seg, current_dir, index, re));
-            }
-        }
+        // Prose line: linkify around its links and inline code spans.
+        out.push_str(&linkify_line(line, current_dir, index, re));
     }
     out
 }
@@ -257,39 +250,75 @@ fn fence_run(line: &str) -> Option<(char, usize, String)> {
     Some((c, len, t[len..].trim().to_string()))
 }
 
-/// Tile a (non-fence) line into prose / inline-code segments. A code span is a
-/// run of N backticks closed by the next run of *exactly* N backticks; its text
-/// (backticks included) is returned with `is_code = true`. Unmatched backtick
-/// runs stay in prose. Concatenating the segments reproduces the line exactly.
-fn code_aware_segments(line: &str) -> Vec<(&str, bool)> {
-    let mut segs = Vec::new();
+/// One piece of a (non-fence) line, as [`tokens`] tiles it.
+enum Tok<'a> {
+    /// An inline code span, backticks included: emitted verbatim, never scanned.
+    Code(&'a str),
+    /// A complete markdown link `[label](dest)`; `text` is the whole link and
+    /// `image` says a `!` precedes it.
+    Link {
+        text: &'a str,
+        label: &'a str,
+        image: bool,
+    },
+    /// Link-free, code-free prose.
+    Prose(&'a str),
+}
+
+/// Tile a (non-fence) line into code spans, links, and prose. A code span is a
+/// run of N backticks closed by the next run of *exactly* N backticks; an
+/// unmatched run stays in prose. Code spans bind tighter than links, as in
+/// CommonMark: a `[` inside a span never opens a link, and a span inside a
+/// link's label — a title like "`opys log`: append …" — never splits the link
+/// (splitting at spans first left the label's head as prose, so its id was
+/// wrapped again on every sync). Concatenating the tokens' text reproduces the
+/// line exactly.
+fn tokens(line: &str) -> Vec<Tok<'_>> {
+    let mut toks = Vec::new();
     let b = line.as_bytes();
     let n = b.len();
     let mut i = 0;
     let mut prose_start = 0;
     while i < n {
-        if b[i] == b'`' {
-            let run = b[i..].iter().take_while(|&&x| x == b'`').count();
-            if let Some(rel) = find_closing_run(&line[i + run..], run) {
-                if prose_start < i {
-                    segs.push((&line[prose_start..i], false));
+        match b[i] {
+            b'`' => {
+                let run = b[i..].iter().take_while(|&&x| x == b'`').count();
+                if let Some(rel) = find_closing_run(&line[i + run..], run) {
+                    if prose_start < i {
+                        toks.push(Tok::Prose(&line[prose_start..i]));
+                    }
+                    let end = i + run + rel + run;
+                    toks.push(Tok::Code(&line[i..end]));
+                    i = end;
+                    prose_start = i;
+                } else {
+                    // Unmatched run: stays in the surrounding prose.
+                    i += run;
                 }
-                let code_end = i + run + rel + run;
-                segs.push((&line[i..code_end], true));
-                i = code_end;
-                prose_start = i;
-                continue;
             }
-            // Unmatched run: skip past it (stays in the surrounding prose).
-            i += run;
-            continue;
+            b'[' => match parse_link(line, i) {
+                Some((label, end)) => {
+                    if prose_start < i {
+                        toks.push(Tok::Prose(&line[prose_start..i]));
+                    }
+                    toks.push(Tok::Link {
+                        text: &line[i..end],
+                        label,
+                        image: line[..i].ends_with('!'),
+                    });
+                    i = end;
+                    prose_start = i;
+                }
+                // A `[` that opens no link (e.g. a checkbox `[ ]`) is prose.
+                None => i += 1,
+            },
+            _ => i += 1,
         }
-        i += 1;
     }
     if prose_start < n {
-        segs.push((&line[prose_start..], false));
+        toks.push(Tok::Prose(&line[prose_start..]));
     }
-    segs
+    toks
 }
 
 /// Byte offset within `s` of the start of the next run of *exactly* `n`
@@ -313,26 +342,23 @@ fn find_closing_run(s: &str, n: usize) -> Option<usize> {
     None
 }
 
-/// Linkify one prose segment (no code spans/fences). Existing markdown links
-/// are parsed with bracket-depth counting — labels may themselves contain
-/// `[…]` — and their interior is never re-matched, so a link is never nested
-/// inside another. A link whose label starts with a live ID is refreshed to
-/// the current title and path; every other link passes through verbatim.
-fn linkify_prose(
-    seg: &str,
+/// Linkify one (non-fence) line. Bare ids in prose become links; a link whose
+/// label starts with a live ID is refreshed to the current title and path;
+/// every other link, and every code span, passes through verbatim — so a link
+/// is never nested inside another.
+fn linkify_line(
+    line: &str,
     current_dir: &Path,
     index: &HashMap<String, (String, PathBuf)>,
     re: &Regex,
 ) -> String {
     let mut out = String::new();
-    let mut pos = 0;
-    while let Some(off) = seg[pos..].find('[') {
-        let start = pos + off;
-        match parse_link(seg, start) {
-            Some((label, end)) => {
-                out.push_str(&replace_bare(&seg[pos..start], current_dir, index, re));
-                let is_image = seg[..start].ends_with('!');
-                let refreshed = if is_image {
+    for tok in tokens(line) {
+        match tok {
+            Tok::Code(s) => out.push_str(s),
+            Tok::Prose(s) => out.push_str(&replace_bare(s, current_dir, index, re)),
+            Tok::Link { text, label, image } => {
+                let refreshed = if image {
                     None
                 } else {
                     re.find(label)
@@ -342,35 +368,36 @@ fn linkify_prose(
                             format!("[{id} — {title}]({})", relpath(current_dir, path))
                         })
                 };
-                match refreshed {
-                    Some(link) => out.push_str(&link),
-                    None => out.push_str(&seg[start..end]),
-                }
-                pos = end;
-            }
-            None => {
-                // A `[` that opens no link (e.g. a checkbox `[ ]`) is prose.
-                out.push_str(&replace_bare(&seg[pos..start], current_dir, index, re));
-                out.push('[');
-                pos = start + 1;
+                out.push_str(refreshed.as_deref().unwrap_or(text));
             }
         }
     }
-    out.push_str(&replace_bare(&seg[pos..], current_dir, index, re));
     out
 }
 
 /// Parse a markdown link `[label](dest)` starting at `start` (a `[`). Returns
 /// the label and the index one past the closing `)`. Brackets in the label and
-/// parens in the destination are matched by depth, so bracketed titles round-trip.
+/// parens in the destination are matched by depth, so bracketed titles
+/// round-trip; a code span inside the label is opaque, so its brackets — and
+/// its backticks — never end the label early.
 fn parse_link(s: &str, start: usize) -> Option<(&str, usize)> {
     let rest = &s[start..];
+    let rb = rest.as_bytes();
     let mut depth = 0usize;
     let mut label_end = None;
-    for (i, ch) in rest.char_indices() {
-        match ch {
-            '[' => depth += 1,
-            ']' => {
+    let mut i = 0;
+    while i < rb.len() {
+        match rb[i] {
+            b'`' => {
+                let run = rb[i..].iter().take_while(|&&x| x == b'`').count();
+                i += run;
+                if let Some(rel) = find_closing_run(&rest[i..], run) {
+                    i += rel + run;
+                }
+                continue;
+            }
+            b'[' => depth += 1,
+            b']' => {
                 depth -= 1;
                 if depth == 0 {
                     label_end = Some(i);
@@ -379,6 +406,7 @@ fn parse_link(s: &str, start: usize) -> Option<(&str, usize)> {
             }
             _ => {}
         }
+        i += 1;
     }
     let label_end = label_end?;
     let after = &rest[label_end + 1..];
@@ -456,21 +484,10 @@ pub fn nested_links(body: &str) -> Vec<String> {
             fence = Some((c, len));
             continue;
         }
-        for (seg, is_code) in code_aware_segments(line) {
-            if is_code {
-                continue; // inline code span (any backtick-run length)
-            }
-            let mut pos = 0;
-            while let Some(off) = seg[pos..].find('[') {
-                let start = pos + off;
-                match parse_link(seg, start) {
-                    Some((label, end)) => {
-                        if contains_link(label) {
-                            found.push(snippet(&seg[start..end]));
-                        }
-                        pos = end;
-                    }
-                    None => pos = start + 1,
+        for tok in tokens(line) {
+            if let Tok::Link { text, label, .. } = tok {
+                if contains_link(label) {
+                    found.push(snippet(text));
                 }
             }
         }
@@ -585,6 +602,53 @@ mod tests {
         );
         let twice = linkify(&once, dir, &m, &re);
         assert_eq!(twice, once);
+    }
+
+    /// A title with an inline code span ("`opys log`: append …") used to split
+    /// the link at the span: the label's head became prose, its id was wrapped
+    /// again on every sync, and the nested result slipped past `nested_links`.
+    #[test]
+    fn link_labels_with_code_spans_are_not_relinkified() {
+        let dir = Path::new("/p/work-items");
+        let re = ref_re(&["FEAT".to_string()]);
+        let mut m = HashMap::new();
+        m.insert(
+            "FEAT-0092".to_string(),
+            (
+                "`opys log`: append a dated entry".to_string(),
+                PathBuf::from("/p/features/FEAT-0092.md"),
+            ),
+        );
+        let once = linkify("The log command (FEAT-0092) owns it.", dir, &m, &re);
+        assert_eq!(
+            once,
+            "The log command ([FEAT-0092 — `opys log`: append a dated entry](../features/FEAT-0092.md)) owns it."
+        );
+        let twice = linkify(&once, dir, &m, &re);
+        assert_eq!(twice, once);
+        // The title inside such a label is still refreshed.
+        assert_eq!(
+            linkify("See [FEAT-0092 — `old`](x/FEAT-0092.md).", dir, &m, &re),
+            "See [FEAT-0092 — `opys log`: append a dated entry](../features/FEAT-0092.md)."
+        );
+    }
+
+    #[test]
+    fn bracket_inside_code_span_does_not_open_a_link() {
+        let dir = Path::new("/p/work-items");
+        let re = ref_re(&["FEAT".to_string()]);
+        assert_eq!(
+            linkify("Match `[` then FEAT-0001 and `]` too.", dir, &idx(), &re),
+            "Match `[` then [FEAT-0001 — Auth login](../features/FEAT-0001.md) and `]` too."
+        );
+    }
+
+    #[test]
+    fn nested_links_are_detected_through_code_spans() {
+        let body = "Bad [[FEAT-0092 — `opys log`: x](FEAT-0092.md) — `opys log`: x](FEAT-0092.md).";
+        let found = nested_links(body);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].starts_with("[[FEAT-0092"), "snippet: {}", found[0]);
     }
 
     #[test]
