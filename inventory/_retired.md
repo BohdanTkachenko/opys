@@ -15,6 +15,7 @@ retired:
   TASK-0073: 'opys-server: worktree union view'
   TASK-0074: 'opys-server: embedded web UI'
   TASK-0075: 'opys-server: systemd install, docs, and M1 closeout'
+  TASK-0122: 'engine: interleaved id sequences'
 ---
 
 # Retired ids

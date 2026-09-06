@@ -48,6 +48,11 @@ pub fn run(ctx: &Ctx, sql: &str, plain: bool, write: bool, stdin_value: bool) ->
         Vec::new()
     };
 
+    // Only a write allocates (a raw `INSERT INTO docs`), and its source is
+    // resolved before the load so a bad `OPYS_ID_SLOT` fails without taking
+    // the inventory lock — a read-only query never reads the slot at all.
+    let mut ids = write.then(|| ctx.id_source(&prj)).transpose()?;
+
     // Unparsable docs are warnings — query the parsable subset (list parity).
     let (mut store, errors) = ctx.load(&prj)?;
     for e in &errors {
@@ -68,7 +73,15 @@ pub fn run(ctx: &Ctx, sql: &str, plain: bool, write: bool, stdin_value: bool) ->
 
         let summary = store.run_user_write(&sql, &params).map_err(usage)?;
         apply_block_edits(&prj, &mut store, &before_blocks)?;
-        reconcile_model(&prj, &mut store, &baseline, &rel_before, !ctx.no_sync)?;
+        reconcile_model(
+            &prj,
+            &mut store,
+            ids.as_deref_mut()
+                .expect("resolved above for the write path"),
+            &baseline,
+            &rel_before,
+            !ctx.no_sync,
+        )?;
 
         let after = verify_problems(&prj, &mut store, &errors)?;
         let new: Vec<String> = after.difference(&before).cloned().collect();
@@ -104,7 +117,11 @@ fn docs_of(store: &mut Store) -> Result<Vec<Doc>> {
 /// canonically. Tags/relations aren't set here — add them via the CLI or
 /// follow-up SQL. Runs before the verify gate, so a malformed insert is refused
 /// with no files changed.
-fn materialize_inserts(prj: &crate::project::Project, store: &mut Store) -> Result<()> {
+fn materialize_inserts(
+    prj: &crate::project::Project,
+    store: &mut Store,
+    ids: &mut dyn IdSource,
+) -> Result<()> {
     use crate::store::g_str;
     let (_, rows) = store.select(
         "SELECT id, type, status, title, body FROM docs WHERE dkey IS NULL",
@@ -161,14 +178,15 @@ fn materialize_inserts(prj: &crate::project::Project, store: &mut Store) -> Resu
     }
 
     // Swap the raw partial rows for canonical documents. Allocate ids one at a
-    // time so multiple inserts in one statement get distinct sequential ids.
+    // time — each `put_doc` advances the max the source reads — so multiple
+    // inserts in one statement get distinct ids.
     store.exec("DELETE FROM docs WHERE dkey IS NULL", vec![])?;
     for raw in raws {
         let t = &pcfg.types[&raw.type_name];
         let id = match raw.id {
             Some(id) => id,
             None => {
-                let n = crate::ids::SequenceMax.reserve(store, 1)?;
+                let n = ids.reserve(store, 1)?;
                 crate::ids::format_id(&t.prefix, n, pcfg.pad)
             }
         };
@@ -202,6 +220,7 @@ fn materialize_inserts(prj: &crate::project::Project, store: &mut Store) -> Resu
 fn reconcile_model(
     prj: &crate::project::Project,
     store: &mut Store,
+    ids: &mut dyn IdSource,
     baseline: &crate::store::Baseline,
     rel_before: &[(String, String)],
     run_sync: bool,
@@ -213,7 +232,7 @@ fn reconcile_model(
     // now anchored nowhere.
     store.reserve_unanchored(rel_before)?;
     // Inserts: turn raw `INSERT INTO docs` rows into allocated, scaffolded docs.
-    materialize_inserts(prj, store)?;
+    materialize_inserts(prj, store, ids)?;
     if run_sync {
         crate::commands::sync::pass(prj, store)?;
     }

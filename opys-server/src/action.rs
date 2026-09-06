@@ -231,12 +231,14 @@ impl ActionOutcome {
 /// Run one action against the corpus rooted at `root`, exactly as the CLI would.
 ///
 /// The sequence is the one in `src/commands/*.rs`, verbatim: open the project,
-/// load a store (which takes the inventory lock), call the print-free core,
-/// flush (which releases it), then run the auto-sync pass. That last step is its
-/// own second load/flush cycle rather than a pass over the store above, and the
-/// difference is visible on disk: `sync::pass` backfills a missing
-/// `created`/`updated` from the file's mtime, so folding it into the first cycle
-/// would read the *pre-write* mtime and write different bytes.
+/// resolve the id source when the action allocates one (before the lock, as
+/// `Ctx::id_source` requires), load a store (which takes the inventory lock),
+/// call the print-free core, flush (which releases it), then run the auto-sync
+/// pass. That last step is its own second load/flush cycle rather than a pass
+/// over the store above, and the difference is visible on disk: `sync::pass`
+/// backfills a missing `created`/`updated` from the file's mtime, so folding it
+/// into the first cycle would read the *pre-write* mtime and write different
+/// bytes.
 ///
 /// The one place the six commands disagree with each other is what happens when
 /// a core refuses. `new::run` propagates immediately — nothing is flushed, no
@@ -272,6 +274,20 @@ pub fn perform(root: &Path, backend: &dyn Backend, action: &Action) -> Attempt {
     if prj.root.as_path() != root {
         return Err(ActionError::Gone);
     }
+    // The id source is resolved *before* the load, which is where the inventory
+    // lock is taken — the ordering `Ctx::id_source` documents for the CLI, and
+    // the reason a bad `OPYS_ID_SLOT` is answered at once instead of after
+    // waiting out `OPYS_LOCK_TIMEOUT_MS` behind another writer. Only `New`
+    // allocates, and only under an `[ids] modulus` does the resolution read
+    // anything at all, so every other action stays exactly as it was.
+    let mut ids = match action {
+        Action::New { .. } => {
+            // The node allocates in its own process's slot (`OPYS_ID_SLOT` in
+            // its environment, else the hash of the user@host it runs as).
+            Some(opys_engine::ids::resolve(&prj.pcfg).map_err(ActionError::Refused)?)
+        }
+        _ => None,
+    };
     // Unparsable documents come back here as messages rather than as a failure,
     // and the CLI drops them at exactly this point: they are the corpus's
     // problem, reported by `verify`, not this write's.
@@ -287,9 +303,13 @@ pub fn perform(root: &Path, backend: &dyn Backend, action: &Action) -> Attempt {
         } => {
             // The trailing `&[]` is the CLI's repeatable `--field key=value`,
             // which the action vocabulary deliberately does not expose.
+            let ids = ids
+                .as_mut()
+                .expect("the id source is resolved above for every `New`");
             let doc = new::core(
                 &prj,
                 &mut store,
+                &mut **ids,
                 type_name,
                 title,
                 tags,

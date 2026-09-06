@@ -105,6 +105,12 @@ their canonical layout path (e.g. an archived doc moves into `_archived/`)
 automatically; pass `--no-sync` to skip, or run `opys sync` after editing files
 by hand.
 
+Ids come from one global, never-reused sequence. A project that creates
+documents on several branches at once sets `[ids] modulus = M` in `opys.toml`:
+each allocator then draws only the numbers of its slot (`OPYS_ID_SLOT`, else a
+stable hash of `user@host`, modulo `M`), so branches cannot collide and merge
+without a `renumber`. Without a modulus, allocation is the dense sequence.
+
 ## Commands
 
 | Command | Purpose |
@@ -112,7 +118,7 @@ by hand.
 | `init` | bootstrap `opys.toml` + `opys/`, print a CLAUDE.md snippet |
 | `config <init\|validate>` | generate / validate the universal `opys.toml` |
 | `new --type <T>` | allocate the next ID and write a skeleton document of type `T` (auto-syncs) |
-| `import --type <T>` | bulk-create documents of type `T` from a JSONL file (sequential IDs, one sync) |
+| `import --type <T>` | bulk-create documents of type `T` from a JSONL file (one ID block, one sync) |
 | `show` / `list` | retrieval (`--type`, `--tag`, `--status`, `--format table\|ids\|paths`) |
 | `set-status` | guarded transitions, enforced by the type's configured rules |
 | `tag` | add/remove tags (`--add a,b --remove c`) |
@@ -433,6 +439,19 @@ systemd.user.services.opys-server = {
 
 On a headless box add `users.users.<you>.linger = true;` (NixOS) for the same
 reason `loginctl enable-linger` exists above.
+
+If a served project sets `[ids] modulus`, the node's `new` action allocates in
+the node's own slot: `OPYS_ID_SLOT` from the unit's environment when set, else
+the hash of the account the service runs as (`$USER` at the hostname — from
+`$HOSTNAME`, else `$COMPUTERNAME`, else `/etc/hostname`) — normally the same
+slot as your own shell on that machine. On macOS, where none of those host
+inputs is normally set, everything on the machine hashes as `user@localhost`,
+so export `HOSTNAME` or pin a slot there. `opys web install` writes no slot
+line, so to
+pin one add `Environment=OPYS_ID_SLOT=<n>` under `[Service]` — as a drop-in
+(`systemctl --user edit opys-server`), since `install --force` rewrites the
+unit — or as `Service.Environment` / `serviceConfig.Environment` in the
+declarations above.
 
 The allowlist stays yours to edit either way: `opys web add` writes it, and the
 node picks the change up without a restart. (One caveat if you hand-edit

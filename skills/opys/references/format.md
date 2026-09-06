@@ -62,6 +62,94 @@ corpus never goes red silently. To undo a mistaken close/retire, restore the
 file from git and delete its line from `_retired.md` — the one sanctioned hand
 edit of the ledger.
 
+### Id allocation
+
+Ids are numbers from **one global, monotonically increasing sequence** shared
+by every type: `new` takes the next number above everything it has seen — live
+documents, the retired ledger, and every relation-map entry (struck or not) —
+so a number is never reused, and a gap is harmless (monotonicity, not density,
+is the contract).
+
+By default the sequence is dense. A project that allocates on several branches
+at once (parallel agents, feature branches that file their own tasks and bugs)
+sets a **modulus** instead:
+
+```toml
+[ids]
+modulus = 16
+```
+
+`M` must be at least 2 (one slot cannot interleave) and at most `2^32`
+(`4294967296` — ids are stored as 64-bit numbers, and a larger stride could
+walk past that range); `config validate` and `verify` report a modulus outside
+those bounds, and every allocating command refuses to run under one. The
+`[ids]` table accepts only `modulus`: any other *key* inside it (a misspelled
+`modulus`, say) is a TOML parse error that stops every command with exit 2,
+like a syntax error, rather than leaving the project silently dense. A
+misspelled *table* name (`[idz]`) is another matter: unknown top-level tables
+are ignored, here as for `[layout]` or `[file_refs]`, so such a typo does leave
+allocation dense, silently. `opys config validate` is the tell: under a modulus
+it prints the resolved slot after the `OK` line (`ids: slot 2 of 4 (from
+OPYS_ID_SLOT) — next id here is congruent to 2 mod 4`) and says nothing when
+allocation is dense. It resolves the slot the way an allocating command would,
+so an unusable `OPYS_ID_SLOT` exits 2 there too, before anything is printed.
+
+With `modulus = M` every allocator owns a **slot** `k` in `0..M` and takes only
+numbers congruent to `k` modulo `M`: the smallest `n ≡ k (mod M)` above the
+corpus-wide max, then `n + M`, `n + 2M`, … Two allocators with different slots
+cannot collide, on any branches, with no shared ledger, ref, or push. The slot
+comes from:
+
+1. `OPYS_ID_SLOT` when set — an integer below `M`; anything else, an empty
+   value included, is a usage error (exit 2) naming the slot and the modulus
+   (so `OPYS_ID_SLOT="$SLOT"` with an unassigned `$SLOT` fails instead of
+   silently sharing one slot). An orchestrator running several agents sets a
+   distinct slot per agent.
+2. Otherwise a stable hash of `user@host`: FNV-1a 64-bit (offset basis
+   `0xcbf29ce484222325`, prime `0x100000001b3`) of the UTF-8 bytes, modulo
+   `M`. The user is `$USER`, else `$USERNAME`, else `unknown`; the host is
+   `$HOSTNAME`, else `$COMPUTERNAME`, else `/etc/hostname`, else `localhost`.
+   Every one of those values is trimmed of surrounding whitespace, and a
+   variable that is set but empty or blank (or an empty `/etc/hostname`)
+   counts as unset — unlike `OPYS_ID_SLOT`, where an empty value is an error
+   (it is trimmed before it is parsed, so `" 3 "` is slot 3). No command is
+   run to find the host, so the slot stays reproducible from the raw
+   environment by any tool that applies the same trimming and fallbacks. The
+   same person on the same machine therefore always lands in the same slot —
+   with one caveat: **on macOS neither `HOSTNAME` nor `/etc/hostname` is
+   normally there**, so everyone on such a machine hashes as `user@localhost`,
+   and two same-named accounts on two Macs share a slot. Export `HOSTNAME`, or
+   set `OPYS_ID_SLOT` (which an orchestrator does anyway).
+
+Which commands read it: the slot is resolved and validated **before the
+inventory is loaded**, and only by the commands that can allocate — `new`,
+`import`, `renumber`, `query --write` (whether or not the statement inserts),
+and the node's `new` action. So a bad `OPYS_ID_SLOT` fails fast, without taking
+the inventory lock or making a concurrent writer wait. Reads (`show`, `list`,
+plain `query`, `verify`) and the non-allocating writes (`set-status`, `tag`,
+`block`, `close`, `retire`, `cleanup`, `sync`) never look at the variable at
+all.
+
+Two allocators sharing a slot are a misconfiguration; they collide exactly as
+they would without a modulus, and `opys renumber` repairs it exactly as today.
+`verify` is unchanged: number uniqueness and the never-reuse ledger are the
+invariants interleaving preserves, so a corpus merged from several slots passes
+as is. `import` reserves its batch as one block that steps by `M` (its summary
+says so: `imported 3 feature document(s): FEAT-0005..FEAT-0013 step 4` — the
+range is not dense); `query --write INSERT` and `renumber` allocate through
+the same slot.
+
+Consequences to plan for: one allocator's consecutive ids are `M` apart
+(`M - 1` unused numbers lie between them), so choose `pad` for the sequence,
+not the document count — at `M = 16`, `pad = 4`
+holds roughly six hundred documents per slot (`9999 / 16`) before ids grow a
+fifth digit (which is allowed: `pad` is a minimum width, never a cap). A
+modulus can be set or changed at any time: existing ids simply stay below the
+max and every allocator only ever allocates above everything it sees — what
+changes is which allocators share a slot from then on, so treat a change as a
+new assignment of slots. With no modulus configured, allocation is the dense
+sequence, byte-identically, and `OPYS_ID_SLOT` is not read.
+
 ## Configuration: `opys.toml`
 
 One config declares every document **type** and the rules over them. `opys config
@@ -70,6 +158,9 @@ init` writes the opinionated default (a permanent `feature` type plus ephemeral
 
 ```toml
 pad = 4                              # zero-padding width for the numeric id part
+
+# [ids]                              # interleaved ids for multi-branch work
+# modulus = 16                       # one slot per allocator (OPYS_ID_SLOT, else user@host)
 
 # [layout]                           # on-disk path template (relative to base)
 # path = "{type}/{status}/{id}.md"   # default; {type}/{status} empty → flat
@@ -536,7 +627,9 @@ features. Two supported bulk paths avoid that:
   canonical `FEAT-NNNN.md` files yourself (matching the frontmatter rules
   above), then run `opys sync` once and `opys verify`. This is a fully
   supported escape hatch when your source data does not map cleanly onto the
-  JSONL schema; allocate IDs monotonically and never reuse a retired one.
+  JSONL schema; allocate IDs monotonically and never reuse a retired one (and,
+  under an `[ids] modulus`, stay in your slot — see
+  [Id allocation](#id-allocation)).
 
 Either way: do **not** loop `opys new` over a large migration. After import,
 review in batches per tag using `opys list`, exactly as for a hand-built

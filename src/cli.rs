@@ -71,7 +71,7 @@ pub enum Command {
     },
 
     /// Bulk-create documents of one type from a JSONL file (one JSON object per
-    /// line), allocating sequential IDs and syncing once. Run `verify` after.
+    /// line), allocating the IDs as one block and syncing once. Run `verify` after.
     Import {
         /// Document type to create (configured in opys.toml; default `feature`).
         #[arg(long = "type", default_value = "feature")]

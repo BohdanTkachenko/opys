@@ -53,6 +53,14 @@ impl Ctx {
     pub fn flush(&self, prj: &Project, store: store::Store) -> Result<()> {
         self.backend.flush(prj, store)
     }
+
+    /// The id source for `prj`: the dense sequence, or — under `[ids]
+    /// modulus` — this allocator's interleaved slot (see [`ids::resolve`]).
+    /// Resolve it before [`Ctx::load`], so a bad `OPYS_ID_SLOT` fails without
+    /// taking the inventory lock.
+    pub fn id_source(&self, prj: &Project) -> Result<Box<dyn ids::IdSource>> {
+        ids::resolve(&prj.pcfg)
+    }
 }
 
 /// Execute a parsed CLI invocation, returning the process exit code.

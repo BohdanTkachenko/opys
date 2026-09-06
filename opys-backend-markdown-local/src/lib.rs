@@ -92,7 +92,8 @@ fn lock_dir() -> PathBuf {
 /// empty forever: the lock is the flock on its handle, which the OS releases
 /// when the holding process exits (however it exits), so stale locks cannot
 /// happen. Machine-local is the lock's whole scope by design — cross-machine
-/// coordination is id leases + `renumber`, not this file.
+/// coordination is interleaved id slots (`[ids] modulus`, ADR-0103) +
+/// `renumber`, not this file.
 pub fn lock_path(base: &Path) -> Result<PathBuf> {
     let canon = std::fs::canonicalize(base)?;
     let s = canon.to_string_lossy();

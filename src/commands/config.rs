@@ -3,8 +3,7 @@
 //! Currently just `config init`, which scaffolds the opinionated default
 //! `opys.toml` for the upcoming universal typed-document engine. Nothing reads
 //! that file yet; this only generates it so the config shape can be reviewed and
-//! iterated on. Future subcommands (`config validate`, `config show`) belong
-//! here too.
+//! iterated on. Future subcommands (`config show`) belong here too.
 
 use crate::error::{usage, Result};
 use crate::project::{find_root, start_dir};
@@ -43,11 +42,22 @@ pub fn validate(ctx: &Ctx) -> Result<i32> {
     let cfg = ProjectConfig::load(&root.join("opys.toml"))?;
     let problems = cfg.validate();
     if problems.is_empty() {
+        // Under `[ids] modulus` the slot this process allocates in is otherwise
+        // invisible until it creates a document (ADR-0103), which is exactly
+        // what an orchestrator wants to check before spawning agents. Resolved
+        // before anything is printed, so an unusable `OPYS_ID_SLOT` is the
+        // usage error (exit 2) it is for every allocating command rather than a
+        // line after `OK` — and only once the config itself is clean, so a
+        // modulus the config rejects stays a reported problem (exit 1) below.
+        let ids = crate::ids::describe(&cfg)?;
         println!(
             "config: OK ({} types, {} rules)",
             cfg.types.len(),
             cfg.rules.len()
         );
+        if let Some(line) = ids {
+            println!("{line}");
+        }
         Ok(0)
     } else {
         eprintln!("config: {} problem(s)", problems.len());

@@ -121,6 +121,23 @@ impl Default for Layout {
     }
 }
 
+/// Id allocation (ADR-0103). With `modulus = M` set, each allocator owns a
+/// slot in `0..M` (from `OPYS_ID_SLOT`, else a stable hash of `user@host`) and
+/// draws only numbers congruent to it, so allocators on different branches
+/// cannot collide. Absent, allocation is the dense global sequence.
+///
+/// Unlike the rest of the config, this table rejects unknown keys at parse
+/// time (a hard `OpysError::Toml`, exit 2, from every command): a misspelled
+/// `modulus` would otherwise leave the project silently dense, and
+/// `Project::open` never runs [`ProjectConfig::validate`], so a validate-time
+/// report could not stop `new` from allocating.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ids {
+    #[serde(default)]
+    pub modulus: Option<u64>,
+}
+
 /// A built-in section behavior a type's section opts into. The validator and
 /// scaffold for each kind are compiled code (closed set, not extensible from
 /// config) — this is the guardrail that keeps the engine opinionated. The
@@ -402,6 +419,9 @@ pub struct ProjectConfig {
     pub pad: usize,
     #[serde(default)]
     pub layout: Layout,
+    /// Interleaved id allocation; see [`Ids`].
+    #[serde(default)]
+    pub ids: Ids,
     #[serde(default)]
     pub types: BTreeMap<String, DocType>,
     #[serde(default)]
@@ -538,6 +558,22 @@ impl ProjectConfig {
                 "base {:?} {problem} — the inventory must live inside the project",
                 self.base
             ));
+        }
+
+        // The same bounds `ids::resolve` enforces before any allocation: a
+        // modulus of 0 or 1 would leave one slot (or none) for every allocator,
+        // and one above `ids::MAX_MODULUS` strides ids past the store's `i64`.
+        if let Some(m) = self.ids.modulus {
+            if m < 2 {
+                errs.push(format!(
+                    "ids.modulus must be at least 2 (got {m}) — interleaving needs at least two slots"
+                ));
+            } else if m > crate::ids::MAX_MODULUS {
+                errs.push(format!(
+                    "ids.modulus must be at most {} (got {m}) — ids must stay within 64-bit numbers",
+                    crate::ids::MAX_MODULUS
+                ));
+            }
         }
 
         // The layout template must place each document at a unique path: it must
@@ -930,6 +966,54 @@ structure = "- @x"
                 .contains("section 'Notes': 'structure' is only allowed on a 'structured' section"),
             "{joined}"
         );
+    }
+
+    #[test]
+    fn flags_a_modulus_outside_the_bounds_and_accepts_a_real_one() {
+        let base = "[types.feature]\nprefix = \"FEAT\"\nstatuses = [\"planned\"]\ndefault_status = \"planned\"\n";
+        for m in [0u64, 1] {
+            let cfg: ProjectConfig =
+                toml::from_str(&format!("{base}[ids]\nmodulus = {m}\n")).unwrap();
+            let joined = cfg.validate().join("\n");
+            assert!(
+                joined.contains(&format!("ids.modulus must be at least 2 (got {m})")),
+                "{joined}"
+            );
+        }
+        // Above the cap, an id would stride past the store's i64 and wrap
+        // into a reusable number; the cap itself is accepted.
+        for m in [crate::ids::MAX_MODULUS + 1, i64::MAX as u64] {
+            let cfg: ProjectConfig =
+                toml::from_str(&format!("{base}[ids]\nmodulus = {m}\n")).unwrap();
+            let joined = cfg.validate().join("\n");
+            assert!(
+                joined.contains(&format!("ids.modulus must be at most 4294967296 (got {m})")),
+                "{joined}"
+            );
+        }
+        for m in [16, crate::ids::MAX_MODULUS] {
+            let cfg: ProjectConfig =
+                toml::from_str(&format!("{base}[ids]\nmodulus = {m}\n")).unwrap();
+            assert_eq!(cfg.ids.modulus, Some(m));
+            assert!(cfg.validate().is_empty());
+        }
+        // Absent: no modulus, so allocation stays the dense sequence.
+        let cfg: ProjectConfig = toml::from_str(base).unwrap();
+        assert_eq!(cfg.ids.modulus, None);
+    }
+
+    /// `[ids]` accepts only `modulus`: a misspelled key is a parse error, not a
+    /// silently dense project. An empty table still means "no modulus".
+    #[test]
+    fn rejects_an_unknown_ids_key_at_parse_time() {
+        let base = "[types.feature]\nprefix = \"FEAT\"\nstatuses = [\"planned\"]\ndefault_status = \"planned\"\n";
+        let err = toml::from_str::<ProjectConfig>(&format!("{base}[ids]\nmodulos = 16\n"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown field `modulos`"), "{err}");
+        assert!(err.contains("expected `modulus`"), "{err}");
+        let cfg: ProjectConfig = toml::from_str(&format!("{base}[ids]\n")).unwrap();
+        assert_eq!(cfg.ids.modulus, None);
     }
 
     #[test]

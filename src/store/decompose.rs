@@ -71,8 +71,9 @@ pub(crate) struct FmRow {
     pub kind: &'static str,
 }
 
-/// The numeric part of a `PREFIX-NNNN` id if it parses (sequence-max parity
-/// with `project::id_part`: malformed ids contribute NULL, which MAX ignores).
+/// The numeric part of a `PREFIX-NNNN` id if it parses; malformed ids
+/// contribute NULL, which the sequence-max `MAX` ignores rather than treating
+/// as huge.
 pub(crate) fn id_num(id: &str) -> Option<i64> {
     id.rsplit_once('-').and_then(|(_, n)| n.parse::<i64>().ok())
 }

@@ -168,18 +168,25 @@ Layering, roughly outermost-in:
   rebuilt by `refresh_projections`; `blocks(doc_id, seq, heading, text)` decomposes
   each body into its `##` sections and is the one *writable* projection —
   `query --write` splices an edited `blocks.text` back into the authoritative body. ID allocation goes through the `ids::IdSource`
-  seam — default `SequenceMax`, one SQL `MAX` across docs/relations/retired; a
-  lease-block source slots in later (ADR-0055). Internal SQL uses `$n` parameters and JOINs only — never
+  seam, resolved by `Ctx::id_source` / `ids::resolve` from the config and never
+  named by a command — `SequenceMax` (one SQL `MAX` across docs/relations/
+  retired) by default, or under `[ids] modulus = M` an `Interleaved` slot
+  (`OPYS_ID_SLOT`, else FNV-1a of `user@host` mod `M`) that draws only
+  congruent numbers, so allocators on different branches cannot collide
+  (ADR-0103). Callers that build several documents before storing any
+  (`import`, `renumber`) take one `block`, which steps by the source's stride. Internal SQL uses `$n` parameters and JOINs only — never
   `IN (subquery)`/FROM-subqueries/`UNION` (GlueSQL executes/​rejects those
   badly). `commands/query.rs` exposes user SQL: read-only (plan-guarded to
   SELECT) by default, or `--write` edit statements that are applied only if the
   post-write corpus still passes `verify::collect_problems` (else nothing is
   flushed — the store mutation stays in memory).
 - `src/project.rs` — `Project` ties the on-disk layout to `pcfg`. `Project::open`
-  requires `<root>/opys.toml`. Owns the canonical-path helper (`doc_path`) and —
-  for the still-file-based `history` path — `next_id_for`/`max_doc_id` and
-  `find` over an already-loaded doc set. Document discovery/parsing lives in the
-  backend crate (`load_docs`). Mutating commands go through the store.
+  requires `<root>/opys.toml`. Owns the canonical-path helper (`doc_path`), the
+  retired-ledger reader (`retired_ids`), and — for the still-file-based
+  `history` path — `find` over an already-loaded doc set. Id allocation is not
+  here: every allocator is `Ctx::id_source` → `ids::resolve`, reserving against
+  the store. Document discovery/parsing lives in the backend crate
+  (`load_docs`). Mutating commands go through the store.
 - `src/doc.rs` / `src/frontmatter.rs` / `src/body.rs` — the parse layer. `Doc` is
   the single document struct (`{path, frontmatter, body, title}`; type derived
   from the id prefix). `frontmatter` parses YAML with `serde_norway` and
@@ -210,12 +217,18 @@ All status/section/link guards are *config*, enforced by one engine
 
 - **IDs**: each type has a `prefix` (validated `^[A-Z][A-Z0-9]*$`, unique across
   types); ids are drawn from a *single global, monotonically increasing
-  sequence* — never reused, never duplicated across prefixes. `max_doc_id` takes
+  sequence* — never reused, never duplicated across prefixes. The store's
+  `max_doc_num` (one SQL `MAX` each over `docs`, `relations`, `retired`) takes
   the max over every live doc, the retired ledger (`<base>/_retired.md`), *and*
-  every relation map (`refs::all_relation_ids`, struck or not), so a closed doc's
-  tombstone still reserves its number; `next_id_for(prefix, …)` is one past it.
+  every relation map (struck or not), so a closed doc's tombstone still
+  reserves its number; the one allocator, the `IdSource` handed out by
+  `Ctx::id_source` / `ids::resolve`, allocates above it — `SequenceMax` one
+  past, `Interleaved` the smallest number in its slot past.
   `retire` appends to the (sorted) ledger; `verify` rejects reuse *and* any two
-  live docs sharing a number (`check_unique_numbers`).
+  live docs sharing a number (`check_unique_numbers`). With `[ids] modulus = M`
+  set, an allocator takes only numbers congruent to its slot (ADR-0103) — the
+  same invariants, with gaps of `M - 1`; with no modulus, allocation is dense
+  and `OPYS_ID_SLOT` is not read.
 - **References** (`references` map): auto-reconciled on every write
   (`links::reconcile`) — bidirectional between live docs, titles refreshed, sorted
   by number. A closed doc leaves a struck-through (`~~title~~`) tombstone.
@@ -372,6 +385,10 @@ only the relevant files. To create or change documents, use the CLI (`new
 --type`, `set-status`, `tag`, `retire`, `block`, `close`); body prose edits are
 normal file edits — run `opys verify` before finishing. Known code-review
 findings are filed as `bug`/`chore` docs linked to their feature.
+
+This repository allocates ids densely today — there is no `[ids]` table in its
+`opys.toml`; `[ids] modulus` (ADR-0103) is the switch to flip when the inventory
+goes multi-branch.
 
 Product and architecture decisions are `adr` docs (`new --type adr`;
 Context/Decision/Consequences sections, statuses proposed → accepted →
