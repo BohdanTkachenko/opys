@@ -15,13 +15,13 @@ use crate::commands::maybe_sync;
 use crate::doc::Doc;
 use crate::error::{usage, Result};
 use crate::frontmatter::Frontmatter;
-use crate::ids::IdSource;
 use crate::project::Project;
 use crate::project_config::{DocType, ProjectConfig};
 use crate::{rules, Ctx};
 
 pub fn run(ctx: &Ctx, type_name: &str, file: &str) -> Result<()> {
     let prj = ctx.open()?;
+    let mut ids = ctx.id_source(&prj)?;
     let (mut store, _) = ctx.load(&prj)?;
     let pcfg = &prj.pcfg;
     let ft = pcfg.types.get(type_name).ok_or_else(|| {
@@ -37,15 +37,17 @@ pub fn run(ctx: &Ctx, type_name: &str, file: &str) -> Result<()> {
     let text = std::fs::read_to_string(file)
         .map_err(|e| usage(format!("cannot read import file {file:?}: {e}")))?;
 
-    // Reserve the whole batch's numbers up front through the allocation seam,
+    // Reserve the whole batch's numbers up front through the allocation seam
+    // (one block — the source decides the spacing, dense or interleaved),
     // building every document in memory and collecting *all* rejections before
     // touching the store (so a rejected batch leaves it — and thus disk —
     // untouched; the reserved numbers become a harmless gap).
     let count = text.lines().filter(|l| !l.trim().is_empty()).count() as u64;
-    let mut next = match count {
-        0 => 0, // no records: skip reservation, fall through to the error below
-        n => crate::ids::SequenceMax.reserve(&mut store, n)?,
-    };
+    let mut nums = match count {
+        0 => Vec::new(), // no records: skip reservation, fall through to the error below
+        n => ids.block(&mut store, n)?,
+    }
+    .into_iter();
     let mut built: Vec<Doc> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
 
@@ -53,8 +55,8 @@ pub fn run(ctx: &Ctx, type_name: &str, file: &str) -> Result<()> {
         if line.trim().is_empty() {
             continue;
         }
-        let id = crate::ids::format_id(&ft.prefix, next, pcfg.pad);
-        next += 1;
+        let num = nums.next().expect("one reserved number per record");
+        let id = crate::ids::format_id(&ft.prefix, num, pcfg.pad);
         match build_record(&prj, ft, pcfg, type_name, &doc_ids, &id, line) {
             Ok(d) => built.push(d),
             Err(e) => errors.push(format!("line {}: {e}", i + 1)),
@@ -77,8 +79,15 @@ pub fn run(ctx: &Ctx, type_name: &str, file: &str) -> Result<()> {
     }
     let first = built.first().and_then(Doc::id).unwrap_or("");
     let last = built.last().and_then(Doc::id).unwrap_or("");
+    // `first..last` reads as a dense range, which it is only for the dense
+    // source; an interleaved block names its stride so the summary does not
+    // claim the numbers in between.
+    let stride = match ids.step() {
+        1 => String::new(),
+        step => format!(" step {step}"),
+    };
     println!(
-        "imported {} {type_name} document(s): {first}..{last}",
+        "imported {} {type_name} document(s): {first}..{last}{stride}",
         built.len()
     );
     ctx.flush(&prj, store)?;

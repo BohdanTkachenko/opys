@@ -34,7 +34,12 @@ This file covers operation.
    `FEAT-NNNN` (and `TASK-`/`BUG-`/`CHORE-NNNN` for work items). IDs are never
    reused or renumbered, even after deletion. An id is a *key*, though, not a
    name — so whenever one appears in prose it is written with its title (see
-   [Naming documents in prose](#naming-documents-in-prose)).
+   [Naming documents in prose](#naming-documents-in-prose)). Ids come from one
+   global sequence; a project that allocates on several branches at once sets
+   `[ids] modulus = M` so each allocator draws only its own slot's numbers
+   (`OPYS_ID_SLOT`, else a stable hash of `user@host`) and branches never
+   collide — an orchestrator sets a distinct slot per agent it spawns (see
+   [Id allocation](references/format.md#id-allocation)).
 4. Intent is stored; derived state is generated. Test pass/fail, dates, and
    completion claims never go into feature files.
 5. Writes go through the CLI (prevents parallel-agent collisions, enforces
@@ -69,7 +74,7 @@ its ID prefix.
 | `init` | bootstrap `opys.toml` + `opys/`, print CLAUDE.md snippet |
 | `config init` / `config validate` | generate / check the universal `opys.toml` |
 | `new --type T --title … [--tags a,b] [--status S] [--features F1,F2] [--reason R] [--field k=v]` | create a doc of type `T` with the next ID (`--type` defaults to `feature`; auto-syncs) |
-| `import --type T FILE.jsonl` | bulk-create docs of type `T` from JSONL (sequential IDs, one sync, transactional) |
+| `import --type T FILE.jsonl` | bulk-create docs of type `T` from JSONL (one ID block, one sync, transactional) |
 | `show ID [--refs]` / `list [--type T] [--tag T] [--status S] [--field k=v]… [--format table\|ids\|paths]` | retrieval; `--field` filters by any custom field (repeatable, ANDed); `show --refs` appends code mentions of the id (per `[file_refs]`) |
 | `set-status IDS S [--reason R]` | guarded transition against the type's statuses + rules; a terminal status is reached only via `close`. `IDS` may be a comma-separated list to move several at once |
 | `tag IDS --add a,b --remove c` | tag maintenance; `IDS` may be a comma-separated list |

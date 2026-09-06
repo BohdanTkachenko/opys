@@ -32,6 +32,12 @@ pub const DEFAULT_OPYS_CONFIG: &str = r##"# opys.toml — the opys document-inve
 base = "opys"                        # inventory dir (relative to this file)
 pad = 4                              # zero-padding width for the numeric id part
 
+# Interleaved ids for multi-branch work: with a modulus M each allocator owns a
+# slot in 0..M (OPYS_ID_SLOT, else a stable hash of user@host) and draws only
+# numbers congruent to it, so branches never collide. Absent: dense sequence.
+# [ids]
+# modulus = 16
+
 # On-disk layout. Each document's path (under `base`) is this template with
 # {type} → the type's `dir`, {status} → the type's `status_dirs[status]`, and
 # {id} → PREFIX-NNNN. Both segments are empty by default, so documents live flat

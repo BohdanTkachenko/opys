@@ -847,8 +847,9 @@ terminal_statuses = ["done"]
     }
 
     /// The id sequence covers live docs, relation-map ids (struck or not), and
-    /// the retired ledger — asserted through the allocation seam
-    /// (`ids::SequenceMax`), the path `new`/`import`/`query --write` use.
+    /// the retired ledger — asserted through the allocation seam's dense
+    /// default (`ids::SequenceMax`), which `new`/`import`/`query --write`/
+    /// `renumber` use when no `[ids] modulus` is configured.
     #[test]
     fn next_id_covers_docs_relations_and_ledger() {
         use crate::ids::{format_id, IdSource, SequenceMax};
@@ -861,6 +862,39 @@ terminal_statuses = ["done"]
         let (mut s, _) = store_of(&prj, docs);
         let first = SequenceMax.reserve(&mut s, 2).unwrap();
         assert_eq!(format_id("FEAT", first, 4), "FEAT-0013");
+    }
+
+    /// `ids::Interleaved` reads the same max (docs, relation maps, ledger) and
+    /// lands on the smallest number above it in its slot; a block steps by the
+    /// modulus, and storing a document advances the next reservation.
+    #[test]
+    fn interleaved_reserve_stays_in_its_slot_above_every_seen_number() {
+        use crate::ids::{format_id, IdSource, Interleaved};
+        let docs: &[(&str, &str)] = &[(
+            "FEAT-0001.md",
+            "---\nid: FEAT-0001\nstatus: planned\nreferences:\n  TASK-0007: ~~Gone~~\n---\n\n# A\n",
+        )];
+        let (_t, prj) = project_with(docs);
+        std::fs::write(prj.base.join("_retired.txt"), "FEAT-0012  # retired\n").unwrap();
+        let (mut s, _) = store_of(&prj, docs);
+        // max 12 → slot 0 of 4 gives 16, slot 1 gives 13, slot 3 gives 15.
+        let mut slot0 = Interleaved::new(0, 4).unwrap();
+        assert_eq!(slot0.block(&mut s, 3).unwrap(), vec![16, 20, 24]);
+        let mut slot1 = Interleaved::new(1, 4).unwrap();
+        assert_eq!(slot1.reserve(&mut s, 1).unwrap(), 13);
+        let mut slot3 = Interleaved::new(3, 4).unwrap();
+        assert_eq!(slot3.reserve(&mut s, 1).unwrap(), 15);
+        // Storing FEAT-0015 moves slot 3's next reservation to 19.
+        let doc = Doc::parse(
+            prj.base.join("FEAT-0015.md"),
+            "---\nid: FEAT-0015\nstatus: planned\n---\n\n# B\n",
+        )
+        .unwrap();
+        s.put_doc(&prj.pcfg, None, &doc).unwrap();
+        assert_eq!(
+            format_id("FEAT", slot3.reserve(&mut s, 1).unwrap(), 4),
+            "FEAT-0019"
+        );
     }
 
     /// User SQL is statement-guarded on the plan: no mutation can execute, even

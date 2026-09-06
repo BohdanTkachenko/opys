@@ -11,11 +11,13 @@ use crate::{refs, rules};
 
 /// Build, validate, and insert a new document into the store; returns the
 /// created [`Doc`] (its `path` is the canonical layout path). Does not
-/// flush/print/sync.
+/// flush/print/sync. The number comes from `ids` — the caller resolves the
+/// source ([`Ctx::id_source`], or [`crate::ids::resolve`] without a `Ctx`).
 #[allow(clippy::too_many_arguments)]
 pub fn core(
     prj: &Project,
     store: &mut Store,
+    ids: &mut dyn IdSource,
     type_name: &str,
     title: &str,
     tags: &str,
@@ -34,7 +36,7 @@ pub fn core(
         ))
     })?;
 
-    let first = crate::ids::SequenceMax.reserve(store, 1)?;
+    let first = ids.reserve(store, 1)?;
     let id = crate::ids::format_id(&t.prefix, first, pcfg.pad);
 
     // Resolve status: empty → the type's default. Reject unknown / terminal.
@@ -123,9 +125,10 @@ pub fn run(
     fields: &[String],
 ) -> Result<()> {
     let prj = ctx.open()?;
+    let mut ids = ctx.id_source(&prj)?;
     let (mut store, _) = ctx.load(&prj)?;
     let doc = core(
-        &prj, &mut store, type_name, title, tags, status, features, reason, fields,
+        &prj, &mut store, &mut *ids, type_name, title, tags, status, features, reason, fields,
     )?;
     println!("{}", doc.path.display());
     ctx.flush(&prj, store)?;

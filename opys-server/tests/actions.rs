@@ -88,6 +88,9 @@ fn init() {
     ONCE.call_once(|| {
         std::env::set_var("OPYS_NOW", "2026-02-03T04:05:06Z");
         std::env::set_var("OPYS_LOCK_TIMEOUT_MS", "5000");
+        // Read only under an `[ids] modulus` (`new_under_a_modulus_allocates_in_the_nodes_slot`);
+        // every dense fixture leaves it unread, so it is harmless to pin here.
+        std::env::set_var("OPYS_ID_SLOT", "3");
     });
 }
 
@@ -103,9 +106,14 @@ fn backend() -> Box<dyn Backend + Send> {
 /// sync pass fills a missing pair from the file's mtime, and the two copies are
 /// created milliseconds apart.
 fn project(root: &Path) -> PathBuf {
+    project_with(root, CONFIG)
+}
+
+/// [`project`] under a different `opys.toml`.
+fn project_with(root: &Path, config: &str) -> PathBuf {
     let inventory = root.join("inventory");
     std::fs::create_dir_all(&inventory).unwrap();
-    std::fs::write(root.join("opys.toml"), CONFIG).unwrap();
+    std::fs::write(root.join("opys.toml"), config).unwrap();
     std::fs::write(
         inventory.join("NOTE-0001.md"),
         "---\n\
@@ -212,10 +220,15 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Fixture {
+        Fixture::with_config(CONFIG)
+    }
+
+    /// A fixture whose two copies run under `config` instead of [`CONFIG`].
+    fn with_config(config: &str) -> Fixture {
         init();
         let dir = tempfile::tempdir().unwrap();
-        let live = project(&dir.path().join("live"));
-        let reference = project(&dir.path().join("reference"));
+        let live = project_with(&dir.path().join("live"), config);
+        let reference = project_with(&dir.path().join("reference"), config);
         let config = dir.path().join("config/server.toml");
         std::fs::create_dir_all(config.parent().unwrap()).unwrap();
         std::fs::write(
@@ -398,6 +411,115 @@ async fn new_writes_what_the_cli_writes() {
         "the empty status must reach the core, which resolves the type's default: {created}"
     );
     fx.assert_mirrors_reference();
+}
+
+/// Under `[ids] modulus` the node allocates in its own process's slot
+/// (ADR-0103): `action.rs` resolves the source itself, having no `Ctx`, and a
+/// refactor that built `SequenceMax` there would collide with every slotted
+/// CLI allocator while the dense fixture above stayed green.
+#[tokio::test(flavor = "multi_thread")]
+async fn new_under_a_modulus_allocates_in_the_nodes_slot() {
+    let fx = Fixture::with_config(&format!("{CONFIG}\n[ids]\nmodulus = 4\n"));
+    let answer = fx
+        .action(json!({"action": "new", "type": "task", "title": "Slotted", "tags": "alpha"}))
+        .await;
+
+    cli(
+        &fx.reference,
+        &[
+            "new", "--type", "task", "--title", "Slotted", "--tags", "alpha",
+        ],
+    )
+    .expect("the CLI accepts the same creation");
+    let created_path = match appeared(&fx.pristine, &snapshot(&fx.reference)).as_slice() {
+        [only] => only.clone(),
+        other => panic!("`opys new` created {} files: {other:?}", other.len()),
+    };
+    let id = Path::new(&created_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .expect("the created file is <ID>.md")
+        .to_string();
+
+    assert_eq!(
+        answer["id"], id,
+        "the node and the CLI resolve the same slot from the same environment"
+    );
+    // The corpus holds NOTE-0001 and TASK-0002; slot 3 of 4 (`OPYS_ID_SLOT`
+    // pinned in `init`) means the first number above 2 congruent to 3.
+    assert_eq!(id, "TASK-0003");
+    let num: u64 = id
+        .rsplit('-')
+        .next()
+        .and_then(|n| n.parse().ok())
+        .expect("a numbered id");
+    assert_eq!(num % 4, 3, "{id} is outside the node's slot");
+    fx.assert_mirrors_reference();
+}
+
+/// The node resolves the id source *before* the load takes the inventory lock,
+/// the ordering `Ctx::id_source` documents for the CLI (ADR-0103): a slot the
+/// project's modulus cannot accept is refused at once, not after waiting out
+/// `OPYS_LOCK_TIMEOUT_MS` behind whoever holds the lock — and refused with the
+/// slot's own message, so the client is told what is actually wrong instead of
+/// being blamed on a busy inventory.
+///
+/// The bad slot is arranged without touching the process environment (`init`
+/// pins `OPYS_ID_SLOT=3` for the whole binary): under `modulus = 2` the only
+/// valid slots are 0 and 1, so slot 3 is out of range by configuration.
+///
+/// Driven through [`action::perform`] rather than the router on purpose: the
+/// handler asks the corpus actor to reload after any outcome but `Gone`/`Busy`,
+/// and *that* load waits for the lock this test is holding — which would hide
+/// the very ordering under test.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bad_slot_is_refused_before_the_inventory_lock_is_taken() {
+    init();
+    let dir = tempfile::tempdir().unwrap();
+    let live = project_with(
+        &dir.path().join("live"),
+        &format!("{CONFIG}\n[ids]\nmodulus = 2\n"),
+    );
+    let pristine = snapshot(&live);
+
+    // Hold the lock exactly as a concurrent `opys` invocation would.
+    let prj = opys_engine::project::Project::open(&live.to_string_lossy()).unwrap();
+    let (mut store, _errors) = MarkdownLocal.load(&prj).expect("the test takes the lock");
+
+    let request: opys_server::action::Action = serde_json::from_value(
+        json!({"action": "new", "type": "task", "title": "Slotted", "tags": "alpha"}),
+    )
+    .unwrap();
+    let root = live.clone();
+    // Well inside `init`'s 5 s lock timeout: a cycle that reached the load
+    // would still be polling for the lock when this fires.
+    let attempt = tokio::time::timeout(
+        Duration::from_secs(2),
+        tokio::task::spawn_blocking(move || {
+            opys_server::action::perform(&root, &MarkdownLocal, &request)
+                .err()
+                .map(|e| e.to_string())
+        }),
+    )
+    .await
+    .expect("the refusal must not wait for the lock it never needs")
+    .unwrap();
+
+    let message = attempt.expect("an unusable slot is refused, not allocated");
+    assert!(message.contains("OPYS_ID_SLOT=3"), "{message}");
+    assert!(message.contains("modulus 2"), "{message}");
+    assert!(
+        !message.contains("busy"),
+        "the lock was never wanted, so it must not be blamed: {message}"
+    );
+
+    drop(store.take_lock());
+    drop(store);
+    assert_eq!(
+        snapshot(&live),
+        pristine,
+        "a refused allocation writes nothing"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

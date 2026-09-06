@@ -614,8 +614,10 @@ fn import_bulk_creates_sequential_ids_and_syncs_once() {
         .args(["import", jsonl.path().to_str().unwrap()])
         .assert()
         .success()
+        // The whole line, newline included: the dense path must not grow a
+        // ` step M` suffix (that belongs to an interleaved block alone).
         .stdout(predicate::str::contains(
-            "imported 2 feature document(s): FEAT-0002..FEAT-0003",
+            "imported 2 feature document(s): FEAT-0002..FEAT-0003\n",
         ));
     dir.child("opys/features/FEAT-0002.md")
         .assert(predicate::str::contains("ptyxis_ref: src/a.c"));
@@ -2565,6 +2567,59 @@ fn config_validate_accepts_the_generated_default() {
 }
 
 #[test]
+fn config_validate_names_the_id_slot_under_a_modulus() {
+    // The slot this process allocates in is invisible until a document is
+    // created, so `config validate` is where an orchestrator reads it back.
+    let dir = TempDir::new().unwrap();
+    dir.child("opys.toml").write_str(&modulus_cfg(4)).unwrap();
+    opys(&dir)
+        .args(["config", "validate"])
+        .env("OPYS_ID_SLOT", "2")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("config: OK"))
+        .stdout(predicate::str::contains(
+            "ids: slot 2 of 4 (from OPYS_ID_SLOT)",
+        ));
+    // Without the variable the line still names the slot, hashed from the
+    // machine, and says where it came from.
+    opys(&dir)
+        .args(["config", "validate"])
+        .env_remove("OPYS_ID_SLOT")
+        .env("USER", "agent")
+        .env("HOSTNAME", "box")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(from the hash of agent@box)"));
+    // A dense project says nothing new.
+    dir.child("opys.toml").write_str(&default_cfg()).unwrap();
+    opys(&dir)
+        .args(["config", "validate"])
+        .env("OPYS_ID_SLOT", "2")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ids: slot").not());
+}
+
+#[test]
+fn config_validate_refuses_an_unusable_slot_before_reporting_ok() {
+    // The config is fine and the environment is not: that is the allocating
+    // commands' usage error (exit 2), and `OK` must not be printed first.
+    let dir = TempDir::new().unwrap();
+    dir.child("opys.toml").write_str(&modulus_cfg(4)).unwrap();
+    opys(&dir)
+        .args(["config", "validate"])
+        .env("OPYS_ID_SLOT", "9")
+        .assert()
+        .failure()
+        .code(2)
+        .stdout(predicate::str::contains("config: OK").not())
+        .stderr(predicate::str::contains(
+            "OPYS_ID_SLOT=9 is not a slot below the [ids] modulus 4",
+        ));
+}
+
+#[test]
 fn config_validate_flags_a_broken_config() {
     let dir = TempDir::new().unwrap();
     dir.child("opys.toml")
@@ -4049,4 +4104,454 @@ fn a_nested_base_is_fine_and_config_validate_reports_an_escaping_one() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("must live inside the project"));
+}
+
+// ---------------------------------------------------------------------------
+// Interleaved id sequences (ADR-0103): `[ids] modulus`, `OPYS_ID_SLOT`.
+// ---------------------------------------------------------------------------
+
+/// The default feature config plus `[ids] modulus = M` (appended: the table
+/// must follow every top-level key, or it would swallow `pad`).
+fn modulus_cfg(modulus: u64) -> String {
+    format!("{}\n[ids]\nmodulus = {modulus}\n", default_cfg())
+}
+
+/// A project under `modulus` seeded with a hand-written FEAT-0001, so two
+/// projects start from an identical corpus regardless of slot.
+fn seeded_modulus_project(modulus: u64) -> TempDir {
+    let dir = project_with(&modulus_cfg(modulus));
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [seed]\n---\n\n# One\n")
+        .unwrap();
+    dir
+}
+
+/// Create `n` documents with `slot`, returning the created file names in order.
+fn new_in_slot(dir: &TempDir, slot: &str, n: usize) -> Vec<String> {
+    (0..n)
+        .map(|i| {
+            let out = opys(dir)
+                .env("OPYS_ID_SLOT", slot)
+                .args(["new", "--title", &format!("Doc {i}"), "--tags", "a"])
+                .assert()
+                .success()
+                .get_output()
+                .stdout
+                .clone();
+            let path = String::from_utf8(out).unwrap();
+            std::path::Path::new(path.trim())
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect()
+}
+
+/// With no modulus configured, allocation is the dense sequence and a stray
+/// `OPYS_ID_SLOT` — even one that would be invalid under any modulus — is not
+/// read at all.
+#[test]
+fn new_without_a_modulus_ignores_the_slot_env() {
+    let dir = project();
+    opys(&dir)
+        .env("OPYS_ID_SLOT", "not a slot")
+        .args(["new", "--title", "One", "--tags", "a"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0001.md"));
+    opys(&dir)
+        .env_remove("OPYS_ID_SLOT")
+        .args(["new", "--title", "Two", "--tags", "a"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0002.md"));
+}
+
+/// Two corpora that start identical and allocate in different slots produce
+/// disjoint, congruent ids — and merging one's new files into the other passes
+/// `verify` (the number-uniqueness check is the invariant interleaving keeps).
+#[test]
+fn interleaved_slots_allocate_disjoint_ids_across_corpora() {
+    let a = seeded_modulus_project(2);
+    let b = seeded_modulus_project(2);
+    assert_eq!(
+        new_in_slot(&a, "0", 3),
+        ["FEAT-0002.md", "FEAT-0004.md", "FEAT-0006.md"]
+    );
+    assert_eq!(
+        new_in_slot(&b, "1", 3),
+        ["FEAT-0003.md", "FEAT-0005.md", "FEAT-0007.md"]
+    );
+    for name in ["FEAT-0003.md", "FEAT-0005.md", "FEAT-0007.md"] {
+        std::fs::copy(
+            b.path().join("opys/features").join(name),
+            a.path().join("opys/features").join(name),
+        )
+        .unwrap();
+    }
+    opys(&a).arg("verify").assert().success();
+    opys(&a).arg("sync").assert().success();
+    opys(&a).arg("verify").assert().success();
+    // The merged corpus keeps allocating above everything it now holds.
+    assert_eq!(new_in_slot(&a, "0", 1), ["FEAT-0008.md"]);
+}
+
+/// The same slot on two identical corpora allocates the same ids — the
+/// misconfiguration `renumber` exists to repair.
+#[test]
+fn interleaved_same_slot_allocates_the_same_ids() {
+    let a = seeded_modulus_project(2);
+    let b = seeded_modulus_project(2);
+    let expected = ["FEAT-0003.md", "FEAT-0005.md", "FEAT-0007.md"];
+    assert_eq!(new_in_slot(&a, "1", 3), expected);
+    assert_eq!(new_in_slot(&b, "1", 3), expected);
+}
+
+/// A slot at or above the modulus, or not an integer, is a usage error (exit
+/// 2) naming both the slot and the modulus; nothing is written.
+#[test]
+fn interleaved_rejects_a_slot_outside_the_modulus() {
+    let dir = seeded_modulus_project(2);
+    opys(&dir)
+        .env("OPYS_ID_SLOT", "2")
+        .args(["new", "--title", "Nope", "--tags", "a"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("OPYS_ID_SLOT=2"))
+        .stderr(predicate::str::contains("modulus 2"))
+        .stderr(predicate::str::contains("valid slots: 0 to 1"));
+    opys(&dir)
+        .env("OPYS_ID_SLOT", "abc")
+        .args(["new", "--title", "Nope", "--tags", "a"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("OPYS_ID_SLOT=\"abc\""))
+        .stderr(predicate::str::contains("modulus 2"));
+    // Set but empty is the orchestrator's unassigned `$SLOT`, not "unset": it
+    // must fail rather than silently land in the hash slot.
+    opys(&dir)
+        .env("OPYS_ID_SLOT", "")
+        .args(["new", "--title", "Nope", "--tags", "a"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("OPYS_ID_SLOT=\"\""))
+        .stderr(predicate::str::contains("modulus 2"));
+    for name in ["FEAT-0002.md", "FEAT-0003.md"] {
+        dir.child("opys/features")
+            .child(name)
+            .assert(predicate::path::missing());
+    }
+}
+
+/// The slot is resolved *before* the inventory lock is taken
+/// (`Ctx::id_source`), so a bad `OPYS_ID_SLOT` is reported as a bad slot even
+/// while another process holds the lock — never as a lock timeout, and without
+/// waiting one out. Deterministic: the holder never lets go, so a resolution
+/// that had moved after the load could only end in the timeout message.
+#[test]
+fn a_bad_slot_is_refused_before_the_inventory_lock() {
+    use fs4::fs_std::FileExt as _;
+    let dir = seeded_modulus_project(2);
+    let base = dir.path().join("opys");
+    let holder = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(opys_backend_markdown_local::lock_path(&base).unwrap())
+        .unwrap();
+    assert!(holder.try_lock_exclusive().unwrap());
+
+    opys(&dir)
+        .env("OPYS_ID_SLOT", "5")
+        .env("OPYS_LOCK_TIMEOUT_MS", "150")
+        .args(["new", "--title", "Nope", "--tags", "a"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("OPYS_ID_SLOT=5"))
+        .stderr(predicate::str::contains("modulus 2"))
+        .stderr(predicate::str::contains("inventory lock").not());
+    drop(holder); // closing the fd releases the flock
+    dir.child("opys/features/FEAT-0003.md")
+        .assert(predicate::path::missing());
+}
+
+/// `modulus` above 2^32 is a config problem too: a larger stride could walk
+/// ids past the store's 64-bit numbers, where they would wrap and be reused.
+#[test]
+fn modulus_above_the_cap_is_a_config_problem() {
+    let dir = project_with(&modulus_cfg(4_294_967_297));
+    opys(&dir)
+        .args(["config", "validate"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "ids.modulus must be at most 4294967296 (got 4294967297)",
+        ));
+    opys(&dir)
+        .env("OPYS_ID_SLOT", "0")
+        .args(["new", "--title", "Nope", "--tags", "a"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "[ids] modulus must be at most 4294967296 (got 4294967297)",
+        ));
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::path::missing());
+}
+
+/// `modulus` below 2 is a config problem (`config validate` and `verify` list
+/// it, exit 1) and every allocating command refuses to run (exit 2).
+#[test]
+fn modulus_below_two_is_a_config_problem() {
+    let dir = project_with(&modulus_cfg(1));
+    opys(&dir)
+        .args(["config", "validate"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "ids.modulus must be at least 2 (got 1)",
+        ));
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "opys.toml: ids.modulus must be at least 2",
+        ));
+    opys(&dir)
+        .env("OPYS_ID_SLOT", "0")
+        .args(["new", "--title", "Nope", "--tags", "a"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "[ids] modulus must be at least 2 (got 1)",
+        ));
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::path::missing());
+}
+
+/// `[ids]` accepts only `modulus`. A misspelled key is a TOML parse error —
+/// a hard error (exit 2) from every command, `config validate` included, not
+/// a project that silently allocates densely.
+#[test]
+fn a_misspelled_ids_key_is_a_config_error() {
+    let dir = project_with(&format!("{}\n[ids]\nmodulos = 16\n", default_cfg()));
+    opys(&dir)
+        .args(["config", "validate"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("opys.toml"))
+        .stderr(predicate::str::contains(
+            "unknown field `modulos`, expected `modulus`",
+        ));
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("unknown field `modulos`"));
+    opys(&dir)
+        .env("OPYS_ID_SLOT", "0")
+        .args(["new", "--title", "Nope", "--tags", "a"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("unknown field `modulos`"));
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::path::missing());
+}
+
+/// `import` reserves the batch as one block that steps by the modulus, so
+/// every imported id stays in the slot.
+#[test]
+fn import_under_a_modulus_steps_by_the_modulus() {
+    let dir = seeded_modulus_project(4);
+    let jsonl = dir.child("import.jsonl");
+    jsonl
+        .write_str(
+            "{\"title\": \"One\", \"tags\": [\"osc\"]}\n\
+             {\"title\": \"Two\", \"tags\": [\"tabs\"], \"status\": \"partial\"}\n\
+             {\"title\": \"Three\", \"tags\": [\"x\"]}\n",
+        )
+        .unwrap();
+    opys(&dir)
+        .env("OPYS_ID_SLOT", "1")
+        .args(["import", jsonl.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "imported 3 feature document(s): FEAT-0005..FEAT-0013 step 4\n",
+        ));
+    for name in ["FEAT-0005.md", "FEAT-0009.md", "FEAT-0013.md"] {
+        dir.child("opys/features")
+            .child(name)
+            .assert(predicate::path::exists());
+    }
+    dir.child("opys/features/FEAT-0009.md")
+        .assert(predicate::str::contains("# Two"));
+    opys(&dir).arg("verify").assert().success();
+    // The next `new` in the same slot continues past the block.
+    assert_eq!(new_in_slot(&dir, "1", 1), ["FEAT-0017.md"]);
+}
+
+/// Without `OPYS_ID_SLOT` the slot is FNV-1a of `user@host` modulo M: pinned
+/// here for `alice@box` (hash `0xa1f84a6896be4a72`, slot 2 of 4) so it can
+/// never drift silently — and with it the fallback chains that decide which
+/// `user` and which `host`: `USER` then `USERNAME`, `HOSTNAME` then
+/// `COMPUTERNAME`, in that order, with a set-but-blank value counting as unset.
+#[test]
+fn interleaved_slot_falls_back_to_a_hash_of_user_at_host() {
+    let dir = seeded_modulus_project(4);
+    for expected in ["FEAT-0002.md", "FEAT-0006.md"] {
+        opys(&dir)
+            .env_remove("OPYS_ID_SLOT")
+            .env("USER", "alice")
+            .env("HOSTNAME", "box")
+            .args(["new", "--title", "Hashed", "--tags", "a"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(expected));
+    }
+    // USERNAME stands in when USER is unset; the slot is the same identity.
+    opys(&dir)
+        .env_remove("OPYS_ID_SLOT")
+        .env_remove("USER")
+        .env("USERNAME", "alice")
+        .env("HOSTNAME", "box")
+        .args(["new", "--title", "Hashed", "--tags", "a"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0010.md"));
+    // COMPUTERNAME stands in when HOSTNAME is unset, ahead of `/etc/hostname`
+    // — which is also what keeps this case off the test machine's own name.
+    opys(&dir)
+        .env_remove("OPYS_ID_SLOT")
+        .env_remove("HOSTNAME")
+        .env("USER", "alice")
+        .env("COMPUTERNAME", "box")
+        .args(["new", "--title", "Hashed", "--tags", "a"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0014.md"));
+    // The chains have an order, not a set: with both members of each pair set
+    // it is USER and HOSTNAME that decide, so the identity is still `alice@box`
+    // (slot 2). Every way of swapping an `or_else` lands somewhere else —
+    // `mallory@box` in slot 0, `alice@other` in 1, `mallory@other` in 3 — so
+    // none of them can produce this id.
+    opys(&dir)
+        .env_remove("OPYS_ID_SLOT")
+        .env("USER", "alice")
+        .env("USERNAME", "mallory")
+        .env("HOSTNAME", "box")
+        .env("COMPUTERNAME", "other")
+        .args(["new", "--title", "Hashed", "--tags", "a"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0018.md"));
+    // Set but blank counts as unset on every step of both chains: a whitespace
+    // USER/HOSTNAME falls through to USERNAME/COMPUTERNAME rather than hashing
+    // `  @  `.
+    opys(&dir)
+        .env_remove("OPYS_ID_SLOT")
+        .env("USER", "  ")
+        .env("USERNAME", "alice")
+        .env("HOSTNAME", "  ")
+        .env("COMPUTERNAME", "box")
+        .args(["new", "--title", "Hashed", "--tags", "a"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0022.md"));
+}
+
+/// `query --write INSERT` allocates through the same source, one congruent id
+/// per row.
+#[test]
+fn query_write_insert_under_a_modulus_stays_in_the_slot() {
+    let cfg = "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
+statuses = [\"planned\"]\ndefault_status = \"planned\"\n\
+[ids]\nmodulus = 4\n";
+    let dir = project_with(cfg);
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# One\n")
+        .unwrap();
+    opys(&dir)
+        .env("OPYS_ID_SLOT", "3")
+        .args([
+            "query",
+            "--write",
+            "INSERT INTO docs (type, title) VALUES ('feature', 'A'), ('feature', 'B')",
+        ])
+        .assert()
+        .success();
+    for name in ["FEAT-0003.md", "FEAT-0007.md"] {
+        dir.child("opys/features")
+            .child(name)
+            .assert(predicate::path::exists());
+    }
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// `query --write` resolves its slot before taking the inventory lock, so a
+/// bad `OPYS_ID_SLOT` is exit 2 with nothing written; a read-only `query`
+/// never allocates and never reads the slot.
+#[test]
+fn query_write_with_a_bad_slot_fails_before_the_load_and_reads_ignore_it() {
+    let dir = seeded_modulus_project(4);
+    opys(&dir)
+        .env("OPYS_ID_SLOT", "9")
+        .args([
+            "query",
+            "--write",
+            "INSERT INTO docs (type, title) VALUES ('feature', 'A')",
+        ])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("OPYS_ID_SLOT=9"))
+        .stderr(predicate::str::contains("modulus 4"));
+    assert_eq!(
+        std::fs::read_dir(dir.path().join("opys/features"))
+            .unwrap()
+            .count(),
+        1,
+        "nothing was written"
+    );
+    opys(&dir)
+        .env("OPYS_ID_SLOT", "9")
+        .args(["query", "SELECT id FROM docs"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0001"));
+}
+
+/// `renumber` allocates replacement ids through the source too, so the repair
+/// lands in this allocator's slot (and cannot collide with another slot).
+#[test]
+fn renumber_under_a_modulus_stays_in_the_slot() {
+    let dir = project_with(&modulus_cfg(2));
+    dir.child("opys/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [auth]\n---\n# Login\n")
+        .unwrap();
+    dir.child("opys/TASK-0001.md")
+        .write_str("---\nid: TASK-0001\nstatus: todo\ntags: []\n---\n# Do it\n")
+        .unwrap();
+    // max 1, slot 1 of 2: the first congruent number above it is 3.
+    opys(&dir)
+        .env("OPYS_ID_SLOT", "1")
+        .args(["--no-sync", "renumber"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("TASK-0001 → TASK-0003"));
 }

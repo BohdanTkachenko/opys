@@ -141,17 +141,6 @@ pub fn ids_with_prefix(fm: &Frontmatter, prefix: &str) -> Vec<String> {
         .collect()
 }
 
-/// Every id appearing in any relation map (`references`, `blocked_by`,
-/// `blocks`), regardless of prefix — used to compute the global ID sequence so
-/// a closed item appearing in any map keeps its number reserved against reuse.
-pub fn all_relation_ids(fm: &Frontmatter) -> Vec<String> {
-    RELATION_FIELDS
-        .iter()
-        .flat_map(|field| parse_in(fm, field))
-        .map(|(id, _)| id)
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

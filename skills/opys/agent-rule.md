@@ -31,6 +31,8 @@ exists; otherwise ignore it.
   strings), `opys show <id> --refs` lists those mentions. If two branches
   allocated the same number, `opys renumber` reconciles them — it rewrites
   documents and warns (with `sed` suggestions) about any code references to fix.
+  A project with `[ids] modulus` set avoids the collision up front: each
+  allocator draws only its slot's numbers (`OPYS_ID_SLOT`, else `user@host`).
 - **Never** put test results, dates, or completion claims in documents, or
   implementation logs in a permanent feature (those belong in a task/bug/chore).
 - Full guide: the `opys` skill — `SKILL.md`, `references/format.md`. Install the
