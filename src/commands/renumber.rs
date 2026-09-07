@@ -9,7 +9,7 @@ use std::process::Command;
 
 use regex::{Captures, Regex};
 
-use crate::commands::maybe_sync;
+use crate::commands::{maybe_sync, print_lines};
 use crate::doc::Doc;
 use crate::error::Result;
 use crate::ids::format_id;
@@ -25,13 +25,13 @@ pub fn run(ctx: &Ctx, base: Option<&str>) -> Result<()> {
     let just_docs: Vec<&Doc> = docs.iter().map(|(_, d)| d).collect();
     let conflicts = find_conflicts(&just_docs);
     if conflicts.is_empty() {
-        println!("renumber: no conflicting IDs found");
+        print_lines(["renumber: no conflicting IDs found"])?;
         return Ok(());
     }
 
     let (git_root, base_sha) = git_context(&prj.root, base);
     match &base_sha {
-        Some(sha) => println!("renumber: base {}", &sha[..sha.len().min(12)]),
+        Some(sha) => print_lines([format!("renumber: base {}", &sha[..sha.len().min(12)])])?,
         None => {
             eprintln!("renumber: warning: no git base found — keeping first of each conflict group")
         }
@@ -71,13 +71,13 @@ pub fn run(ctx: &Ctx, base: Option<&str>) -> Result<()> {
         for (id, num) in victims.iter().zip(nums) {
             let prefix = id.split('-').next().unwrap_or("FEAT");
             let new_id = format_id(prefix, num, prj.pcfg.pad);
-            println!("  {id} → {new_id}");
+            print_lines([format!("  {id} → {new_id}")])?;
             mapping.insert(id.to_string(), new_id);
         }
     }
 
     if mapping.is_empty() {
-        println!("renumber: all conflicting IDs are from the base branch, nothing to do");
+        print_lines(["renumber: all conflicting IDs are from the base branch, nothing to do"])?;
         return Ok(());
     }
 
@@ -103,7 +103,10 @@ pub fn run(ctx: &Ctx, base: Option<&str>) -> Result<()> {
     }
     ctx.flush(&prj, store)?;
 
-    println!("renumber: {} document(s) renumbered", mapping.len());
+    print_lines([format!(
+        "renumber: {} document(s) renumbered",
+        mapping.len()
+    )])?;
     maybe_sync(ctx, &prj);
 
     warn_file_references(&prj, &mapping);

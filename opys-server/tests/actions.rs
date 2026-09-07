@@ -168,10 +168,10 @@ fn snapshot(root: &Path) -> BTreeMap<String, String> {
 /// This is `opys_engine::run` — the same function the `opys` binary calls with
 /// the same clap-parsed [`Cli`] — so the reference is `src/commands/*::run`,
 /// `maybe_sync` and clap's defaults rather than a copy of them. The order those
-/// establish is not the obvious one and is what the byte comparisons pin: the
-/// flush and the auto-sync pass happen *even when the core refused* (except for
-/// `new`, where a refusal propagates before either), and the sync is its own
-/// second load/flush cycle rather than a pass over the store above.
+/// establish is what the byte comparisons pin: a refused write propagates before
+/// the flush, so neither the flush nor the auto-sync pass runs, and on the
+/// success path the sync is its own second load/flush cycle rather than a pass
+/// over the store above.
 ///
 /// Stdout gets the CLI's success line, which is harmless here; a refusal comes
 /// back as the `OpysError` the binary would exit 2 on.
@@ -717,13 +717,19 @@ async fn invalid_transition_is_a_422() {
         "the message must be the one the CLI prints for the same attempt"
     );
 
-    // The CLI still flushes and syncs after a refused transition, and so must
-    // the node: on a corpus this pass has not touched yet, that is a visible
-    // difference (reconciled relations, linkified prose) rather than a no-op.
+    // A refused transition writes nothing — neither side flushes, and neither
+    // runs the auto-sync pass. This corpus is deliberately out of sync (a bare
+    // id awaiting linkify, a missing reverse reference), so a stray sync on
+    // either side would show up here as a difference from the pristine bytes.
     assert_eq!(
         snapshot(&fx.live),
         snapshot(&fx.reference),
         "a refused write must leave the same bytes the CLI leaves"
+    );
+    assert_eq!(
+        snapshot(&fx.live),
+        fx.pristine,
+        "a refused write must not have touched the inventory at all"
     );
 }
 

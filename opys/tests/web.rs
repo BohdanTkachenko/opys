@@ -827,3 +827,47 @@ fn uninstall_without_a_systemd_directory_exits_zero() {
         .env_remove("XDG_CONFIG_HOME"))
     .ok_saying("no systemd user unit directory here — there is nothing to remove");
 }
+
+/// Rust ignores `SIGPIPE`, so an unguarded `println!` aborts the process (exit
+/// 101, a backtrace on stderr) the moment the reader of a pipe goes away —
+/// `opys web list | head -3` included. Every `web` subcommand prints through
+/// `cli::print_line`, which reports the closed pipe as the clean stop it is;
+/// this pins that for the multi-line ones. Its engine counterpart is
+/// `cli::commands_stop_quietly_when_the_reader_closes_the_pipe`.
+#[test]
+fn web_commands_stop_quietly_when_the_reader_closes_the_pipe() {
+    let fx = Fx::new();
+    let project = fx.project("work/alpha");
+    run(fx.opys().args(["web", "add"]).arg(&project)).ok_saying("added");
+
+    for args in [
+        vec!["web".to_string(), "list".to_string()],
+        vec![
+            "web".to_string(),
+            "scan".to_string(),
+            "--under".to_string(),
+            fx.home.join("work").display().to_string(),
+        ],
+        vec!["web".to_string(), "uninstall".to_string()],
+    ] {
+        let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("opys"))
+            .env("HOME", &fx.home)
+            .env("XDG_CONFIG_HOME", fx.home.join(".config"))
+            .args(&args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        // Close the read end before the child prints anything: every write it
+        // then attempts fails with EPIPE.
+        drop(child.stdout.take());
+        let out = child.wait_with_output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!err.contains("panicked"), "`opys {args:?}` panicked: {err}");
+        assert!(
+            out.status.success(),
+            "`opys {args:?}` exited {:?}: {err}",
+            out.status.code()
+        );
+    }
+}

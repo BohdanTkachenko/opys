@@ -369,13 +369,15 @@ pub(crate) fn table_body(labels: &[String], rows: &[Vec<String>]) -> String {
 
 /// Print rendered markdown: styled for a terminal, raw when piped, `plain`,
 /// or `NO_COLOR` — shared by `stats` and `query`.
-pub(crate) fn print_markdown(out: &str, plain: bool) {
+pub(crate) fn print_markdown(out: &str, plain: bool) -> Result<()> {
     let styled =
         !plain && std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
     if styled {
+        // A terminal is on the other end, so there is no pipe to break.
         termimad::MadSkin::default().print_text(out);
+        Ok(())
     } else {
-        println!("{out}");
+        super::print_lines([out])
     }
 }
 
@@ -493,6 +495,6 @@ pub fn run(ctx: &Ctx, plain: bool) -> Result<()> {
     if out.is_empty() {
         return Ok(());
     }
-    print_markdown(&out, plain);
+    print_markdown(&out, plain)?;
     Ok(())
 }

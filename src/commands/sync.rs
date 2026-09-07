@@ -8,6 +8,7 @@
 //! doc at its canonical path, and flush. Relation-map / linkify logic stays in
 //! Rust — the store is the data layer feeding it.
 
+use crate::commands::print_lines;
 use crate::doc::Doc;
 use crate::error::{usage, Result};
 use crate::links;
@@ -19,7 +20,7 @@ use crate::Ctx;
 pub fn run_command(ctx: &Ctx) -> Result<()> {
     let prj = ctx.open()?;
     let n = run(&prj, ctx.backend.as_ref())?;
-    println!("synced {n} document(s)");
+    print_lines([format!("synced {n} document(s)")])?;
     Ok(())
 }
 

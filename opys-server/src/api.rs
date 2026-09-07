@@ -1184,9 +1184,13 @@ async fn action(
             target.ok_or_else(|| ApiError::not_found(format!("no such corpus: {cid}")))?;
         let backend = make_backend();
         let done = crate::action::perform(&root, backend.as_ref(), &request);
-        // Gone and Busy are the two outcomes that touched nothing; everything
-        // else reached the corpus — a refused core still flushes and syncs, so
-        // the files moved either way and the cache is stale either way.
+        // Gone and Busy are the two outcomes that provably touched nothing:
+        // neither ever reached the flush. Everything else reloads, including
+        // `Refused` — a refused *core* now leaves the bytes as they were, but
+        // the same variant also carries a failed flush and a failed load, and a
+        // flush that fails partway leaves files the cache has not seen. The
+        // cheap wrong answer here is one spare reload; the expensive one is a
+        // dashboard serving documents that moved.
         if !matches!(done, Err(ActionError::Gone | ActionError::Busy)) {
             if let Ok(outcome) = &done {
                 // Broadcast here rather than after the `.await` below: a client

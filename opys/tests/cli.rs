@@ -1177,93 +1177,6 @@ fn query_reads_sql_from_stdin() {
         .stdout(predicate::str::contains("| FEAT-0001 |"));
 }
 
-/// `query --write` applies edit SQL when the result still passes verify.
-#[test]
-fn query_write_applies_valid_edits() {
-    let cfg = "pad = 4\n\
-[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
-statuses = [\"planned\", \"implemented\"]\ndefault_status = \"planned\"\n";
-    let dir = project_with(cfg);
-    for n in ["0001", "0002", "0003"] {
-        dir.child(format!("opys/features/FEAT-{n}.md"))
-            .write_str(&format!(
-                "---\nid: FEAT-{n}\nstatus: planned\ntags: [x]\n---\n\n# F{n}\n"
-            ))
-            .unwrap();
-    }
-    opys(&dir)
-        .args([
-            "query",
-            "--write",
-            "UPDATE docs SET status = 'implemented' WHERE status = 'planned'",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("3 updated"));
-    for n in ["0001", "0002", "0003"] {
-        dir.child(format!("opys/features/FEAT-{n}.md"))
-            .assert(predicate::str::contains("status: implemented"));
-    }
-}
-
-/// `query --write` refuses to write (and touches no files) when the result
-/// would fail verify — the rules engine still gates SQL edits.
-#[test]
-fn query_write_gated_by_verify() {
-    // wontfix requires a reason field (a [[rules]] guard).
-    let cfg = "pad = 4\n\
-[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
-statuses = [\"planned\", \"wontfix\"]\ndefault_status = \"planned\"\n\
-[types.feature.fields.wontfix_reason]\ntype = \"string\"\n\
-[[rules]]\nwhen = {{ type = \"feature\", status = \"wontfix\" }}\n\
-require_field = \"wontfix_reason\"\n";
-    let dir = project_with(&cfg.replace("{{", "{").replace("}}", "}"));
-    dir.child("opys/features/FEAT-0001.md")
-        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# A\n")
-        .unwrap();
-    opys(&dir)
-        .args([
-            "query",
-            "--write",
-            "UPDATE docs SET status = 'wontfix' WHERE id = 'FEAT-0001'",
-        ])
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains("refusing to write"))
-        .stderr(predicate::str::contains("wontfix_reason"));
-    // The file is untouched — the store mutation was never flushed.
-    dir.child("opys/features/FEAT-0001.md")
-        .assert(predicate::str::contains("status: planned"));
-}
-
-/// `query --write` allows only INSERT/UPDATE/DELETE: schema-level statements
-/// (CREATE/DROP/ALTER TABLE) are rejected on the plan before anything runs, so
-/// they can't reshape the authoritative tables the store and flush depend on.
-/// A compound `UPDATE …; DROP TABLE docs` is rejected whole — no partial write.
-#[test]
-fn query_write_rejects_non_dml_statements() {
-    let dir = project();
-    dir.child("opys/features/FEAT-0001.md")
-        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# A\n")
-        .unwrap();
-    for bad in [
-        "CREATE TABLE evil (x INTEGER)",
-        "DROP TABLE docs",
-        "ALTER TABLE docs ADD COLUMN evil INTEGER",
-        "UPDATE docs SET status = 'planned'; DROP TABLE docs",
-        "SELECT 1",
-    ] {
-        opys(&dir)
-            .args(["query", "--write", bad])
-            .assert()
-            .code(2)
-            .stderr(predicate::str::contains("allows only INSERT/UPDATE/DELETE"));
-    }
-    // The file was never touched.
-    dir.child("opys/features/FEAT-0001.md")
-        .assert(predicate::str::contains("status: planned"));
-}
-
 /// `verify`/`config validate` reject a `template` referencing an unknown column
 /// (checked against the query's columns, so it fails even with zero rows).
 #[test]
@@ -2996,53 +2909,6 @@ fn bulk_retire_reserves_every_id() {
 }
 
 #[test]
-fn space_separated_ids_are_rejected_not_silently_widened() {
-    // Bulk is opt-in via commas. Space-separated ids (e.g. an unintended
-    // `$(opys list --format ids)` expansion) must fail loudly rather than
-    // operate on the whole set — the safety property of the single positional.
-    let dir = project();
-    for t in ["A", "B"] {
-        opys(&dir)
-            .args(["new", "--title", t, "--tags", "a"])
-            .assert()
-            .success();
-    }
-    opys(&dir)
-        .args(["close", "FEAT-0001", "FEAT-0002"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("unexpected argument"));
-    // Nothing was closed — both files are intact.
-    dir.child("opys/features/FEAT-0001.md")
-        .assert(predicate::path::exists());
-    dir.child("opys/features/FEAT-0002.md")
-        .assert(predicate::path::exists());
-}
-
-#[test]
-fn bulk_is_best_effort_and_reports_failures() {
-    let dir = project();
-    for t in ["A", "B"] {
-        opys(&dir)
-            .args(["new", "--title", t, "--tags", "a"])
-            .assert()
-            .success();
-    }
-    // FEAT-0002 exists; FEAT-0099 does not. The valid one still moves, the
-    // bad one is reported, and the command exits nonzero.
-    opys(&dir)
-        .args(["set-status", "FEAT-0002,FEAT-0099", "partial"])
-        .assert()
-        .failure()
-        .code(2)
-        .stdout(predicate::str::contains("FEAT-0002 -> partial"))
-        .stderr(predicate::str::contains("FEAT-0099"))
-        .stderr(predicate::str::contains("1 of 2 ids failed"));
-    dir.child("opys/features/FEAT-0002.md")
-        .assert(predicate::str::contains("status: partial"));
-}
-
-#[test]
 fn bulk_reads_ids_from_stdin_with_dash() {
     let dir = project();
     for t in ["A", "B", "C"] {
@@ -3111,6 +2977,174 @@ fn bulk_stdin_pipe_from_list_closes_the_selection() {
         .assert(predicate::path::missing());
 }
 
+/// The bulk-edit pipe the docs ship verbatim: README, format.md, SKILL.md, the
+/// web query console and FEAT-0013 all print this exact line, and
+/// `docs_ship_a_bulk_pipe_that_runs` pins them to it.
+const DOC_BULK_PIPE: &str =
+    "opys list --type task --status in-progress --format ids | opys close -";
+
+/// Every file that writes the bulk-edit story for a human. All of them are
+/// checked by `docs_ship_a_bulk_pipe_that_runs`.
+const BULK_DOCS: [&str; 5] = [
+    "README.md",
+    "skills/opys/references/format.md",
+    "skills/opys/SKILL.md",
+    "opys-server/ui/src/Query.svelte",
+    "inventory/FEAT-0013.md",
+];
+
+/// The documented pipe has to work against the *shipped default* config, not
+/// just a test fixture. It used to select on `--status done`, which no live
+/// document can ever hold (`done` is terminal for task/bug/chore and reached
+/// only through `close`, which deletes the file), so the producer was always
+/// empty and the example always exited 2 with `expected at least one id`.
+#[test]
+fn documented_bulk_pipe_runs_under_the_default_config() {
+    let dir = TempDir::new().unwrap();
+    opys(&dir).arg("init").assert().success();
+    opys(&dir)
+        .args(["new", "--title", "Feature", "--tags", "a"])
+        .assert()
+        .success();
+    for t in ["One", "Two"] {
+        opys(&dir)
+            .args([
+                "new",
+                "--type",
+                "task",
+                "--title",
+                t,
+                "--features",
+                "FEAT-0001",
+            ])
+            .assert()
+            .success();
+    }
+    for n in [2, 3] {
+        let path = dir.path().join(format!("opys/TASK-000{n}.md"));
+        // The work is done: check the scaffolded `## Tasks` item, so `close`
+        // has no unchecked-item reason to refuse the batch.
+        let text = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("- [ ]", "- [x]");
+        std::fs::write(&path, text).unwrap();
+    }
+    opys(&dir)
+        .args(["set-status", "TASK-0002", "TASK-0003", "in-progress"])
+        .assert()
+        .success();
+
+    // Run the documented line itself, with only `opys` swapped for the built
+    // binary and this project's root.
+    let script = DOC_BULK_PIPE.replace(
+        "opys ",
+        &format!(
+            "{bin} --root {root} ",
+            bin = assert_cmd::cargo::cargo_bin("opys").display(),
+            root = dir.path().display(),
+        ),
+    );
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&script)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "`{script}` failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    dir.child("opys/TASK-0002.md")
+        .assert(predicate::path::missing());
+    dir.child("opys/TASK-0003.md")
+        .assert(predicate::path::missing());
+}
+
+/// Every place the bulk-edit story is written for a human ships the one pipe
+/// that runs (above), and no example anywhere in those files names a status the
+/// shipped default config cannot reach — the trap that produced both halves of
+/// this guard. `done` is the default config's only terminal status: it belongs
+/// to task/bug/chore, where `set-status` refuses it, and `feature` does not have
+/// it at all, so an example naming it is a hard failure rather than an
+/// illustration. That covers the producer side (`--status done --format ids`
+/// selects nothing) and the consumer side (`set-status … done` is refused).
+#[test]
+fn docs_ship_a_bulk_pipe_that_runs() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    for rel in BULK_DOCS {
+        let text = std::fs::read_to_string(repo.join(rel)).unwrap();
+        assert!(
+            text.contains(DOC_BULK_PIPE),
+            "{rel} does not ship the canonical bulk pipe `{DOC_BULK_PIPE}`"
+        );
+        assert!(
+            !text.contains("--status done --format ids"),
+            "{rel} selects a bulk batch on a terminal status, which matches nothing"
+        );
+        for (n, line) in text.lines().enumerate() {
+            let names_done = line
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+                .any(|w| w == "done");
+            assert!(
+                !(line.contains("set-status") && names_done),
+                "{rel}:{} teaches `set-status` with the terminal status `done`, \
+                 which the default config always refuses: {line}",
+                n + 1
+            );
+        }
+    }
+}
+
+/// Rust ignores SIGPIPE, so an unguarded `println!` panics (exit 101, backtrace
+/// on stderr) as soon as the reader of a pipe goes away — and `opys list
+/// --format ids` is the documented producer of exactly such a pipe
+/// (`| head -1`, `| fzf`, `| grep -q`). Every command must stop quietly instead.
+#[test]
+fn commands_stop_quietly_when_the_reader_closes_the_pipe() {
+    let dir = project();
+    for t in ["A", "B", "C"] {
+        opys(&dir)
+            .args(["new", "--title", t, "--tags", "a"])
+            .assert()
+            .success();
+    }
+    for args in [
+        vec!["list", "--format", "ids"],
+        vec!["list"],
+        vec!["tags"],
+        vec!["show", "FEAT-0001"],
+        vec!["verify"],
+        vec!["query", "SELECT id FROM docs"],
+        vec!["tag", "FEAT-0001", "--add", "b"],
+        // This corpus has no conflicting ids, so `renumber` prints its one line
+        // and returns before it would go looking for a git base.
+        vec!["renumber"],
+    ] {
+        let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("opys"))
+            .arg("--root")
+            .arg(dir.path())
+            .args(&args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        // Close the read end before the child has loaded the project, let alone
+        // printed: every write it then attempts fails with EPIPE.
+        drop(child.stdout.take());
+        let out = child.wait_with_output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!err.contains("panicked"), "`opys {args:?}` panicked: {err}");
+        assert!(
+            out.status.success(),
+            "`opys {args:?}` exited {:?}: {err}",
+            out.status.code()
+        );
+    }
+}
+
 #[test]
 fn bulk_dedupes_repeated_ids() {
     let dir = project();
@@ -3125,6 +3159,295 @@ fn bulk_dedupes_repeated_ids() {
         .assert()
         .success()
         .stdout(predicate::str::contains("retired FEAT-0001"));
+}
+
+/// Several ids as plain positionals — the shell-friendly form, equivalent to a
+/// comma list (`opys list --format ids` output substituted with `$(…)` lands
+/// here).
+#[test]
+fn bulk_takes_several_positional_ids() {
+    let dir = project();
+    for t in ["A", "B", "C"] {
+        opys(&dir)
+            .args(["new", "--title", t, "--tags", "a"])
+            .assert()
+            .success();
+    }
+    opys(&dir)
+        .args([
+            "set-status",
+            "FEAT-0001",
+            "FEAT-0002",
+            "FEAT-0003",
+            "partial",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0001 -> partial"))
+        .stdout(predicate::str::contains("FEAT-0003 -> partial"));
+    for n in 1..=3 {
+        dir.child(format!("opys/features/FEAT-000{n}.md"))
+            .assert(predicate::str::contains("status: partial"));
+    }
+    // Mixed forms in one invocation: positionals and a comma list together.
+    opys(&dir)
+        .args(["tag", "FEAT-0001", "FEAT-0002,FEAT-0003", "--add", "x"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0002 tags: a, x"));
+}
+
+/// Where an option sits around a variadic id list. `--reason` may **lead** the
+/// ids or **trail** the whole thing, with the ids given as positionals or read
+/// from stdin as `-`; the README ships the trailing form and an agent piping
+/// into `set-status` naturally reaches for the leading one. Both work only
+/// because clap parses options anywhere in the argument list, and nothing else
+/// in the suite pins the leading form: adding `trailing_var_arg`,
+/// `allow_hyphen_values`, or another positional to one of these commands would
+/// silently break it. (The one order that does *not* parse is an option wedged
+/// between the ids and `set-status`'s trailing `STATUS` — asserted last, so the
+/// usage line keeps naming the right order.)
+#[test]
+fn bulk_options_may_lead_or_trail_the_id_list() {
+    let dir = project();
+    for t in ["A", "B"] {
+        opys(&dir)
+            .args(["new", "--title", t, "--tags", "a"])
+            .assert()
+            .success();
+    }
+    // Back to a live status between the forms, so each one is a real transition.
+    let replant = |dir: &TempDir| {
+        opys(dir)
+            .args(["set-status", "FEAT-0001", "FEAT-0002", "planned"])
+            .assert()
+            .success();
+    };
+
+    // Leading: the option comes before the ids.
+    opys(&dir)
+        .args([
+            "set-status",
+            "--reason",
+            "leading",
+            "FEAT-0001",
+            "FEAT-0002",
+            "wontfix",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0002 -> wontfix"));
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::str::contains("wontfix_reason: leading"));
+
+    // Trailing: the option comes after the ids *and* the status (the README's
+    // form).
+    replant(&dir);
+    opys(&dir)
+        .args([
+            "set-status",
+            "FEAT-0001",
+            "FEAT-0002",
+            "wontfix",
+            "--reason",
+            "trailing",
+        ])
+        .assert()
+        .success();
+    dir.child("opys/features/FEAT-0002.md")
+        .assert(predicate::str::contains("wontfix_reason: trailing"));
+
+    // Both orders again with the ids on stdin — the `list --format ids | …`
+    // shape, which is where an option has to share the line with `-`.
+    replant(&dir);
+    opys(&dir)
+        .args(["set-status", "--reason", "piped-leading", "-", "wontfix"])
+        .write_stdin("FEAT-0001\nFEAT-0002\n")
+        .assert()
+        .success();
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::str::contains("wontfix_reason: piped-leading"));
+
+    replant(&dir);
+    opys(&dir)
+        .args(["set-status", "-", "wontfix", "--reason", "piped-trailing"])
+        .write_stdin("FEAT-0001,FEAT-0002")
+        .assert()
+        .success();
+    dir.child("opys/features/FEAT-0002.md")
+        .assert(predicate::str::contains("wontfix_reason: piped-trailing"));
+
+    // The accepted limitation: an option *between* the ids and the status is a
+    // parse error, and the usage line it prints spells out the order that works.
+    replant(&dir);
+    opys(&dir)
+        .args(["set-status", "FEAT-0001", "--reason", "middle", "wontfix"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("<IDS>... <STATUS>"));
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::str::contains("status: planned"));
+}
+
+/// A batch is all-or-nothing: one bad id aborts the whole invocation
+/// with exit 2, the ids that already applied in memory are dropped un-flushed,
+/// and nothing is announced on stdout for a write that never happened.
+#[test]
+fn bulk_is_all_or_nothing() {
+    let dir = project();
+    for t in ["A", "B"] {
+        opys(&dir)
+            .args(["new", "--title", t, "--tags", "a"])
+            .assert()
+            .success();
+    }
+    // The bad id is second, so the first really was applied to the store before
+    // the abort — the proof is that it never reaches disk.
+    opys(&dir)
+        .args([
+            "set-status",
+            "FEAT-0001",
+            "FEAT-9999",
+            "FEAT-0002",
+            "partial",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("FEAT-9999"))
+        .stderr(predicate::str::contains("nothing was written"))
+        .stdout(predicate::str::contains("-> partial").not());
+    for n in 1..=2 {
+        dir.child(format!("opys/features/FEAT-000{n}.md"))
+            .assert(predicate::str::contains("status: planned"));
+    }
+}
+
+/// `tag -` reads its ids from stdin, the `list --format ids` pipe shape.
+#[test]
+fn bulk_tag_reads_ids_from_stdin() {
+    let dir = project();
+    for t in ["A", "B"] {
+        opys(&dir)
+            .args(["new", "--title", t, "--tags", "a"])
+            .assert()
+            .success();
+    }
+    opys(&dir)
+        .args(["tag", "-", "--add", "x"])
+        .write_stdin("FEAT-0001\nFEAT-0002\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("FEAT-0001 tags: a, x"))
+        .stdout(predicate::str::contains("FEAT-0002 tags: a, x"));
+}
+
+/// `retire -` reads its ids from stdin.
+#[test]
+fn bulk_retire_reads_ids_from_stdin() {
+    let dir = project();
+    for t in ["A", "B"] {
+        opys(&dir)
+            .args(["new", "--title", t, "--tags", "a"])
+            .assert()
+            .success();
+    }
+    opys(&dir)
+        .args(["retire", "-", "--reason", "dupes"])
+        .write_stdin("FEAT-0001\nFEAT-0002\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("retired FEAT-0001"))
+        .stdout(predicate::str::contains("retired FEAT-0002"));
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::path::missing());
+    dir.child("opys/features/FEAT-0002.md")
+        .assert(predicate::path::missing());
+}
+
+/// `close -` reads its ids from stdin (the shell pipe itself is covered by
+/// `bulk_stdin_pipe_from_list_closes_the_selection`).
+#[test]
+fn bulk_close_reads_ids_from_stdin() {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "Feature", "--tags", "a"])
+        .assert()
+        .success();
+    for t in ["One", "Two"] {
+        opys(&dir)
+            .args([
+                "new",
+                "--type",
+                "task",
+                "--title",
+                t,
+                "--features",
+                "FEAT-0001",
+            ])
+            .assert()
+            .success();
+    }
+    opys(&dir)
+        .args(["close", "-", "--force"])
+        .write_stdin("TASK-0002 TASK-0003\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("closed TASK-0002"))
+        .stdout(predicate::str::contains("closed TASK-0003"));
+    dir.child("opys/work-items/TASK-0002.md")
+        .assert(predicate::path::missing());
+    dir.child("opys/work-items/TASK-0003.md")
+        .assert(predicate::path::missing());
+}
+
+/// `block -` and `unblock -` read their ids from stdin, so a selection can be
+/// blocked (and released) in one invocation each.
+#[test]
+fn bulk_block_and_unblock_read_ids_from_stdin() {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "Feature", "--tags", "a"])
+        .assert()
+        .success();
+    for t in ["One", "Two"] {
+        opys(&dir)
+            .args([
+                "new",
+                "--type",
+                "task",
+                "--title",
+                t,
+                "--features",
+                "FEAT-0001",
+            ])
+            .assert()
+            .success();
+    }
+    opys(&dir)
+        .args(["block", "-", "--by", "FEAT-0001"])
+        .write_stdin("TASK-0002,TASK-0003\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("TASK-0002 blocked by FEAT-0001"))
+        .stdout(predicate::str::contains("TASK-0003 blocked by FEAT-0001"));
+    for n in [2, 3] {
+        dir.child(format!("opys/work-items/TASK-000{n}.md"))
+            .assert(predicate::str::contains("status: blocked"));
+    }
+    opys(&dir)
+        .args(["unblock", "-", "--by", "FEAT-0001"])
+        .write_stdin("TASK-0002\nTASK-0003\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "TASK-0002 no longer blocked by FEAT-0001",
+        ));
+    for n in [2, 3] {
+        dir.child(format!("opys/work-items/TASK-000{n}.md"))
+            .assert(predicate::str::contains("status: todo"));
+    }
 }
 
 #[test]
@@ -3267,171 +3590,6 @@ default_status = \"planned\"\n";
         .assert(predicate::path::exists());
 }
 
-/// `query --write` DELETE of a referenced doc is a lifecycle removal: the file
-/// is deleted, every inbound reference is struck to a `~~title~~` tombstone (so
-/// nothing dangles and verify stays clean), and the id is reserved forever.
-#[test]
-fn query_write_delete_strikes_inbound_ref_and_reserves_id() {
-    let cfg = "pad = 4\n\
-[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
-statuses = [\"planned\", \"implemented\"]\ndefault_status = \"planned\"\n";
-    let dir = project_with(cfg);
-    dir.child("opys/features/FEAT-0001.md")
-        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [x]\n---\n\n# One\n")
-        .unwrap();
-    dir.child("opys/features/FEAT-0002.md")
-        .write_str(
-            "---\nid: FEAT-0002\nstatus: planned\ntags: [x]\nreferences:\n  FEAT-0001: One\n---\n\n# Two\n",
-        )
-        .unwrap();
-    opys(&dir)
-        .args([
-            "query",
-            "--write",
-            "DELETE FROM docs WHERE id = 'FEAT-0001'",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("1 deleted"));
-    dir.child("opys/features/FEAT-0001.md")
-        .assert(predicate::path::missing());
-    dir.child("opys/features/FEAT-0002.md")
-        .assert(predicate::str::contains("FEAT-0001: ~~One~~"));
-    dir.child("opys/_retired.md")
-        .assert(predicate::str::contains("FEAT-0001"));
-    opys(&dir).arg("verify").assert().success();
-}
-
-/// A DELETE of an *unreferenced* doc still reserves its id — striking inbound
-/// refs alone wouldn't reserve a number nobody points at.
-#[test]
-fn query_write_delete_unreferenced_reserves_id() {
-    let cfg = "pad = 4\n\
-[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
-statuses = [\"planned\"]\ndefault_status = \"planned\"\n";
-    let dir = project_with(cfg);
-    dir.child("opys/features/FEAT-0001.md")
-        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [x]\n---\n\n# One\n")
-        .unwrap();
-    opys(&dir)
-        .args([
-            "query",
-            "--write",
-            "DELETE FROM docs WHERE id = 'FEAT-0001'",
-        ])
-        .assert()
-        .success();
-    dir.child("opys/features/FEAT-0001.md")
-        .assert(predicate::path::missing());
-    dir.child("opys/_retired.md")
-        .assert(predicate::str::contains("FEAT-0001"));
-}
-
-/// A reserved id is never handed back out: after deleting FEAT-0001, `new`
-/// allocates FEAT-0002, not the freed number.
-#[test]
-fn query_write_delete_reserves_id_against_new_reuse() {
-    let cfg = "pad = 4\n\
-[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
-statuses = [\"planned\"]\ndefault_status = \"planned\"\n";
-    let dir = project_with(cfg);
-    dir.child("opys/features/FEAT-0001.md")
-        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [x]\n---\n\n# One\n")
-        .unwrap();
-    opys(&dir)
-        .args([
-            "query",
-            "--write",
-            "DELETE FROM docs WHERE id = 'FEAT-0001'",
-        ])
-        .assert()
-        .success();
-    opys(&dir)
-        .args(["new", "--title", "Two", "--tags", "x"])
-        .assert()
-        .success();
-    dir.child("opys/features/FEAT-0001.md")
-        .assert(predicate::path::missing());
-    dir.child("opys/features/FEAT-0002.md")
-        .assert(predicate::path::exists());
-}
-
-/// `query --write` INSERT into docs auto-allocates the next id, defaults the
-/// status, stamps timestamps, and scaffolds the type's required sections so the
-/// new doc passes verify.
-#[test]
-fn query_write_insert_allocates_id_and_scaffolds() {
-    let cfg = "pad = 4\n\
-[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
-statuses = [\"planned\"]\ndefault_status = \"planned\"\n\
-[[types.feature.sections]]\nheading = \"Test plan\"\nkind = \"checklist\"\nrequired = true\n";
-    let dir = project_with(cfg);
-    dir.child("opys/features/FEAT-0001.md")
-        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# One\n\n## Test plan\n- [ ] a\n")
-        .unwrap();
-    opys(&dir)
-        .args([
-            "query",
-            "--write",
-            "INSERT INTO docs (type, title) VALUES ('feature', 'Auto')",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("inserted"));
-    dir.child("opys/features/FEAT-0002.md")
-        .assert(predicate::str::contains("id: FEAT-0002"));
-    dir.child("opys/features/FEAT-0002.md")
-        .assert(predicate::str::contains("## Test plan"));
-    opys(&dir).arg("verify").assert().success();
-}
-
-/// Multiple inserts in one statement get distinct sequential ids.
-#[test]
-fn query_write_insert_allocates_distinct_ids() {
-    let cfg = "pad = 4\n\
-[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
-statuses = [\"planned\"]\ndefault_status = \"planned\"\n";
-    let dir = project_with(cfg);
-    dir.child("opys/features/FEAT-0001.md")
-        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# One\n")
-        .unwrap();
-    opys(&dir)
-        .args([
-            "query",
-            "--write",
-            "INSERT INTO docs (type, title) VALUES ('feature', 'A'), ('feature', 'B')",
-        ])
-        .assert()
-        .success();
-    dir.child("opys/features/FEAT-0002.md")
-        .assert(predicate::path::exists());
-    dir.child("opys/features/FEAT-0003.md")
-        .assert(predicate::path::exists());
-}
-
-/// An INSERT with an unknown type is refused with no files changed.
-#[test]
-fn query_write_insert_rejects_unknown_type() {
-    let cfg = "pad = 4\n\
-[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
-statuses = [\"planned\"]\ndefault_status = \"planned\"\n";
-    let dir = project_with(cfg);
-    dir.child("opys/features/FEAT-0001.md")
-        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# One\n")
-        .unwrap();
-    opys(&dir)
-        .args([
-            "query",
-            "--write",
-            "INSERT INTO docs (type, title) VALUES ('nope', 'X')",
-        ])
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains("needs a known type"));
-    dir.child("opys/features/FEAT-0002.md")
-        .assert(predicate::path::missing());
-}
-
 /// A pre-0.12 plaintext `_retired.txt` is migrated to `_retired.md` on the next
 /// write (here a no-op `sync`), and the reserved id survives the migration.
 #[test]
@@ -3487,56 +3645,47 @@ fn query_blocks_exposes_body_sections() {
         .stdout(predicate::str::contains("# Login"));
 }
 
-/// `UPDATE blocks SET text` splices a section's content back into the body
-/// byte-accurately (sibling sections untouched), gated by verify.
+/// `query --stdin` binds stdin to `$1`, so a multi-line value with
+/// quotes/percent signs can be matched without SQL escaping.
 #[test]
-fn query_write_blocks_splices_section_into_body() {
+fn query_binds_stdin_to_param() {
     let cfg = "pad = 4\n\
 [types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
 statuses = [\"planned\"]\ndefault_status = \"planned\"\n";
     let dir = project_with(cfg);
     dir.child("opys/features/FEAT-0001.md")
-        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# Login\n\n## Notes\nold note.\n\n## More\nkeep me.\n")
+        .write_str(
+            "---\nid: FEAT-0001\nstatus: planned\n---\n\n# T\n\n\
+             ## Notes\nfirst line\nline with 'quotes' and 50% off\n",
+        )
         .unwrap();
     opys(&dir)
         .args([
             "query",
-            "--write",
-            "UPDATE blocks SET text = 'new note.' WHERE doc_id = 'FEAT-0001' AND heading = 'Notes'",
+            "--stdin",
+            "SELECT doc_id FROM blocks WHERE heading = 'Notes' AND text = $1",
         ])
+        .write_stdin("first line\nline with 'quotes' and 50% off\n")
         .assert()
         .success()
-        .stdout(predicate::str::contains("updated"));
-    let f = dir.child("opys/features/FEAT-0001.md");
-    f.assert(predicate::str::contains("## Notes\nnew note."));
-    f.assert(predicate::str::contains("## More\nkeep me."));
+        .stdout(predicate::str::contains("FEAT-0001"));
 }
 
-/// `query --write --stdin` binds stdin to `$1`, so multi-line content with
-/// quotes/percent signs needs no SQL escaping.
+/// `--write` is gone (ADR-0100): `opys query` is read-only, so clap rejects the
+/// flag outright rather than the engine refusing the statement later.
 #[test]
-fn query_write_binds_stdin_to_param() {
-    let cfg = "pad = 4\n\
-[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
-statuses = [\"planned\"]\ndefault_status = \"planned\"\n";
-    let dir = project_with(cfg);
+fn query_rejects_the_removed_write_flag() {
+    let dir = project();
     dir.child("opys/features/FEAT-0001.md")
-        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# T\n\n## Notes\nold.\n")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# A\n")
         .unwrap();
     opys(&dir)
-        .args([
-            "query",
-            "--write",
-            "--stdin",
-            "UPDATE blocks SET text = $1 WHERE doc_id = 'FEAT-0001' AND heading = 'Notes'",
-        ])
-        .write_stdin("first line\nline with 'quotes' and 50% off")
+        .args(["query", "--write", "UPDATE docs SET status = 'x'"])
         .assert()
-        .success();
+        .code(2)
+        .stderr(predicate::str::contains("unexpected argument \'--write\'"));
     dir.child("opys/features/FEAT-0001.md")
-        .assert(predicate::str::contains(
-            "## Notes\nfirst line\nline with 'quotes' and 50% off",
-        ));
+        .assert(predicate::str::contains("status: planned"));
 }
 
 /// A minimal closable type for the ledger-on-close tests: no links, no
@@ -3732,130 +3881,6 @@ fn retire_reason_is_optional() {
         .assert(predicate::str::contains("FEAT-0001: X"));
 }
 
-/// A raw `UPDATE docs SET path` may not relocate a file outside the inventory
-/// base — the flush refuses the plan and nothing on disk changes.
-#[test]
-fn query_write_rejects_path_escape() {
-    let cfg = "pad = 4\n\
-[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
-statuses = [\"planned\"]\ndefault_status = \"planned\"\n";
-    let dir = project_with(cfg);
-    dir.child("opys/features/FEAT-0001.md")
-        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# One\n")
-        .unwrap();
-    opys(&dir)
-        .args([
-            "--no-sync",
-            "query",
-            "--write",
-            "UPDATE docs SET path = '../../evil/FEAT-0001.md' WHERE id = 'FEAT-0001'",
-        ])
-        .assert()
-        .failure()
-        .code(2)
-        .stderr(predicate::str::contains("not a plain relative path"));
-    dir.child("opys/features/FEAT-0001.md")
-        .assert(predicate::path::exists());
-    assert!(!dir.path().parent().unwrap().join("evil").exists());
-}
-
-/// The `retired` ledger is not a DML surface: reservations are managed by the
-/// lifecycle commands. It stays readable via plain `query`.
-#[test]
-fn query_write_rejects_retired_table_dml() {
-    let dir = project();
-    opys(&dir)
-        .args(["new", "--title", "X", "--tags", "a"])
-        .assert()
-        .success();
-    opys(&dir)
-        .args(["retire", "FEAT-0001", "--reason", "dupe"])
-        .assert()
-        .success();
-    opys(&dir)
-        .args(["query", "--write", "DELETE FROM retired"])
-        .assert()
-        .failure()
-        .code(2)
-        .stderr(predicate::str::contains("may not modify 'retired'"));
-    dir.child("opys/_retired.md")
-        .assert(predicate::str::contains("FEAT-0001: X"));
-    opys(&dir)
-        .args(["query", "SELECT id FROM retired"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("FEAT-0001"));
-}
-
-/// Load-snapshot columns (`orig_*`, `dkey`, `num`) are internal bookkeeping —
-/// not writable through `query --write`.
-#[test]
-fn query_write_rejects_snapshot_columns() {
-    let dir = project();
-    dir.child("opys/features/FEAT-0001.md")
-        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# One\n")
-        .unwrap();
-    opys(&dir)
-        .args([
-            "query",
-            "--write",
-            "UPDATE docs SET orig_text = '' WHERE id = 'FEAT-0001'",
-        ])
-        .assert()
-        .failure()
-        .code(2)
-        .stderr(predicate::str::contains("not writable"));
-}
-
-/// A positional `INSERT INTO docs VALUES (…)` would smuggle values into the
-/// internal columns — an explicit (user-facing) column list is required.
-#[test]
-fn query_write_insert_docs_requires_column_list() {
-    let dir = project();
-    opys(&dir)
-        .args([
-            "query",
-            "--write",
-            "INSERT INTO docs VALUES (99, 'FEAT-0099', 99, 'feature', 'planned', 'X', \
-             '', '', '', 'FEAT-0099.md', NULL, NULL, NULL)",
-        ])
-        .assert()
-        .failure()
-        .code(2)
-        .stderr(predicate::str::contains("explicit column list"));
-    dir.child("opys/features/FEAT-0099.md")
-        .assert(predicate::path::missing());
-}
-
-/// The write gate diffs verify problems keyed by doc id, not rendered path — an
-/// edit that relocates a file must not make its pre-existing problems look new.
-#[test]
-fn query_write_relocation_keeps_preexisting_problems_keyed_by_id() {
-    let cfg = "pad = 4\n\
-[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
-statuses = [\"planned\", \"archived\"]\ndefault_status = \"planned\"\n\
-status_dirs = { archived = \"_archived\" }\n";
-    let dir = project_with(cfg);
-    // Pre-existing problem: the live doc reuses a retired id. Its verify
-    // message is path-prefixed, and the status change below moves the path.
-    dir.child("opys/features/FEAT-0007.md")
-        .write_str("---\nid: FEAT-0007\nstatus: planned\n---\n\n# Seven\n")
-        .unwrap();
-    dir.child("opys/_retired.txt")
-        .write_str("FEAT-0007  # retired\n")
-        .unwrap();
-    opys(&dir)
-        .args([
-            "query",
-            "--write",
-            "UPDATE docs SET status = 'archived' WHERE id = 'FEAT-0007'",
-        ])
-        .assert()
-        .success();
-    dir.child("opys/features/_archived/FEAT-0007.md")
-        .assert(predicate::path::exists());
-}
-
 /// The legacy plaintext ledger gets the same protection as `_retired.md`: a
 /// present-but-unreadable `_retired.txt` blocks allocation instead of reading
 /// as empty (which would also let the migration delete it).
@@ -3907,35 +3932,6 @@ fn retire_warns_when_striking_a_required_link() {
         .stderr(predicate::str::contains(
             "must reference at least 1 doc(s) of type 'feature'",
         ));
-}
-
-/// A `--write` DELETE of a relation row that was an id's only anchor (a
-/// tombstone from the pre-ledger era) re-reserves the id in the ledger.
-#[test]
-fn query_write_deleting_a_tombstone_row_reserves_the_id() {
-    let dir = project_with(SOLO_TASK_CFG);
-    dir.child("opys/TASK-0002.md")
-        .write_str(
-            "---\nid: TASK-0002\nstatus: todo\nreferences:\n  TASK-0001: ~~Old one~~\n---\n\n# Two\n",
-        )
-        .unwrap();
-    opys(&dir)
-        .args([
-            "query",
-            "--write",
-            "DELETE FROM relations WHERE ref_id = 'TASK-0001'",
-        ])
-        .assert()
-        .success();
-    dir.child("opys/TASK-0002.md")
-        .assert(predicate::str::contains("TASK-0001").not());
-    dir.child("opys/_retired.md")
-        .assert(predicate::str::contains("TASK-0001: Old one"));
-    opys(&dir)
-        .args(["new", "--type", "task", "--title", "Next"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("TASK-0003"));
 }
 
 /// A `dir = "."` layout renders paths with a leading `./` segment — harmless,
@@ -4474,60 +4470,25 @@ fn interleaved_slot_falls_back_to_a_hash_of_user_at_host() {
         .stdout(predicate::str::contains("FEAT-0022.md"));
 }
 
-/// `query --write INSERT` allocates through the same source, one congruent id
-/// per row.
+/// A read never allocates, so it never resolves a slot: even an unusable
+/// `OPYS_ID_SLOT` leaves `query`, `list` and `verify` working. (The
+/// fails-before-the-load half of this property moved to
+/// `a_bad_slot_is_refused_before_the_inventory_lock` when `query --write`
+/// went away with ADR-0100.)
 #[test]
-fn query_write_insert_under_a_modulus_stays_in_the_slot() {
-    let cfg = "pad = 4\n\
-[types.feature]\nprefix = \"FEAT\"\ndir = \"features\"\n\
-statuses = [\"planned\"]\ndefault_status = \"planned\"\n\
-[ids]\nmodulus = 4\n";
-    let dir = project_with(cfg);
-    dir.child("opys/features/FEAT-0001.md")
-        .write_str("---\nid: FEAT-0001\nstatus: planned\n---\n\n# One\n")
-        .unwrap();
-    opys(&dir)
-        .env("OPYS_ID_SLOT", "3")
-        .args([
-            "query",
-            "--write",
-            "INSERT INTO docs (type, title) VALUES ('feature', 'A'), ('feature', 'B')",
-        ])
-        .assert()
-        .success();
-    for name in ["FEAT-0003.md", "FEAT-0007.md"] {
-        dir.child("opys/features")
-            .child(name)
-            .assert(predicate::path::exists());
-    }
-    opys(&dir).arg("verify").assert().success();
-}
-
-/// `query --write` resolves its slot before taking the inventory lock, so a
-/// bad `OPYS_ID_SLOT` is exit 2 with nothing written; a read-only `query`
-/// never allocates and never reads the slot.
-#[test]
-fn query_write_with_a_bad_slot_fails_before_the_load_and_reads_ignore_it() {
+fn reads_ignore_an_unusable_id_slot() {
     let dir = seeded_modulus_project(4);
-    opys(&dir)
-        .env("OPYS_ID_SLOT", "9")
-        .args([
-            "query",
-            "--write",
-            "INSERT INTO docs (type, title) VALUES ('feature', 'A')",
-        ])
-        .assert()
-        .failure()
-        .code(2)
-        .stderr(predicate::str::contains("OPYS_ID_SLOT=9"))
-        .stderr(predicate::str::contains("modulus 4"));
-    assert_eq!(
-        std::fs::read_dir(dir.path().join("opys/features"))
-            .unwrap()
-            .count(),
-        1,
-        "nothing was written"
-    );
+    for args in [
+        vec!["query", "SELECT id FROM docs"],
+        vec!["list"],
+        vec!["verify"],
+    ] {
+        opys(&dir)
+            .env("OPYS_ID_SLOT", "9")
+            .args(&args)
+            .assert()
+            .success();
+    }
     opys(&dir)
         .env("OPYS_ID_SLOT", "9")
         .args(["query", "SELECT id FROM docs"])

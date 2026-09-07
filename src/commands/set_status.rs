@@ -6,7 +6,7 @@
 //! `Store::put_doc` (which re-decomposes into the tables). Guards run before
 //! any write, so a failed id leaves the store untouched.
 
-use crate::commands::{expand_ids, for_each_id, maybe_sync, touch};
+use crate::commands::{apply_batch, maybe_sync, print_lines, resolve_ids, touch};
 use crate::error::{usage, Result};
 use crate::project::Project;
 use crate::rules;
@@ -73,16 +73,16 @@ pub fn core(
     Ok(())
 }
 
-pub fn run(ctx: &Ctx, ids: &str, status: &str, reason: Option<&str>) -> Result<()> {
+pub fn run(ctx: &Ctx, ids: &[String], status: &str, reason: Option<&str>) -> Result<()> {
     let prj = ctx.open()?;
-    let ids = expand_ids(ids)?;
+    let ids = resolve_ids(ids)?;
     let (mut store, _) = ctx.load(&prj)?;
-    let res = for_each_id(&ids, |id| {
+    let lines = apply_batch(&ids, |id| {
         core(&prj, &mut store, id, status, reason)?;
-        println!("{id} -> {status}");
-        Ok(())
-    });
+        Ok(format!("{id} -> {status}"))
+    })?;
     ctx.flush(&prj, store)?;
+    print_lines(lines)?;
     maybe_sync(ctx, &prj);
-    res
+    Ok(())
 }

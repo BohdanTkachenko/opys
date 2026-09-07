@@ -119,12 +119,16 @@ pub enum Command {
         keys: bool,
     },
 
-    /// Guarded status transition. The id may be a comma-separated list to move
-    /// several documents at once (same status/reason applied to each).
+    /// Guarded status transition. Takes several ids to move a batch at once
+    /// (the same status/reason applied to each); a refused id aborts the batch.
     SetStatus {
-        /// One id, a comma-separated list (e.g. `FEAT-1,FEAT-2`), or `-` to read
-        /// the list from stdin (comma/space/newline-separated).
-        ids: String,
+        /// One or more ids: several positionals (`FEAT-0001 FEAT-0002`), a
+        /// comma-separated list (`FEAT-0001,FEAT-0002`), or `-` to read the list from
+        /// stdin (comma/space/newline-separated). Ids are applied in order in a
+        /// single pass and any failure aborts the whole invocation — nothing is
+        /// written.
+        #[arg(required = true)]
+        ids: Vec<String>,
         status: String,
         /// Required when moving to wontfix.
         #[arg(long)]
@@ -133,9 +137,13 @@ pub enum Command {
 
     /// Add/remove tags on one or more documents.
     Tag {
-        /// One id, a comma-separated list (e.g. `FEAT-1,FEAT-2`), or `-` to read
-        /// the list from stdin (comma/space/newline-separated).
-        ids: String,
+        /// One or more ids: several positionals (`FEAT-0001 FEAT-0002`), a
+        /// comma-separated list (`FEAT-0001,FEAT-0002`), or `-` to read the list from
+        /// stdin (comma/space/newline-separated). Ids are applied in order in a
+        /// single pass and any failure aborts the whole invocation — nothing is
+        /// written.
+        #[arg(required = true)]
+        ids: Vec<String>,
         #[arg(long)]
         add: Option<String>,
         #[arg(long)]
@@ -145,9 +153,13 @@ pub enum Command {
     /// Delete one or more documents; each ID is logged and never reused.
     /// Inbound references are struck into `~~title~~` tombstones, like `close`.
     Retire {
-        /// One id, a comma-separated list (e.g. `FEAT-1,FEAT-2`), or `-` to read
-        /// the list from stdin (comma/space/newline-separated).
-        ids: String,
+        /// One or more ids: several positionals (`FEAT-0001 FEAT-0002`), a
+        /// comma-separated list (`FEAT-0001,FEAT-0002`), or `-` to read the list from
+        /// stdin (comma/space/newline-separated). Ids are applied in order in a
+        /// single pass and any failure aborts the whole invocation — nothing is
+        /// written.
+        #[arg(required = true)]
+        ids: Vec<String>,
         /// Optional context, echoed with the confirmation. The ledger records
         /// the id and title; git records the when and why.
         #[arg(long)]
@@ -158,8 +170,13 @@ pub enum Command {
     /// directions. Each blocked document is auto-set to `blocked` if its type
     /// has that status.
     Block {
-        /// The blocked document's id, a comma-separated list, or `-` for stdin.
-        ids: String,
+        /// The blocked document(s): several positionals (`FEAT-0001 FEAT-0002`), a
+        /// comma-separated list (`FEAT-0001,FEAT-0002`), or `-` to read the list from
+        /// stdin (comma/space/newline-separated). Ids are applied in order in a
+        /// single pass and any failure aborts the whole invocation — nothing is
+        /// written.
+        #[arg(required = true)]
+        ids: Vec<String>,
         /// The blocking document's ID.
         #[arg(long = "by")]
         by: String,
@@ -167,9 +184,13 @@ pub enum Command {
 
     /// Remove a blocker link added by `block` from one or more documents.
     Unblock {
-        /// One id, a comma-separated list (e.g. `FEAT-1,FEAT-2`), or `-` to read
-        /// the list from stdin (comma/space/newline-separated).
-        ids: String,
+        /// One or more ids: several positionals (`FEAT-0001 FEAT-0002`), a
+        /// comma-separated list (`FEAT-0001,FEAT-0002`), or `-` to read the list from
+        /// stdin (comma/space/newline-separated). Ids are applied in order in a
+        /// single pass and any failure aborts the whole invocation — nothing is
+        /// written.
+        #[arg(required = true)]
+        ids: Vec<String>,
         #[arg(long = "by")]
         by: String,
     },
@@ -188,8 +209,9 @@ pub enum Command {
         plain: bool,
     },
 
-    /// Run a SQL query over the inventory and print the result table. Read-only
-    /// (SELECT) by default; `--write` allows INSERT/UPDATE/DELETE. Styled for a
+    /// Run a SQL query over the inventory and print the result table. Read-only:
+    /// every statement must be a SELECT, and nothing is ever written (bulk edits
+    /// pipe `list --format ids` into a lifecycle command). Styled for a
     /// terminal; plain markdown when piped (or with `--plain` / `NO_COLOR`).
     ///
     /// Tables: docs(id, num, type, status, title, created, updated, body,
@@ -199,8 +221,7 @@ pub enum Command {
     /// blocks(doc_id, seq, heading, text),
     /// retired(id, num, title).
     Query {
-        /// The SQL to run (`-` reads it from stdin). A SELECT by default;
-        /// INSERT/UPDATE/DELETE require `--write`.
+        /// The SQL to run (`-` reads it from stdin). Must be a SELECT.
         sql: String,
         /// Emit raw markdown instead of styled terminal output.
         #[arg(long)]
@@ -210,13 +231,6 @@ pub enum Command {
         /// trailing whitespace is trimmed. Incompatible with `sql = -`.
         #[arg(long)]
         stdin: bool,
-        /// Allow edit statements (INSERT/UPDATE/DELETE). Applied only if the
-        /// edit introduces no new `verify` problem — otherwise nothing is
-        /// written. Write the authoritative columns (`docs.status`/`body`/
-        /// `created`/`updated`, `tags.tag`, `relations.raw_value`,
-        /// `fm_fields.value_yaml`); derived ones are recomputed. Setting `blocks.text` splices a `##` section back into the body.
-        #[arg(long)]
-        write: bool,
     },
 
     /// Reconstruct a document's lifecycle from git history: the status timeline
@@ -231,9 +245,13 @@ pub enum Command {
     /// strike its title in every referencing doc, and log the ID to
     /// `_retired.md` so it is never reused.
     Close {
-        /// One id, a comma-separated list (e.g. `FEAT-1,FEAT-2`), or `-` to read
-        /// the list from stdin (comma/space/newline-separated).
-        ids: String,
+        /// One or more ids: several positionals (`FEAT-0001 FEAT-0002`), a
+        /// comma-separated list (`FEAT-0001,FEAT-0002`), or `-` to read the list from
+        /// stdin (comma/space/newline-separated). Ids are applied in order in a
+        /// single pass and any failure aborts the whole invocation — nothing is
+        /// written.
+        #[arg(required = true)]
+        ids: Vec<String>,
         /// Close even if a required checklist section has unchecked items.
         #[arg(long)]
         force: bool,

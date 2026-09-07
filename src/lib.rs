@@ -162,13 +162,8 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
             commands::stats::run(&ctx, plain)?;
             Ok(0)
         }
-        Command::Query {
-            sql,
-            plain,
-            write,
-            stdin,
-        } => {
-            commands::query::run(&ctx, &sql, plain, write, stdin)?;
+        Command::Query { sql, plain, stdin } => {
+            commands::query::run(&ctx, &sql, plain, stdin)?;
             Ok(0)
         }
         #[cfg(feature = "history")]

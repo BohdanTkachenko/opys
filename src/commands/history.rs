@@ -18,6 +18,7 @@ use std::path::PathBuf;
 
 use gix::bstr::{BStr, ByteSlice};
 
+use crate::commands::print_lines;
 use crate::doc::Doc;
 use crate::error::{usage, Result};
 use crate::Ctx;
@@ -65,18 +66,18 @@ pub fn run(ctx: &Ctx, id: &str) -> Result<()> {
         .map_err(|e| usage(format!("git history: {e}")))?;
 
     if revs.is_empty() {
-        println!("{id}: no committed history found");
+        print_lines([format!("{id}: no committed history found")])?;
         return Ok(());
     }
 
     let author_w = revs.iter().map(|r| r.author.len()).max().unwrap_or(0);
-    println!(
+    let mut lines = vec![format!(
         "History of {id} ({} revision{}, newest first):",
         revs.len(),
         if revs.len() == 1 { "" } else { "s" }
-    );
-    for r in &revs {
-        println!(
+    )];
+    lines.extend(revs.iter().map(|r| {
+        format!(
             "  {}  {}  {:<aw$}  {:<14}  {}",
             r.short,
             r.date,
@@ -84,8 +85,9 @@ pub fn run(ctx: &Ctx, id: &str) -> Result<()> {
             r.status,
             r.summary,
             aw = author_w
-        );
-    }
+        )
+    }));
+    print_lines(lines)?;
     Ok(())
 }
 

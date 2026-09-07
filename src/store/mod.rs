@@ -33,7 +33,6 @@ use crate::project_config::ProjectConfig;
 pub(crate) use decompose::split_tag;
 pub(crate) use decompose::{decompose, id_num};
 pub use flush::FlushPlan;
-pub(crate) use model::Baseline;
 
 /// The in-memory corpus database for one CLI invocation.
 pub struct Store {
@@ -848,8 +847,8 @@ terminal_statuses = ["done"]
 
     /// The id sequence covers live docs, relation-map ids (struck or not), and
     /// the retired ledger — asserted through the allocation seam's dense
-    /// default (`ids::SequenceMax`), which `new`/`import`/`query --write`/
-    /// `renumber` use when no `[ids] modulus` is configured.
+    /// default (`ids::SequenceMax`), which `new`/`import`/`renumber` use
+    /// when no `[ids] modulus` is configured.
     #[test]
     fn next_id_covers_docs_relations_and_ledger() {
         use crate::ids::{format_id, IdSource, SequenceMax};

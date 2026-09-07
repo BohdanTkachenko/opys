@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use crate::body;
-use crate::commands::{expand_ids, for_each_id, maybe_sync};
+use crate::commands::{apply_batch, maybe_sync, print_lines, resolve_ids};
 use crate::error::{usage, Result};
 use crate::frontmatter::Frontmatter;
 use crate::project::Project;
@@ -102,18 +102,18 @@ pub fn core(prj: &Project, store: &mut Store, id: &str, force: bool) -> Result<(
     Ok(())
 }
 
-pub fn run(ctx: &Ctx, ids: &str, force: bool) -> Result<()> {
+pub fn run(ctx: &Ctx, ids: &[String], force: bool) -> Result<()> {
     let prj = ctx.open()?;
-    let ids = expand_ids(ids)?;
+    let ids = resolve_ids(ids)?;
     let (mut store, _) = ctx.load(&prj)?;
-    let res = for_each_id(&ids, |id| {
+    let lines = apply_batch(&ids, |id| {
         core(&prj, &mut store, id, force)?;
-        println!("closed {id} (deleted; references struck through)");
-        Ok(())
-    });
+        Ok(format!("closed {id} (deleted; references struck through)"))
+    })?;
     ctx.flush(&prj, store)?;
+    print_lines(lines)?;
     maybe_sync(ctx, &prj);
-    res
+    Ok(())
 }
 
 /// Strike `id` to a tombstone in every relation map that lists it; for
