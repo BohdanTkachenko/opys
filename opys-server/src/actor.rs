@@ -636,7 +636,12 @@ impl Actor {
         // Unparsable documents arrive as `parse_errors` and are already part of
         // what verify reports, so a broken file shows up as a problem rather
         // than taking the corpus down.
-        let problems = verify::collect_problems(&prj, &docs, parse_errors);
+        let mut problems = verify::collect_problems(&prj, &docs, parse_errors);
+        // The corpus was just read off the medium and nothing has written since,
+        // so the spelling checks (format.md's quoted `history` keys) can run
+        // against it too — the dashboard's verify dot then says what `opys
+        // verify` says.
+        problems.extend(verify::spelling_problems(&docs, self.backend.as_ref()));
         let summaries = docs.iter().filter_map(|d| summary(&prj, d)).collect();
         Ok(Warm {
             prj,

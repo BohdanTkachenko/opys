@@ -14,6 +14,7 @@ pub mod doc;
 pub mod error;
 pub mod file_refs;
 pub mod frontmatter;
+pub mod history;
 pub mod ids;
 pub mod links;
 pub mod mdprism;

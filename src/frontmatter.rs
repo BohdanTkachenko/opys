@@ -13,13 +13,15 @@ use serde_norway::{Mapping, Value};
 /// Feature field keys with first-class meaning; everything else is a declared
 /// custom field (or rejected by `verify`). `references` is the uniform
 /// ID->title map linking to other features and work items; `blocked_by` /
-/// `blocks` are the directional blocker-relation maps (see `refs.rs`).
-pub const RESERVED_FIELDS: [&str; 10] = [
+/// `blocks` are the directional blocker-relation maps (see `refs.rs`);
+/// `history` is the auto-maintained lifecycle map (see `history.rs`).
+pub const RESERVED_FIELDS: [&str; 11] = [
     "id",
     "status",
     "tags",
     "created",
     "updated",
+    "history",
     "spec",
     "wontfix_reason",
     "references",
@@ -28,14 +30,15 @@ pub const RESERVED_FIELDS: [&str; 10] = [
 ];
 
 /// Work-item reserved field keys. Work items share `id`/`status`/`tags`/
-/// `created`/`updated`/`references`/`blocked_by`/`blocks` with features and add
-/// `blocked_reason`.
-pub const WI_RESERVED_FIELDS: [&str; 9] = [
+/// `created`/`updated`/`history`/`references`/`blocked_by`/`blocks` with
+/// features and add `blocked_reason`.
+pub const WI_RESERVED_FIELDS: [&str; 10] = [
     "id",
     "status",
     "tags",
     "created",
     "updated",
+    "history",
     "references",
     "blocked_by",
     "blocks",
@@ -132,6 +135,20 @@ impl Frontmatter {
 #[derive(Debug)]
 pub struct ParseError(pub String);
 
+/// The `---`-fenced YAML region of a file, fences excluded, or `None` when the
+/// file has no terminated frontmatter.
+///
+/// The spelling-level companion to [`parse`], which reads the same region into a
+/// [`Frontmatter`]. Parsing throws the spelling away — `"2026-…Z"` and `2026-…Z`
+/// are one and the same string to a YAML 1.2 reader — so a check about how a
+/// value is *written* (the quoted `history` keys of
+/// [`crate::history::unquoted_keys`]) has to read the source rather than the map.
+pub fn source(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix("---\n")?;
+    let end = rest.find("\n---")?;
+    Some(&rest[..end])
+}
+
 /// Split a file into (frontmatter, body), then parse the frontmatter as YAML.
 pub fn parse(text: &str, path_display: &str) -> Result<(Frontmatter, String), ParseError> {
     if !text.starts_with("---\n") {
@@ -139,15 +156,14 @@ pub fn parse(text: &str, path_display: &str) -> Result<(Frontmatter, String), Pa
             "{path_display}: missing frontmatter opening '---'"
         )));
     }
-    let end = match text.get(4..).and_then(|s| s.find("\n---")) {
-        Some(i) => i + 4,
-        None => {
-            return Err(ParseError(format!(
-                "{path_display}: unterminated frontmatter"
-            )))
-        }
+    let Some(yaml) = source(text) else {
+        return Err(ParseError(format!(
+            "{path_display}: unterminated frontmatter"
+        )));
     };
-    let yaml = &text[4..end];
+    // `source` strips the opening fence, so the body starts after the YAML
+    // region's own `\n---`.
+    let end = 4 + yaml.len();
     let mut body = &text[end + 4..];
     if let Some(stripped) = body.strip_prefix('\n') {
         body = stripped;
@@ -201,6 +217,11 @@ pub fn serialize(fm: &Frontmatter, body: &str) -> String {
 
 /// Render one `key: value` frontmatter entry (possibly multi-line).
 fn render_entry(key: &str, value: &Value) -> String {
+    if key == crate::history::FIELD {
+        if let Some(rendered) = render_history(value) {
+            return rendered;
+        }
+    }
     if let Some(scalar) = inline_scalar(value) {
         return format!("{key}: {scalar}");
     }
@@ -217,6 +238,103 @@ fn render_entry(key: &str, value: &Value) -> String {
         .unwrap_or_else(|_| format!("{key}: ~"))
         .trim_end_matches('\n')
         .to_string()
+}
+
+/// Render the `history` lifecycle map: one `"<ts>": <status>` entry per line,
+/// sorted by key, **keys always quoted**. Quoting is not decoration — a bare
+/// RFC3339 scalar is resolved as a *timestamp* by a YAML 1.1 reader, and
+/// `serde_norway`'s block emitter (the path every other map takes) writes these
+/// keys unquoted. So this path takes every mapping with string keys, not only
+/// the canonical ones `history::is_map` blesses: surrendering a map to the
+/// generic emitter the moment one *value* is odd would make opys itself write
+/// the unquoted form this function exists to prevent.
+///
+/// It also never emits a scalar it cannot read back. `format_string` quotes but
+/// does not *escape* control characters (its contract — see `inline_scalar`), so
+/// a status or key holding a newline would be written as a raw line break inside
+/// a double-quoted scalar, turning the document unparseable. Control characters
+/// therefore go through [`escaped_scalar`] instead.
+///
+/// Returns `None` — falling through to the generic block path, which round-trips
+/// it verbatim — only for a value that is not a non-empty mapping, or one whose
+/// key or value is *composite* (a nested mapping/sequence has no one-line form).
+fn render_history(value: &Value) -> Option<String> {
+    let Value::Mapping(m) = value else {
+        return None;
+    };
+    let mut entries: Vec<(Option<&str>, String, String)> = m
+        .iter()
+        .map(|(k, v)| Some((k.as_str(), history_key(k)?, history_value(v)?)))
+        .collect::<Option<Vec<_>>>()?;
+    if entries.is_empty() {
+        return None;
+    }
+    // Sorted by *instant*, not by spelling. `verify` demands the canonical
+    // fixed-width key, for which the two agree — but a hand-written key of a
+    // different width sorts wrong lexically (`.` is 0x2E, `Z` is 0x5A, so
+    // `…:05.5Z` would come before `…:05Z`), and silently reordering the map that
+    // way turns a corpus verify had blessed red on the next unrelated write.
+    // Unparseable keys fall back to their spelling, keeping the order total.
+    entries.sort_unstable_by_key(|(ts, rendered, _)| {
+        (
+            ts.and_then(crate::history::parse),
+            ts.unwrap_or(rendered).to_string(),
+        )
+    });
+    let mut out = String::from(crate::history::FIELD);
+    out.push(':');
+    for (_, key, status) in entries {
+        out.push_str(&format!("\n  {key}: {status}"));
+    }
+    Some(out)
+}
+
+/// One history key on one line: a string key is **always** quoted (see
+/// [`render_history`]), escaping control characters a plain quoted scalar could
+/// not carry; any other scalar is rendered as itself, so one odd key does not
+/// cost the rest of the map its quoting. `None` for a composite key.
+fn history_key(k: &Value) -> Option<String> {
+    match k {
+        Value::String(s) if s.chars().any(char::is_control) => Some(escaped_scalar(s)),
+        Value::String(s) => Some(format!(
+            "\"{}\"",
+            s.replace('\\', "\\\\").replace('"', "\\\"")
+        )),
+        _ => inline_scalar(k),
+    }
+}
+
+/// One history entry's value on one line, or `None` for a composite (which has
+/// no inline form and sends the whole map to the generic emitter).
+fn history_value(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) if s.chars().any(char::is_control) => Some(escaped_scalar(s)),
+        _ => inline_scalar(v),
+    }
+}
+
+/// A double-quoted YAML scalar that round-trips *any* string, control characters
+/// included. `format_string` deliberately does not do this — a multi-line value
+/// reads better as a `|-` block, which is what the generic path emits — but the
+/// history block has no generic path to fall back to without losing its quoted
+/// keys, so it escapes instead.
+fn escaped_scalar(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            // C0/C1 controls have no mnemonic escape; all of them fit in `\uXXXX`.
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Inline representation of a flat scalar, or `None` if `value` is composite or
@@ -333,6 +451,133 @@ mod tests {
         let out = serialize(&fm, "# Title\n");
         let expected = "---\nid: VIK-0001\nstatus: planned\ntags: [osc]\ncreated: \"2026-06-01T09:00:00Z\"\nupdated: \"2026-06-16T14:30:00Z\"\ncustom_field: x\n---\n\n# Title\n";
         assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn history_renders_one_quoted_entry_per_line_sorted_between_blocks_and_references() {
+        let mut fm = Frontmatter::new();
+        fm.set_str("id", "TASK-0001");
+        fm.set_str("status", "in-progress");
+        fm.set_str("created", "2026-06-16T14:30:00Z");
+        fm.set_str("updated", "2026-07-01T09:00:00Z");
+        let mut blocks = Mapping::new();
+        blocks.insert(
+            Value::String("FEAT-0002".into()),
+            Value::String("A feature".into()),
+        );
+        fm.insert("blocks", Value::Mapping(blocks.clone()));
+        fm.insert("references", Value::Mapping(blocks));
+        // Hand-written out of order: the serializer sorts by key.
+        let mut hist = Mapping::new();
+        hist.insert(
+            Value::String("2026-07-01T09:00:00.000000Z".into()),
+            Value::String("in-progress".into()),
+        );
+        hist.insert(
+            Value::String("2026-06-16T14:30:00.000000Z".into()),
+            Value::String("todo".into()),
+        );
+        fm.insert("history", Value::Mapping(hist));
+
+        let out = serialize(&fm, "# Title\n");
+        let expected = "---\n\
+             id: TASK-0001\n\
+             status: in-progress\n\
+             created: \"2026-06-16T14:30:00Z\"\n\
+             updated: \"2026-07-01T09:00:00Z\"\n\
+             blocks:\n  FEAT-0002: A feature\n\
+             history:\n  \"2026-06-16T14:30:00.000000Z\": todo\n  \"2026-07-01T09:00:00.000000Z\": in-progress\n\
+             references:\n  FEAT-0002: A feature\n\
+             ---\n\n# Title\n";
+        assert_eq!(out, expected);
+
+        // And it round-trips: parsing the output and re-serializing is a fixpoint.
+        let (again, body) = parse(&out, "x.md").unwrap();
+        assert_eq!(serialize(&again, &body), out);
+    }
+
+    /// The block is ordered by *instant*, not by spelling. `verify` demands the
+    /// canonical fixed-width key, but a hand-written narrower one must not be
+    /// silently reordered into a map that no longer strictly increases (`.` is
+    /// 0x2E and `Z` is 0x5A, so a lexical sort puts the later entry first).
+    #[test]
+    fn history_is_ordered_by_instant_not_by_spelling() {
+        let mut fm = Frontmatter::new();
+        fm.set_str("id", "TASK-0001");
+        let mut hist = Mapping::new();
+        for (k, v) in [
+            ("2026-01-01T00:00:00.500000Z", "partial"),
+            ("2026-01-01T00:00:00Z", "planned"),
+        ] {
+            hist.insert(Value::String(k.into()), Value::String(v.into()));
+        }
+        fm.insert("history", Value::Mapping(hist));
+        assert_eq!(
+            serialize(&fm, "# T\n"),
+            "---\nid: TASK-0001\nhistory:\n  \"2026-01-01T00:00:00Z\": planned\n  \
+             \"2026-01-01T00:00:00.500000Z\": partial\n---\n\n# T\n"
+        );
+    }
+
+    /// Every mapping with string keys keeps its **quoted** keys, even when a
+    /// value is not a string. Handing such a map to the generic emitter would
+    /// make opys write `2026-01-01T00:00:00.000000Z: null` — the unquoted form a
+    /// YAML 1.1 reader resolves as a timestamp, which is the whole reason this
+    /// block is hand-rendered.
+    #[test]
+    fn history_keys_stay_quoted_even_when_a_value_is_not_a_string() {
+        let text = "---\nid: A-1\nhistory:\n  \"2026-01-01T00:00:00.000000Z\": planned\n  \
+                    \"2026-02-01T00:00:00.000000Z\": null\n---\n\n# T\n";
+        let (fm, body) = parse(text, "x.md").unwrap();
+        assert_eq!(serialize(&fm, &body), text);
+
+        // …and a *key* that is not a string costs only itself its quoting: an
+        // unparseable key sorts first, the timestamps keep their quotes.
+        let text = "---\nid: A-1\nhistory:\n  5: x\n  \
+                    \"2026-01-01T00:00:00.000000Z\": planned\n---\n\n# T\n";
+        let (fm, body) = parse(text, "x.md").unwrap();
+        assert_eq!(serialize(&fm, &body), text);
+    }
+
+    /// `format_string` quotes but does not escape, so a control character in a
+    /// history key or value used to be written as a raw line break inside a
+    /// double-quoted scalar — a successful write that left the file unparseable.
+    #[test]
+    fn history_escapes_control_characters_and_round_trips() {
+        let mut fm = Frontmatter::new();
+        fm.set_str("id", "A-1");
+        let mut hist = Mapping::new();
+        hist.insert(
+            Value::String("2026-01-01T00:00:00.000000Z".into()),
+            // A newline, a quote, a tab and a bare control character.
+            Value::String("open\"ed\n---\n\n# gone\tx\u{1}".into()),
+        );
+        hist.insert(
+            Value::String("key\nwith \"quotes\"\u{7}".into()),
+            Value::String("planned".into()),
+        );
+        fm.insert("history", Value::Mapping(hist));
+
+        let out = serialize(&fm, "# T\n");
+        assert!(
+            !out.contains("open\"ed\n"),
+            "a raw line break inside a quoted scalar: {out}"
+        );
+        let (again, body) = parse(&out, "x.md").unwrap();
+        assert_eq!(again.get("history"), fm.get("history"));
+        // …and re-serializing is a fixpoint.
+        assert_eq!(serialize(&again, &body), out);
+    }
+
+    #[test]
+    fn a_wrong_shaped_history_round_trips_through_the_generic_path() {
+        for text in [
+            "---\nid: A-1\nhistory: 5\n---\n\n# T\n",
+            "---\nid: A-1\nhistory: {}\n---\n\n# T\n",
+        ] {
+            let (fm, body) = parse(text, "x.md").unwrap();
+            assert_eq!(serialize(&fm, &body), text);
+        }
     }
 
     #[test]

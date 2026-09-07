@@ -70,6 +70,13 @@ impl Backend for MarkdownLocal {
     fn load_docs(&self, prj: &Project) -> (Vec<Doc>, Vec<String>) {
         load_docs(prj)
     }
+
+    /// The file's bytes, unparsed. A document the store relocated in memory (or
+    /// one that was never on disk) reads as `None`, and the spelling checks
+    /// that use this then have nothing to say about it.
+    fn stored_text(&self, path: &Path) -> Option<String> {
+        std::fs::read_to_string(path).ok()
+    }
 }
 
 /// The directory holding inventory lock files: `$XDG_RUNTIME_DIR` when set

@@ -90,6 +90,9 @@ pub fn core(
         fm.insert(&k, v);
     }
     touch(&mut fm);
+    // The first lifecycle entry, keyed off `created` so the two denote the same
+    // instant by construction (verify checks exactly that).
+    crate::history::seed(&mut fm, status, &crate::commands::now_utc_micros());
 
     let body = scaffold_body(title, t);
 

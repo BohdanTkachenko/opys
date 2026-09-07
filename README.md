@@ -136,14 +136,18 @@ without a `renumber`. Without a modulus, allocation is the dense sequence.
 | `agent-rules --tool <editor>` | generate a rules-based editor's instruction file from the canonical rule |
 | `web <start\|add\|remove\|list\|scan\|install\|uninstall>` | the always-on node: serve the allowlisted projects over HTTP — see [below](#the-always-on-node-opys-web) |
 
-A feature file looks like (the `references` map is auto-maintained — a work
-item links back, and a closed one leaves a struck-through tombstone):
+A feature file looks like (`history` and the `references` map are
+auto-maintained — `history` records every status change, and a work item that
+links back appears in `references`, struck through once it is closed):
 
 ```markdown
 ---
 id: FEAT-0421
 status: implemented
 tags: [osc, tabs]
+history:
+  "2026-06-16T14:30:00.000000Z": planned
+  "2026-07-01T09:00:00.000000Z": implemented
 references:
   TASK-0042: Make tab title survive profile switch
 ---

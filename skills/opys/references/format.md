@@ -327,11 +327,20 @@ turns a multi-second stat into a sub-100ms one.
 
 ## A complete feature file
 
+The three auto-maintained keys (`created`, `updated`, `history`) are written by
+opys, not by you — but `history` is **required**, so a document you write by
+hand needs one (see [The lifecycle map](#the-lifecycle-map-history)):
+
 ````markdown
 ---
 id: FEAT-0421
 status: implemented
 tags: [osc, tabs, vte-parsing]
+created: "2026-06-16T14:30:00Z"
+updated: "2026-07-01T09:00:00Z"
+history:
+  "2026-06-16T14:30:00.000000Z": planned
+  "2026-07-01T09:00:00.000000Z": implemented
 ptyxis_ref: src/ptyxis-tab.c, set_title handler
 ---
 
@@ -365,12 +374,16 @@ parser. Unlike earlier versions of this system — which restricted frontmatter
 to flat `key: value` lines — custom fields may now use the full YAML feature
 set: nested mappings, sequences, and multiline/block scalars (`|`, `>`).
 
-The CLI's serializer still emits **canonical, minimal frontmatter**: core
-fields first (`id`, `status`, `tags`), then remaining keys alphabetically,
-with flat scalars and scalar lists rendered inline (`tags: [osc, tabs]`).
-Complex custom values are written as block YAML under their key. Hand edits may
-use any valid YAML; running a write command re-canonicalizes scalar fields and
-may reflow the formatting (not the meaning) of complex values.
+The CLI's serializer still emits **canonical, minimal frontmatter**: the five
+core fields first, in this order — `id`, `status`, `tags`, `created`, `updated`
+— then every remaining key alphabetically, with flat scalars and scalar lists
+rendered inline (`tags: [osc, tabs]`). Complex custom values are written as
+block YAML under their key; `history` is the one exception, rendered by its own
+block (keys always quoted, entries sorted by instant — see
+[The lifecycle map](#the-lifecycle-map-history)) in its alphabetical slot. Hand
+edits may use any valid YAML; running a write command re-canonicalizes scalar
+fields and may reflow the formatting (not the meaning) of complex values — so a
+key written in the wrong slot is moved to its canonical one by the next write.
 
 > **Quote any value containing a colon-followed-by-space (`: `).** In YAML
 > `wontfix_reason: MVP scope: containers` parses the value as a nested mapping
@@ -390,6 +403,7 @@ may reflow the formatting (not the meaning) of complex values.
 | `references` | no | ID→title map of linked work items (and features); auto-maintained |
 | `blocked_by` / `blocks` | no | ID→title maps of the blocker relation; auto-maintained (see Blockers) |
 | `blocked_from` | no | the status held before `block` auto-set `blocked`; auto-maintained — restored (then removed) by `unblock` |
+| `history` | yes | the lifecycle map: RFC3339 **UTC** timestamp (six fractional digits, `Z`) → status, one quoted entry per line, sorted by key; auto-maintained — nothing hand-edits it (see The lifecycle map) |
 | `wontfix_reason` | iff wontfix | one-line ADR for the scope exception |
 | `spec` | no | pointer to long-form shared material (a plain string field) |
 | custom | per config | validated against `[fields.*]` declarations |
@@ -410,6 +424,72 @@ with a live ID has its title and path refreshed. A nested markdown link (a
 complete link inside another link's label — invalid markdown, typically the
 footprint of a bad edit) fails verify.
 
+### The lifecycle map (`history`)
+
+Every status a document has held, keyed by when it took it:
+
+```yaml
+history:
+  "2026-06-16T14:30:00.000000Z": planned
+  "2026-07-01T09:00:00.000000Z": partial
+```
+
+Keys are RFC3339 in **UTC**, always spelled with `Z` and exactly six fractional
+digits. That spelling is required, not merely conventional: fixed-width keys are
+the only ones whose lexical and chronological order agree, and the serializer
+emits the block sorted, so `verify` rejects any other width (`2026-06-16T14:30:00Z`
+included). Keys are quoted because a bare RFC3339 scalar is read as a
+*timestamp*, not a string, by a YAML 1.1 reader — the corpus is read by more
+than opys, so the quoting is part of the format and `verify` enforces it. A
+write whose key is not strictly greater than the document's greatest existing
+key is bumped by one microsecond, so two transitions inside the same second
+cannot collide.
+
+`new` writes the first entry (keyed to the same instant as `created`),
+`set-status` appends, `import` seeds one entry at the status it was given, and
+`block`/`unblock` append when they auto-set the status. **Nothing else writes
+it, and nothing hand-edits it** — `import` rejects a record that carries a
+`history` key, and the node's `set-field` refuses it by name. A status change on
+a document that predates the map seeds its first entry from `created`, at the
+status being left, before appending — so a write never leaves a document whose
+`created` and first key disagree. Unlike the relation maps, history cannot be
+rebuilt from ground truth, so `sync` never repairs it — `verify` reports:
+
+- a document with no history at all — absent, or a value carrying no entries
+  whatever (`{}`, `[]`, a bare scalar): `missing history`;
+- a value that is *there* and carries entries but is not a lifecycle map: a
+  non-string key, an entry whose status is not a string, or a key that is not
+  spelled canonically (RFC3339 UTC, `Z`, exactly six fractional digits). The
+  message names the offending key or entry — or, when the value is not a mapping
+  at all (a YAML list of entries, say), its shape;
+- a last entry whose status is not the document's current `status`;
+- keys that do not strictly increase;
+- a `created` that is not the same second as the first key, when both exist;
+- a key written **unquoted**. This one is checked against the file, not the
+  parsed map: opys reads YAML 1.2, which resolves `2026-06-16T14:30:00.000000Z:
+  planned` to the very same string→status pair as the quoted form, so every
+  check above passes — while a YAML 1.1 reader sees a timestamp key and a
+  document that is no longer a string→string map. Nothing repairs the spelling
+  either: the next write re-quotes the block, so an unreported bare key would
+  surface as a surprise diff long after it was written.
+
+The shape rule is **all-or-nothing**, and it covers every YAML shape, not only
+mappings: one bad pair makes the whole map unreadable, and so does a list or a
+one-line string that carries entries. That is deliberate. A value opys cannot
+read is data it must not destroy, so it is kept verbatim, reported, and left for
+a human — and every write that would append to it (`set-status`, and
+`block`/`unblock`'s auto-set) **refuses** rather than replacing it. Only a value
+holding no entries at all may be replaced by a seed. Reading only the
+well-formed entries, or blessing a non-mapping as empty, would bless a map the
+tool could not actually maintain, and the next status change would overwrite the
+rest of it.
+
+A document that has history but no `created` takes `created` from its first key
+on the next write, rather than from the wall clock.
+
+Seeding the map on an inventory that predates it is a one-time procedure:
+see `docs/migration-history.md`.
+
 ### Custom-field type mapping
 
 `[fields.<name>].type` is checked against the YAML type of the value:
@@ -424,7 +504,7 @@ footprint of a bad edit) fails verify.
 
 An `enum` field must declare a non-empty `values` array (verify errors on an
 empty one). Reserved keys (`id`, `status`, `tags`, `created`, `updated`,
-`references`, `blocked_by`, `blocks`, `blocked_from`) are always allowed; every other key must be
+`history`, `references`, `blocked_by`, `blocks`, `blocked_from`) are always allowed; every other key must be
 declared under the type's
 `[types.<name>.fields.*]` or verify rejects it. Richer YAML does not relax
 the declare-or-fail rule.
@@ -486,8 +566,8 @@ whose last tombstone it strips).
   the decision is recorded and not re-litigated.
 
 Status changes go through `set-status`, never hand edits — the guards live
-there. It takes an id list, so a whole selection moves in one command (see
-**Bulk edits**).
+there, and each one is recorded in the document's `history` map. It takes an
+id list, so a whole selection moves in one command (see **Bulk edits**).
 
 ## Test plan rules
 
@@ -613,7 +693,9 @@ features. Two supported bulk paths avoid that:
   feature. `title` and `tags` are required; `status` (default `planned`),
   `spec`, and any declared custom fields are optional top-level keys; `body` is
   optional markdown placed under the `# Title` heading (use it to carry a
-  `## Test plan` or `## Manual verification`). One ID allocation and one sync
+  `## Test plan` or `## Manual verification`). The auto-allocated `id` and the
+  auto-maintained `history` are rejected by name — import allocates the one and
+  seeds the other with a single entry at the record's status. One ID allocation and one sync
   cover the whole batch, and it is **transactional** — if any record is
   rejected, nothing is written. The same write-time status guards as `new`
   apply (a record with `"status": "implemented"` must include a checked
@@ -641,7 +723,7 @@ inventory.
 `opys query` is **read-only**. Every statement must be a SELECT — checked on the
 plan before anything executes, so a compound like `SELECT 1; DELETE FROM docs`
 is rejected whole — and the command never writes files. All tables are
-queryable: the authoritative `docs`/`tags`/`relations`/`fm_fields`/`retired`,
+queryable: the authoritative `docs`/`tags`/`relations`/`history`/`fm_fields`/`retired`,
 and the derived `fields`/`sections`/`blocks` projections (`blocks` decomposes
 each body into one row per `##` section, so you can query into prose). `-` reads
 the SQL itself from stdin; `--stdin` binds stdin to `$1` for a large or
@@ -689,7 +771,9 @@ none of them. Narrow the list — or fix that document — rather than reaching 
 Test results, execution dates, completion claims, assignees, or sprint
 metadata. CI owns automated results; this system owns intent only. (Priority
 is the one carve-out: a project may declare a `priority` int *field* —
-lower = higher — and tools may order by it. It is frontmatter, never prose.)
+lower = higher — and tools may order by it. It is frontmatter, never prose.
+The auto-maintained `created`/`updated`/`history` timestamps are not an
+exception either: they record when opys wrote, not when work happened.)
 
 Implementation logs, task checklists, and branch/PR links also do not belong
 here — they go in an ephemeral document (a `task`/`bug`/`chore`), which is

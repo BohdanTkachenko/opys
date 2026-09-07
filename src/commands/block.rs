@@ -28,27 +28,36 @@ pub fn block_core(prj: &Project, store: &mut Store, id: &str, by: &str) -> Resul
         .ok_or_else(|| OpysError::NotFound { id: by.to_string() })?;
 
     let id_blockable = has_status(prj, id, "blocked");
+    let now = crate::commands::now_utc_micros();
     edit_doc(prj, store, id, true, |fm| {
         let mut changed = refs::add_to_map(fm, refs::BLOCKED_BY, by, &by_title);
         // Auto-set `blocked`, remembering the status we came from so `unblock` can
         // restore it (rather than guessing `in-progress`). Only on the first
         // transition into `blocked`, so a second blocker doesn't clobber it.
         if id_blockable && fm.status() != Some("blocked") {
-            if let Some(prev) = fm.status().map(str::to_string) {
-                fm.set_str("blocked_from", prev);
+            let prev = fm.status().map(str::to_string);
+            if let Some(prev) = &prev {
+                fm.set_str("blocked_from", prev.clone());
             }
             fm.set_str("status", "blocked");
+            // The auto-set is a status change like any other, so it is recorded.
+            // (TASK-0112 removes the auto-set; until then the invariant holds.)
+            // `record`, not `append`: a document predating the map is seeded from
+            // `created` at the status it is leaving first, so this entry lands
+            // second and `created` still matches the first (verify check 4).
+            guard_history(fm, id, "blocked")?;
+            crate::history::record(fm, &now, prev.as_deref().unwrap_or("blocked"), "blocked");
             changed = true;
         }
         if changed {
             touch(fm);
         }
-        changed
+        Ok(changed)
     })?;
     // The reverse `blocks` link on the blocker is derived bookkeeping (the same
     // link reconcile maintains), so it does not bump the blocker's `updated`.
     edit_doc(prj, store, by, false, |fm| {
-        refs::add_to_map(fm, refs::BLOCKS, id, &id_title)
+        Ok(refs::add_to_map(fm, refs::BLOCKS, id, &id_title))
     })?;
     Ok(())
 }
@@ -84,6 +93,7 @@ pub fn unblock_core(prj: &Project, store: &mut Store, id: &str, by: &str) -> Res
     }
 
     let id_blockable = has_status(prj, id, "blocked");
+    let now = crate::commands::now_utc_micros();
     let default_status = prj
         .pcfg
         .type_name_for_id(id)
@@ -99,7 +109,11 @@ pub fn unblock_core(prj: &Project, store: &mut Store, id: &str, by: &str) -> Res
             && fm.get_str("blocked_reason").is_none()
         {
             let restore = restore_status(prj, id, fm, &default_status);
-            fm.set_str("status", restore);
+            guard_history(fm, id, &restore)?;
+            fm.set_str("status", &restore);
+            // Seeded-then-appended, as in `block_core`: a document that predates
+            // the map must not get a wall-clock *first* entry.
+            crate::history::record(fm, &now, "blocked", &restore);
             changed = true;
         }
         // Clear the bookkeeping field once no blocker remains (whether or not the
@@ -110,12 +124,12 @@ pub fn unblock_core(prj: &Project, store: &mut Store, id: &str, by: &str) -> Res
         if changed {
             touch(fm);
         }
-        changed
+        Ok(changed)
     })?;
     // The blocker may already be gone (a closed doc's struck tombstone); cleaning
     // the target side is enough, so a missing blocker is not an error.
     match edit_doc(prj, store, by, false, |fm| {
-        refs::remove_from_map(fm, refs::BLOCKS, id)
+        Ok(refs::remove_from_map(fm, refs::BLOCKS, id))
     }) {
         Ok(()) | Err(OpysError::NotFound { .. }) => {}
         Err(e) => return Err(e),
@@ -164,6 +178,21 @@ fn is_restorable(prj: &Project, id: &str, status: &str) -> bool {
         })
 }
 
+/// Refuse an auto-set status change on a document whose `history` opys cannot
+/// read. The map is the one frontmatter value that cannot be rebuilt from
+/// ground truth, so a write path must never append beside a shape it does not
+/// understand — `verify` reports it and a human repairs it. Mirrors the guard in
+/// `set_status::core`.
+fn guard_history(fm: &Frontmatter, id: &str, status: &str) -> Result<()> {
+    match crate::history::botched(fm) {
+        Some(why) => Err(usage(format!(
+            "cannot set {id} to {status}: {why}; repair the lifecycle map by hand \
+             (see docs/migration-history.md), then retry"
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// Whether the type of `id` declares `status`.
 fn has_status(prj: &Project, id: &str, status: &str) -> bool {
     prj.pcfg
@@ -174,14 +203,16 @@ fn has_status(prj: &Project, id: &str, status: &str) -> bool {
 
 /// Apply `f` to the frontmatter of the doc with `id`, writing it back (and,
 /// when `relocate`, updating its canonical path) only if `f` reports a change.
-/// Errors if `id` is not found.
+/// Errors if `id` is not found. `f` is fallible so a guard that can only be
+/// evaluated on the loaded frontmatter — the lifecycle-map shape check below —
+/// can refuse *before* anything is written: nothing has touched the store yet.
 fn edit_doc<F>(prj: &Project, store: &mut Store, id: &str, relocate: bool, f: F) -> Result<()>
 where
-    F: FnOnce(&mut Frontmatter) -> bool,
+    F: FnOnce(&mut Frontmatter) -> Result<bool>,
 {
     let dkey = store.dkey_of(id)?;
     let mut doc = store.doc(dkey)?;
-    if f(&mut doc.frontmatter) {
+    if f(&mut doc.frontmatter)? {
         store.put_doc(&prj.pcfg, Some(dkey), &doc)?;
         if relocate {
             store.set_canonical_path(&prj.pcfg, dkey)?;

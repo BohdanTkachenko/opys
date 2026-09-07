@@ -3,6 +3,8 @@ id: CHORE-0041
 status: todo
 created: "2026-07-06T05:14:48Z"
 updated: "2026-07-06T05:14:48Z"
+history:
+  "2026-07-06T05:14:48.000000Z": todo
 references:
   FEAT-0001: Config-driven document types
 ---

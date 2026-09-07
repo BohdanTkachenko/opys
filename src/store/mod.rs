@@ -25,7 +25,7 @@ use gluesql::core::error::Error as GlueError;
 use gluesql::prelude::{Glue, MemoryStorage, ParamLiteral, Payload, Value as GValue};
 
 use crate::doc::Doc;
-use crate::error::{OpysError, Result};
+use crate::error::{usage, OpysError, Result};
 use crate::project::Project;
 use crate::project_config::ProjectConfig;
 
@@ -103,6 +103,7 @@ impl Store {
         let mut doc_rows: Vec<Vec<ParamLiteral>> = Vec::new();
         let mut tag_rows: Vec<Vec<ParamLiteral>> = Vec::new();
         let mut rel_rows: Vec<Vec<ParamLiteral>> = Vec::new();
+        let mut hist_rows: Vec<Vec<ParamLiteral>> = Vec::new();
         let mut fm_rows: Vec<Vec<ParamLiteral>> = Vec::new();
         for (doc, mtime) in &loaded.docs {
             let dkey = store.next_dkey;
@@ -124,12 +125,20 @@ impl Store {
                 doc.to_text().into_param(),   // orig_text
                 mtime.clone().into_param(),
             ]);
-            push_child_rows(dkey, &rows, &mut tag_rows, &mut rel_rows, &mut fm_rows);
+            push_child_rows(
+                dkey,
+                &rows,
+                &mut tag_rows,
+                &mut rel_rows,
+                &mut hist_rows,
+                &mut fm_rows,
+            );
             store.loaded.push((dkey, doc.path.clone()));
         }
         store.insert_batch("docs", 13, doc_rows)?;
         store.insert_batch("tags", 6, tag_rows)?;
         store.insert_batch("relations", 9, rel_rows)?;
+        store.insert_batch("history", 5, hist_rows)?;
         store.insert_batch("fm_fields", 6, fm_rows)?;
 
         let mut rows = Vec::with_capacity(loaded.retired.len());
@@ -296,7 +305,7 @@ impl Store {
                         k.into_param(),
                     ],
                 )?;
-                for table in ["tags", "relations", "fm_fields"] {
+                for table in ["tags", "relations", "history", "fm_fields"] {
                     self.exec(
                         &format!("DELETE FROM {table} WHERE dkey = $1"),
                         vec![k.into_param()],
@@ -326,23 +335,95 @@ impl Store {
                 k
             }
         };
-        let (mut t, mut r, mut f) = (Vec::new(), Vec::new(), Vec::new());
-        push_child_rows(dkey, &rows, &mut t, &mut r, &mut f);
+        let (mut t, mut r, mut h, mut f) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        push_child_rows(dkey, &rows, &mut t, &mut r, &mut h, &mut f);
         self.insert_batch("tags", 6, t)?;
         self.insert_batch("relations", 9, r)?;
+        self.insert_batch("history", 5, h)?;
         self.insert_batch("fm_fields", 6, f)?;
         Ok(dkey)
     }
 
     /// Remove a document's rows entirely (close/retire); flush deletes the file.
     pub fn delete_doc(&mut self, dkey: i64) -> Result<()> {
-        for table in ["docs", "tags", "relations", "fm_fields"] {
+        for table in ["docs", "tags", "relations", "history", "fm_fields"] {
             self.exec(
                 &format!("DELETE FROM {table} WHERE dkey = $1"),
                 vec![dkey.into_param()],
             )?;
         }
         Ok(())
+    }
+
+    /// Append one entry to a document's `history` lifecycle map: the status it
+    /// just moved to, at `want` — bumped to one microsecond past the greatest
+    /// existing key when `want` is not strictly greater, so two transitions at
+    /// the same instant never collide. Returns the key actually written.
+    ///
+    /// Must be called **after** the [`Self::put_doc`] that changed the status:
+    /// `put_doc` re-decomposes the document, wiping and rewriting its child
+    /// rows, so an entry appended before it would be discarded.
+    ///
+    /// **Refuses** when the document's `history` is not in this table but parked
+    /// in `fm_fields` — a value `decompose` could not read (`history::is_map`),
+    /// which `history::seed` rightly declines to overwrite. Inserting a row
+    /// beside it would put the key in two homes at once, and `reconstruct`'s
+    /// authoritative-table rule would then let the single new row *shadow* the
+    /// operator's whole map: a command that exits 0, destroys data that cannot
+    /// be rebuilt from ground truth, and leaves a corpus `verify` rejects. The
+    /// caller reports the problem instead; the repair is a hand edit.
+    pub fn append_history(&mut self, dkey: i64, want: &str, status: &str) -> Result<String> {
+        let doc_id = self
+            .scalar(
+                "SELECT id FROM docs WHERE dkey = $1",
+                vec![dkey.into_param()],
+            )?
+            .as_ref()
+            .and_then(g_str);
+        let opaque = self
+            .scalar(
+                "SELECT COUNT(*) FROM fm_fields WHERE dkey = $1 AND key = $2",
+                vec![dkey.into_param(), crate::history::FIELD.into_param()],
+            )?
+            .as_ref()
+            .and_then(g_i64)
+            .unwrap_or(0)
+            > 0;
+        if opaque {
+            let id = doc_id.as_deref().unwrap_or("this document");
+            return Err(usage(format!(
+                "{id}: its 'history' is not a lifecycle map opys can read, so nothing may be \
+                 appended to it — run `opys verify` and repair the map by hand \
+                 (see docs/migration-history.md)"
+            )));
+        }
+        let (_, rows) = self.select(
+            "SELECT ts, seq FROM history WHERE dkey = $1",
+            vec![dkey.into_param()],
+        )?;
+        let existing: Vec<String> = rows.iter().filter_map(|r| g_str(&r[0])).collect();
+        let last = crate::history::greatest(existing.iter().map(String::as_str));
+        let key = crate::history::next_key(last.as_deref(), want);
+        let seq = rows.iter().filter_map(|r| g_i64(&r[1])).max().unwrap_or(-1) + 1;
+        // The bump saturates when the greatest key is already the greatest
+        // representable instant (see `history::next_key`), so an equal key can
+        // come back. Replace that entry rather than duplicating it, matching the
+        // frontmatter map, where inserting an existing key overwrites its value.
+        self.exec(
+            "DELETE FROM history WHERE dkey = $1 AND ts = $2",
+            vec![dkey.into_param(), key.clone().into_param()],
+        )?;
+        self.exec(
+            "INSERT INTO history VALUES ($1, $2, $3, $4, $5)",
+            vec![
+                dkey.into_param(),
+                doc_id.into_param(),
+                seq.into_param(),
+                key.clone().into_param(),
+                status.into_param(),
+            ],
+        )?;
+        Ok(key)
     }
 
     /// Stamp the auto-maintained timestamps for a *user-initiated* edit: always
@@ -376,12 +457,35 @@ impl Store {
             .unwrap_or(0)
             > 0;
         if !has_created_col && !has_created_fm {
+            // Prefer the document's first `history` key over the wall clock:
+            // `verify` requires `created` and that key to denote the same
+            // second, so a history-seeded document with no `created` (exactly
+            // what the migration procedure produces) would otherwise be turned
+            // red by the very next `tag`/`set-status`.
+            let created = self
+                .first_history_key(dkey)?
+                .unwrap_or_else(|| now.to_string());
             self.exec(
                 "UPDATE docs SET created = $1 WHERE dkey = $2",
-                vec![now.into_param(), dkey.into_param()],
+                vec![created.into_param(), dkey.into_param()],
             )?;
         }
         Ok(())
+    }
+
+    /// The document's earliest-in-file `history` key, when it is a well-formed
+    /// UTC timestamp. The store's mirror of [`crate::commands::created_from_history`].
+    fn first_history_key(&mut self, dkey: i64) -> Result<Option<String>> {
+        let (_, rows) = self.select(
+            "SELECT seq, ts FROM history WHERE dkey = $1",
+            vec![dkey.into_param()],
+        )?;
+        Ok(rows
+            .iter()
+            .filter_map(|r| Some((g_i64(&r[0])?, g_str(&r[1])?)))
+            .min_by_key(|(seq, _)| *seq)
+            .map(|(_, ts)| ts)
+            .filter(|ts| crate::history::is_utc_key(ts)))
     }
 
     /// Overwrite `docs.path` directly (the relative form; flush performs the
@@ -506,6 +610,7 @@ fn push_child_rows(
     rows: &decompose::DocRows,
     tags: &mut Vec<Vec<ParamLiteral>>,
     rels: &mut Vec<Vec<ParamLiteral>>,
+    hist: &mut Vec<Vec<ParamLiteral>>,
     fms: &mut Vec<Vec<ParamLiteral>>,
 ) {
     let doc_id = rows.id.clone();
@@ -530,6 +635,15 @@ fn push_child_rows(
             r.raw_value.clone().into_param(),
             r.title.clone().into_param(),
             r.struck.into_param(),
+        ]);
+    }
+    for h in &rows.history {
+        hist.push(vec![
+            dkey.into_param(),
+            doc_id.clone().into_param(),
+            h.seq.into_param(),
+            h.ts.clone().into_param(),
+            h.status.clone().into_param(),
         ]);
     }
     for f in &rows.fm_fields {
@@ -777,6 +891,34 @@ terminal_statuses = ["done"]
             ("FEAT-0006.md",
              "---\nid: FEAT-0006\nstatus: planned\nreferences:\n  TASK-0009: Nine\n  \
               TASK-0002: Two\n---\n\n# Six\n"),
+            // History: canonical, hand-edited out of order, and wrong-typed.
+            ("FEAT-0010.md",
+             "---\nid: FEAT-0010\nstatus: planned\ncreated: \"2026-01-01T00:00:00Z\"\n\
+              history:\n  \"2026-01-01T00:00:00.000000Z\": planned\n  \
+              \"2026-01-02T00:00:00.000000Z\": implemented\n---\n\n# Ten\n"),
+            ("FEAT-0011.md",
+             "---\nid: FEAT-0011\nstatus: planned\nhistory:\n  \
+              \"2026-01-02T00:00:00.000000Z\": implemented\n  \
+              \"2026-01-01T00:00:00.000000Z\": planned\n---\n\n# Eleven\n"),
+            ("FEAT-0012.md",
+             "---\nid: FEAT-0012\nstatus: planned\nhistory: 5\n---\n\n# Twelve\n"),
+            // A *non-empty* map the shape rule rejects — one wrong-typed status,
+            // one non-canonical key, one control character in a value. Each stays
+            // whole in `fm_fields`, and the hand-rendered block still quotes its
+            // keys and escapes what a quoted scalar cannot carry raw.
+            ("FEAT-0013.md",
+             "---\nid: FEAT-0013\nstatus: planned\nhistory:\n  \
+              \"2026-01-01T00:00:00.000000Z\": planned\n  \
+              \"2026-01-02T00:00:00.000000Z\": 5\n---\n\n# Thirteen\n"),
+            ("FEAT-0014.md",
+             "---\nid: FEAT-0014\nstatus: planned\nhistory:\n  \
+              \"2026-01-01T00:00:00Z\": planned\n---\n\n# Fourteen\n"),
+            ("FEAT-0015.md",
+             "---\nid: FEAT-0015\nstatus: planned\nhistory:\n  \
+              \"2026-01-01T00:00:00.000000Z\": \"open\\n---\\n\\n# gone\"\n---\n\n# Fifteen\n"),
+            ("FEAT-0016.md",
+             "---\nid: FEAT-0016\nstatus: planned\nhistory:\n  5: x\n  \
+              \"2026-01-01T00:00:00.000000Z\": planned\n---\n\n# Sixteen\n"),
             // Missing id; string-that-looks-like-a-number; list field.
             ("stray/FEAT-0007.md",
              "---\nid: FEAT-0007\nstatus: planned\npriority: \"5\"\narea: [ui, core]\n---\n\n# Seven\n"),
@@ -802,6 +944,94 @@ terminal_statuses = ["done"]
         }
     }
 
+    /// A `history` value the shape rule rejects is kept verbatim in `fm_fields`
+    /// for fidelity, and `append_history` **refuses** to write beside it. It used
+    /// to insert a row into the empty `history` table anyway, and reconstruct's
+    /// authoritative-table rule then let that one row shadow — and destroy — the
+    /// operator's whole map. The value must survive the refused append byte for
+    /// byte; it is the one frontmatter map that cannot be rebuilt.
+    #[test]
+    fn append_history_refuses_a_map_the_shape_rule_rejects() {
+        let cases = [
+            // Carries no entries at all: `history::seed` replaces these before
+            // any append reaches the store, so refusing them costs nothing.
+            "history: {}".to_string(),
+            "history: 5".to_string(),
+            // Non-empty, and unreadable in each of the three ways.
+            "history:\n  \"2026-01-01T00:00:00.000000Z\": 5".to_string(),
+            "history:\n  \"2026-01-01T00:00:00.000000Z\": planned\n  \
+             \"2026-02-01T00:00:00.000000Z\": null"
+                .to_string(),
+            // A well-formed *looking* map whose key is not canonical.
+            "history:\n  \"2026-01-01T00:00:00Z\": planned".to_string(),
+            // Not a mapping at all, but carrying entries all the same — the
+            // list a hand-written migration script produces, and a one-line
+            // scalar. `history::botched` names the shape, so the command guards
+            // refuse first; this is the store-side backstop.
+            "history: [\"2026-01-01T00:00:00.000000Z: open\", \
+             \"2026-02-01T00:00:00.000000Z: reopened\"]"
+                .to_string(),
+            "history: \"2026-01-01T00:00:00.000000Z: open\"".to_string(),
+        ];
+        for value in &cases {
+            let text = format!("---\nid: FEAT-0001\nstatus: planned\n{value}\n---\n\n# A\n");
+            let docs: &[(&str, &str)] = &[("FEAT-0001.md", &text)];
+            let (_t, prj) = project_with(docs);
+            let (mut s, _) = store_of(&prj, docs);
+            let k = s.dkey_of("FEAT-0001").unwrap();
+            // Untouched, the value round-trips verbatim.
+            assert_eq!(s.doc(k).unwrap().to_text(), text);
+
+            let err = s
+                .append_history(k, "2026-01-02T03:04:05.000000Z", "partial")
+                .expect_err("append must refuse a map it cannot read");
+            assert!(
+                err.to_string()
+                    .contains("not a lifecycle map opys can read"),
+                "{err}"
+            );
+            // …and the document is exactly as it was.
+            assert_eq!(s.doc(k).unwrap().to_text(), text, "value: {value}");
+        }
+    }
+
+    /// The `history` map round-trips through the store keeping the file's own
+    /// entry order (so `verify` can see a hand-edited map that is out of order),
+    /// while `append_history` adds one entry, bumping a colliding key.
+    #[test]
+    fn history_round_trips_in_file_order_and_append_bumps() {
+        let docs: &[(&str, &str)] = &[(
+            "FEAT-0001.md",
+            "---\nid: FEAT-0001\nstatus: planned\nhistory:\n  \
+             \"2026-01-02T00:00:00.000000Z\": implemented\n  \
+             \"2026-01-01T00:00:00.000000Z\": planned\n---\n\n# A\n",
+        )];
+        let (_t, prj) = project_with(docs);
+        let (mut s, _) = store_of(&prj, docs);
+
+        let k = s.dkey_of("FEAT-0001").unwrap();
+        // File order survives — reconstruction does not sort.
+        assert_eq!(
+            crate::history::entries(&s.doc(k).unwrap().frontmatter)
+                .into_iter()
+                .map(|(ts, _)| ts)
+                .collect::<Vec<_>>(),
+            vec![
+                "2026-01-02T00:00:00.000000Z".to_string(),
+                "2026-01-01T00:00:00.000000Z".to_string()
+            ]
+        );
+
+        // The greatest key is 01-02, so a same-instant append is bumped past it.
+        let key = s
+            .append_history(k, "2026-01-02T00:00:00.000000Z", "archived")
+            .unwrap();
+        assert_eq!(key, "2026-01-02T00:00:00.000001Z");
+        let entries = crate::history::entries(&s.doc(k).unwrap().frontmatter);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries.last().unwrap().1, "archived");
+    }
+
     /// `updated` always bumps; `created` backfills only when the key is absent
     /// everywhere — a wrong-typed `created` (in fm_fields) blocks the backfill.
     #[test]
@@ -814,6 +1044,13 @@ terminal_statuses = ["done"]
             (
                 "FEAT-0002.md",
                 "---\nid: FEAT-0002\nstatus: planned\ncreated: 7\nupdated: 8\n---\n\n# B\n",
+            ),
+            // Seeded history, no `created`: verify requires the two to denote the
+            // same second, so the backfill takes the first key, not `now`.
+            (
+                "FEAT-0003.md",
+                "---\nid: FEAT-0003\nstatus: planned\nhistory:\n  \
+                 \"2026-01-01T00:00:00.000000Z\": planned\n---\n\n# C\n",
             ),
         ];
         let (_t, prj) = project_with(docs);
@@ -841,6 +1078,18 @@ terminal_statuses = ["done"]
         );
         assert_eq!(
             d2.frontmatter.get_str("updated"),
+            Some("2026-03-03T00:00:00Z")
+        );
+
+        let k3 = s.dkey_of("FEAT-0003").unwrap();
+        s.touch(k3, "2026-03-03T00:00:00Z").unwrap();
+        let d3 = s.doc(k3).unwrap();
+        assert_eq!(
+            d3.frontmatter.get_str("created"),
+            Some("2026-01-01T00:00:00.000000Z")
+        );
+        assert_eq!(
+            d3.frontmatter.get_str("updated"),
             Some("2026-03-03T00:00:00Z")
         );
     }

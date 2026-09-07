@@ -128,6 +128,19 @@ fn build_record(
         };
         match key {
             "id" => return Err(usage("id is auto-allocated — remove it from the record")),
+            // Every other unrecognised key is copied into the frontmatter
+            // verbatim, which would let a record plant a lifecycle map opys did
+            // not write — one `seed` then refuses to replace, leaving a document
+            // `verify` rejects (and, before the serializer escaped control
+            // characters, one that could not be parsed back at all). `import`
+            // seeds exactly one entry, at the record's status; that is the whole
+            // contract.
+            _ if key == crate::history::FIELD => {
+                return Err(usage(
+                    "history is auto-maintained — remove it from the record (import seeds one \
+                     entry at the record's status)",
+                ))
+            }
             "title" => title = Some(as_string(&v, "title")?),
             "body" => extra_body = Some(as_string(&v, "body")?),
             _ => {
@@ -176,6 +189,19 @@ fn build_record(
             body.push_str(&crate::commands::new::scaffold_section(sec));
         }
     }
+
+    // Stamp the auto-maintained timestamps (a record may supply its own) and
+    // seed the lifecycle map at the record's status, keyed off `created` so the
+    // two denote the same instant. Without `created` here the mtime backfill in
+    // the next sync pass would set it from a different clock than the key.
+    let now = crate::commands::now_rfc3339();
+    if !fm.contains_key("created") {
+        fm.set_str("created", now.clone());
+    }
+    if !fm.contains_key("updated") {
+        fm.set_str("updated", now);
+    }
+    crate::history::seed(&mut fm, &status, &crate::commands::now_utc_micros());
 
     let problems = rules::evaluate(pcfg, type_name, &status, &fm, &body, doc_ids);
     if !problems.is_empty() {

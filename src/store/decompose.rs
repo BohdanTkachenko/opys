@@ -8,6 +8,16 @@
 //!   wrong-typed value through the reconstructed frontmatter).
 //! - `tags` → `tags` rows, only when it is a **non-empty all-string sequence**
 //!   (list order preserved via `seq`); `tags: []` / wrong shapes → `fm_fields`.
+//! - `history` → `history` rows, only when the value passes `history::is_map`:
+//!   a **non-empty mapping whose every key is a canonical UTC key** (RFC3339,
+//!   `Z`, exactly six fractional digits) **and whose every value is a string**.
+//!   That is stricter than the `is_string_map` the relation maps use — a
+//!   non-canonical key (`"2026-01-02T03:04:05Z": planned`) stays verbatim in
+//!   `fm_fields`, as does every other shape, because a value this table cannot
+//!   own must survive untouched for the operator to repair. (Entry order is
+//!   preserved via `seq`, as for relations: opys appends in increasing key order
+//!   and the serializer sorts, but a hand-edited order must round-trip so
+//!   `verify` can see it.)
 //! - `references`/`blocked_by`/`blocks` → `relations` rows, only when the value
 //!   is a **non-empty mapping with string keys and string values** (entry order
 //!   preserved via `seq`; opys writes them sorted by id number but hand-edited
@@ -40,7 +50,15 @@ pub(crate) struct DocRows {
     pub body: String,
     pub tags: Vec<TagRow>,
     pub relations: Vec<RelRow>,
+    pub history: Vec<HistRow>,
     pub fm_fields: Vec<FmRow>,
+}
+
+/// One `history` entry: a UTC RFC3339 key and the status it records.
+pub(crate) struct HistRow {
+    pub seq: i64,
+    pub ts: String,
+    pub status: String,
 }
 
 pub(crate) struct TagRow {
@@ -100,6 +118,7 @@ pub(crate) fn decompose(pcfg: &ProjectConfig, doc: &Doc) -> Result<DocRows> {
         body: doc.body.clone(),
         tags: Vec::new(),
         relations: Vec::new(),
+        history: Vec::new(),
         fm_fields: Vec::new(),
     };
 
@@ -129,6 +148,21 @@ pub(crate) fn decompose(pcfg: &ProjectConfig, doc: &Doc) -> Result<DocRows> {
                         key: tkey.to_string(),
                         value: tval.map(str::to_string),
                         tag,
+                    });
+                }
+            }
+            // One shape rule for the lifecycle map, shared with
+            // `history::entries` and `verify`: `history::is_map` is stricter
+            // than `is_string_map` (it demands canonical keys too), because a
+            // key this table cannot own must stay in `fm_fields` where the
+            // operator's value survives untouched.
+            _ if key == crate::history::FIELD && crate::history::is_map(v) => {
+                let Yaml::Mapping(m) = v else { unreachable!() };
+                for (i, (hk, hv)) in m.iter().enumerate() {
+                    out.history.push(HistRow {
+                        seq: i as i64,
+                        ts: hk.as_str().expect("checked by is_map").to_string(),
+                        status: hv.as_str().expect("checked by is_map").to_string(),
                     });
                 }
             }

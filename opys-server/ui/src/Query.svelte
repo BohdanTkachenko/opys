@@ -137,7 +137,7 @@
     <span class="prompt" aria-hidden="true">❯</span>
     <span class="termtitle">sql · read-only</span>
     <span class="tables muted" title="the tables this corpus decomposes into">
-      docs · tags · relations · fm_fields · retired · fields · sections · blocks
+      docs · tags · relations · history · fm_fields · retired · fields · sections · blocks
     </span>
   </div>
   <textarea
