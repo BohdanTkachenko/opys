@@ -17,7 +17,14 @@ exists; otherwise ignore it.
 - **Writes go through the `opys` CLI** so invariants hold and parallel agents
   don't collide: `opys new --type <T>`, `set-status`, `tag`, `retire`, `block`,
   `close`. Body prose, `## Test plan`, and `## Tasks` edits are normal file
-  edits. Run `opys verify` before finishing.
+  edits — frontmatter is not: the relation maps and `history` (the lifecycle
+  map recording every status change) are auto-maintained, so do not hand-edit
+  them. opys reconciles the relation maps on every write — a hand-added link is
+  kept, but its title is refreshed and the reverse side added, so editing them
+  by hand buys nothing; a `history` map opys cannot read fails `verify` and is
+  never repaired automatically — `set-status` (and `block`/`unblock`'s auto-set)
+  refuse to run on that document until a human repairs the map.
+  Run `opys verify` before finishing.
 - **Always say what an id is.** `PREFIX-NNNN` is a lookup key, not a name:
   a reader who sees `ADR-0082` learns nothing at all. Every time you write an id
   in prose — in a document body, a commit message, or a reply to a person —

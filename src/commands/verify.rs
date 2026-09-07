@@ -24,7 +24,11 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
     // byte-identical to the parsed ones (the store round-trip is a fixpoint).
     let (mut store, parse_errors) = ctx.load(&prj)?;
     let docs: Vec<Doc> = store.all_docs()?.into_iter().map(|(_, d)| d).collect();
-    let errors = collect_problems(&prj, &docs, parse_errors);
+    let mut errors = collect_problems(&prj, &docs, parse_errors);
+    // …plus the checks that read the medium's own text (see below). The command
+    // has not written anything, so what the backend hands back is still the
+    // corpus the store was built from.
+    errors.extend(spelling_problems(&docs, ctx.backend.as_ref()));
 
     if errors.is_empty() {
         print_lines([format!("verify: OK ({} documents)", docs.len())])?;
@@ -36,6 +40,34 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
         }
         Ok(1)
     }
+}
+
+/// The problems only the *stored* text can reveal: invariants about how a value
+/// is **written**, which the parsed model has already normalized away. There is
+/// one today — format.md requires every `history` key to be quoted, and both
+/// spellings parse to the identical string (see [`crate::history::unquoted_keys`]).
+///
+/// Deliberately outside [`collect_problems`]: that gate also runs over documents
+/// that exist only in memory (`query --write`'s post-write corpus, the node's
+/// warm store), where the medium's text is *not* the text being judged — and
+/// opys's own writer always emits the quoted form, so a check against stale
+/// bytes could only produce a false verdict. Callers that do read the durable
+/// corpus (`verify`, the node's per-corpus problem list) add this on top.
+pub fn spelling_problems(docs: &[Doc], backend: &dyn crate::backend::Backend) -> Vec<String> {
+    let mut errors = Vec::new();
+    for d in docs {
+        let (Some(id), Some(stored)) = (d.id(), backend.stored_text(&d.path)) else {
+            continue;
+        };
+        for key in crate::history::unquoted_keys(&d.frontmatter, &stored) {
+            errors.push(format!(
+                "{id}: history key '{key}' is written unquoted (a bare RFC3339 \
+                 scalar is read as a timestamp, not a string, by a YAML 1.1 \
+                 reader); quote it: \"{key}\": <status>"
+            ));
+        }
+    }
+    errors
 }
 
 /// Run every integrity check over `docs`, appending to the parse errors already
@@ -124,6 +156,7 @@ pub fn collect_problems(prj: &Project, docs: &[Doc], parse_errors: Vec<String>) 
         }
 
         check_timestamps(m, id, &mut errors);
+        check_history(m, id, &mut errors);
         check_references(m, id, &doc_ids, &mut errors);
         for snip in crate::links::nested_links(&d.body) {
             errors.push(format!(
@@ -204,7 +237,15 @@ fn check_stats(prj: &Project, docs: &[Doc], errors: &mut Vec<String>) {
 fn reserved_fields() -> Vec<&'static str> {
     // `blocked_from` is auto-maintained bookkeeping: the status a doc held before
     // `block` auto-set it to `blocked`, restored by `unblock` (see commands/block).
-    let mut v = vec!["id", "status", "tags", "created", "updated", "blocked_from"];
+    let mut v = vec![
+        "id",
+        "status",
+        "tags",
+        "created",
+        "updated",
+        "blocked_from",
+        crate::history::FIELD,
+    ];
     v.extend(refs::RELATION_FIELDS);
     v
 }
@@ -223,6 +264,91 @@ fn check_timestamps(m: &Frontmatter, id: &str, errors: &mut Vec<String>) {
                     "{id}: '{key}' must be an RFC3339 datetime (e.g. 2026-06-16T14:30:00Z)"
                 ));
             }
+        }
+    }
+}
+
+/// The `history` lifecycle map (written by `new`/`set-status`/`import`, never by
+/// hand) must be present and well formed. Four checks, in order:
+///
+/// 1. it is a lifecycle map at all — `history::is_map`, the *one* shape rule the
+///    store and `history::entries` use too. A value that carries entries but
+///    fails it is reported through `history::botched`, which names the offending
+///    key or entry — or, when the value is not a mapping at all (a hand-migrated
+///    YAML list, say), its shape. Only a value carrying no entries whatever
+///    (absent, `{}`, `[]`, a bare scalar) says `missing history`, the phrase the
+///    migration procedure greps for: a document that *has* entries opys cannot
+///    read must never be told to add a block it already has. Reporting the whole
+///    map rather than reading its well-formed subset is what keeps the three
+///    readers honest: a map `verify` blessed but the store could not decompose
+///    was destroyed by the next `set-status`;
+/// 2. its last entry records the document's current `status`;
+/// 3. the keys strictly increase as instants (not as strings). Canonical
+///    spelling — RFC3339 UTC, `Z`, exactly six fractional digits — is already
+///    part of the shape rule, and is not pedantry: only fixed-width keys have
+///    the same lexical and chronological order, which is what the serializer's
+///    sorted block relies on, so a `2026-01-01T00:00:00Z` accepted here would be
+///    reordered past a `2026-01-01T00:00:00.5Z` by the next unrelated write;
+/// 4. `created` and the first key denote the same second, when both exist
+///    (`created` carries a local offset, the key is UTC — compare instants).
+///
+/// Unlike the relation maps, history is never repaired: it cannot be rebuilt
+/// from ground truth, so a botched one is reported and fixed by hand.
+fn check_history(m: &Frontmatter, id: &str, errors: &mut Vec<String>) {
+    // (1a) Present and carrying entries, but not a shape opys can read. Say
+    // exactly what is wrong: no append path will write beside this map (and no
+    // other path rewrites it) until a human fixes it.
+    if let Some(why) = crate::history::botched(m) {
+        errors.push(format!(
+            "{id}: {why}; opys will not rewrite a lifecycle map it cannot read — \
+             repair it by hand (see docs/migration-history.md)"
+        ));
+        return;
+    }
+    let entries = crate::history::entries(m);
+    if entries.is_empty() {
+        errors.push(format!(
+            "{id}: missing history (the lifecycle map is written by new/set-status/import; \
+             see docs/migration-history.md to seed an existing document)"
+        ));
+        return;
+    }
+
+    // (2) The last entry is the current status.
+    if let (Some(status), Some((_, last))) = (m.status(), entries.last()) {
+        if last != status {
+            errors.push(format!(
+                "{id}: history's last entry ({last}) does not match status ({status})"
+            ));
+        }
+    }
+
+    // (3) Keys strictly increase (they are canonical — check 1 guaranteed it).
+    let mut prev: Option<(String, OffsetDateTime)> = None;
+    for (key, _) in &entries {
+        let dt = crate::history::parse(key).expect("is_map checked the key is canonical");
+        if let Some((pk, pdt)) = &prev {
+            if dt <= *pdt {
+                errors.push(format!(
+                    "{id}: history keys must strictly increase ('{key}' does not follow '{pk}')"
+                ));
+            }
+        }
+        prev = Some((key.clone(), dt));
+    }
+
+    // (4) `created` and the first key are the same second. An unparseable
+    // `created` is already reported by `check_timestamps`.
+    let (first_key, _) = &entries[0];
+    if let (Some(created), Some(first)) = (
+        m.get_str("created").and_then(crate::history::parse),
+        crate::history::parse(first_key),
+    ) {
+        if created.unix_timestamp() != first.unix_timestamp() {
+            errors.push(format!(
+                "{id}: 'created' ({}) does not match the first history entry ({first_key})",
+                m.get_str("created").unwrap_or_default()
+            ));
         }
     }
 }

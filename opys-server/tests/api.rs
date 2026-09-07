@@ -55,8 +55,9 @@ fn project(root: &Path) -> PathBuf {
          status: open\n\
          tags: [alpha, shared]\n\
          updated: \"2026-01-01T00:00:00Z\"\n\
-         references:\n  TASK-0002: Do the thing\n\
          blocks:\n  TASK-0002: Do the thing\n\
+         history:\n  \"2026-01-01T00:00:00.000000Z\": open\n\
+         references:\n  TASK-0002: Do the thing\n\
          ---\n\n# Note one\n\nHello <script>alert(1)</script> world.\n",
     )
     .unwrap();
@@ -66,9 +67,10 @@ fn project(root: &Path) -> PathBuf {
          id: TASK-0002\n\
          status: doing\n\
          tags: [shared]\n\
+         blocked_by:\n  NOTE-0001: Note one\n\
+         history:\n  \"2026-01-01T00:00:00.000000Z\": doing\n\
          priority: 5\n\
          references:\n  NOTE-0001: Note one\n\
-         blocked_by:\n  NOTE-0001: Note one\n\
          ---\n\n# Do the thing\n\nWork.\n",
     )
     .unwrap();
@@ -84,7 +86,9 @@ fn messy_project(root: &Path) -> PathBuf {
     std::fs::write(root.join("opys.toml"), CONFIG).unwrap();
     std::fs::write(
         inventory.join("NOTE-0003.md"),
-        "---\nid: NOTE-0003\nstatus: open\nbogus: 1\n---\n\n# Messy\n\nText.\n",
+        "---\nid: NOTE-0003\nstatus: open\nbogus: 1\n\
+         history:\n  \"2026-01-01T00:00:00.000000Z\": open\n\
+         ---\n\n# Messy\n\nText.\n",
     )
     .unwrap();
     std::fs::canonicalize(root).unwrap()

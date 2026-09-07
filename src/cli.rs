@@ -216,7 +216,8 @@ pub enum Command {
     ///
     /// Tables: docs(id, num, type, status, title, created, updated, body,
     /// path), tags(doc_id, seq, tag, key, value), relations(doc_id, field,
-    /// seq, ref_id, ref_num, raw_value, title, struck), fields(doc_id, key,
+    /// seq, ref_id, ref_num, raw_value, title, struck),
+    /// history(doc_id, seq, ts, status), fields(doc_id, key,
     /// value), sections(doc_id, heading, kind, items, unchecked),
     /// blocks(doc_id, seq, heading, text),
     /// retired(id, num, title).

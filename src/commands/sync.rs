@@ -50,11 +50,22 @@ pub fn pass(prj: &Project, store: &mut Store) -> Result<usize> {
     // Reconstruct the working set, backfilling the auto-maintained timestamps on
     // docs predating the fields from the file's mtime. Housekeeping, so it must
     // not bump `updated` on docs that already have it — only fill genuine gaps.
+    // A missing `created` prefers the first `history` key over the mtime: the
+    // two must denote the same instant (verify checks it), and the lifecycle
+    // map is the better record of when the document came into being.
     let mut docs: Vec<Doc> = Vec::with_capacity(count);
     for r in &rows {
         let mut doc = r.doc.clone();
         let need_created = !doc.frontmatter.contains_key("created");
         let need_updated = !doc.frontmatter.contains_key("updated");
+        if need_created {
+            if let Some((first_key, _)) = crate::history::entries(&doc.frontmatter).first() {
+                if crate::history::is_utc_key(first_key) {
+                    doc.frontmatter.set_str("created", first_key.clone());
+                }
+            }
+        }
+        let need_created = !doc.frontmatter.contains_key("created");
         if (need_created || need_updated) && r.orig_mtime.is_some() {
             let ts = r.orig_mtime.clone().unwrap();
             if need_created {

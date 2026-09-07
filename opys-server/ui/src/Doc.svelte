@@ -52,13 +52,16 @@
    *
    * `updated` is in here because the header shows it: every document has one, so
    * leaving it out listed the same timestamp twice, in two formats. `created`
-   * stays a custom row — nothing else renders it.
+   * stays a custom row — nothing else renders it. `history` is hidden: it is the
+   * auto-maintained lifecycle map (the engine refuses to edit it), and an
+   * ever-growing timestamp→status map rendered as one JSON line is noise.
    */
   const RESERVED = new Set([
     'id',
     'status',
     'tags',
     'updated',
+    'history',
     'references',
     'blocked_by',
     'blocks',

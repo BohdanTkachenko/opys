@@ -169,9 +169,25 @@ when = { status = "blocked" }
 require_any = [{ field = "blocked_reason" }, { link = "blocked_by" }]
 "#;
 
+/// The instant every [`opys`] invocation is pinned to. Every `new` now writes a
+/// `history` entry, whose key is UTC with microsecond precision — an unpinned
+/// clock would make the byte expectations time-dependent. Tests that need time
+/// to advance set their own, later, `OPYS_NOW` (a later `.env` wins).
+const PINNED_NOW: &str = "2026-01-02T03:04:05Z";
+/// The `history` key of a document created at [`PINNED_NOW`].
+const PINNED_KEY: &str = "2026-01-02T03:04:05.000000Z";
+
+/// The `history:` block for a hand-written fixture document: one entry at
+/// `status`, keyed to [`PINNED_NOW`] (which is also what a fixture carrying
+/// `created: "2026-01-02T03:04:05Z"` needs, since verify checks the two agree).
+fn hist(status: &str) -> String {
+    format!("history:\n  \"{PINNED_KEY}\": {status}\n")
+}
+
 fn opys(dir: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("opys").unwrap();
     cmd.arg("--root").arg(dir.path());
+    cmd.env("OPYS_NOW", PINNED_NOW);
     cmd
 }
 
@@ -369,9 +385,10 @@ fn retired_ledger_is_sorted_by_number() {
 fn verify_passes_clean_and_flags_violations() {
     let dir = project();
     dir.child("opys/features/FEAT-0001.md")
-        .write_str(
-            "---\nid: FEAT-0001\nstatus: planned\ntags: [osc, tabs]\n---\n\n# Clean feature\n",
-        )
+        .write_str(&format!(
+            "---\nid: FEAT-0001\nstatus: planned\ntags: [osc, tabs]\n{}---\n\n# Clean feature\n",
+            hist("planned")
+        ))
         .unwrap();
     opys(&dir)
         .arg("verify")
@@ -403,9 +420,10 @@ fn verify_accepts_namespaced_and_keyed_tags_but_rejects_duplicate_keys() {
     let dir = project();
     // Colon-namespaced and key=value tags are accepted.
     dir.child("opys/features/FEAT-0001.md")
-        .write_str(
-            "---\nid: FEAT-0001\nstatus: planned\ntags: [osc, area:parsing, priority=high]\n---\n\n# Clean\n",
-        )
+        .write_str(&format!(
+            "---\nid: FEAT-0001\nstatus: planned\ntags: [osc, area:parsing, priority=high]\n{}---\n\n# Clean\n",
+            hist("planned")
+        ))
         .unwrap();
     opys(&dir).arg("verify").assert().success();
 
@@ -545,9 +563,10 @@ fn verify_checks_structured_section_against_mdprism() {
     // A "## Manual verification" present but missing the required sub-sections
     // declared by the section's mdprism `structure`.
     dir.child("opys/features/FEAT-0001.md")
-        .write_str(
-            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# F\n\n## Manual verification\n- Looks right\n",
-        )
+        .write_str(&format!(
+            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n{}---\n\n# F\n\n## Manual verification\n- Looks right\n",
+            hist("planned")
+        ))
         .unwrap();
     opys(&dir)
         .arg("verify")
@@ -559,9 +578,10 @@ fn verify_checks_structured_section_against_mdprism() {
 
     // A document matching the structure passes.
     dir.child("opys/features/FEAT-0001.md")
-        .write_str(
-            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# F\n\n## Manual verification\n### Setup\n- a window\n\n### Procedure\n1. open it\n\n### Expectations\n- it renders\n",
-        )
+        .write_str(&format!(
+            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n{}---\n\n# F\n\n## Manual verification\n### Setup\n- a window\n\n### Procedure\n1. open it\n\n### Expectations\n- it renders\n",
+            hist("planned")
+        ))
         .unwrap();
     opys(&dir).arg("verify").assert().success();
 }
@@ -573,9 +593,10 @@ fn verify_ignores_prose_code_span_on_checked_item() {
         .write_str("fn sftp_uri_rewrites_to_ssh() {}\n")
         .unwrap();
     dir.child("opys/features/FEAT-0001.md")
-        .write_str(
-            "---\nid: FEAT-0001\nstatus: implemented\ntags: [ssh]\n---\n\n# Sftp\n\n## Test plan\n- [x] sftp:// rewrites to `ssh -t exec $SHELL` not a path — `lib.rs::sftp_uri_rewrites_to_ssh`\n",
-        )
+        .write_str(&format!(
+            "---\nid: FEAT-0001\nstatus: implemented\ntags: [ssh]\n{}---\n\n# Sftp\n\n## Test plan\n- [x] sftp:// rewrites to `ssh -t exec $SHELL` not a path — `lib.rs::sftp_uri_rewrites_to_ssh`\n",
+            hist("implemented")
+        ))
         .unwrap();
     opys(&dir).arg("verify").assert().success();
 }
@@ -721,7 +742,7 @@ fn verify_corpus_grep_check_resolves_test_refs() {
         .write_str("fn real_test() {}\nfn another() {}\n")
         .unwrap();
     dir.child("opys/features/FEAT-0001.md")
-        .write_str("---\nid: FEAT-0001\nstatus: implemented\ntags: [a]\n---\n\n# Good\n\n## Test plan\n- [x] a — `mod::real_test`\n- [x] b — `src/lib.rs::another`\n")
+        .write_str(&format!("---\nid: FEAT-0001\nstatus: implemented\ntags: [a]\n{}---\n\n# Good\n\n## Test plan\n- [x] a — `mod::real_test`\n- [x] b — `src/lib.rs::another`\n", hist("implemented")))
         .unwrap();
     opys(&dir).arg("verify").assert().success();
 
@@ -784,13 +805,16 @@ fn verify_code_pointers_file_and_symbol_check() {
     // A doc whose Code Pointers line points at a real (file, symbol) pair, and
     // whose checked Test plan item carries a resolvable multi-`::` ref, passes.
     dir.child("opys/features/FEAT-0001.md")
-        .write_str(concat!(
-            "---\nid: FEAT-0001\nstatus: implemented\ntags: [a]\n---\n\n",
-            "# Cursor group\n\n",
-            "## Code Pointers\n",
-            "- `preferences/appearance.rs` — `cursor_group`: builds the group\n\n",
-            "## Test plan\n",
-            "- [x] exposes combos — `e2e::preferences::ocr::ocr_cursor_group_exposes_shape_and_blink_combos`\n",
+        .write_str(&format!(
+            concat!(
+                "---\nid: FEAT-0001\nstatus: implemented\ntags: [a]\n{}---\n\n",
+                "# Cursor group\n\n",
+                "## Code Pointers\n",
+                "- `preferences/appearance.rs` — `cursor_group`: builds the group\n\n",
+                "## Test plan\n",
+                "- [x] exposes combos — `e2e::preferences::ocr::ocr_cursor_group_exposes_shape_and_blink_combos`\n",
+            ),
+            hist("implemented")
         ))
         .unwrap();
     opys(&dir).arg("verify").assert().success();
@@ -1602,9 +1626,10 @@ fn verify_fails_on_dangling_unstruck_reference() {
 
     // The same reference, struck through, is an accepted tombstone.
     dir.child("opys/features/FEAT-0001.md")
-        .write_str(
-            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\nreferences:\n  TASK-0099: ~~Ghost~~\n---\n\n# F\n",
-        )
+        .write_str(&format!(
+            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n{}references:\n  TASK-0099: ~~Ghost~~\n---\n\n# F\n",
+            hist("planned")
+        ))
         .unwrap();
     opys(&dir).arg("verify").assert().success();
 }
@@ -2586,9 +2611,10 @@ fn verify_enforces_opys_rules_when_present() {
 
     // Supplying the reason satisfies both the legacy checks and the rule.
     dir.child("opys/_archived/FEAT-0001.md")
-        .write_str(
-            "---\nid: FEAT-0001\nstatus: archived\ntags: [a]\narchived_reason: removed in v3\n---\n\n# F\n",
-        )
+        .write_str(&format!(
+            "---\nid: FEAT-0001\nstatus: archived\ntags: [a]\narchived_reason: removed in v3\n{}---\n\n# F\n",
+            hist("archived")
+        ))
         .unwrap();
     opys(&dir).arg("verify").assert().success();
 }
@@ -2629,7 +2655,10 @@ fn verify_enforces_field_pattern_from_opys_config() {
         ));
 
     dir.child("opys/features/FEAT-0001.md")
-        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [a]\nticket: JIRA-42\n---\n\n# F\n")
+        .write_str(&format!(
+            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n{}ticket: JIRA-42\n---\n\n# F\n",
+            hist("planned")
+        ))
         .unwrap();
     opys(&dir).arg("verify").assert().success();
 }
@@ -2666,12 +2695,642 @@ fn new_stamps_created_and_updated_and_set_status_bumps_updated() {
         ));
 }
 
+/// `new` writes exactly one history entry, at the type's default status, keyed
+/// to the same instant as `created` (verify checks the two agree).
+#[test]
+fn new_writes_one_history_entry_at_the_default_status() {
+    let dir = project();
+    opys(&dir)
+        .args(["new", "--title", "First", "--tags", "a"])
+        .assert()
+        .success();
+    let text = std::fs::read_to_string(dir.path().join("opys/features/FEAT-0001.md")).unwrap();
+    assert!(
+        text.contains(&format!("history:\n  \"{PINNED_KEY}\": planned\n")),
+        "{text}"
+    );
+    assert_eq!(text.matches("\": planned").count(), 1, "{text}");
+    assert!(
+        text.contains(&format!("created: \"{PINNED_NOW}\"")),
+        "{text}"
+    );
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// `set-status` appends; two transitions under one pinned clock land one
+/// microsecond apart, in order, and the last entry is the current status.
+#[test]
+fn set_status_appends_history_bumping_a_same_instant_key() {
+    let dir = project();
+    opys(&dir)
+        .args(["new", "--title", "First", "--tags", "a"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["set-status", "FEAT-0001", "partial"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["set-status", "FEAT-0001", "planned"])
+        .assert()
+        .success();
+    let text = std::fs::read_to_string(dir.path().join("opys/features/FEAT-0001.md")).unwrap();
+    // One pinned instant, three writes: 0µs, +1µs, +2µs — distinct and ordered.
+    assert!(
+        text.contains(
+            "history:\n  \
+             \"2026-01-02T03:04:05.000000Z\": planned\n  \
+             \"2026-01-02T03:04:05.000001Z\": partial\n  \
+             \"2026-01-02T03:04:05.000002Z\": planned\n"
+        ),
+        "{text}"
+    );
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// The key is UTC even when the clock is not: an `OPYS_NOW` carrying an offset
+/// is converted, and `created` (which keeps the offset) still agrees with it.
+#[test]
+fn a_clock_with_an_offset_still_yields_a_utc_history_key() {
+    let dir = project();
+    opys(&dir)
+        .env("OPYS_NOW", "2026-06-16T10:30:00-04:00")
+        .args(["new", "--title", "First", "--tags", "a"])
+        .assert()
+        .success();
+    let text = std::fs::read_to_string(dir.path().join("opys/features/FEAT-0001.md")).unwrap();
+    assert!(
+        text.contains("created: \"2026-06-16T10:30:00-04:00\""),
+        "{text}"
+    );
+    assert!(
+        text.contains("history:\n  \"2026-06-16T14:30:00.000000Z\": planned\n"),
+        "{text}"
+    );
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// `import` seeds one entry at the status the record was given.
+#[test]
+fn import_seeds_one_history_entry_at_the_given_status() {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "Alpha", "--tags", "a"])
+        .assert()
+        .success();
+    let jsonl = dir.child("tasks.jsonl");
+    jsonl
+        .write_str(
+            "{\"title\": \"Wire it\", \"status\": \"in-progress\", \
+             \"references\": {\"FEAT-0001\": \"Alpha\"}}\n",
+        )
+        .unwrap();
+    opys(&dir)
+        .args(["import", "--type", "task", jsonl.path().to_str().unwrap()])
+        .assert()
+        .success();
+    let text = std::fs::read_to_string(dir.path().join("opys/work-items/TASK-0002.md")).unwrap();
+    assert!(
+        text.contains(&format!("history:\n  \"{PINNED_KEY}\": in-progress\n")),
+        "{text}"
+    );
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// `block`'s auto-set into `blocked` and `unblock`'s restore are status changes,
+/// so each appends an entry — the map is a complete record of the lifecycle.
+#[test]
+fn block_and_unblock_append_the_auto_set_status() {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "Alpha", "--tags", "a"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args([
+            "new",
+            "--type",
+            "task",
+            "--title",
+            "Wire",
+            "--features",
+            "FEAT-0001",
+        ])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["block", "TASK-0002", "--by", "FEAT-0001"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["unblock", "TASK-0002", "--by", "FEAT-0001"])
+        .assert()
+        .success();
+    let text = std::fs::read_to_string(dir.path().join("opys/work-items/TASK-0002.md")).unwrap();
+    assert!(
+        text.contains(
+            "history:\n  \
+             \"2026-01-02T03:04:05.000000Z\": todo\n  \
+             \"2026-01-02T03:04:05.000001Z\": blocked\n  \
+             \"2026-01-02T03:04:05.000002Z\": todo\n"
+        ),
+        "{text}"
+    );
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// Delete a document's `history:` block, turning a file `opys` just wrote into
+/// one that predates the map — the state an inventory is in before the
+/// migration in `docs/migration-history.md` runs.
+fn strip_history(path: &std::path::Path) {
+    let text = std::fs::read_to_string(path).unwrap();
+    let kept: String = text
+        .lines()
+        .scan(false, |in_block, line| {
+            *in_block = if line == "history:" {
+                true
+            } else {
+                *in_block && line.starts_with("  ")
+            };
+            Some((*in_block, line))
+        })
+        .filter(|(in_block, _)| !in_block)
+        .map(|(_, line)| format!("{line}\n"))
+        .collect();
+    assert!(kept.len() < text.len(), "no history block in {text}");
+    std::fs::write(path, kept).unwrap();
+}
+
+/// A document written before `history` existed keeps its migration handle. A
+/// status change on it seeds the *first* entry from `created`, at the status
+/// being left, so the transition lands second and the corpus stays green.
+/// Appending straight onto it would key the first entry to the wall clock,
+/// contradicting `created` — a red corpus the migration could neither find (it
+/// greps `missing history`) nor fix, since nothing hand-edits the map.
+#[test]
+fn a_status_change_seeds_history_on_a_document_that_predates_the_map() {
+    let dir = project();
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str(
+            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n\
+             created: \"2024-01-05T10:00:00-04:00\"\n\
+             updated: \"2024-01-05T10:00:00-04:00\"\n---\n\n# A\n",
+        )
+        .unwrap();
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("FEAT-0001: missing history"));
+
+    opys(&dir)
+        .args(["set-status", "FEAT-0001", "partial"])
+        .assert()
+        .success();
+    let text = std::fs::read_to_string(dir.path().join("opys/features/FEAT-0001.md")).unwrap();
+    assert!(
+        text.contains(
+            "history:\n  \
+             \"2024-01-05T14:00:00.000000Z\": planned\n  \
+             \"2026-01-02T03:04:05.000000Z\": partial\n"
+        ),
+        "{text}"
+    );
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// The same seeding covers `block`'s auto-set, which changes status outside
+/// `set-status`.
+#[test]
+fn block_seeds_history_on_a_document_that_predates_the_map() {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "Alpha", "--tags", "a"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args([
+            "new",
+            "--type",
+            "task",
+            "--title",
+            "Wire",
+            "--features",
+            "FEAT-0001",
+        ])
+        .assert()
+        .success();
+    let task = dir.path().join("opys/work-items/TASK-0002.md");
+    strip_history(&task);
+
+    opys(&dir)
+        .args(["block", "TASK-0002", "--by", "FEAT-0001"])
+        .assert()
+        .success();
+    let text = std::fs::read_to_string(&task).unwrap();
+    assert!(
+        text.contains(
+            "history:\n  \
+             \"2026-01-02T03:04:05.000000Z\": todo\n  \
+             \"2026-01-02T03:04:05.000001Z\": blocked\n"
+        ),
+        "{text}"
+    );
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// A migrated document may carry `history` and no `created` (the procedure says
+/// so). Both `touch` paths — `Store::touch` behind `tag`, and the frontmatter
+/// `touch` behind `set-status` — then backfill `created` from the first history
+/// key, never from the wall clock: `verify` requires the two to denote the same
+/// second, so stamping "now" would turn a clean corpus red on a successful write.
+#[test]
+fn a_write_backfills_created_from_the_first_history_key() {
+    let dir = project();
+    for id in ["FEAT-0001", "FEAT-0002"] {
+        dir.child(format!("opys/features/{id}.md"))
+            .write_str(&format!(
+                "---\nid: {id}\nstatus: planned\ntags: [core]\nhistory:\n  \
+                 \"2026-01-01T00:00:00.000000Z\": planned\n---\n\n# Doc {id_num}\n",
+                id_num = &id[5..]
+            ))
+            .unwrap();
+    }
+    opys(&dir).arg("verify").assert().success();
+
+    opys(&dir)
+        .args(["tag", "FEAT-0001", "--add", "x"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["set-status", "FEAT-0002", "partial"])
+        .assert()
+        .success();
+    opys(&dir).arg("verify").assert().success();
+    for id in ["FEAT-0001", "FEAT-0002"] {
+        let text =
+            std::fs::read_to_string(dir.path().join(format!("opys/features/{id}.md"))).unwrap();
+        assert!(
+            text.contains("created: \"2026-01-01T00:00:00.000000Z\""),
+            "{text}"
+        );
+    }
+}
+
+/// The four history checks, each on its own document.
+#[test]
+fn verify_flags_a_botched_history_map() {
+    let dir = project();
+    // (a) no history at all.
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# A\n")
+        .unwrap();
+    // (b) the last entry is not the current status.
+    dir.child("opys/features/FEAT-0002.md")
+        .write_str(&format!(
+            "---\nid: FEAT-0002\nstatus: partial\ntags: [a]\n{}---\n\n# B\n",
+            hist("planned")
+        ))
+        .unwrap();
+    // (c) keys that do not strictly increase, and a key that is not UTC.
+    dir.child("opys/features/FEAT-0003.md")
+        .write_str(
+            "---\nid: FEAT-0003\nstatus: partial\ntags: [a]\nhistory:\n  \
+             \"2026-01-02T03:04:05.000000Z\": planned\n  \
+             \"2026-01-01T00:00:00.000000Z\": partial\n---\n\n# C\n",
+        )
+        .unwrap();
+    dir.child("opys/features/FEAT-0004.md")
+        .write_str(
+            "---\nid: FEAT-0004\nstatus: planned\ntags: [a]\nhistory:\n  \
+             \"2026-01-02T03:04:05.000000+00:00\": planned\n---\n\n# D\n",
+        )
+        .unwrap();
+    // …and one that *is* UTC but not fixed width. Accepting it would be a trap:
+    // the serializer sorts the block lexically-by-instant, so a narrower key
+    // beside a fractional one in the same second would be reordered by the next
+    // unrelated write, turning a blessed corpus red.
+    dir.child("opys/features/FEAT-0006.md")
+        .write_str(
+            "---\nid: FEAT-0006\nstatus: planned\ntags: [a]\nhistory:\n  \
+             \"2026-01-02T03:04:05Z\": planned\n---\n\n# F\n",
+        )
+        .unwrap();
+    // …and a map whose *entries* are wrong-typed. One good pair beside one bad
+    // one used to read as a valid map (`entries` filter-mapped the bad pair
+    // away) while the store kept the whole value opaque — verify blessed it and
+    // the next `set-status` destroyed it.
+    dir.child("opys/features/FEAT-0007.md")
+        .write_str(
+            "---\nid: FEAT-0007\nstatus: planned\ntags: [a]\nhistory:\n  \
+             \"2026-01-02T03:04:05.000000Z\": planned\n  \
+             \"2026-01-03T00:00:00.000000Z\": 5\n---\n\n# G\n",
+        )
+        .unwrap();
+    dir.child("opys/features/FEAT-0008.md")
+        .write_str(
+            "---\nid: FEAT-0008\nstatus: planned\ntags: [a]\nhistory:\n  \
+             5: planned\n---\n\n# H\n",
+        )
+        .unwrap();
+    // …and a value that is not a mapping at all but still carries entries: the
+    // YAML list a hand-written migration produces. It used to be reported as
+    // `missing history` — telling the operator to *add* a block that is already
+    // there — and then silently replaced by the next `set-status`.
+    dir.child("opys/features/FEAT-0009.md")
+        .write_str(
+            "---\nid: FEAT-0009\nstatus: planned\ntags: [a]\nhistory:\n  \
+             - \"2026-01-02T03:04:05.000000Z: planned\"\n  \
+             - \"2026-02-02T03:04:05.000000Z: partial\"\n---\n\n# I\n",
+        )
+        .unwrap();
+    // (d) `created` and the first key are different seconds.
+    dir.child("opys/features/FEAT-0005.md")
+        .write_str(&format!(
+            "---\nid: FEAT-0005\nstatus: planned\ntags: [a]\ncreated: \"2026-05-05T00:00:00Z\"\n{}---\n\n# E\n",
+            hist("planned")
+        ))
+        .unwrap();
+
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("FEAT-0001: missing history"))
+        .stderr(predicate::str::contains(
+            "FEAT-0002: history's last entry (planned) does not match status (partial)",
+        ))
+        .stderr(predicate::str::contains(
+            "FEAT-0003: history keys must strictly increase",
+        ))
+        .stderr(predicate::str::contains(
+            "FEAT-0004: history key '2026-01-02T03:04:05.000000+00:00' is not a canonical \
+             UTC timestamp (RFC3339 with 'Z' and exactly six fractional digits, \
+             e.g. 2026-06-16T14:30:00.000000Z)",
+        ))
+        .stderr(predicate::str::contains(
+            "FEAT-0005: 'created' (2026-05-05T00:00:00Z) does not match the first history entry",
+        ))
+        .stderr(predicate::str::contains(
+            "FEAT-0006: history key '2026-01-02T03:04:05Z' is not a canonical UTC timestamp",
+        ))
+        .stderr(predicate::str::contains(
+            "FEAT-0007: history entry '2026-01-03T00:00:00.000000Z' does not record a status \
+             as a string",
+        ))
+        .stderr(predicate::str::contains(
+            "FEAT-0008: a history key is not a string",
+        ))
+        .stderr(predicate::str::contains(
+            "FEAT-0009: 'history' is a sequence, not a timestamp→status mapping",
+        ));
+}
+
+/// History keys are **quoted** in the file, and `verify` enforces the spelling.
+///
+/// It cannot do that from the parsed map: a YAML 1.2 reader (`serde_norway`,
+/// and so opys) resolves a bare `2026-…Z` to the identical string, so an
+/// unquoted key satisfies `history::is_map` and every other history check. A
+/// YAML 1.1 reader does not — it resolves the key as a *timestamp* — so a corpus
+/// written that way is not the string→string map format.md specifies for the
+/// other implementations that read it. `verify` therefore reads the stored text
+/// (`verify::spelling_problems`, through `Backend::stored_text`), which is also
+/// the only check the hand-written migration of docs/migration-history.md has:
+/// nothing else reports the spelling, and the next unrelated write silently
+/// re-quotes the file, so the mistake would otherwise surface as a surprise diff
+/// long after the migration.
+#[test]
+fn verify_flags_a_history_key_written_unquoted() {
+    let dir = project();
+    let bare = format!(
+        "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\nhistory:\n  \
+         {PINNED_KEY}: planned\n---\n\n# A\n"
+    );
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str(&bare)
+        .unwrap();
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(format!(
+            "FEAT-0001: history key '{PINNED_KEY}' is written unquoted (a bare RFC3339 \
+             scalar is read as a timestamp, not a string, by a YAML 1.1 reader); \
+             quote it: \"{PINNED_KEY}\": <status>"
+        )));
+
+    // The canonical spelling — the one opys itself writes — is what clears it,
+    // and it is the only difference between the two files.
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str(&bare.replace(&format!("  {PINNED_KEY}:"), &format!("  \"{PINNED_KEY}\":")))
+        .unwrap();
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// A `history` map opys cannot read is **data**: reported, never rewritten.
+///
+/// The shape rule is all-or-nothing (`history::is_map`), and `verify`,
+/// `store::decompose` and `history::entries` all use it. When they disagreed —
+/// `entries` reading the well-formed subset of a map the store kept opaque in
+/// `fm_fields` — `verify` printed OK, and the next `set-status` exited 0 while
+/// destroying every entry and leaving the corpus red. Now every append path
+/// refuses and the bytes on disk do not move.
+#[test]
+fn a_botched_history_is_reported_and_no_write_touches_it() {
+    let dir = project();
+    enable_work_items(&dir);
+    // One entry well formed, one not: the old reader saw a valid map here.
+    let feat = "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n\
+                created: \"2026-01-01T00:00:00Z\"\nhistory:\n  \
+                \"2026-01-01T00:00:00.000000Z\": planned\n  \
+                \"2026-02-01T00:00:00.000000Z\": null\n---\n\n# A\n";
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str(feat)
+        .unwrap();
+    let task = "---\nid: TASK-0002\nstatus: todo\ntags: [a]\n\
+                created: \"2026-01-01T00:00:00Z\"\nhistory:\n  \
+                \"2026-01-01T00:00:00.000000Z\": 5\nreferences:\n  FEAT-0001: A\n---\n\n\
+                # T\n\n## Tasks\n- [ ] x\n\n## Progress\n- none\n";
+    dir.child("opys/TASK-0002.md").write_str(task).unwrap();
+    // …and a value that is not a mapping at all: the YAML list a hand-written
+    // migration script produces. The shape rule covers every shape, not just
+    // mappings — this one was reported as `missing history` and then replaced
+    // wholesale by the next `set-status`, which exited 0.
+    let seq = "---\nid: FEAT-0003\nstatus: planned\ntags: [a]\n\
+               created: \"2026-01-01T00:00:00Z\"\nhistory:\n  \
+               - \"2026-01-01T00:00:00.000000Z: planned\"\n  \
+               - \"2026-02-01T00:00:00.000000Z: partial\"\n---\n\n# C\n";
+    dir.child("opys/features/FEAT-0003.md")
+        .write_str(seq)
+        .unwrap();
+
+    // Reported, naming the document and the entry — not blessed, and not
+    // silently reduced to `missing history`.
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "FEAT-0001: history entry '2026-02-01T00:00:00.000000Z' does not record a status \
+             as a string; opys will not rewrite a lifecycle map it cannot read",
+        ))
+        .stderr(predicate::str::contains(
+            "TASK-0002: history entry '2026-01-01T00:00:00.000000Z' does not record a status",
+        ))
+        .stderr(predicate::str::contains(
+            "FEAT-0003: 'history' is a sequence, not a timestamp→status mapping",
+        ));
+
+    // Every write path that would append refuses, before touching anything.
+    for args in [
+        vec!["set-status", "FEAT-0001", "partial"],
+        vec!["set-status", "FEAT-0003", "partial"],
+        vec!["block", "TASK-0002", "--by", "FEAT-0001"],
+    ] {
+        opys(&dir)
+            .args(&args)
+            .arg("--no-sync")
+            .assert()
+            .failure()
+            .code(2)
+            .stderr(predicate::str::contains("repair the lifecycle map by hand"));
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("opys/features/FEAT-0001.md")).unwrap(),
+        feat,
+        "a refused write must not move a byte of the map"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("opys/TASK-0002.md")).unwrap(),
+        task
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("opys/features/FEAT-0003.md")).unwrap(),
+        seq,
+        "a sequence carries entries too — a refused write must not replace it"
+    );
+
+    // A write that does *not* record a status leaves the map alone too — and
+    // keeps its keys quoted, rather than surrendering the block to the generic
+    // YAML emitter, which writes bare RFC3339 keys a YAML 1.1 reader resolves
+    // as timestamps.
+    opys(&dir)
+        .args(["tag", "FEAT-0001", "--add", "z", "--no-sync"])
+        .assert()
+        .success();
+    let text = std::fs::read_to_string(dir.path().join("opys/features/FEAT-0001.md")).unwrap();
+    assert!(
+        text.contains(
+            "history:\n  \"2026-01-01T00:00:00.000000Z\": planned\n  \
+             \"2026-02-01T00:00:00.000000Z\": null\n"
+        ),
+        "{text}"
+    );
+}
+
+/// A control character in a history value used to be written as a raw line
+/// break inside a double-quoted scalar (`format_string` quotes but does not
+/// escape), so a *successful* command turned a parseable document into one
+/// nothing could read — wedging `sync` for the whole corpus.
+#[test]
+fn a_control_character_in_history_survives_a_rewrite() {
+    let dir = project();
+    let text = "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\nhistory:\n  \
+                \"2026-01-02T03:04:05.000000Z\": \"open\\n---\\n\\n# gone\"\n---\n\n# A\n";
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str(text)
+        .unwrap();
+    opys(&dir)
+        .args(["tag", "FEAT-0001", "--add", "z"])
+        .assert()
+        .success();
+    let after = std::fs::read_to_string(dir.path().join("opys/features/FEAT-0001.md")).unwrap();
+    assert!(
+        after.contains("\"2026-01-02T03:04:05.000000Z\": \"open\\n---\\n\\n# gone\""),
+        "{after}"
+    );
+    // Still parseable: the only complaint is the (legitimate) status mismatch.
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("invalid frontmatter YAML").not());
+    opys(&dir).arg("sync").assert().success();
+}
+
+/// `import` copies a record's unrecognised keys into the frontmatter verbatim,
+/// so it must refuse `history` by name — otherwise a record plants a lifecycle
+/// map opys did not write, which `seed` then refuses to replace.
+#[test]
+fn import_refuses_a_record_carrying_history() {
+    let dir = project();
+    let jsonl = dir.child("rec.jsonl");
+    jsonl
+        .write_str(
+            "{\"title\": \"Planted\", \"tags\": [\"a\"], \
+             \"history\": {\"2026-01-01T00:00:00.000000Z\": \"planned\"}}\n",
+        )
+        .unwrap();
+    opys(&dir)
+        .args(["import", jsonl.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "history is auto-maintained — remove it from the record",
+        ));
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::path::missing());
+}
+
+/// `history` is readable from `query` but never a write surface: raw DML
+/// against the table is refused. (The field-level refusal — the server's
+/// `set-field` action — is pinned in `opys-server/tests/actions.rs`.)
+#[test]
+fn history_is_queryable_but_never_writable() {
+    let dir = project();
+    opys(&dir)
+        .args(["new", "--title", "First", "--tags", "a"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["query", "SELECT ts, status FROM history"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(PINNED_KEY));
+    // `opys query` is read-only since ADR-0100, so the lifecycle map has no raw
+    // write path at all: the flag is gone and a DELETE is refused on the plan.
+    opys(&dir)
+        .args(["query", "--write", "DELETE FROM history"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("unexpected argument '--write'"));
+    opys(&dir)
+        .args(["query", "DELETE FROM history"])
+        .assert()
+        .code(2);
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::str::contains(PINNED_KEY));
+}
+
 #[test]
 fn verify_rejects_malformed_timestamp_but_allows_absent() {
     let dir = project();
-    // Absent timestamps (docs predating the fields) are allowed.
+    // Absent timestamps (docs predating the fields) are allowed. With no
+    // `created` to agree with, any well-formed history key is accepted.
     dir.child("opys/features/FEAT-0001.md")
-        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# F\n")
+        .write_str(&format!(
+            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n{}---\n\n# F\n",
+            hist("planned")
+        ))
         .unwrap();
     opys(&dir).arg("verify").assert().success();
 
@@ -2694,6 +3353,9 @@ fn verify_rejects_malformed_timestamp_but_allows_absent() {
 #[test]
 fn sync_backfills_missing_timestamps_from_mtime() {
     let dir = project();
+    // A document predating both the timestamps and the lifecycle map: sync
+    // cannot invent history (only new/set-status/import write it), so the one
+    // remaining problem afterwards is `missing history`.
     dir.child("opys/features/FEAT-0001.md")
         .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# F\n")
         .unwrap();
@@ -2702,7 +3364,35 @@ fn sync_backfills_missing_timestamps_from_mtime() {
     dir.child("opys/features/FEAT-0001.md")
         .assert(predicate::str::contains("created:"))
         .assert(predicate::str::contains("updated:"));
-    // And the backfilled values are valid RFC3339, so verify still passes.
+    // And the backfilled values are valid RFC3339: verify complains about the
+    // absent history and about nothing else.
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("verify: 1 problem(s)"))
+        .stderr(predicate::str::contains("missing history"))
+        .stderr(predicate::str::contains("must be an RFC3339 datetime").not());
+}
+
+/// A document that has history but no `created` takes `created` from the first
+/// history key, not from the file's mtime — the two have to denote the same
+/// instant, and the lifecycle map is the better record.
+#[test]
+fn sync_backfills_created_from_the_first_history_entry() {
+    let dir = project();
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str(&format!(
+            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n{}---\n\n# F\n",
+            hist("planned")
+        ))
+        .unwrap();
+    opys(&dir).arg("sync").assert().success();
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::str::contains(format!(
+            "created: \"{PINNED_KEY}\""
+        )));
     opys(&dir).arg("verify").assert().success();
 }
 
@@ -3844,9 +4534,10 @@ fn retire_strikes_inbound_references_and_verify_stays_green() {
         .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# One\n")
         .unwrap();
     dir.child("opys/features/FEAT-0002.md")
-        .write_str(
-            "---\nid: FEAT-0002\nstatus: planned\ntags: [a]\nreferences:\n  FEAT-0001: One\n---\n\n# Two\n",
-        )
+        .write_str(&format!(
+            "---\nid: FEAT-0002\nstatus: planned\ntags: [a]\n{}references:\n  FEAT-0001: One\n---\n\n# Two\n",
+            hist("planned")
+        ))
         .unwrap();
     opys(&dir)
         .args(["retire", "FEAT-0001", "--reason", "dupe"])
@@ -4117,7 +4808,10 @@ fn modulus_cfg(modulus: u64) -> String {
 fn seeded_modulus_project(modulus: u64) -> TempDir {
     let dir = project_with(&modulus_cfg(modulus));
     dir.child("opys/features/FEAT-0001.md")
-        .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [seed]\n---\n\n# One\n")
+        .write_str(&format!(
+            "---\nid: FEAT-0001\nstatus: planned\ntags: [seed]\n{}---\n\n# One\n",
+            hist("planned")
+        ))
         .unwrap();
     dir
 }

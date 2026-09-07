@@ -44,6 +44,17 @@ pub fn core(
     let doc_ids = store.doc_ids()?;
     let mut doc = store.doc(dkey)?;
 
+    // A `history` opys cannot read is data it must not touch. Refuse *before*
+    // any mutation: `run` flushes whether or not this returns an error, so a
+    // refusal after `put_doc` would still land the status change on disk without
+    // its entry. (`Store::append_history` refuses too, as a backstop.)
+    if let Some(why) = crate::history::botched(&doc.frontmatter) {
+        return Err(usage(format!(
+            "cannot set {id} to {status}: {why}; repair the lifecycle map by hand \
+             (see docs/migration-history.md), then retry"
+        )));
+    }
+
     if let Some(r) = reason {
         // `--reason` writes `<status>_reason`, which must be a declared field for
         // the type or the very next `verify` rejects it as unknown frontmatter.
@@ -57,8 +68,17 @@ pub fn core(
         }
         doc.frontmatter.set_str(&field, r);
     }
+    let now = crate::commands::now_utc_micros();
+    let prev_status = doc.frontmatter.status().unwrap_or(status).to_string();
     doc.frontmatter.set_str("status", status);
     touch(&mut doc.frontmatter);
+    // A document that predates `history` is seeded here — from `created`, at the
+    // status it is *leaving* — so the append below lands as its second entry.
+    // Appending straight onto it would key the *first* entry to the wall clock,
+    // contradicting `created` (verify check 4) and leaving a corpus that verify
+    // rejects and the migration procedure can no longer find: it greps for
+    // `missing history`, which such a document no longer reports.
+    crate::history::seed(&mut doc.frontmatter, &prev_status, &now);
 
     let problems = rules::evaluate(pcfg, &tname, status, &doc.frontmatter, &doc.body, &doc_ids);
     if !problems.is_empty() {
@@ -69,6 +89,9 @@ pub fn core(
     }
 
     store.put_doc(pcfg, Some(dkey), &doc)?;
+    // After `put_doc`, which rewrites the doc's child rows from `doc` (and would
+    // otherwise discard the entry).
+    store.append_history(dkey, &now, status)?;
     store.set_canonical_path(pcfg, dkey)?;
     Ok(())
 }

@@ -160,7 +160,7 @@ Layering, roughly outermost-in:
   Rust-side invariants — rules, linkify, mdprism); `flush` writes changed docs
   back (create/rename/relocate/delete + retired-ledger rewrite). Markdown files
   remain the durable storage. Authoritative tables `docs`/`tags`/`relations`/
-  `fm_fields`/`retired` (every frontmatter key has exactly one home; arbitrary
+  `history`/`fm_fields`/`retired` (every frontmatter key has exactly one home; arbitrary
   YAML round-trips through `fm_fields.value_yaml` — the invariant is
   `reconstruct(decompose(doc)).to_text() == doc.to_text()`); derived
   `fields`/`sections`/`blocks` (the `[[stats]]`/`opys query` contract) are
@@ -197,6 +197,11 @@ Layering, roughly outermost-in:
 - `src/refs.rs` — the uniform relation maps (`references`/`blocked_by`/`blocks`),
   ID→title: parse/serialize (sorted by item number), strikethrough tombstone
   helpers, `id_number`.
+- `src/history.rs` — the `history` lifecycle map (UTC RFC3339 with six
+  fractional digits → status): key formatting, `is_canonical_key` (the exact
+  spelling `verify` demands), the same-instant `+1µs` bump, and the
+  `seed`/`append`/`record` writers. Distinct from `commands::history`, the
+  git-timeline command behind the `history` *feature*.
 - `src/links.rs` — the auto-sync engine: `reconcile`/`reconcile_blockers`
   (bidirectional, title-fresh relation maps between live docs) and `linkify`
   (bare `PREFIX-NNNN` mentions in prose → markdown links, skipping code; the
@@ -243,6 +248,17 @@ All status/section/link guards are *config*, enforced by one engine
   blocked-reason rule); `unblock` reverts to `in-progress` when no blocker/reason
   remains. `refs::RELATION_FIELDS` drives close/cleanup/verify/id-reservation
   uniformly.
+- **Lifecycle history**: every status change is appended to the reserved
+  `history` map (`new` seeds it from `created`, `set-status`/`import`/`block`'s
+  auto-set write it; nothing hand-edits it). Keys are UTC RFC3339 with *exactly*
+  six fractional digits — `verify` rejects any other width, because only fixed
+  width makes lexical order chronological, and the serializer sorts the block —
+  and a colliding key is bumped one microsecond. A status change on a document
+  that predates the map seeds its first entry from `created` at the status being
+  left, so the write lands second and never contradicts `created`. `verify`
+  checks presence, the last entry against `status`, strictly increasing
+  canonical keys, and `created` against the first key — and never repairs, since
+  history cannot be rebuilt from ground truth.
 - **Status lifecycle**: each type declares its own `statuses`, `default_status`,
   and `terminal_statuses`. No FSM — any status → any status — except a terminal
   status is reached only via `close` (`new`/`set-status` reject it). The
@@ -265,8 +281,8 @@ All status/section/link guards are *config*, enforced by one engine
   section's content against its `structure` (an `mdprism` schema) via
   `mdprism::Schema::validate`; `new` scaffolds the required ones (a `structured`
   section from `mdprism::Schema::scaffold`).
-- **Frontmatter is closed**: only the reserved keys (`id`/`status`/`tags` +
-  `references`/`blocked_by`/`blocks`) plus the doc type's declared `[fields.*]`
+- **Frontmatter is closed**: only the reserved keys (`id`/`status`/`tags`/
+  `history` + `references`/`blocked_by`/`blocks`) plus the doc type's declared `[fields.*]`
   are allowed; unknown keys fail `verify`. Declared fields are type-checked
   (`check_custom_fields`); a `type = "enum"` field constrains the value to its
   `values`, a `pattern` constrains a string, and `list --field key=value` filters
@@ -286,12 +302,34 @@ deletes any stale `INDEX.md` left by older versions).
 
 ### Frontmatter serialization
 
-`frontmatter::serialize` emits canonical output: core fields (`id`, `status`,
-`tags`) first, remaining keys alphabetically; flat scalars and scalar lists
-inline (`tags: [a, b]`), complex values as block YAML. `format_string` quotes
+`frontmatter::serialize` emits canonical output: the five core fields of
+`ORDER` (`id`, `status`, `tags`, `created`, `updated`) first, in that order, then
+the remaining keys alphabetically; flat scalars and scalar lists inline
+(`tags: [a, b]`), complex values as block YAML. `format_string` quotes
 only when needed for unambiguous round-tripping. The unit tests in
 `frontmatter.rs` pin this exact output — update them deliberately when changing
 formatting.
+
+**`history` is the one exception** — it takes a dedicated `render_history` path
+instead of the block-map one, because `serde_norway`'s block emitter writes the
+timestamp keys *unquoted* and a bare RFC3339 scalar is resolved as a datetime by
+a YAML 1.1 reader. That path always quotes the key, sorts entries by *parsed
+instant* rather than by spelling, and escapes control characters itself
+(`format_string` quotes but does not escape — its callers are guaranteed
+control-char-free by `inline_scalar`, and a raw newline inside a quoted scalar
+would make the document unparseable). It takes every non-empty mapping, not just
+the canonical ones, so opys never emits the unquoted form — a key that is not a
+string costs only itself its quoting; only a *composite* key or value falls
+through to the generic emitter. The frontmatter unit tests pin that output too.
+
+Quoting is the one history invariant `verify` cannot check from the parsed map:
+opys reads YAML 1.2, where the bare and quoted spellings are the same string. So
+it reads the document as stored, through `Backend::stored_text` (the seam exists
+so verify does not read files behind the backend's back) — `history::unquoted_keys`
+finds the bare keys and `verify::spelling_problems` reports them. That pass runs
+only where the medium's bytes *are* the subject: the `verify` command and the
+node's per-corpus problem list, never `collect_problems`, which also judges
+documents that exist only in memory.
 
 ### The always-on node (`opys web`)
 

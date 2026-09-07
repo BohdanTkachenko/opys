@@ -30,6 +30,7 @@ pub(crate) struct FullRow {
 struct Parts {
     tags: Vec<(i64, String)>,
     relations: Vec<(String, i64, String, String)>, // (field, seq, ref_id, raw_value)
+    history: Vec<(i64, String, String)>,           // (seq, ts, status)
     fm_fields: Vec<(String, String)>,              // (key, value_yaml)
 }
 
@@ -112,6 +113,23 @@ impl Store {
             ));
         }
 
+        // File order is preserved (via `seq`) rather than sorted: `verify`
+        // only ever sees reconstructed documents, so a hand-edited map that is
+        // out of order has to survive the round trip for the strictly-increasing
+        // check to observe it. The serializer sorts on the way out.
+        let (_, rows) = self.select(
+            &format!("SELECT dkey, seq, ts, status FROM history{filter} ORDER BY dkey, seq"),
+            params.clone(),
+        )?;
+        for r in rows {
+            let k = need_i64(&r[0])?;
+            out.entry(k).or_default().history.push((
+                need_i64(&r[1])?,
+                need_str(&r[2])?,
+                need_str(&r[3])?,
+            ));
+        }
+
         // Element rows (value_yaml NULL) are query-only; only fidelity rows
         // participate in reconstruction.
         let not_elem = if filter.is_empty() {
@@ -162,7 +180,28 @@ impl Store {
             }
             map.insert(Yaml::String(field.to_string()), Yaml::Mapping(m));
         }
+        if !parts.history.is_empty() {
+            let mut entries = parts.history;
+            entries.sort_by_key(|(seq, _, _)| *seq);
+            let mut m = Mapping::new();
+            for (_, ts, status) in entries {
+                m.insert(Yaml::String(ts), Yaml::String(status));
+            }
+            map.insert(
+                Yaml::String(crate::history::FIELD.to_string()),
+                Yaml::Mapping(m),
+            );
+        }
         for (key, value_yaml) in parts.fm_fields {
+            // An authoritative table already emitted this key. That happens when
+            // a wrong-shaped `history` or relation map was kept verbatim in
+            // `fm_fields` for fidelity and a command has since appended a real
+            // entry: the table is then the truth, and letting the fidelity row
+            // win would silently drop the append (a `set-status` that reports
+            // success and records nothing).
+            if map.contains_key(Yaml::String(key.clone())) {
+                continue;
+            }
             let value: Yaml = serde_norway::from_str(&value_yaml)
                 .map_err(|e| OpysError::Store(format!("cannot parse stored field '{key}': {e}")))?;
             map.insert(Yaml::String(key), value);

@@ -1237,6 +1237,7 @@ async fn set_field_refuses_keys_a_dedicated_action_owns() {
         ("tags", "tag"),
         ("blocked_by", "block"),
         ("updated", "auto-maintained"),
+        ("history", "auto-maintained lifecycle history"),
     ] {
         let (status, answer) = fx
             .try_action(json!({

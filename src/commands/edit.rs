@@ -115,6 +115,9 @@ fn owned_elsewhere(key: &str) -> Option<&'static str> {
         "tags" => Some("use tag"),
         "updated" => Some("it is auto-maintained; every write refreshes it"),
         "blocked_from" => Some("it is auto-maintained bookkeeping for block/unblock"),
+        "history" => {
+            Some("it is auto-maintained lifecycle history written by new/set-status/import")
+        }
         k if crate::refs::RELATION_FIELDS.contains(&k) => {
             Some("relation maps are written by block/unblock and the reconcile pass")
         }

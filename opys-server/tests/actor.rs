@@ -22,7 +22,12 @@ tags_required = false
 "#;
 
 fn write_note(inventory: &Path, n: u32, body: &str) {
-    let text = format!("---\nid: NOTE-{n:04}\nstatus: open\n---\n\n# Note {n}\n\n{body}\n");
+    // `history` is reserved and required: a document without it fails verify.
+    let text = format!(
+        "---\nid: NOTE-{n:04}\nstatus: open\n\
+         history:\n  \"2026-01-01T00:00:00.000000Z\": open\n\
+         ---\n\n# Note {n}\n\n{body}\n"
+    );
     std::fs::write(inventory.join(format!("NOTE-{n:04}.md")), text).unwrap();
 }
 

@@ -45,7 +45,12 @@ fn backend() -> Box<dyn Backend + Send> {
 fn write_note(inventory: &Path, n: u32) {
     std::fs::write(
         inventory.join(format!("NOTE-{n:04}.md")),
-        format!("---\nid: NOTE-{n:04}\nstatus: open\n---\n\n# Note {n}\n\nBody.\n"),
+        // `history` is reserved and required: a document without it fails verify.
+        format!(
+            "---\nid: NOTE-{n:04}\nstatus: open\n\
+             history:\n  \"2026-01-01T00:00:00.000000Z\": open\n\
+             ---\n\n# Note {n}\n\nBody.\n"
+        ),
     )
     .unwrap();
 }

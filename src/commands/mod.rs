@@ -57,15 +57,48 @@ pub fn now_rfc3339() -> String {
     now.format(&Rfc3339).expect("RFC3339 formatting")
 }
 
+/// The current instant as a [`crate::history`] key: RFC3339 **UTC**, exactly
+/// six fractional digits, `Z` suffix (`2026-09-05T14:03:22.418213Z`) — fixed
+/// width, so lexical order is chronological. Honors `OPYS_NOW` exactly as
+/// [`now_rfc3339`] does, except that the override is normalized rather than
+/// returned verbatim: an offset is converted to UTC, and a value without
+/// fractional seconds yields `.000000`. An unparseable override falls back to
+/// the wall clock — a history key must always be a valid RFC3339 UTC datetime.
+pub fn now_utc_micros() -> String {
+    if let Ok(s) = std::env::var("OPYS_NOW") {
+        if let Some(key) = crate::history::key_from(&s) {
+            return key;
+        }
+    }
+    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+    crate::history::format_key(now)
+}
+
 /// Stamp the auto-maintained timestamp fields on a user-initiated write: always
 /// refresh `updated`, and set `created` once (only if absent). Reconcile/linkify
 /// housekeeping must NOT call this — only meaningful user edits bump `updated`.
+/// A missing `created` is backfilled from the document's first `history` key
+/// before the wall clock, exactly as [`crate::commands::sync`] does: `verify`
+/// requires the two to denote the same second, so stamping "now" onto a
+/// history-seeded document would leave the corpus red after a successful write.
 pub fn touch(fm: &mut Frontmatter) {
     let now = now_rfc3339();
     if !fm.contains_key("created") {
-        fm.set_str("created", now.clone());
+        fm.set_str(
+            "created",
+            created_from_history(fm).unwrap_or_else(|| now.clone()),
+        );
     }
     fm.set_str("updated", now);
+}
+
+/// The document's first `history` key, when it is a well-formed UTC timestamp —
+/// the value a missing `created` is backfilled from.
+pub fn created_from_history(fm: &Frontmatter) -> Option<String> {
+    crate::history::entries(fm)
+        .first()
+        .map(|(k, _)| k.clone())
+        .filter(|k| crate::history::is_utc_key(k))
 }
 
 /// Split a comma-separated argument, trimming and dropping empties.
