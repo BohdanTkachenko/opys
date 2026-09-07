@@ -4,9 +4,10 @@
 //! `edit-body` and `set-field`/`remove-field` actions): the body is swapped
 //! for the text the caller sent, or one custom frontmatter field is set or
 //! removed, and the result is kept **only if it introduces no new verify
-//! problems** — the same contract `opys query --write` gives an arbitrary SQL
-//! edit. New problems, not all problems: a corpus with pre-existing findings
-//! can still be edited, it just cannot be made worse.
+//! problems**. New problems, not all problems: a corpus with pre-existing
+//! findings can still be edited, it just cannot be made worse. This module is
+//! the gate's one implementation — `opys query` is read-only and every other
+//! write is a lifecycle command, guarded by the rules engine instead.
 //!
 //! There is deliberately no CLI subcommand mounted on this yet: in a terminal,
 //! editing a body *is* editing the file. The core lives in the engine rather
@@ -143,9 +144,9 @@ fn refuse_new_problems(
 
 /// The corpus's verify findings as a set, for a before/after difference.
 ///
-/// Keyed by the problem strings themselves. A body edit never moves a file, so
-/// unlike `query --write` (whose SQL can rename and relocate) the strings are
-/// stable enough to difference directly.
+/// Keyed by the problem strings themselves. These edits never move a file (they
+/// touch neither status nor layout), so the path-prefixed strings are stable
+/// enough to difference directly.
 fn problems(prj: &Project, store: &mut Store, parse_errors: &[String]) -> Result<HashSet<String>> {
     let docs: Vec<_> = store.all_docs()?.into_iter().map(|(_, d)| d).collect();
     Ok(verify::collect_problems(prj, &docs, parse_errors.to_vec())

@@ -117,9 +117,9 @@
 <header class="head">
   <h1>Query console</h1>
   <p class="small muted">
-    Read-only SQL over this corpus. The node refuses anything that is not a
-    <code>SELECT</code>; writing SQL is <code>opys query --write</code>, which
-    re-verifies the whole corpus before it keeps a change.
+    Read-only SQL over this corpus — here and in the CLI, every statement must be
+    a <code>SELECT</code>. Writes are lifecycle commands: pipe a selection into
+    one with <code>opys list --type task --status in-progress --format ids | opys close -</code>.
   </p>
 </header>
 

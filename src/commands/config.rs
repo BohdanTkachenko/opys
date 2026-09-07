@@ -5,6 +5,7 @@
 //! that file yet; this only generates it so the config shape can be reviewed and
 //! iterated on. Future subcommands (`config show`) belong here too.
 
+use crate::commands::print_lines;
 use crate::error::{usage, Result};
 use crate::project::{find_root, start_dir};
 use crate::project_config::ProjectConfig;
@@ -17,13 +18,16 @@ pub fn init(ctx: &Ctx) -> Result<()> {
     std::fs::create_dir_all(&root)?;
     let path = root.join("opys.toml");
     if path.exists() {
-        println!("{} already exists; leaving it untouched", path.display());
+        print_lines([format!(
+            "{} already exists; leaving it untouched",
+            path.display()
+        )])?;
     } else {
         std::fs::write(&path, DEFAULT_OPYS_CONFIG)?;
-        println!(
+        print_lines([format!(
             "created {} — edit it to model your document types",
             path.display()
-        );
+        )])?;
     }
     Ok(())
 }
@@ -50,13 +54,13 @@ pub fn validate(ctx: &Ctx) -> Result<i32> {
         // line after `OK` — and only once the config itself is clean, so a
         // modulus the config rejects stays a reported problem (exit 1) below.
         let ids = crate::ids::describe(&cfg)?;
-        println!(
+        print_lines([format!(
             "config: OK ({} types, {} rules)",
             cfg.types.len(),
             cfg.rules.len()
-        );
+        )])?;
         if let Some(line) = ids {
-            println!("{line}");
+            print_lines([line])?;
         }
         Ok(0)
     } else {

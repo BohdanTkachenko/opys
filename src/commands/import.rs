@@ -11,7 +11,7 @@ use std::collections::HashSet;
 
 use serde_norway::Value;
 
-use crate::commands::maybe_sync;
+use crate::commands::{maybe_sync, print_lines};
 use crate::doc::Doc;
 use crate::error::{usage, Result};
 use crate::frontmatter::Frontmatter;
@@ -86,10 +86,10 @@ pub fn run(ctx: &Ctx, type_name: &str, file: &str) -> Result<()> {
         1 => String::new(),
         step => format!(" step {step}"),
     };
-    println!(
+    print_lines([format!(
         "imported {} {type_name} document(s): {first}..{last}{stride}",
         built.len()
-    );
+    )])?;
     ctx.flush(&prj, store)?;
     maybe_sync(ctx, &prj);
     Ok(())

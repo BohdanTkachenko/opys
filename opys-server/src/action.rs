@@ -240,13 +240,12 @@ impl ActionOutcome {
 /// into the first cycle would read the *pre-write* mtime and write different
 /// bytes.
 ///
-/// The one place the six commands disagree with each other is what happens when
-/// a core refuses. `new::run` propagates immediately — nothing is flushed, no
-/// sync runs. The other five capture the error, flush and sync anyway, and
-/// return it last, so a refused write still leaves the corpus reconciled. That
-/// asymmetry is not tidied up here: it is observable whenever the corpus was not
-/// already in sync, and the point of this module is that the same write through
-/// the API and through the CLI leaves the same bytes.
+/// A refused core is the same everywhere: the error propagates *before* the
+/// flush, the store is dropped un-flushed, and no sync runs — so a write the
+/// corpus rejects leaves the bytes exactly as they were. That is the CLI's rule
+/// too — a batch is all-or-nothing — and the point of this module is
+/// that the same write through the API and through the CLI leaves the same
+/// bytes.
 ///
 /// Blocking, and possibly for a while — the load waits out `OPYS_LOCK_TIMEOUT_MS`
 /// (10 s by default) if another writer holds the inventory lock, which is
@@ -359,9 +358,9 @@ pub fn perform(root: &Path, backend: &dyn Backend, action: &Action) -> Attempt {
             finish(&prj, backend, store, done)
         }
         Action::EditBody { id, body } => {
-            // Like `new`, not like the other five: a refused edit propagates
-            // *before* the flush, because the whole point of the verify gate is
-            // that a rejected body never reaches disk.
+            // Inlined rather than routed through `finish` only because the
+            // gate needs the load's parse errors: a refused edit propagates
+            // before the flush here too, so a rejected body never reaches disk.
             edit::body_core(&prj, &mut store, id, body, &parse_errors)
                 .map_err(ActionError::Refused)?;
             let mut outcome = ActionOutcome::new(id, format!("{id} body updated (verified)"));
@@ -401,16 +400,15 @@ pub fn perform(root: &Path, backend: &dyn Backend, action: &Action) -> Attempt {
     }
 }
 
-/// The tail every command except `new` runs: flush and sync happen even when the
-/// core refused, and only then is the core's verdict returned. A failure to
-/// flush masks that verdict, which is also what the CLI's `ctx.flush(…)?` does.
+/// The tail every lifecycle action runs: a refusal propagates first (dropping
+/// the store un-flushed, so nothing reaches disk), then the flush and the
+/// auto-sync pass. The order is the CLI's — `commands::*::run` returns the
+/// error before `ctx.flush`, and only a successful write is synced.
 fn finish(prj: &Project, backend: &dyn Backend, store: Store, attempted: Attempt) -> Attempt {
+    let mut outcome = attempted?;
     backend.flush(prj, store).map_err(ActionError::Refused)?;
-    let skipped = auto_sync(prj, backend);
-    attempted.map(|mut outcome| {
-        outcome.sync_skipped = skipped;
-        outcome
-    })
+    outcome.sync_skipped = auto_sync(prj, backend);
+    Ok(outcome)
 }
 
 /// The auto-sync pass — reconcile relations, linkify prose, relocate documents

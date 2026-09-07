@@ -32,8 +32,8 @@ live flat at the base; empty segments collapse, so the order is free (e.g.
 editing the layout) moves its file to the new canonical path on the next write —
 relocated documents stay fully in the inventory. Directory structure must never
 encode taxonomy — that is what tags and `opys list` are for. A document's path
-always stays under the base: a write that would place a file outside it (only
-reachable via raw SQL edits) is refused.
+always stays under the base: a write that would place a file outside it is
+refused at flush time.
 
 ### The retired ledger (`_retired.md`)
 
@@ -41,9 +41,8 @@ reachable via raw SQL edits) is refused.
 file whose frontmatter holds a single `retired:` map of `ID: last title`, sorted
 by number. Every id it lists is reserved forever — allocation continues past it,
 and `verify` rejects a live document reusing one. It is written by `retire`,
-`close`, `renumber`, the removal cascade of a `query --write` DELETE, and
-`cleanup` (which first ledger-reserves any id whose last struck tombstone it is
-about to strip). The value is the document's last title, for human reference
+`close`, `renumber`, and `cleanup` (which first ledger-reserves any id whose
+last struck tombstone it is about to strip). The value is the document's last title, for human reference
 only; git records the when and why (`retire --reason` is echoed, not persisted).
 
 **An unreadable ledger is an error, never an empty ledger**: if `_retired.md`
@@ -51,7 +50,7 @@ only; git records the when and why (`retire --reason` is echoed, not persisted).
 reports it as a problem, and every command that allocates ids, reserves ids, or
 flushes files refuses to run (and never rewrites the ledger) until the file is
 fixed — an empty read would reuse reserved numbers and the next rewrite would
-drop them permanently. Read-only commands (`list`, `show`, plain `query`) still
+drop them permanently. Read-only commands (`list`, `show`, `query`) still
 work. A pre-0.12 plaintext `_retired.txt` is read only when `_retired.md` is
 absent, and is migrated to it on the next write.
 
@@ -462,9 +461,10 @@ Mark a dependency between two items (features and/or work items) with
 removes it. The relation is **directional and bidirectional**: the blocked item
 gains a `blocked_by` entry and the blocker gains the inverse `blocks` entry,
 both kept title-fresh and sorted automatically (you do not hand-edit them).
-Either id may be a document of any type. The blocked side accepts a comma-
-separated list (`opys block FEAT-1,FEAT-2 --by FEAT-9`), or `-` to read the list
-from stdin, to point several documents at one blocker in a single command.
+Either id may be a document of any type. The blocked side takes an id list like
+every other mutating command (see **Bulk edits** below), so
+`opys block FEAT-0001 FEAT-0002 --by FEAT-0009` points several documents at one blocker
+in a single command.
 
 Blocking a document whose type has a `blocked` status auto-sets it — the blocker
 link itself serves as the `blocked_reason`, so none is required; `unblock`
@@ -486,7 +486,8 @@ whose last tombstone it strips).
   the decision is recorded and not re-litigated.
 
 Status changes go through `set-status`, never hand edits — the guards live
-there.
+there. It takes an id list, so a whole selection moves in one command (see
+**Bulk edits**).
 
 ## Test plan rules
 
@@ -635,25 +636,53 @@ Either way: do **not** loop `opys new` over a large migration. After import,
 review in batches per tag using `opys list`, exactly as for a hand-built
 inventory.
 
-## Raw SQL edits (`opys query --write`)
+## SQL queries (`opys query`)
 
-`opys query` is read-only: every statement must be a SELECT (all tables,
-including `retired`, are queryable). `--write` accepts only INSERT/UPDATE/DELETE
-against the authoritative user-facing tables `docs`/`tags`/`relations`/
-`fm_fields` plus `blocks` (whose `text` column splices a `##` section back into
-the body). The `retired` ledger is not a DML surface (reservations are managed
-by the lifecycle commands — though deleting a doc, or even a tombstone relation
-row, through `--write` still ledger-reserves the id), and the derived
-`fields`/`sections` tables are rebuilt from the docs. `UPDATE` may not assign
-the internal bookkeeping columns (`dkey`, `num`, `ref_num`, `orig_*`);
-`INSERT INTO docs` requires an explicit column list drawn from
-`id`/`type`/`status`/`title`/`body` (child-table inserts are full rows by
-nature — they attach to a doc via `dkey`, and derived pieces like `ref_num` are
-recomputed on the next load). A `docs.path` edit must stay a plain relative
-path under the inventory base. An edit is applied only if the corpus passes
-`verify` no worse than before (problems are compared keyed by doc id, so a
-relocation does not disturb pre-existing findings); a refused edit changes
-nothing on disk.
+`opys query` is **read-only**. Every statement must be a SELECT — checked on the
+plan before anything executes, so a compound like `SELECT 1; DELETE FROM docs`
+is rejected whole — and the command never writes files. All tables are
+queryable: the authoritative `docs`/`tags`/`relations`/`fm_fields`/`retired`,
+and the derived `fields`/`sections`/`blocks` projections (`blocks` decomposes
+each body into one row per `##` section, so you can query into prose). `-` reads
+the SQL itself from stdin; `--stdin` binds stdin to `$1` for a large or
+multi-line value that would otherwise need SQL escaping.
+
+There is no write mode. Every change goes through a lifecycle command, so it is
+guarded by the rules and leaves a valid document — SQL cannot bypass that.
+
+## Bulk edits
+
+Every id-taking mutating command (`set-status`, `tag`, `retire`, `block`,
+`unblock`, `close`) takes a **list** of ids, three interchangeable ways: several
+positionals (`opys set-status FEAT-0001 FEAT-0002 partial`), a comma-separated list
+(`FEAT-0001,FEAT-0002`), or the literal `-`, which reads the list from stdin with
+comma, space and newline separation all accepted. So a query and an edit
+compose:
+
+```sh
+opys list --type task --status in-progress --format ids | opys close -
+opys list --tag legacy --format ids | opys tag - --add deprecated
+```
+
+A batch is **all-or-nothing**: ids are applied in order against one loaded
+corpus, and the first failure (an unknown id, a refused transition, a rule
+violation) aborts the whole invocation with exit code 2 and writes nothing —
+not even the ids that had already succeeded. Repeated ids are collapsed, keeping
+first-seen order.
+
+Select on a status a live document can actually hold. A terminal status is only
+ever reached *through* `close`, which deletes the document, so
+`--status done | opys close -` selects nothing, and an empty selection is a
+failure like any other: `-` with nothing on stdin exits 2 (`expected at least
+one id`) and writes nothing. A pipeline that may legitimately match nothing has
+to guard its producer. In the other direction, a producer whose reader goes away
+(`opys list --format ids | head -1`) stops quietly at exit 0 — no command turns
+a closed pipe into a crash.
+
+So one document that a rule refuses stops the batch its list belongs to: a
+`close` list holding a document with an unchecked required checklist item closes
+none of them. Narrow the list — or fix that document — rather than reaching for
+`close --force`, which drops the checklist guard for every id in the list.
 
 ## What never goes in feature files
 

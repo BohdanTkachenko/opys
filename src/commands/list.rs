@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use gluesql::prelude::ParamLiteral;
 
 use crate::cli::ListFormat;
-use crate::commands::parse_field_filters;
+use crate::commands::{parse_field_filters, print_lines};
 use crate::error::Result;
 use crate::store::{g_i64, g_str, IntoParam};
 use crate::Ctx;
@@ -100,23 +100,28 @@ pub fn run(
         BTreeMap::new()
     };
 
-    for r in rows {
-        let dkey = g_i64(&r[0]).unwrap_or(0);
-        let id = g_str(&r[1]).unwrap_or_default();
-        let status = g_str(&r[2]).unwrap_or_default();
-        let title = g_str(&r[3]).unwrap_or_default();
-        let relpath = g_str(&r[4]).unwrap_or_default();
-        match format {
-            ListFormat::Ids => println!("{id}"),
-            ListFormat::Paths => println!("{}", prj.base.join(relpath).display()),
-            ListFormat::Table => {
-                let tags = doc_tags
-                    .get(&dkey)
-                    .map(|ts| ts.join(", "))
-                    .unwrap_or_default();
-                println!("{id}  [{status}]  ({tags})  {title}");
+    let lines: Vec<String> = rows
+        .iter()
+        .map(|r| {
+            let dkey = g_i64(&r[0]).unwrap_or(0);
+            let id = g_str(&r[1]).unwrap_or_default();
+            let status = g_str(&r[2]).unwrap_or_default();
+            let title = g_str(&r[3]).unwrap_or_default();
+            let relpath = g_str(&r[4]).unwrap_or_default();
+            match format {
+                ListFormat::Ids => id,
+                ListFormat::Paths => prj.base.join(relpath).display().to_string(),
+                ListFormat::Table => {
+                    let tags = doc_tags
+                        .get(&dkey)
+                        .map(|ts| ts.join(", "))
+                        .unwrap_or_default();
+                    format!("{id}  [{status}]  ({tags})  {title}")
+                }
             }
-        }
-    }
-    Ok(())
+        })
+        .collect();
+    // `list` is the producer of the documented bulk pipe, so a reader that
+    // closes early (`| head -1`, `| fzf`) must not crash it.
+    print_lines(lines)
 }

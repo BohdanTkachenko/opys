@@ -4,6 +4,7 @@
 //! adding any host-specific frontmatter.
 
 use crate::cli::AgentTool;
+use crate::commands::{print_lines, print_text};
 use crate::error::{usage, Result};
 use crate::project::{find_root, start_dir};
 use crate::templates::AGENT_RULE;
@@ -55,14 +56,14 @@ pub fn run(ctx: &Ctx, tool: AgentTool, stdout: bool) -> Result<()> {
         let (rel, frontmatter) = target(t);
         let content = format!("{frontmatter}{AGENT_RULE}");
         if stdout {
-            print!("{content}");
+            print_text(&content)?;
         } else {
             let path = root.join(rel);
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
             std::fs::write(&path, content)?;
-            println!("wrote {}", path.display());
+            print_lines([format!("wrote {}", path.display())])?;
         }
     }
     Ok(())

@@ -94,9 +94,13 @@ opys tags                                   # distinct tags (--keys for just key
 opys new --type bug --title "Survive profile switch" --features FEAT-0001
 opys close BUG-0002                         # deletes the file; reference struck through
 
-# Bulk: the mutating commands take a comma-separated id list, or `-` for stdin
-opys set-status FEAT-0001,FEAT-0002 wontfix --reason "superseded"
-opys list --type task --status done --format ids | opys close -
+# Bulk: every id-taking mutating command (set-status, tag, retire, block,
+# unblock, close) takes an id list — several ids, a comma-separated list, or
+# `-` for stdin. All-or-nothing: one bad id writes nothing.
+# Filter on a status a live doc can hold — `done` is reached only *through*
+# `close`, so it selects nothing, and an empty selection exits 2.
+opys set-status FEAT-0001 FEAT-0002 wontfix --reason "superseded"
+opys list --type task --status in-progress --format ids | opys close -
 ```
 
 Mutating commands (`new`, `set-status`, `tag`, `retire`, `block`, `close`,
@@ -128,7 +132,7 @@ without a `renumber`. Without a modulus, allocation is the dense sequence.
 | `verify` | full integrity check — wire into CI |
 | `sync` | reconcile references, linkify prose, relocate docs to their layout path (for hand edits) |
 | `stats` | render configured `[[stats]]` sections (each a SQL query over the corpus, shown as a table; default: status counts, coverage, tags) |
-| `query "SELECT …"` | run a SQL query over the inventory (`-` reads it from stdin; `--stdin` binds stdin to `$1` for escape-free values) and print the result table; `--write` allows INSERT/UPDATE/DELETE, applied only if the edit introduces no new `verify` problem (else nothing is written). The `blocks` table decomposes bodies into `##` sections — `UPDATE blocks SET text = …` edits a section in place |
+| `query "SELECT …"` | run a read-only SQL query over the inventory (`-` reads it from stdin; `--stdin` binds stdin to `$1` for escape-free values) and print the result table. Every statement must be a SELECT — writes are lifecycle commands, so bulk edits pipe `list --format ids` into one. The `blocks` table decomposes bodies into `##` sections, for querying into prose |
 | `agent-rules --tool <editor>` | generate a rules-based editor's instruction file from the canonical rule |
 | `web <start\|add\|remove\|list\|scan\|install\|uninstall>` | the always-on node: serve the allowlisted projects over HTTP — see [below](#the-always-on-node-opys-web) |
 

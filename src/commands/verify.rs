@@ -6,6 +6,7 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use walkdir::WalkDir;
 
 use crate::body;
+use crate::commands::print_lines;
 use crate::config::{FieldSpec, FieldType};
 use crate::doc::Doc;
 use crate::error::Result;
@@ -26,7 +27,7 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
     let errors = collect_problems(&prj, &docs, parse_errors);
 
     if errors.is_empty() {
-        println!("verify: OK ({} documents)", docs.len());
+        print_lines([format!("verify: OK ({} documents)", docs.len())])?;
         Ok(0)
     } else {
         eprintln!("verify: {} problem(s)", errors.len());
@@ -38,9 +39,9 @@ pub fn run(ctx: &Ctx) -> Result<i32> {
 }
 
 /// Run every integrity check over `docs`, appending to the parse errors already
-/// collected at load. Shared by the `verify` command and the `opys query
-/// --write` gate (a write is only flushed if this returns empty). Never returns
-/// an `OpysError` — content problems are data, not failures.
+/// collected at load. Shared by the `verify` command and the "no worse" gate in
+/// `commands::edit` (an edit is only flushed if it adds nothing to this list).
+/// Never returns an `OpysError` — content problems are data, not failures.
 pub fn collect_problems(prj: &Project, docs: &[Doc], parse_errors: Vec<String>) -> Vec<String> {
     let mut errors = parse_errors;
     let pcfg = &prj.pcfg;

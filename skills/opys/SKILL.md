@@ -76,26 +76,32 @@ its ID prefix.
 | `new --type T --title … [--tags a,b] [--status S] [--features F1,F2] [--reason R] [--field k=v]` | create a doc of type `T` with the next ID (`--type` defaults to `feature`; auto-syncs) |
 | `import --type T FILE.jsonl` | bulk-create docs of type `T` from JSONL (one ID block, one sync, transactional) |
 | `show ID [--refs]` / `list [--type T] [--tag T] [--status S] [--field k=v]… [--format table\|ids\|paths]` | retrieval; `--field` filters by any custom field (repeatable, ANDed); `show --refs` appends code mentions of the id (per `[file_refs]`) |
-| `set-status IDS S [--reason R]` | guarded transition against the type's statuses + rules; a terminal status is reached only via `close`. `IDS` may be a comma-separated list to move several at once |
-| `tag IDS --add a,b --remove c` | tag maintenance; `IDS` may be a comma-separated list |
-| `block IDS --by BLOCKER` / `unblock IDS --by BLOCKER` | record/remove a blocker link (`blocked_by`/`blocks`); the blocked side may be a comma-separated list; blocking auto-sets `blocked` when the type has it |
-| `retire IDS [--reason R]` | delete file(s), strike inbound references (warning when a struck link leaves a `requires_link` rule failing), log each ID (with its title) to `_retired.md` so it is never reallocated; `--reason` is echoed, not persisted (git records the why) |
-| `close IDS [--force]` / `cleanup` | finish doc(s) whose type has a terminal status (strike its refs everywhere and log the ID to `_retired.md`); strip struck refs (ledger-reserving any id whose last tombstone is stripped) |
-
-Every mutating command above takes **one or more ids** for bulk operations.
-Pass an explicit comma-separated list (`set-status FEAT-1,FEAT-2 done`) — bulk is
-opt-in, so an accidental space-separated expansion is rejected rather than
-silently widening the batch. Or pass `-` to read the list from stdin, where
-comma/space/newline separation are all accepted, composing with `list`:
-`opys list --type task --status done --format ids | opys close -`. With several
-ids the run is best-effort — each is attempted, failures are reported, and the
-command exits nonzero if any failed while the successful writes stand.
+| `set-status IDS… S [--reason R]` | guarded transition against the type's statuses + rules; a terminal status is reached only via `close`. `IDS` is an id list (see below) |
+| `tag IDS… --add a,b --remove c` | tag maintenance; `IDS` is an id list |
+| `block IDS… --by BLOCKER` / `unblock IDS… --by BLOCKER` | record/remove a blocker link (`blocked_by`/`blocks`); the blocked side is an id list; blocking auto-sets `blocked` when the type has it |
+| `retire IDS… [--reason R]` | delete file(s), strike inbound references (warning when a struck link leaves a `requires_link` rule failing), log each ID (with its title) to `_retired.md` so it is never reallocated; `--reason` is echoed, not persisted (git records the why) |
+| `close IDS… [--force]` / `cleanup` | finish doc(s) whose type has a terminal status (strike its refs everywhere and log the ID to `_retired.md`); strip struck refs (ledger-reserving any id whose last tombstone is stripped) |
 | `verify` | full integrity check; nonzero exit on problems — wire into CI |
 | `sync` | reconcile references, linkify prose, relocate docs to their layout path |
 | `renumber [--base REF]` | resolve cross-branch ID collisions: keep IDs already present at the git merge-base with main/master, renumber the branch-added duplicates, retiring the old numbers. Warns about any code references to a renumbered ID with a `sed` fix per file |
 | `stats` | render configured `[[stats]]` sections (default: status counts, coverage, tags; each a SQL query over the corpus, shown as a table) |
-| `query "SELECT …"` | run a SQL query over the inventory (tables: `docs`, `tags`, `relations`, `fields`, `sections`, `blocks`, `retired`; `-` reads the SQL from stdin) — for slices `list` can't express (joins, aggregates). `blocks(doc_id, seq, heading, text)` decomposes each body into its `##` sections (query into bodies). `--write` allows INSERT/UPDATE/DELETE for bulk edits (write the *authoritative* columns — `docs.status`/`body`/`created`/`updated`, `tags.tag`, `relations.raw_value`, `fm_fields.value_yaml`, and `blocks.text` which splices a `##` section back into the body; derived columns like `docs.title` or `tags.key`/`value` are recomputed), applied only if the edit introduces no new `verify` problem — else nothing is written. Writes are confined to `docs`/`tags`/`relations`/`fm_fields`/`blocks` — the `retired` ledger and the derived `fields`/`sections` tables are read-only, `UPDATE` may not assign internal columns (`dkey`, `num`, `ref_num`, `orig_*`), `INSERT INTO docs` needs an explicit column list (`id`/`type`/`status`/`title`/`body`), and a `docs.path` edit may not leave the inventory base. `--stdin` binds stdin to `$1` for escape-free multi-line values (e.g. a section body) |
+| `query "SELECT …"` | run a **read-only** SQL query over the inventory (tables: `docs`, `tags`, `relations`, `fields`, `sections`, `blocks`, `retired`; `-` reads the SQL from stdin) — for slices `list` can't express (joins, aggregates). `blocks(doc_id, seq, heading, text)` decomposes each body into its `##` sections (query into bodies). Every statement must be a SELECT and nothing is ever written: bulk edits pipe `list --format ids` into a mutating command instead. `--stdin` binds stdin to `$1` for escape-free multi-line values |
 | `agent-rules --tool <editor>` | generate a rules-based editor's instruction file from the canonical rule |
+
+Every id-taking mutating command (`set-status`, `tag`, `retire`, `block`,
+`unblock`, `close`) takes an **id list**, three interchangeable ways: several
+ids (`set-status FEAT-0001 FEAT-0002 partial`), a comma-separated list (`FEAT-0001,FEAT-0002`),
+or `-` to read the list from stdin (comma/space/newline separation all
+accepted), which composes with `list`:
+`opys list --type task --status in-progress --format ids | opys close -`. A batch is
+**all-or-nothing** — ids are applied in order and the first failure aborts the
+whole invocation with exit 2, writing nothing, so a widened list that hits a bad
+id cannot land half a change. That includes a rule refusal: one document with an
+unchecked required checklist item stops the whole `close`, so narrow the list
+rather than reaching for `--force`, which drops that guard for every id. Filter
+on a status a live document can hold: a terminal status is reached only through
+`close` (which deletes the document), so `--status done` selects nothing, and an
+empty selection exits 2 (`expected at least one id`) without writing.
 
 ## Code references to IDs
 

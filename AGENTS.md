@@ -165,8 +165,8 @@ Layering, roughly outermost-in:
   `reconstruct(decompose(doc)).to_text() == doc.to_text()`); derived
   `fields`/`sections`/`blocks` (the `[[stats]]`/`opys query` contract) are
   rebuilt by `refresh_projections`; `blocks(doc_id, seq, heading, text)` decomposes
-  each body into its `##` sections and is the one *writable* projection —
-  `query --write` splices an edited `blocks.text` back into the authoritative body. ID allocation goes through the `ids::IdSource`
+  each body into its `##` sections, for querying into prose. All three
+  projections are read-only. ID allocation goes through the `ids::IdSource`
   seam, resolved by `Ctx::id_source` / `ids::resolve` from the config and never
   named by a command — `SequenceMax` (one SQL `MAX` across docs/relations/
   retired) by default, or under `[ids] modulus = M` an `Interleaved` slot
@@ -175,10 +175,11 @@ Layering, roughly outermost-in:
   (ADR-0103). Callers that build several documents before storing any
   (`import`, `renumber`) take one `block`, which steps by the source's stride. Internal SQL uses `$n` parameters and JOINs only — never
   `IN (subquery)`/FROM-subqueries/`UNION` (GlueSQL executes/​rejects those
-  badly). `commands/query.rs` exposes user SQL: read-only (plan-guarded to
-  SELECT) by default, or `--write` edit statements that are applied only if the
-  post-write corpus still passes `verify::collect_problems` (else nothing is
-  flushed — the store mutation stays in memory).
+  badly). `commands/query.rs` exposes user SQL, read-only: every statement is
+  plan-guarded to SELECT and the command never flushes (ADR-0100 — writes are
+  lifecycle commands, and a bulk edit pipes `list --format ids` into one).
+  The "no worse than before" verify gate has one owner, `commands/edit.rs`
+  (the web UI's edit-body/set-field/remove-field actions).
 - `src/project.rs` — `Project` ties the on-disk layout to `pcfg`. `Project::open`
   requires `<root>/opys.toml`. Owns the canonical-path helper (`doc_path`), the
   retired-ledger reader (`retired_ids`), and — for the still-file-based
@@ -192,7 +193,7 @@ Layering, roughly outermost-in:
   re-serializes canonically; `body` extracts the title, sections
   (`section`/`sections`/`section_spans`), and checkbox items (`checklist_items`),
   and `apply_section_edits` splices new content into a section byte-accurately
-  (the writable `blocks.text` path).
+  (the dated-log append path, FEAT-0105).
 - `src/refs.rs` — the uniform relation maps (`references`/`blocked_by`/`blocks`),
   ID→title: parse/serialize (sorted by item number), strikethrough tombstone
   helpers, `id_number`.

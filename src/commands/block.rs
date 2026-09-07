@@ -6,7 +6,7 @@
 //! blocked document's type has a `blocked` status, it is auto-set — the blocker
 //! link itself serves as the `blocked_reason`.
 
-use crate::commands::{expand_ids, for_each_id, maybe_sync, touch};
+use crate::commands::{apply_batch, maybe_sync, print_lines, resolve_ids, touch};
 use crate::error::{usage, OpysError, Result};
 use crate::frontmatter::Frontmatter;
 use crate::project::Project;
@@ -54,18 +54,18 @@ pub fn block_core(prj: &Project, store: &mut Store, id: &str, by: &str) -> Resul
 }
 
 /// Mark one or more documents as blocked by `by`, linking both directions.
-pub fn block(ctx: &Ctx, ids: &str, by: &str) -> Result<()> {
+pub fn block(ctx: &Ctx, ids: &[String], by: &str) -> Result<()> {
     let prj = ctx.open()?;
-    let ids = expand_ids(ids)?;
+    let ids = resolve_ids(ids)?;
     let (mut store, _) = ctx.load(&prj)?;
-    let res = for_each_id(&ids, |id| {
+    let lines = apply_batch(&ids, |id| {
         block_core(&prj, &mut store, id, by)?;
-        println!("{id} blocked by {by}");
-        Ok(())
-    });
+        Ok(format!("{id} blocked by {by}"))
+    })?;
     ctx.flush(&prj, store)?;
+    print_lines(lines)?;
     maybe_sync(ctx, &prj);
-    res
+    Ok(())
 }
 
 /// Remove the blocker link from both sides. When the blocked document's type has
@@ -124,18 +124,18 @@ pub fn unblock_core(prj: &Project, store: &mut Store, id: &str, by: &str) -> Res
 }
 
 /// Remove the blocker link from both sides for one or more documents.
-pub fn unblock(ctx: &Ctx, ids: &str, by: &str) -> Result<()> {
+pub fn unblock(ctx: &Ctx, ids: &[String], by: &str) -> Result<()> {
     let prj = ctx.open()?;
-    let ids = expand_ids(ids)?;
+    let ids = resolve_ids(ids)?;
     let (mut store, _) = ctx.load(&prj)?;
-    let res = for_each_id(&ids, |id| {
+    let lines = apply_batch(&ids, |id| {
         unblock_core(&prj, &mut store, id, by)?;
-        println!("{id} no longer blocked by {by}");
-        Ok(())
-    });
+        Ok(format!("{id} no longer blocked by {by}"))
+    })?;
     ctx.flush(&prj, store)?;
+    print_lines(lines)?;
     maybe_sync(ctx, &prj);
-    res
+    Ok(())
 }
 
 /// The status to restore on unblock: the remembered `blocked_from` when it is

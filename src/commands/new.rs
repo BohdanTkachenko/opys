@@ -1,4 +1,4 @@
-use crate::commands::{maybe_sync, split_csv, touch};
+use crate::commands::{maybe_sync, print_lines, split_csv, touch};
 use crate::doc::Doc;
 use crate::error::{usage, Result};
 use crate::frontmatter::Frontmatter;
@@ -130,7 +130,7 @@ pub fn run(
     let doc = core(
         &prj, &mut store, &mut *ids, type_name, title, tags, status, features, reason, fields,
     )?;
-    println!("{}", doc.path.display());
+    print_lines([doc.path.display().to_string()])?;
     ctx.flush(&prj, store)?;
     maybe_sync(ctx, &prj);
     Ok(())
