@@ -7,7 +7,6 @@ pub mod cleanup;
 pub mod close;
 pub mod config;
 pub mod edit;
-#[cfg(feature = "history")]
 pub mod history;
 pub mod import;
 pub mod init;

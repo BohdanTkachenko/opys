@@ -145,6 +145,11 @@ rules.
    review in batches per tag using `opys list`; archive the source
    document. Do not write spec prose during migration unless the source
    contains real behavioral detail.
+5. If upgrading an inventory that predates the `history` lifecycle map (verify
+   says `missing history`): `opys history --seed <id>` writes it from the
+   document's git timeline, one id per invocation, and refuses to overwrite an
+   existing map. See `docs/migration-history.md` for the procedure and the
+   fallback for documents git cannot answer for.
 
 ## Workflow: implementing a feature (for coding agents)
 

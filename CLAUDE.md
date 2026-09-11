@@ -60,7 +60,7 @@ ui-build                                    # opys-server/ui/dist is generated, 
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings   # warnings are errors
 cargo test --all
-cargo clippy --workspace --all-targets --all-features -- -D warnings   # + history feature
+cargo clippy --workspace --all-targets --all-features -- -D warnings   # + the `history` alias
 cargo test --all --all-features
 cargo package --list -p opys-server --allow-dirty       # the bundle is in the tarball
 cargo build --workspace --all-targets       # also built on MSRV 1.88 — don't use newer std APIs
@@ -207,8 +207,39 @@ Layering, roughly outermost-in:
 - `src/history.rs` — the `history` lifecycle map (UTC RFC3339 with six
   fractional digits → status): key formatting, `is_canonical_key` (the exact
   spelling `verify` demands), the same-instant `+1µs` bump, and the
-  `seed`/`append`/`record` writers. Distinct from `commands::history`, the
-  git-timeline command behind the `history` *feature*.
+  `seed`/`append`/`record` writers. Distinct from `src/git/`, which reconstructs
+  a timeline *from git*, and from `commands::history`, the command over it.
+- `src/git/` — the in-process git reader (ADR-0102, feature `git`, on by
+  default): `open` (a non-repository is `None`, never an error), `truth_branch`
+  (`[git] main`, falling back to `master`), `refs` (branch tips selected by the
+  `[git] branches` globs plus every linked worktree head from
+  `<git-dir>/worktrees/*/HEAD`, deduplicated by commit, labelled by branch else
+  by checkout directory), `docs_changed_vs_main` (a tree diff under the base,
+  keyed by the id-named **basename** so a relocation is not a delete plus an add,
+  decoding only the blobs that differ), `occupancy` (which refs hold a document
+  at a status main's on-disk copy does not — the caller supplies main's loaded
+  docs, because corpus I/O is the backend's job), and `timeline` (what `opys
+  history <id>` prints and `--seed` writes). `fixture` builds test repositories
+  through gix's write API, so the reader's own tests and the binary's `history`
+  tests never spawn `git` — pinned by
+  `git::tests::nothing_in_the_reader_spawns_a_process`. The repository is not
+  free of subprocesses: `opys/tests/cli.rs` keeps a `git` helper for
+  `renumber_keeps_a_relocated_base_document` (because `opys renumber` shells out
+  to `git merge-base` itself), and `opys-server`'s worktree tests and
+  `discover.rs` spawn it too — which is why `flake.nix` still lists `pkgs.git`
+  in `nativeCheckInputs`. `fixture` is `#[doc(hidden)]` and
+  gated `any(test, feature = "test-fixtures")`, so it compiles only into the
+  engine's own tests and into whoever asks for that non-default feature (only
+  `opys`'s *dev*-dependency does, for `opys/tests/cli.rs`) — never into the
+  published crate's API. The feature does not imply `git`, so that edge cannot
+  smuggle gix into a `--no-default-features` build. The data types and a
+  main-only fallback are compiled unconditionally, so a `--no-default-features`
+  build answers "empty, plus one notice" rather than not compiling. The
+  `history` **command** is the one thing that does not degrade: it is parsed in
+  every build, but a binary without the feature answers it with
+  `git::NO_GIT_FEATURE_COMMAND` (exit 2) instead of an empty timeline it never
+  looked for — and so does a project that is no git repository. Only the reader
+  promises "main-only and nothing fails".
 - `src/lifecycle.rs` — the status graph: `allowed_targets`/`allows`/`can_close`
   over a type's `[transitions]` map, plus the one wording of the "…may move to"
   phrase. The single reader of that map, so `set-status`, `close`, `verify` and

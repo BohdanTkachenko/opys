@@ -19,6 +19,7 @@ retired:
   TASK-0111: 'engine: per-type transitions and the set-status guard'
   TASK-0114: 'engine: remove `query --write` and the writable blocks projection'
   TASK-0115: 'engine: `opys log` and dated log sections'
+  TASK-0117: 'engine: the gix branch reader, default-on, and the comrak trim'
   TASK-0122: 'engine: interleaved id sequences'
 ---
 

@@ -257,10 +257,17 @@ pub enum Command {
     /// Reconstruct a document's lifecycle from git history: the status timeline
     /// across commits, following the file across relocations (e.g. into
     /// `_archived/`). Reads the repository in-process and decodes each revision
-    /// through the document parser — no subprocess, no string scraping.
-    /// Requires the optional `history` build feature.
-    #[cfg(feature = "history")]
-    History { id: String },
+    /// through the document parser — no subprocess, no string scraping. A
+    /// binary compiled without the `git` cargo feature still takes the command
+    /// and answers by naming the feature it lacks.
+    History {
+        id: String,
+        /// Write the document's `history` lifecycle map from that timeline, for
+        /// a one-time migration of an inventory that predates the map (see
+        /// docs/migration-history.md). Refuses to overwrite an existing map.
+        #[arg(long)]
+        seed: bool,
+    },
 
     /// Finish a document of a type with a terminal status — and, where the type
     /// declares `[transitions]`, an edge into one from the document's current

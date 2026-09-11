@@ -60,6 +60,12 @@ fn default_true() -> bool {
 fn default_layout_path() -> String {
     DEFAULT_LAYOUT_PATH.to_string()
 }
+fn default_git_main() -> String {
+    DEFAULT_TRUTH_BRANCH.to_string()
+}
+fn default_git_branches() -> Vec<String> {
+    vec![DEFAULT_BRANCH_PATTERN.to_string()]
+}
 
 /// Placeholder names in a layout template that aren't one of `type`/`status`/`id`.
 fn unknown_placeholders(template: &str) -> Vec<&str> {
@@ -97,6 +103,14 @@ pub const DEFAULT_BASE: &str = "opys";
 /// Directory (under the inventory base) for a type that declares no explicit
 /// `dir`. Empty by default → documents live flat at the base.
 pub const DEFAULT_DOC_DIR: &str = "";
+
+/// The branch a project calls truth when `[git] main` says nothing. When
+/// `refs/heads/main` does not resolve, the reader falls back to `master`.
+pub const DEFAULT_TRUTH_BRANCH: &str = "main";
+
+/// The default `[git] branches` pattern: local heads only, so remote-tracking
+/// refs are opt-in.
+pub const DEFAULT_BRANCH_PATTERN: &str = "refs/heads/*";
 
 /// Default file-path template (relative to the base). Both the `{type}` and
 /// `{status}` segments are empty by default, so this collapses to a flat
@@ -136,6 +150,46 @@ impl Default for Layout {
 pub struct Ids {
     #[serde(default)]
     pub modulus: Option<u64>,
+}
+
+/// Reading the inventory out of git (ADR-0102): which branch is *truth*, and
+/// which refs count as work in flight.
+///
+/// `main` names the truth branch — where `next` evaluates pickability and
+/// completion, and the baseline every other ref is diffed against. When
+/// `refs/heads/<main>` does not resolve, the reader falls back to `master`, so
+/// a repository that never renamed its default branch needs no config at all.
+///
+/// `branches` is a list of glob patterns matched against **fully qualified** ref
+/// names with git's own wildmatch, in which `*` crosses `/` (so `refs/heads/*`
+/// covers `refs/heads/feat/x`, the way a refspec does). It selects which refs
+/// the reader reads, and defaults to local heads only: a remote-tracking ref is
+/// opt-in because keeping it fetched is the user's job, and a stale
+/// `refs/remotes/*` would report work in flight that ended days ago. Linked
+/// worktree heads are read whatever the patterns say — they are not ref names,
+/// so no pattern could select them.
+///
+/// Like [`Ids`], this table rejects unknown keys at parse time (a hard
+/// `OpysError::Toml`, exit 2): a misspelled `main` would silently change what
+/// "truth" means, and `Project::open` never runs [`ProjectConfig::validate`],
+/// so a validate-time report could not stop the reader from using the wrong
+/// baseline.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Git {
+    #[serde(default = "default_git_main")]
+    pub main: String,
+    #[serde(default = "default_git_branches")]
+    pub branches: Vec<String>,
+}
+
+impl Default for Git {
+    fn default() -> Self {
+        Git {
+            main: default_git_main(),
+            branches: default_git_branches(),
+        }
+    }
 }
 
 /// A built-in section behavior a type's section opts into. The validator and
@@ -453,6 +507,10 @@ pub struct ProjectConfig {
     /// Interleaved id allocation; see [`Ids`].
     #[serde(default)]
     pub ids: Ids,
+    /// Which branch is truth and which refs the branch reader reads; see
+    /// [`Git`].
+    #[serde(default)]
+    pub git: Git,
     #[serde(default)]
     pub types: BTreeMap<String, DocType>,
     #[serde(default)]
@@ -605,6 +663,23 @@ impl ProjectConfig {
                     crate::ids::MAX_MODULUS
                 ));
             }
+        }
+
+        // A truth branch is the baseline every ref is diffed against; an empty
+        // name resolves to nothing, which would silently make every branch look
+        // like the whole inventory.
+        if self.git.main.trim().is_empty() {
+            errs.push("git.main must name a branch (e.g. \"main\")".into());
+        }
+        // An empty `branches` list is legal — it reads no branch refs at all,
+        // leaving worktree heads — but an empty *pattern* matches nothing and is
+        // always a mistake.
+        if self.git.branches.iter().any(|p| p.trim().is_empty()) {
+            errs.push(
+                "git.branches: empty pattern — name a ref glob (e.g. \"refs/heads/*\") \
+                 or drop the entry"
+                    .into(),
+            );
         }
 
         // The layout template must place each document at a unique path: it must
@@ -1110,6 +1185,47 @@ default_status = "open"
         )
         .unwrap();
         assert!(cfg.validate().is_empty(), "{:?}", cfg.validate());
+    }
+
+    #[test]
+    fn git_defaults_to_main_and_local_heads_and_rejects_a_typo() {
+        // No `[git]` table at all: the reader still knows what truth is and
+        // which refs count, and remote-tracking refs stay opt-in.
+        let cfg: ProjectConfig = toml::from_str(
+            "[types.feature]\nprefix = \"FEAT\"\nstatuses = [\"planned\"]\n\
+             default_status = \"planned\"\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.git.main, "main");
+        assert_eq!(cfg.git.branches, ["refs/heads/*"]);
+
+        // A misspelled key is a parse error, not a silently ignored table: it
+        // would otherwise change what "truth" means with nothing to report it
+        // (`Project::open` never runs `validate`).
+        let err = toml::from_str::<ProjectConfig>(
+            "[types.feature]\nprefix = \"FEAT\"\nstatuses = [\"planned\"]\n\
+             default_status = \"planned\"\n[git]\nmian = \"trunk\"\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown field `mian`"), "{err}");
+        // The message names the two keys the table accepts, which is what
+        // format.md's `[git]` section promises.
+        assert!(err.contains("`main`"), "{err}");
+        assert!(err.contains("`branches`"), "{err}");
+    }
+
+    #[test]
+    fn flags_git_table_problems() {
+        let cfg: ProjectConfig = toml::from_str(
+            "[types.feature]\nprefix = \"FEAT\"\nstatuses = [\"planned\"]\n\
+             default_status = \"planned\"\n[git]\nmain = \"\"\n\
+             branches = [\"refs/heads/*\", \"\"]\n",
+        )
+        .unwrap();
+        let joined = cfg.validate().join("\n");
+        assert!(joined.contains("git.main must name a branch"), "{joined}");
+        assert!(joined.contains("git.branches: empty pattern"), "{joined}");
     }
 
     #[test]
