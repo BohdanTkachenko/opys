@@ -43,6 +43,10 @@ doing = ["todo", "done"]
 [types.task.fields.priority]
 type = "int"
 
+[[types.task.sections]]
+heading = "Progress"
+kind = "log"
+
 # The shape the shipped `feature` type has, and this repo's own `feature` and
 # `adr`: a status graph and *no* terminal status. `closable` is false for every
 # document of it, and not because of the graph — the payload has to say which of
@@ -452,6 +456,12 @@ async fn doc_carries_the_statuses_a_write_would_accept() {
         "{task:#}"
     );
     assert_eq!(task["closable"], true);
+
+    // Which sections `opys log` writes to travels the same way (FEAT-0105), so
+    // the entry box never has to read `opys.toml` either — and a type with no
+    // log section says so by carrying none.
+    assert_eq!(task["log_sections"], json!(["Progress"]), "{task:#}");
+    assert_eq!(note["log_sections"], json!([]), "{note:#}");
 }
 
 /// `closable` is false for two different reasons, and the payload has to say

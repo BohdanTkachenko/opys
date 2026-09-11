@@ -149,6 +149,27 @@ pub enum Command {
         remove: Option<String>,
     },
 
+    /// Append a dated entry to the document's `log` section.
+    ///
+    /// The entry is stamped with the current UTC time to the second, so a log
+    /// reads as a timeline and `verify` can check that it does not go
+    /// backwards. `TEXT` of `-` reads the entry from stdin (for a multi-line
+    /// note, whose continuation lines are indented under the bullet).
+    ///
+    /// This is the one mutating command that takes a single id: the second
+    /// positional is the text, and `-` there already means stdin, so an id list
+    /// would be ambiguous.
+    Log {
+        /// The document to log to.
+        id: String,
+        /// The entry text, or `-` to read it from stdin.
+        text: String,
+        /// Which log section to append to. Required only for a type that
+        /// declares more than one.
+        #[arg(long)]
+        section: Option<String>,
+    },
+
     /// Delete one or more documents; each ID is logged and never reused.
     /// Inbound references are struck into `~~title~~` tombstones, like `close`.
     Retire {

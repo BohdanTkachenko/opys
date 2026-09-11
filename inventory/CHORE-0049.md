@@ -20,4 +20,4 @@ Decision: the structured-section feature stays (validate + scaffold are on-story
 - [ ] revisit extracting mdprism as its own crate only if the feature earns adoption
 
 ## Progress
-- Decided during the pre-announcement review discussion.
+- 2026-07-06T16:11:20Z Decided during the pre-announcement review discussion.

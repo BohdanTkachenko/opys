@@ -18,6 +18,7 @@ retired:
   TASK-0110: 'engine: the history map and UTC sub-second timestamps'
   TASK-0111: 'engine: per-type transitions and the set-status guard'
   TASK-0114: 'engine: remove `query --write` and the writable blocks projection'
+  TASK-0115: 'engine: `opys log` and dated log sections'
   TASK-0122: 'engine: interleaved id sequences'
 ---
 

@@ -18,4 +18,4 @@ references:
 - [ ] route future version bumps through release-plz so changelog_update fires
 
 ## Progress
-- Filed from the pre-announcement review: the 0.12.0 bump was made manually outside release-plz's release-pr flow, so the pending release would tag v0.12.0 with no notes.
+- 2026-07-06T05:14:48Z Filed from the pre-announcement review: the 0.12.0 bump was made manually outside release-plz's release-pr flow, so the pending release would tag v0.12.0 with no notes.

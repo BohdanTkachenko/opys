@@ -158,6 +158,12 @@ impl SectionKind {
     pub fn is_checkable(self) -> bool {
         matches!(self, SectionKind::Checklist)
     }
+
+    /// Whether this section holds dated log entries — written by `opys log`,
+    /// parsed by [`crate::body::log_entries`], checked by `verify`.
+    pub fn is_log(self) -> bool {
+        matches!(self, SectionKind::Log)
+    }
 }
 
 /// Which lines of a section a [`SectionCheck`] validates.
@@ -335,6 +341,14 @@ pub struct Rule {
     pub require_any: Option<Vec<AnyTerm>>,
     #[serde(default)]
     pub field_matches: Option<FieldMatch>,
+    /// The heading of a `log` section that must carry an entry stamped at or
+    /// after the last `history` entry whose status *differs* from the status
+    /// this rule guards (the first key when every entry holds it). Shipped on
+    /// the move into `review`, so a handoff without a checkpoint is refused.
+    /// See [`crate::rules`] for why that definition — rather than "the last
+    /// history key" — makes the write-time and verify-time verdicts agree.
+    #[serde(default)]
+    pub require_log_since_status: Option<String>,
 }
 
 impl Rule {
@@ -347,6 +361,7 @@ impl Rule {
             self.require_link.is_some(),
             self.require_any.is_some(),
             self.field_matches.is_some(),
+            self.require_log_since_status.is_some(),
         ]
         .iter()
         .filter(|b| **b)
@@ -857,6 +872,17 @@ impl ProjectConfig {
                         )),
                         Some(s) if !s.kind.is_checkable() => errs.push(format!(
                             "{tag}: require_checked_section '{sec}' targets a non-checklist section"
+                        )),
+                        _ => {}
+                    }
+                }
+                if let Some(sec) = &r.require_log_since_status {
+                    match dt.sections.iter().find(|s| &s.heading == sec) {
+                        None => errs.push(format!(
+                            "{tag}: require_log_since_status '{sec}' is not a section of type '{t}'"
+                        )),
+                        Some(s) if !s.kind.is_log() => errs.push(format!(
+                            "{tag}: require_log_since_status '{sec}' targets a non-log section"
                         )),
                         _ => {}
                     }

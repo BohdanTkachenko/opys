@@ -131,7 +131,7 @@ required = true
 # Ephemeral implementation work. Deleted on `close`.
 [types.task]
 prefix = "TASK"
-statuses = ["todo", "in-progress", "blocked", "done"]
+statuses = ["todo", "in-progress", "blocked", "review", "done"]
 default_status = "todo"
 terminal_statuses = ["done"]         # "done" reached only via `close`
 tags_required = false
@@ -157,7 +157,7 @@ required = true
 # Like task, plus a required Reproduction section.
 [types.bug]
 prefix = "BUG"
-statuses = ["todo", "in-progress", "blocked", "done"]
+statuses = ["todo", "in-progress", "blocked", "review", "done"]
 default_status = "todo"
 terminal_statuses = ["done"]
 tags_required = false
@@ -188,7 +188,7 @@ required = true
 # Maintenance/tooling work with no user-facing behavior change.
 [types.chore]
 prefix = "CHORE"
-statuses = ["todo", "in-progress", "blocked", "done"]
+statuses = ["todo", "in-progress", "blocked", "review", "done"]
 default_status = "todo"
 terminal_statuses = ["done"]
 tags_required = false
@@ -213,7 +213,7 @@ required = true
 # ------------------------------ validation rules -----------------------------
 # Each rule: an optional `when { type?, status? }` + one assertion. Closed set:
 # require_field, field_matches, require_section, require_checked_section,
-# require_link, require_any.
+# require_link, require_any, require_log_since_status.
 
 [[rules]]
 when = { type = "feature", status = "wontfix" }
@@ -230,6 +230,22 @@ require_checked_section = "Test plan"
 [[rules]]
 when = { status = "blocked" }
 require_any = [{ field = "blocked_reason" }, { link = "blocked_by" }]
+
+# A handoff needs a checkpoint: moving a work item into `review` requires a
+# `## Progress` entry stamped at or after the moment its status last changed, so
+# whoever picks it up reads what happened rather than guessing. Append one with
+# `opys log <id> "…"`.
+[[rules]]
+when = { type = "task", status = "review" }
+require_log_since_status = "Progress"
+
+[[rules]]
+when = { type = "bug", status = "review" }
+require_log_since_status = "Progress"
+
+[[rules]]
+when = { type = "chore", status = "review" }
+require_log_since_status = "Progress"
 
 # ---------------------------------- stats ------------------------------------
 # `opys stats` renders these sections (and the TUI stats screen shows the same

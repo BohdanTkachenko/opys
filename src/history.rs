@@ -61,11 +61,28 @@ pub const FIELD: &str = "history";
 const UTC_MICROS: &[FormatItem<'static>] =
     format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:6]Z");
 
+/// The log-entry stamp format: RFC3339, UTC, whole seconds, `Z`. A `log`
+/// section is read by people as much as by `verify`, and a microsecond nobody
+/// typed is noise in a `## Progress` bullet. The fixed-width lexical ordering a
+/// history key needs is not at stake: log entries are appended in order and
+/// compared as instants, never sorted as strings.
+const UTC_SECONDS: &[FormatItem<'static>] =
+    format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
+
 /// Render an instant as a history key (converted to UTC).
 pub fn format_key(dt: OffsetDateTime) -> String {
     dt.to_offset(time::UtcOffset::UTC)
         .format(UTC_MICROS)
         .expect("UTC micros formatting")
+}
+
+/// Render an instant as a [log-entry](crate::body::log_entries) stamp: UTC,
+/// whole seconds, `Z`. Spelled out rather than left to `Rfc3339`, whose
+/// formatter emits whatever subsecond digits the value happens to carry.
+pub fn format_seconds(dt: OffsetDateTime) -> String {
+    dt.to_offset(time::UtcOffset::UTC)
+        .format(UTC_SECONDS)
+        .expect("UTC seconds formatting")
 }
 
 /// Parse any RFC3339 datetime (a history key included).

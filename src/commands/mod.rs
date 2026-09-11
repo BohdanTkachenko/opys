@@ -12,6 +12,7 @@ pub mod history;
 pub mod import;
 pub mod init;
 pub mod list;
+pub mod log;
 pub mod new;
 pub mod query;
 pub mod renumber;
@@ -72,6 +73,21 @@ pub fn now_utc_micros() -> String {
     }
     let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
     crate::history::format_key(now)
+}
+
+/// The current instant as a [log-entry](crate::body::log_entries) stamp:
+/// RFC3339 **UTC**, whole seconds, `Z` (`2026-09-05T14:03:22Z`). Honors
+/// `OPYS_NOW` the way [`now_utc_micros`] does — normalized, not returned
+/// verbatim, so an override carrying an offset or a fraction still yields a
+/// canonical stamp — and falls back to the wall clock when it cannot be parsed.
+pub fn now_utc_seconds() -> String {
+    if let Ok(s) = std::env::var("OPYS_NOW") {
+        if let Some(dt) = crate::history::parse(&s) {
+            return crate::history::format_seconds(dt);
+        }
+    }
+    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+    crate::history::format_seconds(now)
 }
 
 /// Stamp the auto-maintained timestamp fields on a user-initiated write: always
@@ -168,7 +184,8 @@ fn split_ids(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// Read stdin to a string, for the `-` id argument.
+/// Read stdin to a string, for the `-` id argument (and for `log`'s `-`, which
+/// is a body of text rather than a list).
 fn read_stdin() -> Result<String> {
     use std::io::Read;
     let mut buf = String::new();
@@ -363,6 +380,26 @@ mod tests {
     fn now_rfc3339_is_parseable() {
         let s = now_rfc3339();
         assert!(OffsetDateTime::parse(&s, &Rfc3339).is_ok(), "got {s:?}");
+    }
+
+    #[test]
+    fn now_utc_seconds_is_utc_whole_seconds() {
+        let s = now_utc_seconds();
+        assert!(s.ends_with('Z'), "got {s:?}");
+        assert!(!s.contains('.'), "got {s:?}");
+        assert_eq!(s.len(), 20, "got {s:?}");
+        assert!(crate::history::parse(&s).is_some(), "got {s:?}");
+    }
+
+    #[test]
+    fn now_utc_seconds_normalizes_an_offset_and_drops_the_fraction() {
+        // The pure half of the override, without touching the process's
+        // environment (which other tests share).
+        let dt = crate::history::parse("2026-06-16T10:30:00.812345-04:00").unwrap();
+        assert_eq!(
+            crate::history::format_seconds(dt),
+            "2026-06-16T14:30:00Z".to_string()
+        );
     }
 
     #[test]

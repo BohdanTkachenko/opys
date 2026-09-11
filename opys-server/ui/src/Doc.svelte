@@ -220,6 +220,44 @@
     if (outcome) blocker = '';
   }
 
+  // The log entry box, under the body. The node stamps the entry and splices
+  // it into the section, so this sends only the text — the same call `opys log`
+  // makes. A type with one log section needs no chooser; the `section` field
+  // only rides along when there is a choice to make.
+  let logEntry = $state('');
+  let logSection = $state('');
+
+  // Seed the chooser from the document, the way the status row seeds itself: a
+  // plain variable holds what it was seeded from, so navigating to another
+  // document re-seeds and a mere refresh leaves a half-typed entry alone.
+  let logSeeded = null;
+  $effect(() => {
+    const current = d?.id;
+    if (current === logSeeded) return;
+    logSeeded = current;
+    logSection = (d?.log_sections ?? [])[0] ?? '';
+  });
+
+  async function addLogEntry() {
+    const text = logEntry.trim();
+    if (text.length === 0) return;
+    const sections = d?.log_sections ?? [];
+    const section = sections.length > 1 ? logSection || sections[0] : undefined;
+    const outcome = await perform(
+      { action: 'log', id: d.id, text, section },
+      'adding a log entry',
+    );
+    if (outcome) logEntry = '';
+  }
+
+  /** ⌘/Ctrl+Enter sends the entry; the textarea keeps Enter for newlines. */
+  function logKeys(event) {
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      addLogEntry();
+    }
+  }
+
   /** Enter submits, Escape clears — for the inline boxes. */
   function inlineKeys(submit, clear) {
     return (event) => {
@@ -950,6 +988,52 @@
     <article class="body page" use:markdownLinks onclick={editFromClick}>
       {@html d.body_html}
     </article>
+
+    <!-- The log box sits after the body rather than inside the section it
+         writes to: the body arrives as one rendered blob, so there is no anchor
+         within it to hang a control on. It says which section it appends to,
+         which is the next best thing. -->
+    {#if (d.log_sections ?? []).length > 0}
+      <div class="page logbox">
+        <label class="small muted" for="logentry">
+          Append to
+          {#if d.log_sections.length > 1}
+            <select
+              class="inline"
+              bind:value={logSection}
+              disabled={Boolean(pending)}
+              aria-label="which log section to append to"
+            >
+              {#each d.log_sections as heading (heading)}
+                <option value={heading}>## {heading}</option>
+              {/each}
+            </select>
+          {:else}
+            <code>## {d.log_sections[0]}</code>
+          {/if}
+          — the node stamps it with the time.
+        </label>
+        <textarea
+          id="logentry"
+          class="logentry"
+          bind:value={logEntry}
+          onkeydown={logKeys}
+          rows="2"
+          placeholder="what just happened"
+          disabled={Boolean(pending)}
+        ></textarea>
+        <div class="logbar">
+          <button
+            class="btn small primary"
+            disabled={Boolean(pending) || logEntry.trim().length === 0}
+            onclick={addLogEntry}
+          >
+            Log
+          </button>
+          <span class="small muted"><kbd>⌘↵</kbd> adds the entry</span>
+        </div>
+      </div>
+    {/if}
   {/if}
 {/if}
 </div>
@@ -969,6 +1053,32 @@
        `.page`'s centering — the bar sat at the viewport's left edge while the
        text it belongs to was centered. */
     margin-block: 0.25rem 0.5rem;
+  }
+
+  /* Set apart from the body it appends to, but on the same reading measure:
+     it writes into the text above it, so it must not read as a new region. */
+  .logbox {
+    display: grid;
+    gap: 0.4rem;
+    margin-top: 1.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .logentry {
+    display: block;
+    width: 100%;
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    line-height: 1.5;
+    resize: vertical;
+    padding: 0.5rem 0.6rem;
+  }
+
+  .logbar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
   }
 
   .srcedit {

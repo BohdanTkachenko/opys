@@ -109,7 +109,7 @@ const WORK_ITEM_TYPES: &str = r#"
 [types.task]
 prefix = "TASK"
 dir = "work-items"
-statuses = ["todo", "in-progress", "blocked", "done"]
+statuses = ["todo", "in-progress", "blocked", "review", "done"]
 default_status = "todo"
 terminal_statuses = ["done"]
 requires_link = { to = "feature", min = 1 }
@@ -127,7 +127,7 @@ required = true
 [types.bug]
 prefix = "BUG"
 dir = "work-items"
-statuses = ["todo", "in-progress", "blocked", "done"]
+statuses = ["todo", "in-progress", "blocked", "review", "done"]
 default_status = "todo"
 terminal_statuses = ["done"]
 requires_link = { to = "feature", min = 1 }
@@ -149,7 +149,7 @@ required = true
 [types.chore]
 prefix = "CHORE"
 dir = "work-items"
-statuses = ["todo", "in-progress", "blocked", "done"]
+statuses = ["todo", "in-progress", "blocked", "review", "done"]
 default_status = "todo"
 terminal_statuses = ["done"]
 requires_link = { to = "feature", min = 1 }
@@ -167,6 +167,18 @@ required = true
 [[rules]]
 when = { status = "blocked" }
 require_any = [{ field = "blocked_reason" }, { link = "blocked_by" }]
+
+[[rules]]
+when = { type = "task", status = "review" }
+require_log_since_status = "Progress"
+
+[[rules]]
+when = { type = "bug", status = "review" }
+require_log_since_status = "Progress"
+
+[[rules]]
+when = { type = "chore", status = "review" }
+require_log_since_status = "Progress"
 "#;
 
 /// The instant every [`opys`] invocation is pinned to. Every `new` now writes a
@@ -5249,6 +5261,358 @@ fn renumber_under_a_modulus_stays_in_the_slot() {
         .assert()
         .success()
         .stdout(predicate::str::contains("TASK-0001 → TASK-0003"));
+}
+
+// ---------------------------------------------------------------------------
+// `opys log` — FEAT-0105
+// ---------------------------------------------------------------------------
+
+/// A project with a feature (FEAT-0001) and a task (TASK-0002) linked to it.
+fn work_item_project() -> TempDir {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "Alpha", "--tags", "core"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args([
+            "new",
+            "--type",
+            "task",
+            "--title",
+            "Wire it",
+            "--features",
+            "FEAT-0001",
+        ])
+        .assert()
+        .success();
+    dir
+}
+
+fn read(dir: &TempDir, rel: &str) -> String {
+    std::fs::read_to_string(dir.child(rel).path()).unwrap()
+}
+
+/// The entry lands in the declared log section and **nothing else in the file
+/// moves** — asserted byte-for-byte, including the blank line separating the
+/// log section from the one after it.
+#[test]
+fn log_appends_a_dated_bullet_and_changes_nothing_else() {
+    let dir = work_item_project();
+    let path = "opys/work-items/TASK-0002.md";
+    // A section after the log one, so the separator between them is at stake.
+    let seeded = format!("{}\n## Notes\nkeep me\n", read(&dir, path));
+    std::fs::write(dir.child(path).path(), &seeded).unwrap();
+
+    opys(&dir)
+        .args(["log", "TASK-0002", "first thing"])
+        .assert()
+        .success()
+        .stdout("TASK-0002 logged to '## Progress'\n");
+    let once = seeded.replace(
+        "## Progress\n",
+        &format!("## Progress\n- {PINNED_NOW} first thing\n"),
+    );
+    assert_eq!(read(&dir, path), once);
+
+    // A second entry goes under the first, still without touching the rest.
+    opys(&dir)
+        .env("OPYS_NOW", "2026-03-04T05:06:07Z")
+        .args(["log", "TASK-0002", "second thing"])
+        .assert()
+        .success();
+    assert_eq!(
+        read(&dir, path),
+        once.replace(
+            "first thing\n",
+            "first thing\n- 2026-03-04T05:06:07Z second thing\n",
+        )
+        .replace(
+            &format!("updated: \"{PINNED_NOW}\""),
+            "updated: \"2026-03-04T05:06:07Z\"",
+        )
+    );
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// A type with no `log` section has nowhere to put the entry: exit 2, naming
+/// the type rather than inventing a section.
+#[test]
+fn log_on_a_type_without_a_log_section_exits_2() {
+    let dir = work_item_project();
+    opys(&dir)
+        .args(["log", "FEAT-0001", "nope"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "type 'feature' declares no log section",
+        ));
+    // And an id whose prefix is nobody's.
+    opys(&dir)
+        .args(["log", "NOPE-0001", "nope"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("unrecognized id prefix"));
+}
+
+/// Two log sections: `--section` picks one, and leaving it out is an error that
+/// names both.
+#[test]
+fn log_needs_a_section_when_the_type_declares_two() {
+    let cfg = format!(
+        "{}\n[types.note]\nprefix = \"NOTE\"\nstatuses = [\"open\"]\ndefault_status = \"open\"\n\
+[[types.note.sections]]\nheading = \"Progress\"\nkind = \"log\"\nrequired = true\n\
+[[types.note.sections]]\nheading = \"Decisions\"\nkind = \"log\"\nrequired = true\n",
+        default_cfg()
+    );
+    let dir = project_with(&cfg);
+    opys(&dir)
+        .args(["new", "--type", "note", "--title", "Scratch"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["log", "NOTE-0001", "which one?"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "type 'note' has 2 log sections (Progress, Decisions) — pass --section",
+        ));
+    opys(&dir)
+        .args([
+            "log",
+            "NOTE-0001",
+            "chose the simple thing",
+            "--section",
+            "Decisions",
+        ])
+        .assert()
+        .success()
+        .stdout("NOTE-0001 logged to '## Decisions'\n");
+    let text = read(&dir, "opys/NOTE-0001.md");
+    assert!(
+        text.contains(&format!(
+            "## Decisions\n- {PINNED_NOW} chose the simple thing\n"
+        )),
+        "{text}"
+    );
+    // The other log section is untouched.
+    assert!(text.contains("## Progress\n\n"), "{text}");
+    // A `--section` that names a section of another kind is still refused.
+    opys(&dir)
+        .args(["log", "NOTE-0001", "x", "--section", "Nowhere"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("is not a log section"));
+}
+
+/// `-` means stdin only when it is the whole argument: an entry that merely
+/// contains a dash is text. Nothing should be read from stdin here, so the
+/// test gives the child no stdin to read.
+#[test]
+fn log_treats_a_dash_inside_text_as_text() {
+    let dir = work_item_project();
+    opys(&dir)
+        .args(["log", "TASK-0002", " - still a note"])
+        .assert()
+        .success();
+    dir.child("opys/work-items/TASK-0002.md")
+        .assert(predicate::str::contains(format!(
+            "- {PINNED_NOW} - still a note"
+        )));
+}
+
+/// `-` reads the entry from stdin; continuation lines are indented two spaces
+/// under the bullet so the whole note is one entry.
+#[test]
+fn log_indents_a_multi_line_entry_from_stdin() {
+    let dir = work_item_project();
+    opys(&dir)
+        .args(["log", "TASK-0002", "-"])
+        .write_stdin("chose the flock\nbecause a lease file can go stale\n\nrejected: a lock dir\n")
+        .assert()
+        .success();
+    let text = read(&dir, "opys/work-items/TASK-0002.md");
+    assert!(
+        text.contains(&format!(
+            "## Progress\n- {PINNED_NOW} chose the flock\n  because a lease file can go stale\n\n  rejected: a lock dir\n"
+        )),
+        "{text}"
+    );
+    // One entry, not four.
+    opys(&dir)
+        .args([
+            "query",
+            "SELECT items FROM sections WHERE doc_id = 'TASK-0002' AND kind = 'log'",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1"));
+    opys(&dir).arg("verify").assert().success();
+
+    // Empty text is refused rather than writing a bare stamp.
+    opys(&dir)
+        .args(["log", "TASK-0002", "-"])
+        .write_stdin("   \n\n")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("needs some text"));
+}
+
+/// The write is an ordinary mutating command: `updated` moves and the sync pass
+/// runs over the entry, so a bare id in it becomes a link.
+#[test]
+fn log_bumps_updated_and_linkifies_a_bare_id() {
+    let dir = work_item_project();
+    opys(&dir)
+        .env("OPYS_NOW", "2026-05-06T07:08:09Z")
+        .args(["log", "TASK-0002", "blocked on FEAT-0001 landing"])
+        .assert()
+        .success();
+    let text = read(&dir, "opys/work-items/TASK-0002.md");
+    assert!(text.contains("updated: \"2026-05-06T07:08:09Z\""), "{text}");
+    assert!(
+        text.contains("[FEAT-0001 — Alpha](../features/FEAT-0001.md) landing"),
+        "{text}"
+    );
+
+    // `--no-sync` is honoured: the mention stays bare.
+    opys(&dir)
+        .env("OPYS_NOW", "2026-05-06T07:08:10Z")
+        .args(["--no-sync", "log", "TASK-0002", "still on FEAT-0001"])
+        .assert()
+        .success();
+    let text = read(&dir, "opys/work-items/TASK-0002.md");
+    assert!(text.contains("still on FEAT-0001\n"), "{text}");
+}
+
+/// A section the type declares but the document lacks is created at the end of
+/// the body rather than losing the entry.
+#[test]
+fn log_creates_the_declared_section_when_the_document_lacks_it() {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "Alpha", "--tags", "core"])
+        .assert()
+        .success();
+    dir.child("opys/work-items/TASK-0002.md")
+        .write_str(&format!(
+            "---\nid: TASK-0002\nstatus: todo\ncreated: \"{PINNED_NOW}\"\nupdated: \"{PINNED_NOW}\"\n{}references:\n  FEAT-0001: Alpha\n---\n\n# Hand written\n\n## Tasks\n- [ ] do it\n",
+            hist("todo")
+        ))
+        .unwrap();
+    opys(&dir)
+        .args(["log", "TASK-0002", "starting"])
+        .assert()
+        .success()
+        .stdout("TASK-0002 logged to '## Progress' (section created)\n");
+    let text = read(&dir, "opys/work-items/TASK-0002.md");
+    assert!(
+        text.ends_with(&format!(
+            "## Tasks\n- [ ] do it\n\n## Progress\n- {PINNED_NOW} starting\n"
+        )),
+        "{text}"
+    );
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// verify's two log checks: an undated bullet and a stamp that goes backwards.
+/// Two entries sharing a stamp are legal — the check is non-decreasing, not
+/// strictly increasing.
+#[test]
+fn verify_flags_an_undated_and_a_backwards_log_entry() {
+    let dir = project();
+    enable_work_items(&dir);
+    opys(&dir)
+        .args(["new", "--title", "Alpha", "--tags", "core"])
+        .assert()
+        .success();
+    let write = |progress: &str| {
+        dir.child("opys/work-items/TASK-0002.md")
+            .write_str(&format!(
+                "---\nid: TASK-0002\nstatus: todo\ncreated: \"{PINNED_NOW}\"\nupdated: \"{PINNED_NOW}\"\n{}references:\n  FEAT-0001: Alpha\n---\n\n# Hand written\n\n## Tasks\n- [ ] do it\n\n## Progress\n{progress}",
+                hist("todo")
+            ))
+            .unwrap();
+    };
+
+    write("- 2026-08-24: legacy dated form\n");
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "TASK-0002: section 'Progress': undated log entry '2026-08-24: legacy dated form'",
+        ));
+
+    write("- 2026-01-02T03:04:05Z later\n- 2026-01-01T00:00:00Z earlier\n");
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+        "log entries must not go backwards ('2026-01-01T00:00:00Z' follows '2026-01-02T03:04:05Z')",
+    ));
+
+    // Equal stamps are fine: two `opys log` calls in one second, or a migration
+    // dating a document's bullets from its `created`.
+    write("- 2026-01-02T03:04:05Z one\n- 2026-01-02T03:04:05Z two\n");
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// The shipped `require_log_since_status` rule: `review` needs a checkpoint,
+/// and a `review → in-progress → review` bounce needs a fresh one each time.
+#[test]
+fn review_refuses_without_a_fresh_log_entry_and_accepts_with_one() {
+    let dir = work_item_project();
+    // Nothing logged yet.
+    opys(&dir)
+        .env("OPYS_NOW", "2026-02-01T00:00:00Z")
+        .args(["set-status", "TASK-0002", "review"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "'## Progress' has no log entry since the status last changed",
+        ));
+
+    opys(&dir)
+        .env("OPYS_NOW", "2026-02-01T01:00:00Z")
+        .args(["log", "TASK-0002", "ready for a look"])
+        .assert()
+        .success();
+    opys(&dir)
+        .env("OPYS_NOW", "2026-02-01T02:00:00Z")
+        .args(["set-status", "TASK-0002", "review"])
+        .assert()
+        .success();
+    // The verdict is the same after the transition's own history entry lands.
+    opys(&dir).arg("verify").assert().success();
+
+    // Bounce back out and in: the entry that satisfied the first visit is stale
+    // for the second.
+    opys(&dir)
+        .env("OPYS_NOW", "2026-02-02T00:00:00Z")
+        .args(["set-status", "TASK-0002", "in-progress"])
+        .assert()
+        .success();
+    opys(&dir)
+        .env("OPYS_NOW", "2026-02-02T01:00:00Z")
+        .args(["set-status", "TASK-0002", "review"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("no log entry since"));
+    opys(&dir)
+        .env("OPYS_NOW", "2026-02-02T02:00:00Z")
+        .args(["log", "TASK-0002", "second look, addressed the comments"])
+        .assert()
+        .success();
+    opys(&dir)
+        .env("OPYS_NOW", "2026-02-02T03:00:00Z")
+        .args(["set-status", "TASK-0002", "review"])
+        .assert()
+        .success();
+    opys(&dir).arg("verify").assert().success();
 }
 
 // ---------------------------------------------------------------------------

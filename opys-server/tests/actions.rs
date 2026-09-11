@@ -537,6 +537,37 @@ async fn set_status_writes_what_the_cli_writes() {
     fx.assert_mirrors_reference();
 }
 
+/// The `log` action is `opys log`: the same stamp, the same splice, the same
+/// section scaffolded when the document lacks it.
+#[tokio::test(flavor = "multi_thread")]
+async fn log_writes_what_the_cli_writes() {
+    // The shared CONFIG declares no log section, so `task` gains one here.
+    // `required` stays false: making it required would put every fixture
+    // document into verify failure and change what the other tests measure.
+    let fx = Fixture::with_config(&format!(
+        "{CONFIG}\n[[types.task.sections]]\nheading = \"Progress\"\nkind = \"log\"\n"
+    ));
+    let answer = fx
+        .action(json!({"action": "log", "id": "TASK-0002", "text": "picked it up"}))
+        .await;
+    assert_eq!(answer["id"], "TASK-0002");
+    assert_eq!(
+        answer["message"],
+        "TASK-0002 logged to '## Progress' (section created)"
+    );
+
+    cli(&fx.reference, &["log", "TASK-0002", "picked it up"])
+        .expect("the CLI accepts the same entry");
+    fx.assert_mirrors_reference();
+
+    // And the entry really is stamped, not just appended.
+    let text = std::fs::read_to_string(fx.live.join("inventory/TASK-0002.md")).unwrap();
+    assert!(
+        text.contains("## Progress\n- 2026-02-03T04:05:06Z picked it up\n"),
+        "{text}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn tag_writes_what_the_cli_writes_and_runs_the_sync_pass() {
     let fx = Fixture::new();

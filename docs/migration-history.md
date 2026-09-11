@@ -1,3 +1,9 @@
+> Two one-time upgrade procedures for an inventory that predates a reserved,
+> auto-maintained field. Part 1 seeds the `history` lifecycle map; part 2 dates
+> the bullets of every `kind = "log"` section. Both are procedures an agent
+> runs by hand — neither is derivable from the corpus, so `opys sync` cannot do
+> either.
+
 # Seeding `history` on an existing inventory
 
 `history` is a reserved, auto-maintained frontmatter key: a map of RFC3339 UTC
@@ -140,3 +146,81 @@ document that still has no history seeds that document's first entry from
 second — so a document touched mid-migration comes out correctly seeded rather
 than stamped with the wall clock. Every document still waiting keeps reporting
 `missing history`, and never anything worse.
+
+# Dating an existing inventory's log sections
+
+A section declared `kind = "log"` holds a **dated timeline**: every top-level
+bullet starts with an RFC3339 UTC timestamp at whole seconds (see the format
+spec, *Log sections*). `opys log` stamps every entry it writes; nothing
+rewrites an entry written before the command existed. So an inventory created
+earlier reports one problem per old bullet, and keeps reporting it until this
+procedure has been run:
+
+```
+TASK-0046: section 'Progress': undated log entry 'Decided during the pre-announce…' (every entry starts with a UTC timestamp — …)
+```
+
+Undated bullets are **reported, not rejected**: nothing refuses to write, and
+the documents stay usable. But `opys verify` exits 1, so an inventory wired into
+CI goes red on the upgrade — run this before or with it.
+
+## 1. Find the documents
+
+```sh
+opys verify 2>&1 | grep 'undated log entry'
+```
+
+Only sections a type *declares* as `kind = "log"` are checked, so a stray
+`## Progress` heading on a type that declares no log section is out of scope —
+leave it alone. `opys query "SELECT doc_id, heading FROM sections WHERE kind =
+'log'"` lists exactly the sections in scope.
+
+Take a baseline first: `opys verify` (expect only `undated log entry` lines) and
+`opys sync` twice, checking your VCS diff is empty afterwards, so unrelated
+reconcile/linkify churn is not mistaken for the migration.
+
+## 2. Rewrite the bullets
+
+Per bullet, inside a declared `log` section only:
+
+| the old bullet | becomes |
+| --- | --- |
+| `- YYYY-MM-DD: text` (the common hand-written form) | `- YYYY-MM-DDT00:00:00Z text` |
+| `- text` (undated) | the document's `created` as UTC seconds — or the stamp of the bullet above it, whichever is **later** — then the text: `- 2026-07-06T05:14:48Z text` |
+| already RFC3339 UTC | left alone |
+
+Continuation lines — anything not starting with `- ` at column 0 — are never
+touched: they belong to the bullet above them and carry no stamp of their own.
+
+Three rules make this safe to do mechanically:
+
+- **Equal stamps are legal.** The check is non-decreasing, not strictly
+  increasing, precisely so that a document whose two undated bullets both take
+  its `created` comes out green.
+- **A stamp earlier than `created` is legal too**, as long as no bullet above it
+  carries a later one. Nothing compares a bullet to `created`, so a
+  `- 2026-08-24:` bullet on a document created on the 25th (a note written
+  before the file existed) needs no adjustment.
+- **An undated bullet never goes backwards.** `created` is usually *earlier*
+  than the hand-written dates above it, so an undated bullet that follows a
+  dated one cannot simply take `created` — a `## Progress` of `- 2026-08-24: did
+  X` then `- finished Y` on a document created in January would come out
+  `2026-08-24T00:00:00Z`, `2026-01-02T03:04:06Z` and fail verify with `log
+  entries must not go backwards`. Carry the running maximum instead: each
+  undated bullet takes `created` or the stamp of the bullet above it, whichever
+  is later. In a log that is entirely undated the two are the same thing, which
+  is the first rule again.
+
+Order the bullets as they already stand in the file: the dates are an
+approximation of when the work happened, and reordering them would lose the
+sequence, which is the part that was real.
+
+## 3. Check
+
+```sh
+opys verify        # the 'undated log entry' problems are gone
+opys sync          # then again — the diff must be empty the second time
+```
+
+From here on, append with the command — `opys log <id> "…"`, or `opys log <id> -`
+for a multi-line entry — and the stamps take care of themselves.
