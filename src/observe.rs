@@ -1,5 +1,5 @@
-//! Time-aware observations: **stuck** and **overflowed** documents, the clock
-//! they are measured against, and the fixes `verify --fix` performs.
+//! Time-aware observations: **stuck** and **overflowed** documents, and the
+//! clock they are measured against.
 //!
 //! Two things an agent loop has to notice are not content problems (ADR-0101).
 //! A document can sit in a status past any reasonable time for the project,
@@ -21,17 +21,22 @@
 //! honours `OPYS_NOW`) and the one place the two predicates live, so `verify`,
 //! `opys next` and the node's flow view can never disagree about who is stuck.
 //!
+//! Nothing here writes. An observation names where the *type's config* intends
+//! a stale document to go (`ttl`'s `then`, `max_visits`'s `then`), and moving it
+//! there is a decision for whoever knows whether the agent holding it is still
+//! alive — a dispatcher, not the tracker (ADR-0101, "Pending move to kobzar").
+//! opys observes; the config records the intent; something outside opys acts on
+//! it.
+//!
 //! One reading is worth spelling out, because the word "exceeds" is ambiguous
 //! and the whole feature turns on it: `max_visits = { limit = N }` allows N
 //! entries into the status, and a document that has made its N-th **is at its
 //! limit** — [`overflow`] reports it and `set-status` refuses another entry. The
 //! two trip at the same count on purpose: a refusal a user cannot act on, with
 //! no observation naming where the document should go instead, would be a dead
-//! end rather than the escape hatch ADR-0101 asks for.
-//!
-//! That reading only holds because *nothing* writes an entry past the limit,
-//! [`apply_fixes`] included: a fix is an ordinary `set-status` under the same
-//! guard, so the highest count opys can produce is `limit` itself.
+//! end rather than the escape hatch ADR-0101 asks for. Since the guard is the
+//! only path into a status, the highest count opys can produce is `limit`
+//! itself.
 
 use std::fmt;
 
@@ -40,7 +45,6 @@ use time::{Duration, OffsetDateTime};
 use crate::doc::Doc;
 use crate::project::Project;
 use crate::project_config::DocType;
-use crate::store::Store;
 
 /// The raw `OPYS_NOW` override, when it is set and non-empty.
 ///
@@ -131,9 +135,10 @@ pub enum Kind {
     },
 }
 
-/// One observation about one document: what was seen, and where `verify --fix`
-/// would move it (`None` for a `ttl` written as a bare duration — that one is
-/// reported and nothing more).
+/// One observation about one document: what was seen, and where the type's
+/// config intends it to go (`None` for a `ttl` written as a bare duration —
+/// that one is reported and nothing more). opys never performs the move; the
+/// target is the project's declared intent, for a dispatcher to read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Observation {
     pub id: String,
@@ -144,10 +149,13 @@ pub struct Observation {
 impl fmt::Display for Observation {
     /// The line `verify`, `opys next` and the node all print. Byte-stable: the
     /// history key and the configured duration are echoed as written.
+    ///
+    /// The tail names the *configured* target and claims nothing about who acts
+    /// on it — opys reports, and whatever drives the loop decides.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let fix = match &self.target {
-            Some(t) => format!("`--fix` moves it to {t}"),
-            None => "no ttl target, nothing to fix".to_string(),
+        let target = match &self.target {
+            Some(t) => format!("configured target: {t}"),
+            None => "no configured target".to_string(),
         };
         match &self.kind {
             Kind::Stuck {
@@ -156,7 +164,7 @@ impl fmt::Display for Observation {
                 after,
             } => write!(
                 f,
-                "{}: stuck in {status} since {since} (ttl {after}) — {fix}",
+                "{}: stuck in {status} since {since} (ttl {after}) — {target}",
                 self.id
             ),
             Kind::Overflow {
@@ -165,7 +173,7 @@ impl fmt::Display for Observation {
                 limit,
             } => write!(
                 f,
-                "{}: {visits} visit{} to {status} reaches its limit of {limit} — {fix}",
+                "{}: {visits} visit{} to {status} reaches its limit of {limit} — {target}",
                 self.id,
                 if *visits == 1 { "" } else { "s" }
             ),
@@ -209,8 +217,9 @@ pub fn stuck(doc: &Doc, t: &DocType, now: OffsetDateTime) -> Option<Observation>
 /// The document has entered its current status as often as the type's
 /// `max_visits` allows.
 ///
-/// Only the status the document holds *now* is considered: that is the one a fix
-/// moves it out of, and the one whose `then` edge `config validate` checked.
+/// Only the status the document holds *now* is considered: that is the one the
+/// configured `then` moves it out of, and the one whose edge `config validate`
+/// checked.
 /// Fires at `visits >= limit` — see the module docs for why the guard and the
 /// observation trip together.
 pub fn overflow(doc: &Doc, t: &DocType) -> Option<Observation> {
@@ -253,10 +262,10 @@ pub fn visits(doc: &Doc, status: &str) -> usize {
 /// carries the thresholds.
 ///
 /// The order is by id rather than by load order because load order is *path*
-/// order, and a `--fix` that relocates a document changes its path: sorting by
-/// id keeps the block byte-stable across the fix it just performed. Per
-/// document, an overflow is listed before a stuck — the order `apply_fixes`
-/// resolves them in.
+/// order, and a status change relocates a document: sorting by id keeps the
+/// block byte-stable across a move that is invisible to the reader. Per
+/// document, an overflow is listed before a stuck — the spent budget is the
+/// stronger signal.
 pub fn observations(prj: &Project, docs: &[Doc], now: OffsetDateTime) -> Vec<Observation> {
     let mut out = Vec::new();
     for doc in docs {
@@ -274,68 +283,6 @@ pub fn observations(prj: &Project, docs: &[Doc], now: OffsetDateTime) -> Vec<Obs
             .then_with(|| a.id.cmp(&b.id))
     });
     out
-}
-
-/// What [`apply_fixes`] did: the transitions it performed, and the ones the
-/// engine refused.
-#[derive(Debug, Default)]
-pub struct FixReport {
-    /// One line per applied fix, for the caller to print.
-    pub applied: Vec<String>,
-    /// One line per refusal, phrased as a `verify` problem.
-    pub refused: Vec<String>,
-}
-
-/// Perform the fixable observations against a loaded store, as ordinary status
-/// transitions: history appended, layout relocation recorded, the type's rules
-/// evaluated. The caller flushes and syncs.
-///
-/// Two rules, both load-bearing:
-///
-/// - **at most one fix per document per run.** A document can be overflowed
-///   *and* stuck on the same status; the second fix would be computed from a
-///   status the first one just left, and `set-status` would refuse it as an
-///   undeclared edge. The overflow is preferred — an exhausted visit budget is
-///   the stronger signal, and it is the one a person is meant to take over.
-/// - **a refusal is data, not a failure.** A `then` may be a status whose
-///   `[[rules]]` demand a field no config check can foresee. Refusing to fix one
-///   document must not abort the pass or turn `verify` into exit 2: the refusal
-///   is collected, phrased as a problem, and the re-verify decides the code.
-pub fn apply_fixes(prj: &Project, store: &mut Store, obs: &[Observation]) -> FixReport {
-    use crate::commands::set_status;
-
-    let mut report = FixReport::default();
-    let mut touched: Vec<&str> = Vec::new();
-    for o in obs {
-        let Some(target) = &o.target else { continue };
-        if touched.contains(&o.id.as_str()) {
-            continue;
-        }
-        touched.push(&o.id);
-        // Every fix is an ordinary move, subject to the visit budget like any
-        // other — the overflow fix included. Bypassing it there would suppress
-        // the budget of the *target*, never the spent one being escaped (the
-        // guard counts entries into the status being entered, and
-        // `validate_observation_target` already rejects `then == key`), so the
-        // only thing a bypass could ever do is write the one state the guard
-        // exists to prevent: a count past `limit` (see the module docs), by
-        // performing a move `set-status` had just refused. A `then` whose own
-        // budget is spent lands in the refusals instead, naming its own `then`
-        // — the next step up the escalation, for a person to take.
-        let (from, what) = match &o.kind {
-            Kind::Stuck { status, .. } => (status, "stuck"),
-            Kind::Overflow { status, .. } => (status, "max_visits"),
-        };
-        match set_status::core(prj, store, &o.id, target, None) {
-            Ok(()) => report
-                .applied
-                .push(format!("fixed {}: {from} -> {target} ({what})", o.id)),
-            Err(e) => report
-                .refused
-                .push(format!("{}: could not fix ({what}): {e}", o.id)),
-        }
-    }
-    report
 }
 
 #[cfg(test)]
@@ -434,21 +381,21 @@ mod tests {
         assert_eq!(
             o.to_string(),
             "T-0001: stuck in doing since 2026-01-02T03:04:05.000000Z (ttl 10m) — \
-             `--fix` moves it to todo"
+             configured target: todo"
         );
     }
 
     /// A bare duration is observed and nothing more, and a status with no `ttl`
     /// is not observed at all.
     #[test]
-    fn a_bare_ttl_duration_has_nothing_to_fix() {
+    fn a_bare_ttl_duration_names_no_target() {
         let t = doc_type(
             "statuses = [\"doing\", \"idle\"]\ndefault_status = \"doing\"\n\
              [types.t.ttl]\ndoing = \"10m\"\n",
         );
         let o = stuck(&doc("doing", &["doing"]), &t, at("2026-06-01T00:00:00Z")).expect("stuck");
         assert_eq!(o.target, None);
-        assert!(o.to_string().ends_with("— no ttl target, nothing to fix"));
+        assert!(o.to_string().ends_with("— no configured target"));
         assert_eq!(
             stuck(&doc("idle", &["idle"]), &t, at("2026-06-01T00:00:00Z")),
             None
@@ -491,18 +438,18 @@ mod tests {
         assert_eq!(o.target.as_deref(), Some("user-review"));
         assert_eq!(
             o.to_string(),
-            "T-0001: 3 visits to review reaches its limit of 3 — `--fix` moves it to user-review"
+            "T-0001: 3 visits to review reaches its limit of 3 — configured target: user-review"
         );
         // Only the status the document holds now is counted.
         assert_eq!(overflow(&doc("doing", &["review", "doing"]), &t), None);
     }
 
     /// The one entry point, and the reason it sorts: documents reach it in the
-    /// backend's *path* order, which a `--fix` relocation changes, so the block
+    /// backend's *path* order, which a status change relocates, so the block
     /// is ordered by id number instead. Here `opys/T-0002.md` and `opys/X-0003.md`
     /// both load before `opys/_stuck/T-0001.md` ('T' and 'X' sort before '_'),
     /// and T-0001 is still named first. Per document the overflow precedes the
-    /// stuck — the order `apply_fixes` resolves them in — and a document whose
+    /// stuck — the spent budget is the stronger signal — and a document whose
     /// id prefix belongs to no type is skipped, because a type is what carries
     /// the thresholds (`verify` already reports the stray prefix as a problem).
     #[test]
