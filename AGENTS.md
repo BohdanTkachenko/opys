@@ -140,7 +140,7 @@ binary maps them to exit `2` — the binary passes any other code through
 unchanged, so `3` needed no mapping. Crucially, **content problems found by
 `verify` are not `OpysError`s** — they are collected into a `Vec<String>` and
 printed, so verify can report *all* problems at once rather than aborting on the
-first, and the same applies to a fix `verify --fix` could not perform.
+first. `verify` itself never writes, in any mode.
 
 Layering, roughly outermost-in:
 
@@ -255,10 +255,12 @@ Layering, roughly outermost-in:
   as an instant, which `commands::now_utc_micros`/`today` go through — while
   `now_rfc3339` returns `override_str()` verbatim, so an offset survives),
   `parse_duration`, the `stuck`/`overflow` predicates over a type's
-  `[ttl]`/`[max_visits]`, `observations` (the one function `verify`, `next` and
-  the node call, so the three cannot disagree) and `apply_fixes` (what
-  `verify --fix` performs, one fix per document per run, every one of them an
-  ordinary `set_status::core` move under the visit budget).
+  `[ttl]`/`[max_visits]` and `observations` (the one function `verify`, `next`
+  and the node call, so the three cannot disagree). Read-only throughout: an
+  observation names the target the type's config declares and nothing here
+  performs the move (ADR-0101, "Pending move to kobzar" — acting on staleness
+  needs to know whether the agent holding the document is still alive, which
+  only a dispatcher knows).
 - `src/links.rs` — the auto-sync engine: `reconcile`/`reconcile_blockers`
   (bidirectional, title-fresh relation maps between live docs) and `linkify`
   (bare `PREFIX-NNNN` mentions in prose → markdown links, skipping code; the
@@ -348,26 +350,28 @@ All status/section/link guards are *config*, enforced by one engine
   `{ limit, then }`). A document past its `ttl` is *stuck*; one whose history
   records `limit` entries at its current status is *overflowed*. The two trip at
   the same count but not in the same place: the observation counts the status the
-  document *holds* (the one a fix moves it out of), while the guard counts the
-  status being *entered*, so `set-status` refuses the move from anywhere, naming
-  `then`. Neither is a content problem: `verify` prints them in their own block
-  and exits `3` when they are all it found, and `verify --fix` performs the
-  configured transitions. `config validate` requires each `then` to be a
-  declared, non-terminal status and — where the type declares transitions — the
-  fix edge, the edge back (the recovery edge a fix under a running agent relies
-  on) and, for `max_visits`, the *escalation edge* to `then` from every status
-  that may enter the budgeted one, so the refusal never advertises an illegal
-  move.
+  document *holds* (the one the configured `then` moves it out of), while the
+  guard counts the status being *entered*, so `set-status` refuses the move from
+  anywhere, naming `then`. Neither is a content problem: `verify` prints them in
+  their own block and exits `3` when they are all it found. `config validate`
+  requires each `then` to be a declared, non-terminal status and — where the
+  type declares transitions — the edge to it, the edge back (the recovery edge a
+  move under a running agent relies on) and, for `max_visits`, the *escalation
+  edge* to `then` from every status that may enter the budgeted one, so the
+  refusal never advertises an illegal move.
 
-  `verify --fix` is deliberately timid: at most one fix per document per run
-  (overflow before stuck), a refused fix is a problem rather than an abort,
-  nothing is flushed on a run that fixed nothing, every fix — the overflow one
-  included — stays subject to the visit budget (the guard counts entries into
-  the status being *entered*, so a bypass could only ever suppress the budget of
-  the `then` being moved *to*, writing the one count the guard exists to
-  prevent; a spent `then` lands in the refusals instead, naming its own `then`),
-  and no fixing happens at all while `pcfg.validate()` has anything to say — a
-  fix is a move along the graph that check guards.
+  **opys observes; it does not act.** A `then` is recorded *intent* — where the
+  project wants a stale document to go — and nothing in opys performs that move
+  (ADR-0101's "Pending move to kobzar": deciding a document is really abandoned
+  needs to know whether the agent holding it is still alive, which only a
+  dispatcher knows, and ADR-0051 keeps files and git the only truth). The
+  observation line ends `— configured target: <status>` (or `— no configured
+  target` for a bare-duration `ttl`), and `verify` writes nothing. The config
+  checks above still earn their keep: they catch a `then` nothing could *ever*
+  move the document to, when the config is written rather than on the day the
+  threshold trips. The visit budget is a different thing and stays enforced —
+  `set-status` refusing an entry is a refusal counting visits, not a write off
+  the clock.
 - **Section checks** (`[[types.X.sections.checks]]`): a universal, config-driven
   validation attachable to any section. A `pattern` regex parses each line into
   named capture groups; an optional `file` group (a path that must exist under
@@ -400,14 +404,13 @@ All status/section/link guards are *config*, enforced by one engine
 
 opys generates no view files (no `INDEX.md`); slice the inventory live with
 `opys list` or `opys query`. Mutating commands (`new`, `set-status`, `tag`,
-`log`, `retire`, `block`, `close`, `cleanup`, and `verify --fix` when it actually
-fixed something) call `maybe_sync` → `commands/sync::run` automatically unless
-`--no-sync` is passed. That pass reconciles relations,
-linkifies prose, and **relocates each document to its canonical layout path**
-(the store's `flush` renames a file when a status change or `[layout]` edit moved
-it, e.g. into `_archived/`); it refuses to run if any document fails to parse
-(run `verify` first). `opys sync` runs the same pass after hand edits (and
-deletes any stale `INDEX.md` left by older versions).
+`log`, `retire`, `block`, `close`, `cleanup`) call `maybe_sync` →
+`commands/sync::run` automatically unless `--no-sync` is passed. That pass
+reconciles relations, linkifies prose, and **relocates each document to its
+canonical layout path** (the store's `flush` renames a file when a status change
+or `[layout]` edit moved it, e.g. into `_archived/`); it refuses to run if any
+document fails to parse (run `verify` first). `opys sync` runs the same pass
+after hand edits (and deletes any stale `INDEX.md` left by older versions).
 
 ### Frontmatter serialization
 

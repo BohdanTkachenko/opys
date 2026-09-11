@@ -167,7 +167,7 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
             commands::block::unblock(&ctx, &ids, &by)?;
             Ok(0)
         }
-        Command::Verify { fix } => commands::verify::run(&ctx, fix),
+        Command::Verify => commands::verify::run(&ctx),
         Command::Sync => {
             commands::sync::run_command(&ctx)?;
             Ok(0)

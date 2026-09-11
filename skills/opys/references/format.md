@@ -186,8 +186,8 @@ implemented = ["partial", "planned", "archived"]   # `planned` is the escalation
 wontfix     = ["planned"]            # a status absent from the map is a dead end
 
 [types.feature.ttl]                  # optional: how long a status may hold a doc
-planned = "2y"                       # a bare duration is observed, never fixed
-partial = { after = "90d", then = "planned" }   # `verify --fix` performs this
+planned = "2y"                       # a bare duration is observed and nothing more
+partial = { after = "90d", then = "planned" }   # …and where it should go next
 
 [types.feature.max_visits]           # optional: how often a status may be entered
 partial = { limit = 8, then = "planned" }
@@ -774,8 +774,8 @@ minutes where a "ship the game" feature may legitimately sit for two years:
 
 ```toml
 [types.task.ttl]
-review      = "2d"                               # observed only, nothing to fix
-in-progress = { after = "10m", then = "stuck" }  # `verify --fix` performs this
+review      = "2d"                               # observed only, no target named
+in-progress = { after = "10m", then = "stuck" }  # …and where it should go next
 
 [types.task.max_visits]
 review = { limit = 3, then = "user-review" }
@@ -783,7 +783,7 @@ review = { limit = 3, then = "user-review" }
 [types.task.transitions]
 todo        = ["in-progress"]
 in-progress = ["review", "stuck", "user-review"]   # …and the escalation edge
-stuck       = ["in-progress", "todo"]   # the recovery edge a fix relies on
+stuck       = ["in-progress", "todo"]   # the recovery edge `config validate` wants
 review      = ["in-progress", "user-review", "done"]
 user-review = ["review", "in-progress"]
 ```
@@ -794,7 +794,9 @@ spaces, no sign, no decimal point, no bare number.
 
 - **Stuck** — the document's last history key is more than `after` in the past.
   A `ttl` written as a bare duration is reported and nothing more; the
-  `{ after, then }` form names where `--fix` moves it.
+  `{ after, then }` form also names where the project intends the document to
+  go. That target is *recorded intent*, not an action: opys reports it and never
+  moves anything (see "opys observes, it does not act" below).
 - **Overflowed** — the document's history records it entering the status it
   currently holds `limit` times. `limit = N` *allows* N entries: a document that
   has made its N-th is at its limit, so `verify` reports it and `set-status`
@@ -806,26 +808,26 @@ spaces, no sign, no decimal point, no bare number.
 
 They trip at the same count but not in the same *place*, and the difference is
 what the config checks below are for. The **observation** counts the status the
-document holds *now* — that is the one a fix moves it out of. The **guard**
-counts the status being entered, so it refuses the move from wherever the
-document stands; a document that has already bounced back out of the budgeted
-status is not observed (there is nothing to fix: it is not there) but still
-cannot return.
+document holds *now* — that is the one the configured `then` moves it out of.
+The **guard** counts the status being entered, so it refuses the move from
+wherever the document stands; a document that has already bounced back out of
+the budgeted status is not observed (it is not there any more) but still cannot
+return.
 
 `config validate` (and so `verify`) checks each entry, exit 1 like every other
 config problem: every key and every `then` is a declared status; `then` is not
 the key itself and not terminal (a terminal status is reached only via `close`,
-which `set-status` refuses, so the fix could never run); `limit` is at least 1;
-the duration parses. Where the type also declares a **status graph**, the fix
-edge `key -> then` must exist — the fix is an ordinary `set-status` — and so
-must the **recovery edge** `then -> key`, because a fix may land under a running
-agent and that agent must be one `set-status` away from where it was. A
-`max_visits` budget is checked once more: every status with an edge *into* the
-budgeted one must declare an edge to `then` as well — the **escalation edge**,
-because that is where the guard's refusal sends a document standing there, and
-advice that is not a legal move is a trap. (`then` itself is exempt: a document
-already there needs no move.) A type with no graph is exempt from all three: it
-allows every move already.
+which `set-status` refuses, so the intended move could never be made); `limit`
+is at least 1; the duration parses. Where the type also declares a **status
+graph**, the edge `key -> then` must exist — the move the config names is an
+ordinary `set-status` — and so must the **recovery edge** `then -> key`, because
+that move may land under a running agent and that agent must be one `set-status`
+away from where it was. A `max_visits` budget is checked once more: every status
+with an edge *into* the budgeted one must declare an edge to `then` as well —
+the **escalation edge**, because that is where the guard's refusal sends a
+document standing there, and advice that is not a legal move is a trap. (`then`
+itself is exempt: a document already there needs no move.) A type with no graph
+is exempt from all three: it allows every move already.
 
 One consequence worth stating: once a document has spent its `max_visits`
 budget it cannot re-enter that status even along a declared edge. `then` is
@@ -834,7 +836,26 @@ where a person (or a different agent) takes over.
 `block`/`unblock`'s auto-set does not go through `set-status`, so — exactly as
 with the graph — it is not subject to the visit budget.
 
-### `verify` exit codes and `--fix`
+### opys observes, it does not act
+
+A `then` target is the project telling a **reader** where a stale document
+belongs. opys never performs that move, and there is no flag that makes it:
+deciding a document is really abandoned means knowing whether the agent holding
+it is still alive, and only whatever dispatched that agent knows. A tracker
+whose truth is files and git does not start writes off its own clock. So the
+split is:
+
+- **opys** computes the observation and prints the configured target;
+- **the config** records where the project intends the document to go, and
+  `config validate` insists that move is one the status graph actually allows;
+- **whatever drives the loop** — an orchestrator, a script, a person reading the
+  block — decides and runs the `set-status`.
+
+That is why `config validate`'s checks above are worth having even though opys
+performs no move: they catch a `then` nothing could *ever* move the document to,
+at the moment the config is written rather than on the day the threshold trips.
+
+### `verify` exit codes
 
 | Code | Meaning |
 |---|---|
@@ -849,51 +870,20 @@ Problems and observations are two blocks on **stderr**, problems first:
 verify: 1 problem(s)
   FEAT-0002: missing required '## Test plan' section
 verify: 2 observation(s)
-  TASK-0001: stuck in in-progress since 2026-01-02T03:04:05.000001Z (ttl 10m) — `--fix` moves it to stuck
-  TASK-0002: 3 visits to review reaches its limit of 3 — `--fix` moves it to user-review
+  TASK-0001: stuck in in-progress since 2026-01-02T03:04:05.000001Z (ttl 10m) — configured target: stuck
+  TASK-0002: 3 visits to review reaches its limit of 3 — configured target: user-review
 ```
+
+An observation over a `ttl` written as a bare duration ends `— no configured
+target` instead: the project asked to be told and nothing more.
 
 `verify: OK (N documents)` is printed on stdout for exit `0` only — a nonzero
 run never claims to be OK. **Gate CI on `1`**: most scripts gate on any nonzero
 code, which trips on `3` as well, and a corpus that only has observations was
 clean when it was written.
 
-`verify --fix` performs the fixable observations first: each is an ordinary
-transition (history appended, the layout relocation performed, the sync pass run
-— skipped, like every other mutating command's, under `--no-sync`). One line per
-fix goes to **stdout**, before the re-verify's blocks:
-
-```
-fixed TASK-0001: in-progress -> stuck (stuck)
-fixed TASK-0002: review -> user-review (max_visits)
-```
-
-The exit code then reports what *remains* — including any observe-only `ttl`
-entry, whose observation line ends `— no ttl target, nothing to fix` and which is
-exit `3` again. Five rules make it safe to run unattended:
-
-- at most **one fix per document per run**: a document can be both stuck and
-  overflowed, and the second move would start from a status the first one just
-  left. The overflow goes first;
-- a **refusal** — a `then` the engine will not move the document to, whether
-  because the status has a `[[rules]]` guard the document cannot satisfy or
-  because its own visit budget is spent — is reported as a problem
-  (`TASK-0001: could not fix (stuck): …`) and the pass continues, so one bad
-  document never turns `verify` into exit `2`;
-- **nothing is written at all when there was nothing to fix**, so a clean run is
-  never a silent `sync` over hand-written bytes;
-- **every fix is subject to the visit budget**, the overflow fix included: the
-  guard counts entries into the status being *entered*, so exempting a fix could
-  only ever waive the budget of the target it moves *to* — writing the very
-  count `limit` is defined to be the last of, and performing a move `set-status`
-  refuses by name. A target whose own budget is spent lands in the refusals
-  instead, naming *its* `then` (the next step up an escalation chain), which
-  also means a `verify --fix` loop terminates;
-- and `--fix` **stands down entirely while the config has problems** — it
-  performs transitions along the graph `config validate` checks, so fixing under
-  a config that check rejects is how a document ends up parked in a dead end. It
-  says so once on stderr (`verify: --fix skipped — opys.toml has problems, …`)
-  and reports the observations unfixed.
+`verify` writes nothing at all: it takes the inventory lock to read a consistent
+corpus and leaves every byte where it found it.
 
 The clock is injectable: **`OPYS_NOW`** (RFC3339) overrides it for every
 timestamp opys writes and every observation it measures, so tests and repeated

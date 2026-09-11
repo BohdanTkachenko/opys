@@ -288,9 +288,10 @@ pub struct LinkReq {
     pub min: usize,
 }
 
-/// A `[types.<name>.ttl]` value: `in-progress = "10m"` (observed only — there is
-/// nothing for `--fix` to do) or `in-progress = { after = "10m", then = "stuck" }`
-/// (fixable — `--fix` performs that transition).
+/// A `[types.<name>.ttl]` value: `in-progress = "10m"` (observed only) or
+/// `in-progress = { after = "10m", then = "stuck" }` (observed, and naming where
+/// the project intends a stuck document to go — opys reports that target and
+/// never performs the move).
 ///
 /// Deserialized by hand rather than as an untagged enum so both spellings land
 /// in one shape and a malformed table names the field it is missing.
@@ -299,7 +300,8 @@ pub struct Ttl {
     /// How long the document may sit in the status, e.g. `"10m"`, `"2d"`,
     /// `"1h30m"`. Unparsed here — see [`crate::observe::parse_duration`].
     pub after: String,
-    /// Where `verify --fix` moves a stuck document, when the config says.
+    /// Where the project intends a stuck document to go, when the config says.
+    /// Recorded intent, reported by `verify`; opys itself never moves it.
     pub then: Option<String>,
 }
 
@@ -406,8 +408,8 @@ pub struct DocType {
     pub releases_blocks: Vec<String>,
     /// `[types.<name>.ttl]` — how long a document may sit in a status before
     /// `verify` calls it **stuck** (ADR-0101 decision 1). A status maps either to
-    /// a bare duration (observed only) or to `{ after, then }` (`verify --fix`
-    /// moves it to `then`).
+    /// a bare duration (observed only) or to `{ after, then }` (observed, with
+    /// `then` naming where the project intends the document to go).
     ///
     /// The duration stays a string here on purpose: a typo must be a
     /// `validate` problem (exit 1), never a parse error that changes the exit
@@ -889,9 +891,9 @@ impl ProjectConfig {
                 ));
             }
             // `ttl` / `max_visits` (ADR-0101 decision 1): the two time-aware
-            // observations `verify` reports and `--fix` performs. Both are
-            // keyed by a status and both may name a `then` the fix moves the
-            // document to, so one routine checks both.
+            // observations `verify` reports. Both are keyed by a status and both
+            // may name a `then` the project intends the document to move to, so
+            // one routine checks both.
             for (from, ttl) in &t.ttl {
                 validate_observation_key(name, t, "ttl", from, &mut errs);
                 if crate::observe::parse_duration(&ttl.after).is_none() {
@@ -1139,16 +1141,17 @@ fn validate_observation_key(
     }
 }
 
-/// The `then` of an observation is where `verify --fix` sends the document, so
-/// it has to be somewhere the fix can actually go and somewhere a human (or an
-/// agent) can come back from (ADR-0101 decision 6):
+/// The `then` of an observation is where the project intends the document to go
+/// (ADR-0101 decision 6). opys never performs that move — but a target nothing
+/// could ever move the document to is config the project cannot mean, so it is
+/// checked here rather than discovered on the day the threshold trips:
 ///
 /// - a declared, non-terminal status other than the key itself (a terminal one
 ///   is reached only through `close`, which `set-status` refuses outright, so
-///   every fix would fail);
+///   the intended move could never be made);
 /// - when the type declares a status graph, the edge `from -> then` must exist,
-///   because the fix *is* an ordinary `set-status`; and the **recovery edge**
-///   `then -> from` must exist too, so a document the node flipped under a
+///   because the intended move is an ordinary `set-status`; and the **recovery
+///   edge** `then -> from` must exist too, so a document moved there under a
 ///   running agent is one `set-status` away from where it was.
 ///
 /// A type with no graph is exempt from the last two: it allows every move
@@ -1192,14 +1195,15 @@ fn validate_observation_target(
     if !crate::lifecycle::allows(t, from, then) {
         errs.push(format!(
             "type '{type_name}': {kind} '{from}' -> '{then}' is not a declared transition \
-             (`verify --fix` performs an ordinary set-status)"
+             (the move the config names must be one)"
         ));
         ok = false;
     }
     if !crate::lifecycle::allows(t, then, from) {
         errs.push(format!(
             "type '{type_name}': {kind} '{from}' -> '{then}' has no way back ('{then}' declares \
-             no transition to '{from}' — the recovery edge a fix under a running agent relies on)"
+             no transition to '{from}' — the recovery edge a move under a running agent relies \
+             on)"
         ));
         ok = false;
     }
@@ -1215,12 +1219,12 @@ fn validate_observation_target(
 /// into it, and the refusal tells the caller to go to `then` instead. That
 /// advice has to be a legal move from wherever the document stands, or the
 /// document is barred from `from` for good with the advertised escape out of
-/// reach — verify sees nothing to report, because [`crate::observe::overflow`]
-/// keys on the status the document *holds*, and `--fix` has nothing to do.
+/// reach — and verify sees nothing to report either, because
+/// [`crate::observe::overflow`] keys on the status the document *holds*.
 ///
 /// So every predecessor of `from` must also declare an edge to `then`. `then`
 /// itself is exempt (a document already there needs no move), and so is `from`
-/// (the fix edge `from -> then` is checked above).
+/// (the configured edge `from -> then` is checked above).
 fn validate_escalation_edges(
     type_name: &str,
     t: &DocType,
@@ -1393,9 +1397,9 @@ done = ["planned"]
     }
 
     /// Both `ttl` spellings land in one shape: a bare duration is observed and
-    /// nothing more, a table names where `--fix` should send the document. The
-    /// duration stays unparsed here — a typo is a `validate` problem, not a
-    /// parse error that would change the exit code of every command.
+    /// nothing more, a table names where the project intends the document to
+    /// go. The duration stays unparsed here — a typo is a `validate` problem,
+    /// not a parse error that would change the exit code of every command.
     #[test]
     fn ttl_accepts_a_bare_duration_and_a_table() {
         let cfg: ProjectConfig = toml::from_str(
@@ -1439,8 +1443,8 @@ doing = { limit = 3, then = "stuck" }
     }
 
     /// Every way a `ttl`/`max_visits` entry can be config the project cannot
-    /// mean, including the recovery edge `verify --fix` under a running agent
-    /// relies on (ADR-0101 decision 6).
+    /// mean, including the recovery edge a move under a running agent relies on
+    /// (ADR-0101 decision 6).
     #[test]
     fn flags_broken_ttl_and_max_visits_maps() {
         let cfg: ProjectConfig = toml::from_str(
@@ -1481,8 +1485,8 @@ stuck = { limit = 2, then = "stuck" }
             "type 'task': max_visits 'review': limit must be at least 1 (got 0)",
             "type 'task': max_visits 'review' -> 'done' targets a terminal status",
             "type 'task': max_visits 'stuck' -> 'stuck' must move the document somewhere else",
-            // The fix edge `doing -> review` and the way back both exist, but
-            // `todo` may enter `doing` and could not take the escape.
+            // The configured edge `doing -> review` and the way back both
+            // exist, but `todo` may enter `doing` and could not take the escape.
             "type 'task': max_visits 'doing' -> 'review': a document at 'todo' may enter \
              'doing' but not 'review' — once the budget is spent the refusal would name an \
              escape it cannot take",
