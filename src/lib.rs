@@ -24,6 +24,7 @@ pub mod lifecycle;
 pub mod links;
 pub mod mdprism;
 pub mod observe;
+pub mod order;
 pub mod project;
 pub mod project_config;
 pub mod refs;
@@ -122,6 +123,7 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
             field,
             blocked,
             unblocked,
+            sort,
             format,
         } => {
             // One tri-state rather than two bools: clap has already refused the
@@ -135,6 +137,7 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
                 status.as_deref(),
                 &field,
                 blocked,
+                sort,
                 format,
             )?;
             Ok(0)

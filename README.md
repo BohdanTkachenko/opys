@@ -15,7 +15,8 @@ hold at write time and parallel agents don't collide; reads are plain `grep` +
 targeted file reads. A `verify` subcommand is the CI gate. It is deliberately
 *not* a task board — no sprints or assignees; priority exists only as an
 opt-in declared int field (`[types.X.fields.priority]`) that the web UI's
-board orders and reorders by.
+board orders and reorders by, and that a type's `order_by` chain — what
+`opys list --sort` applies — leads with.
 
 Need a different lifecycle — an `epic`, an `adr`, a `risk`? Add a `[types.<name>]`
 block to `opys.toml` and the whole tool (create, verify, index) works for
@@ -85,6 +86,8 @@ opys init                                   # bootstrap opys.toml + opys/
 opys new --title "Tab title follows OSC 0/2" --tags osc,tabs
 opys list --status planned
 opys list --tag area                        # exact tag, or any tag with key `area`
+opys list --sort --format ids               # the type's order_by chain: effective
+                                            # priority, then blocks count, then id
 opys set-status FEAT-0001 implemented       # a declared edge, and rejected here unless
                                             # a test-plan item is checked
 opys verify                                 # integrity check; exit 1 on problems, 3 on
@@ -132,7 +135,7 @@ without a `renumber`. Without a modulus, allocation is the dense sequence.
 | `config <init\|validate>` | generate / validate the universal `opys.toml` |
 | `new --type <T>` | allocate the next ID and write a skeleton document of type `T` (auto-syncs) |
 | `import --type <T>` | bulk-create documents of type `T` from a JSONL file (one ID block, one sync) |
-| `show` / `list` | retrieval (`--type`, `--tag`, `--status`, `--field`, `--blocked`/`--unblocked`, `--format table\|ids\|paths`) |
+| `show` / `list` | retrieval (`--type`, `--tag`, `--status`, `--field`, `--blocked`/`--unblocked`, `--sort`, `--format table\|ids\|paths`) |
 | `set-status` | guarded transitions: the type's declared `[transitions]` edges (when it declares any), its `max_visits` budget for the target status (the refusal names the configured `then`), and its configured rules |
 | `tag` | add/remove tags (`--add a,b --remove c`) |
 | `log` | append a dated entry to a document's `kind = "log"` section (`opys log TASK-0042 "…"`, or `-` to read it from stdin) |

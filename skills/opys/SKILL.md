@@ -10,7 +10,8 @@ A version-controlled inventory of typed markdown documents — what a product do
 changing it (ephemeral `task`/`bug`/`chore` documents) — one markdown file per
 item, managed by the `opys` CLI, verified in CI. Document types are configured in
 `opys.toml`; projects add their own. Deliberately not a task board (no
-sprints or assignees; a `priority` int field is opt-in config, lower = higher).
+sprints or assignees; a `priority` int field is opt-in config, lower = higher,
+and `list --sort` orders by the type's `order_by` chain over it).
 
 Read `references/format.md` before authoring or editing documents or the
 `opys.toml` config — it is the normative file-format spec and design rationale.
@@ -75,7 +76,7 @@ its ID prefix.
 | `config init` / `config validate` | generate / check the universal `opys.toml` |
 | `new --type T --title … [--tags a,b] [--features F1,F2] [--reason R] [--field k=v]` | create a doc of type `T` with the next ID, at the type's initial status — there is no `--status`, `import` is the seam that seeds elsewhere (`--type` defaults to `feature`; auto-syncs) |
 | `import --type T FILE.jsonl` | bulk-create docs of type `T` from JSONL (one ID block, one sync, transactional) |
-| `show ID [--refs]` / `list [--type T] [--tag T] [--status S] [--field k=v]… [--blocked\|--unblocked] [--format table\|ids\|paths]` | retrieval; `--field` filters by any custom field (repeatable, ANDed); `--blocked`/`--unblocked` filter on the derived blocked predicate (see `block` below); `show --refs` appends code mentions of the id (per `[file_refs]`) |
+| `show ID [--refs]` / `list [--type T] [--tag T] [--status S] [--field k=v]… [--blocked\|--unblocked] [--sort] [--format table\|ids\|paths]` | retrieval; `--field` filters by any custom field (repeatable, ANDed); `--blocked`/`--unblocked` filter on the derived blocked predicate (see `block` below); `--sort` orders by the type's `order_by` chain — effective priority (transitive over live `blocks`, unprioritised last), then blocks count, then id — grouped by type, in config declaration order; `show --refs` appends code mentions of the id (per `[file_refs]`) |
 | `set-status IDS… S [--reason R]` | guarded transition against the type's statuses, its declared `[transitions]` edges (when it declares any — the refusal names the legal targets), its `max_visits` budget for the target status (the refusal names the configured `then`) and its rules; a terminal status is reached only via `close`. `IDS` is an id list (see below) |
 | `tag IDS… --add a,b --remove c` | tag maintenance; `IDS` is an id list |
 | `log ID "TEXT"\|- [--section H]` | append a dated entry (`- <UTC ts> text`) to the type's `kind = "log"` section; `-` reads the entry from stdin (continuation lines indent two spaces). Takes **one** id — the second positional is the text. A missing-but-declared section is created; a type with none, or with two and no `--section`, exits 2 |

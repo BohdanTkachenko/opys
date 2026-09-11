@@ -18,6 +18,7 @@ retired:
   TASK-0110: 'engine: the history map and UTC sub-second timestamps'
   TASK-0111: 'engine: per-type transitions and the set-status guard'
   TASK-0112: 'engine: blocked is derived; remove the blocked status machinery'
+  TASK-0113: 'engine: the ordering chain over the priority int'
   TASK-0114: 'engine: remove `query --write` and the writable blocks projection'
   TASK-0115: 'engine: `opys log` and dated log sections'
   TASK-0116: 'engine: ttl, max_visits, the stuck predicate, `verify --fix`, exit 3'

@@ -112,6 +112,14 @@ pub enum Command {
         /// Only documents nothing live blocks — what to pick up next.
         #[arg(long)]
         unblocked: bool,
+        /// Order by each type's `order_by` chain — by default effective
+        /// priority (lower first, unprioritised last), then how many live
+        /// documents the item blocks, then lowest id — instead of load order.
+        /// A mixed listing is grouped by type, types in the order
+        /// `opys.toml` declares them; with `--type` it is simply that
+        /// type's chain.
+        #[arg(long)]
+        sort: bool,
         #[arg(long, value_enum, default_value_t = ListFormat::Table)]
         format: ListFormat,
     },

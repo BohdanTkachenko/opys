@@ -209,7 +209,9 @@ Layering, roughly outermost-in:
   ID→title: parse/serialize (sorted by item number), strikethrough tombstone
   helpers, `id_number`. Also the derived-blocked predicate — `Corpus` (config +
   an id→status index, built once per command), `live_blockers` and `is_blocked`
-  — which `list --blocked` and the node both read rather than reimplement.
+  — which `list --blocked` and the node both read rather than reimplement, plus
+  `live_blocks`, the same question from the blocker's side (not struck, target
+  resolves, and the document itself has not released) that ordering counts.
 - `src/history.rs` — the `history` lifecycle map (UTC RFC3339 with six
   fractional digits → status): key formatting, `is_canonical_key` (the exact
   spelling `verify` demands), the same-instant `+1µs` bump, and the
@@ -251,6 +253,17 @@ Layering, roughly outermost-in:
   phrase. The single reader of that map, so `set-status`, `close`, `verify` and
   the node's `DocView` cannot disagree about declared order, duplicates, or what
   an absent map means (any-to-any) versus an absent *key* (a dead end).
+- `src/order.rs` — the ordering chain (ADR-0099 decision 4): the `OrderKey`
+  enum, `chain` (a type's `order_by`, or the default `["priority", "blocks",
+  "id"]` with the priority key *dropped* on a type declaring no `int priority`,
+  since priority is opt-in per ADR-0095), `effective_priority` (the smallest
+  number over a document and everything it transitively still blocks, walked
+  with a visited set so a cycle terminates) and `compare`. The single reader of
+  `order_by`, so `list --sort`, `next` and the flow view cannot order the same
+  corpus three ways. Unprioritised sorts **last** — `Option`'s own `Ord` is the
+  other way round, so every optional key goes through one helper here. The web
+  UI board is the deliberate exception: it orders a column by the raw
+  `priority` field, because that is the number drag-to-reorder writes.
 - `src/observe.rs` — the time-aware observations (ADR-0101): `override_str()`
   (the one reader of the `OPYS_NOW` override) and `now()` (the override parsed
   as an instant, which `commands::now_utc_micros`/`today` go through — while
@@ -315,6 +328,15 @@ All status/section/link guards are *config*, enforced by one engine
   and the document view alike. There is no `blocked` status, `blocked_from` or
   `blocked_reason`; everything that blocks is a document.
   `refs::RELATION_FIELDS` drives close/cleanup/verify/id-reservation uniformly.
+- **Ordering** (`order_by`, ADR-0099 decision 4): a type's chain of tiebreaks —
+  `priority` (effective, ascending, unprioritised last), `blocks` (live count,
+  descending), `id` (ascending), `updated` (newest first) — defaulting to
+  `["priority", "blocks", "id"]`. Effective priority is transitive over live
+  `blocks` entries, so a task at 30 holding up one at 1 sorts as a 1. An
+  unknown key is a parse error (the set is closed); an *explicit* chain naming
+  `priority` on a type with no `int priority` field is a `validate` problem,
+  while the implicit default just drops the key. `list --sort` applies it,
+  grouped by type.
 - **Lifecycle history**: every status change is appended to the reserved
   `history` map (`new` seeds it from `created`, `set-status`/`import` write it;
   `block`/`unblock` change no status so they write nothing; nothing hand-edits
