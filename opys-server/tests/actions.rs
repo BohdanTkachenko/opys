@@ -797,6 +797,87 @@ async fn a_move_off_the_status_graph_is_a_422() {
     assert_eq!(answer["message"], "NOTE-0001 -> review", "{answer}");
 }
 
+/// A note whose `review` allows a single visit, and nothing else worth a graph:
+/// the budget is the subject, so the type declares no `[transitions]` (which
+/// would drag in the fix/recovery/escalation edges `config validate` demands and
+/// tell us nothing about the node).
+const VISITS_CONFIG: &str = r#"
+base = "inventory"
+
+[types.note]
+prefix = "NOTE"
+statuses = ["open", "review", "parked", "closed"]
+default_status = "open"
+terminal_statuses = ["closed"]
+tags_required = false
+
+[types.note.max_visits]
+review = { limit = 1, then = "parked" }
+
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "doing", "blocked", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]
+tags_required = false
+"#;
+
+/// An entry past the type's `max_visits` budget is refused by the node in the
+/// CLI's own words (ADR-0101). The sibling of
+/// [`a_move_off_the_status_graph_is_a_422`], for the other hard refusal
+/// `set_status::core` carries: the node runs the same core, so it must not be
+/// possible to give the API a budget the CLI does not have.
+///
+/// The refused move is one to the status the document already holds — legal as
+/// a graph move, and still a visit, because it appends an entry.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_entry_past_the_visit_budget_is_a_422() {
+    let fx = Fixture::with_config(VISITS_CONFIG);
+    // The single allowed entry, performed on both copies.
+    let answer = fx
+        .action(json!({"action": "set-status", "id": "NOTE-0001", "status": "review"}))
+        .await;
+    assert_eq!(answer["message"], "NOTE-0001 -> review", "{answer}");
+    cli(&fx.reference, &["set-status", "NOTE-0001", "review"])
+        .expect("the CLI accepts the first entry too");
+    fx.assert_mirrors_reference();
+    let spent = snapshot(&fx.live);
+
+    let (status, answer) = fx
+        .try_action(json!({"action": "set-status", "id": "NOTE-0001", "status": "review"}))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+    let refused = cli(&fx.reference, &["set-status", "NOTE-0001", "review"])
+        .expect_err("the CLI refuses the second entry");
+    assert_eq!(
+        answer["error"],
+        refused.to_string(),
+        "the message must be the one the CLI prints for the same attempt"
+    );
+    assert!(
+        answer["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("max_visits sends it to parked instead")),
+        "the refusal has to name the escape the budget configured: {answer}"
+    );
+    assert_eq!(
+        snapshot(&fx.live),
+        spent,
+        "a refused write must not have touched the inventory at all"
+    );
+    assert_eq!(
+        snapshot(&fx.reference),
+        spent,
+        "and the CLI's refusal must leave the same bytes"
+    );
+
+    // The escape the refusal names is a move the node performs.
+    let answer = fx
+        .action(json!({"action": "set-status", "id": "NOTE-0001", "status": "parked"}))
+        .await;
+    assert_eq!(answer["message"], "NOTE-0001 -> parked", "{answer}");
+}
+
 /// A write the corpus refuses is the caller's answer, not the node's failure:
 /// 422 with the engine's own message, which is the text the CLI prints before
 /// exiting 2. The expectation comes from running the same attempt through the

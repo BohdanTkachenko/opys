@@ -27,7 +27,7 @@ pub mod verify;
 use serde_norway::Value;
 use time::{
     format_description::well_known::Rfc3339, format_description::FormatItem,
-    macros::format_description, OffsetDateTime,
+    macros::format_description,
 };
 
 use crate::error::{usage, Result};
@@ -37,22 +37,26 @@ use crate::Ctx;
 
 const ISO_DATE: &[FormatItem<'static>] = format_description!("[year]-[month]-[day]");
 
-/// Today's date as `YYYY-MM-DD` (local time, falling back to UTC).
+/// Today's date as `YYYY-MM-DD` (the [clock](crate::observe::now): `OPYS_NOW`
+/// when set, else local time falling back to UTC).
 pub fn today() -> String {
-    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
-    now.format(&ISO_DATE).expect("ISO date formatting")
+    crate::observe::now()
+        .format(&ISO_DATE)
+        .expect("ISO date formatting")
 }
 
 /// The current instant as an RFC3339 datetime, second precision (local time,
 /// falling back to UTC). Honors the `OPYS_NOW` environment override so tests can
-/// pin a deterministic timestamp; the override is returned verbatim.
+/// pin a deterministic timestamp; the override is returned **verbatim** — an
+/// offset survives into `created`, and a value this tool cannot parse still
+/// lands where the user put it rather than being silently replaced by the wall
+/// clock. The variable itself is read in one place,
+/// [`crate::observe::override_str`].
 pub fn now_rfc3339() -> String {
-    if let Ok(s) = std::env::var("OPYS_NOW") {
-        if !s.is_empty() {
-            return s;
-        }
+    if let Some(s) = crate::observe::override_str() {
+        return s;
     }
-    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+    let now = crate::observe::now();
     let now = now.replace_nanosecond(0).unwrap_or(now);
     now.format(&Rfc3339).expect("RFC3339 formatting")
 }
@@ -65,13 +69,10 @@ pub fn now_rfc3339() -> String {
 /// fractional seconds yields `.000000`. An unparseable override falls back to
 /// the wall clock — a history key must always be a valid RFC3339 UTC datetime.
 pub fn now_utc_micros() -> String {
-    if let Ok(s) = std::env::var("OPYS_NOW") {
-        if let Some(key) = crate::history::key_from(&s) {
-            return key;
-        }
+    if let Some(key) = crate::observe::override_str().and_then(|s| crate::history::key_from(&s)) {
+        return key;
     }
-    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
-    crate::history::format_key(now)
+    crate::history::format_key(crate::observe::now())
 }
 
 /// The current instant as a [log-entry](crate::body::log_entries) stamp:
@@ -80,13 +81,7 @@ pub fn now_utc_micros() -> String {
 /// verbatim, so an override carrying an offset or a fraction still yields a
 /// canonical stamp — and falls back to the wall clock when it cannot be parsed.
 pub fn now_utc_seconds() -> String {
-    if let Ok(s) = std::env::var("OPYS_NOW") {
-        if let Some(dt) = crate::history::parse(&s) {
-            return crate::history::format_seconds(dt);
-        }
-    }
-    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
-    crate::history::format_seconds(now)
+    crate::history::format_seconds(crate::observe::now())
 }
 
 /// Stamp the auto-maintained timestamp fields on a user-initiated write: always

@@ -160,6 +160,38 @@ in-progress = ["review", "todo"]
 review      = ["done", "in-progress", "user-review"]
 user-review = ["done", "in-progress"]
 
+# Time-aware observations (ADR-0101). `ttl` is how long a document may sit in a
+# status, `max_visits` how often it may enter one; `verify` reports both apart
+# from content problems and exits 3 when they are all it found. Uncommenting
+# these two lines observes only — a bare duration has no fix:
+# [types.task.ttl]
+# in-progress = "2d"                 # one or more <n><unit>: s/m/h/d/w/y
+#
+# A *fixable* entry names where `verify --fix` sends the document, so the target
+# has to be a status a document can also come back from. That needs statuses
+# this default config does not ship — add them first, e.g.:
+#   statuses = ["todo", "in-progress", "review", "stuck", "user-review", "done"]
+#   [types.task.ttl]
+#   in-progress = { after = "2d", then = "stuck" }
+#   [types.task.max_visits]
+#   review = { limit = 3, then = "user-review" }    # the coder/reviewer loop
+#   [types.task.transitions]           # replaces the map above: the fix edge,
+#   todo = ["in-progress"]             # the way back and the escape must all
+#   in-progress = ["review", "stuck", "user-review"]   # exist, or `config
+#   stuck = ["in-progress"]            # validate` says so.  <- recovery edge
+#   review = ["in-progress", "user-review", "done"]
+#   user-review = ["review", "in-progress"]
+# `in-progress` names `user-review` as well because a spent budget refuses the
+# *entry* into `review`: the escape the refusal advertises has to be reachable
+# from wherever the document stands.
+# The example drops `blocked` on purpose. `block`/`unblock` set that status
+# *without* consulting the graph, so a type that declares both a `blocked`
+# status and a transitions map records history pairs `verify` then rejects —
+# do not pair the two until that auto-set is gone (format.md, "The status
+# graph"). For the same reason a `then` may not point at `blocked`: its rule
+# below demands a reason or a blocker link, which a fix cannot supply, so every
+# fix would be refused.
+
 [[types.task.sections]]
 heading = "Tasks"
 kind = "checklist"
@@ -324,5 +356,89 @@ mod tests {
             toml::from_str(super::DEFAULT_OPYS_CONFIG).expect("parses as ProjectConfig");
         let problems = cfg.validate();
         assert!(problems.is_empty(), "default config problems: {problems:?}");
+    }
+
+    /// The commented sketch under the `task` type is a recipe a user applies
+    /// verbatim: it replaces the type's `statuses` line and appends the four
+    /// tables below it. Uncomment it, apply it, and it must validate — a config
+    /// example that `config validate` rejects is worse than no example.
+    ///
+    /// It must also keep clear of `blocked`. `block`/`unblock` set that status
+    /// without consulting the graph (format.md, "The status graph"), so a type
+    /// with both a `blocked` status and a `transitions` map records history
+    /// pairs `verify` then rejects — a red CI on the user's first `block`,
+    /// which no config check can see coming.
+    #[test]
+    fn the_commented_task_sketch_applies_and_validates() {
+        // The sketch is the run of `#   `-indented lines after the "add them
+        // first" line; the deeper indent is what separates it from the prose.
+        let marker = "# this default config does not ship — add them first, e.g.:\n";
+        let start = super::DEFAULT_OPYS_CONFIG
+            .find(marker)
+            .expect("the task sketch's lead-in line")
+            + marker.len();
+        let sketch: String = super::DEFAULT_OPYS_CONFIG[start..]
+            .lines()
+            .take_while(|l| l.starts_with("#   "))
+            .map(|l| format!("{}\n", &l[4..]))
+            .collect();
+        let statuses = sketch
+            .lines()
+            .find(|l| l.starts_with("statuses = "))
+            .expect("the sketch replaces the type's statuses line")
+            .to_string();
+        assert!(
+            !sketch.contains("blocked"),
+            "the sketch must not pair a `blocked` status with a transitions map: {sketch}"
+        );
+
+        // Apply it: swap the `task` type's statuses line for the sketch's, drop
+        // the shipped `[types.task.transitions]` table the sketch replaces, and
+        // append the rest at the end of the file (the sketch's own tables are
+        // fully qualified, so where they land does not matter).
+        let rest: String = sketch
+            .lines()
+            .filter(|l| !l.starts_with("statuses = "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let task_at = super::DEFAULT_OPYS_CONFIG
+            .find("[types.task]")
+            .expect("the task type");
+        // The sketch redeclares the graph, so the shipped table has to go or TOML
+        // sees a duplicate key. Cut it from its header to the blank line ending it.
+        let shipped_graph = super::DEFAULT_OPYS_CONFIG
+            .find("[types.task.transitions]")
+            .expect("the shipped task graph");
+        let shipped_graph_end = shipped_graph
+            + super::DEFAULT_OPYS_CONFIG[shipped_graph..]
+                .find("\n\n")
+                .expect("a blank line after the shipped task graph")
+            + 2;
+        let old_statuses_at = task_at
+            + super::DEFAULT_OPYS_CONFIG[task_at..]
+                .find("statuses = ")
+                .expect("the task type's statuses line");
+        let old_statuses_end = old_statuses_at
+            + super::DEFAULT_OPYS_CONFIG[old_statuses_at..]
+                .find('\n')
+                .expect("a newline after it");
+        assert!(
+            old_statuses_end < shipped_graph,
+            "the sketch splice assumes the statuses line precedes the graph"
+        );
+        let applied = format!(
+            "{}{statuses}{}{}\n{rest}",
+            &super::DEFAULT_OPYS_CONFIG[..old_statuses_at],
+            &super::DEFAULT_OPYS_CONFIG[old_statuses_end..shipped_graph],
+            &super::DEFAULT_OPYS_CONFIG[shipped_graph_end..],
+        );
+
+        let cfg: crate::project_config::ProjectConfig =
+            toml::from_str(&applied).expect("the applied sketch parses as ProjectConfig");
+        let problems = cfg.validate();
+        assert!(
+            problems.is_empty(),
+            "the shipped task sketch does not validate: {problems:?}\n{applied}"
+        );
     }
 }

@@ -288,6 +288,72 @@ pub struct LinkReq {
     pub min: usize,
 }
 
+/// A `[types.<name>.ttl]` value: `in-progress = "10m"` (observed only — there is
+/// nothing for `--fix` to do) or `in-progress = { after = "10m", then = "stuck" }`
+/// (fixable — `--fix` performs that transition).
+///
+/// Deserialized by hand rather than as an untagged enum so both spellings land
+/// in one shape and a malformed table names the field it is missing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ttl {
+    /// How long the document may sit in the status, e.g. `"10m"`, `"2d"`,
+    /// `"1h30m"`. Unparsed here — see [`crate::observe::parse_duration`].
+    pub after: String,
+    /// Where `verify --fix` moves a stuck document, when the config says.
+    pub then: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for Ttl {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        use serde::de::{Error as _, MapAccess, Visitor};
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = Ttl;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a duration string, or a table { after = \"10m\", then = \"stuck\" }")
+            }
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> std::result::Result<Ttl, E> {
+                Ok(Ttl {
+                    after: s.to_string(),
+                    then: None,
+                })
+            }
+            fn visit_map<M: MapAccess<'de>>(self, mut m: M) -> std::result::Result<Ttl, M::Error> {
+                let (mut after, mut then) = (None, None);
+                while let Some(key) = m.next_key::<String>()? {
+                    match key.as_str() {
+                        "after" => after = Some(m.next_value::<String>()?),
+                        "then" => then = Some(m.next_value::<String>()?),
+                        // Unknown keys are ignored, as everywhere else in this
+                        // config: a misspelled one leaves the entry observe-only,
+                        // which `verify` shows, rather than taking every command
+                        // down with a parse error.
+                        _ => {
+                            m.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(Ttl {
+                    after: after.ok_or_else(|| M::Error::missing_field("after"))?,
+                    then,
+                })
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+/// A `[types.<name>.max_visits]` value: `review = { limit = 3, then = "user-review" }`.
+///
+/// `limit = N` means N entries into the status are allowed; the document that
+/// has made its N-th is *at* its limit — `verify` reports it and `set-status`
+/// refuses another entry, so `then` is where it goes next.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct MaxVisits {
+    pub limit: usize,
+    pub then: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct DocType {
     pub prefix: String,
@@ -338,6 +404,21 @@ pub struct DocType {
     /// what "live" means.
     #[serde(default)]
     pub releases_blocks: Vec<String>,
+    /// `[types.<name>.ttl]` — how long a document may sit in a status before
+    /// `verify` calls it **stuck** (ADR-0101 decision 1). A status maps either to
+    /// a bare duration (observed only) or to `{ after, then }` (`verify --fix`
+    /// moves it to `then`).
+    ///
+    /// The duration stays a string here on purpose: a typo must be a
+    /// `validate` problem (exit 1), never a parse error that changes the exit
+    /// code of every command. Parse it with [`crate::observe::parse_duration`].
+    #[serde(default)]
+    pub ttl: BTreeMap<String, Ttl>,
+    /// `[types.<name>.max_visits]` — how often a document may enter a status
+    /// before `verify` calls it **overflowed** and `set-status` refuses another
+    /// entry (ADR-0101 decision 1). Read through [`crate::observe`].
+    #[serde(default)]
+    pub max_visits: BTreeMap<String, MaxVisits>,
     #[serde(default)]
     pub tags_required: bool,
     #[serde(default)]
@@ -807,6 +888,36 @@ impl ProjectConfig {
                     t.default_status
                 ));
             }
+            // `ttl` / `max_visits` (ADR-0101 decision 1): the two time-aware
+            // observations `verify` reports and `--fix` performs. Both are
+            // keyed by a status and both may name a `then` the fix moves the
+            // document to, so one routine checks both.
+            for (from, ttl) in &t.ttl {
+                validate_observation_key(name, t, "ttl", from, &mut errs);
+                if crate::observe::parse_duration(&ttl.after).is_none() {
+                    errs.push(format!(
+                        "type '{name}': ttl '{from}': '{}' is not a duration (one or more \
+                         <integer><unit> groups, units s/m/h/d/w/y — e.g. \"10m\", \"2d\", \
+                         \"1h30m\")",
+                        ttl.after
+                    ));
+                }
+                if let Some(then) = &ttl.then {
+                    validate_observation_target(name, t, "ttl", from, then, &mut errs);
+                }
+            }
+            for (from, mv) in &t.max_visits {
+                validate_observation_key(name, t, "max_visits", from, &mut errs);
+                if mv.limit < 1 {
+                    errs.push(format!(
+                        "type '{name}': max_visits '{from}': limit must be at least 1 (got {})",
+                        mv.limit
+                    ));
+                }
+                if validate_observation_target(name, t, "max_visits", from, &mv.then, &mut errs) {
+                    validate_escalation_edges(name, t, from, &mv.then, &mut errs);
+                }
+            }
             if let Some(lr) = &t.requires_link {
                 if !type_names.contains(lr.to.as_str()) {
                     errs.push(format!(
@@ -1012,6 +1123,128 @@ impl ProjectConfig {
     }
 }
 
+/// The key of a `[types.X.ttl]` / `[types.X.max_visits]` entry must be a status
+/// the type declares, or the entry can never fire.
+fn validate_observation_key(
+    type_name: &str,
+    t: &DocType,
+    kind: &str,
+    from: &str,
+    errs: &mut Vec<String>,
+) {
+    if !t.statuses.contains(&from.to_string()) {
+        errs.push(format!(
+            "type '{type_name}': {kind} key '{from}' is not a status"
+        ));
+    }
+}
+
+/// The `then` of an observation is where `verify --fix` sends the document, so
+/// it has to be somewhere the fix can actually go and somewhere a human (or an
+/// agent) can come back from (ADR-0101 decision 6):
+///
+/// - a declared, non-terminal status other than the key itself (a terminal one
+///   is reached only through `close`, which `set-status` refuses outright, so
+///   every fix would fail);
+/// - when the type declares a status graph, the edge `from -> then` must exist,
+///   because the fix *is* an ordinary `set-status`; and the **recovery edge**
+///   `then -> from` must exist too, so a document the node flipped under a
+///   running agent is one `set-status` away from where it was.
+///
+/// A type with no graph is exempt from the last two: it allows every move
+/// already, which is what [`crate::lifecycle::allows`] answers.
+///
+/// Returns whether `then` is usable at all, so a caller can skip the further
+/// checks that only make sense for a target that resolves.
+fn validate_observation_target(
+    type_name: &str,
+    t: &DocType,
+    kind: &str,
+    from: &str,
+    then: &str,
+    errs: &mut Vec<String>,
+) -> bool {
+    if !t.statuses.contains(&then.to_string()) {
+        errs.push(format!(
+            "type '{type_name}': {kind} '{from}' -> '{then}' targets a status the type does \
+             not declare"
+        ));
+        return false;
+    }
+    if then == from {
+        errs.push(format!(
+            "type '{type_name}': {kind} '{from}' -> '{then}' must move the document somewhere \
+             else"
+        ));
+        return false;
+    }
+    if t.terminal_statuses.iter().any(|s| s == then) {
+        errs.push(format!(
+            "type '{type_name}': {kind} '{from}' -> '{then}' targets a terminal status (it is \
+             reached only via `close`, which deletes)"
+        ));
+        return false;
+    }
+    if t.transitions.is_empty() {
+        return true;
+    }
+    let mut ok = true;
+    if !crate::lifecycle::allows(t, from, then) {
+        errs.push(format!(
+            "type '{type_name}': {kind} '{from}' -> '{then}' is not a declared transition \
+             (`verify --fix` performs an ordinary set-status)"
+        ));
+        ok = false;
+    }
+    if !crate::lifecycle::allows(t, then, from) {
+        errs.push(format!(
+            "type '{type_name}': {kind} '{from}' -> '{then}' has no way back ('{then}' declares \
+             no transition to '{from}' — the recovery edge a fix under a running agent relies on)"
+        ));
+        ok = false;
+    }
+    ok
+}
+
+/// The **escalation edges** of a `max_visits` budget, checked only for that kind
+/// (ADR-0101 decision 6).
+///
+/// A `ttl` fires only while the document holds the key status, so its `then` is
+/// only ever entered from there. A visit budget is different: `set-status`
+/// refuses the *entry* into `from`, which happens from any status with an edge
+/// into it, and the refusal tells the caller to go to `then` instead. That
+/// advice has to be a legal move from wherever the document stands, or the
+/// document is barred from `from` for good with the advertised escape out of
+/// reach — verify sees nothing to report, because [`crate::observe::overflow`]
+/// keys on the status the document *holds*, and `--fix` has nothing to do.
+///
+/// So every predecessor of `from` must also declare an edge to `then`. `then`
+/// itself is exempt (a document already there needs no move), and so is `from`
+/// (the fix edge `from -> then` is checked above).
+fn validate_escalation_edges(
+    type_name: &str,
+    t: &DocType,
+    from: &str,
+    then: &str,
+    errs: &mut Vec<String>,
+) {
+    if t.transitions.is_empty() {
+        return;
+    }
+    for (pred, targets) in &t.transitions {
+        if pred == then || pred == from || !targets.iter().any(|s| s == from) {
+            continue;
+        }
+        if !crate::lifecycle::allows(t, pred, then) {
+            errs.push(format!(
+                "type '{type_name}': max_visits '{from}' -> '{then}': a document at '{pred}' \
+                 may enter '{from}' but not '{then}' — once the budget is spent the refusal \
+                 would name an escape it cannot take"
+            ));
+        }
+    }
+}
+
 /// Validate a section's `structure`: only a `structured` section may declare it,
 /// and then it is required and must parse as an [`mdprism`] schema.
 fn validate_structure(type_name: &str, sec: &SectionSpec, errs: &mut Vec<String>) {
@@ -1157,6 +1390,114 @@ done = ["planned"]
             joined.contains("type 'feature': default_status 'planned' has no outgoing transitions"),
             "{joined}"
         );
+    }
+
+    /// Both `ttl` spellings land in one shape: a bare duration is observed and
+    /// nothing more, a table names where `--fix` should send the document. The
+    /// duration stays unparsed here — a typo is a `validate` problem, not a
+    /// parse error that would change the exit code of every command.
+    #[test]
+    fn ttl_accepts_a_bare_duration_and_a_table() {
+        let cfg: ProjectConfig = toml::from_str(
+            r#"
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "doing", "stuck"]
+default_status = "todo"
+
+[types.task.ttl]
+todo = "2d"
+doing = { after = "10m", then = "stuck" }
+
+[types.task.max_visits]
+doing = { limit = 3, then = "stuck" }
+"#,
+        )
+        .unwrap();
+        let t = &cfg.types["task"];
+        assert_eq!(
+            t.ttl["todo"],
+            Ttl {
+                after: "2d".to_string(),
+                then: None
+            }
+        );
+        assert_eq!(
+            t.ttl["doing"],
+            Ttl {
+                after: "10m".to_string(),
+                then: Some("stuck".to_string())
+            }
+        );
+        assert_eq!(
+            t.max_visits["doing"],
+            MaxVisits {
+                limit: 3,
+                then: "stuck".to_string()
+            }
+        );
+    }
+
+    /// Every way a `ttl`/`max_visits` entry can be config the project cannot
+    /// mean, including the recovery edge `verify --fix` under a running agent
+    /// relies on (ADR-0101 decision 6).
+    #[test]
+    fn flags_broken_ttl_and_max_visits_maps() {
+        let cfg: ProjectConfig = toml::from_str(
+            r#"
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "doing", "review", "stuck", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]
+
+[types.task.transitions]
+todo = ["doing"]
+doing = ["review", "stuck"]
+review = ["doing", "done"]
+stuck = ["todo"]
+
+[types.task.ttl]
+idle = "10m"
+todo = "ten minutes"
+doing = { after = "10m", then = "stuck" }
+review = { limit = 1, after = "1d", then = "todo" }
+
+[types.task.max_visits]
+doing = { limit = 2, then = "review" }
+review = { limit = 0, then = "done" }
+stuck = { limit = 2, then = "stuck" }
+"#,
+        )
+        .unwrap();
+        let joined = cfg.validate().join("\n");
+        for want in [
+            "type 'task': ttl key 'idle' is not a status",
+            "type 'task': ttl 'todo': 'ten minutes' is not a duration",
+            // `doing -> stuck` is declared, but `stuck` only goes back to `todo`.
+            "type 'task': ttl 'doing' -> 'stuck' has no way back ('stuck' declares no \
+             transition to 'doing'",
+            "type 'task': ttl 'review' -> 'todo' is not a declared transition",
+            "type 'task': max_visits 'review': limit must be at least 1 (got 0)",
+            "type 'task': max_visits 'review' -> 'done' targets a terminal status",
+            "type 'task': max_visits 'stuck' -> 'stuck' must move the document somewhere else",
+            // The fix edge `doing -> review` and the way back both exist, but
+            // `todo` may enter `doing` and could not take the escape.
+            "type 'task': max_visits 'doing' -> 'review': a document at 'todo' may enter \
+             'doing' but not 'review' — once the budget is spent the refusal would name an \
+             escape it cannot take",
+        ] {
+            assert!(joined.contains(want), "missing {want:?} in\n{joined}");
+        }
+        // An unknown key inside the table is ignored, not a parse error: the
+        // entry is simply observe-only, which verify shows.
+        let cfg: ProjectConfig = toml::from_str(
+            "[types.task]\nprefix = \"TASK\"\nstatuses = [\"todo\"]\n\
+             default_status = \"todo\"\n[types.task.ttl]\n\
+             todo = { after = \"1d\", thenn = \"todo\" }\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.types["task"].ttl["todo"].then, None);
     }
 
     /// A key is not an edge: a `default_status` that is present in the map but

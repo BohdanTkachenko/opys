@@ -133,11 +133,15 @@ the storage backends, and the node with its embedded web UI. Permanently, and
 for every crate here.
 
 **Exit-code contract (important):** `verify` returns `1` when it finds content
-problems; every other command returns `0` on success. Real failures (bad
-flags, IO, missing config) surface as `OpysError` and the binary maps them to
-exit `2`. Crucially, **content problems found by `verify` are not `OpysError`s**
-— they are collected into a `Vec<String>` and printed, so verify can report
-*all* problems at once rather than aborting on the first.
+problems and `3` when all it found are *observations* (a document past its
+type's `ttl`, or at its `max_visits` limit — ADR-0101: not content problems, and
+never mixed into the problem list); every other command returns `0` on success.
+Real failures (bad flags, IO, missing config) surface as `OpysError` and the
+binary maps them to exit `2` — the binary passes any other code through
+unchanged, so `3` needed no mapping. Crucially, **content problems found by
+`verify` are not `OpysError`s** — they are collected into a `Vec<String>` and
+printed, so verify can report *all* problems at once rather than aborting on the
+first, and the same applies to a fix `verify --fix` could not perform.
 
 Layering, roughly outermost-in:
 
@@ -247,6 +251,15 @@ Layering, roughly outermost-in:
   phrase. The single reader of that map, so `set-status`, `close`, `verify` and
   the node's `DocView` cannot disagree about declared order, duplicates, or what
   an absent map means (any-to-any) versus an absent *key* (a dead end).
+- `src/observe.rs` — the time-aware observations (ADR-0101): `override_str()`
+  (the one reader of the `OPYS_NOW` override) and `now()` (the override parsed
+  as an instant, which `commands::now_utc_micros`/`today` go through — while
+  `now_rfc3339` returns `override_str()` verbatim, so an offset survives),
+  `parse_duration`, the `stuck`/`overflow` predicates over a type's
+  `[ttl]`/`[max_visits]`, `observations` (the one function `verify`, `next` and
+  the node call, so the three cannot disagree) and `apply_fixes` (what
+  `verify --fix` performs, one fix per document per run, every one of them an
+  ordinary `set_status::core` move under the visit budget).
 - `src/links.rs` — the auto-sync engine: `reconcile`/`reconcile_blockers`
   (bidirectional, title-fresh relation maps between live docs) and `linkify`
   (bare `PREFIX-NNNN` mentions in prose → markdown links, skipping code; the
@@ -331,6 +344,31 @@ All status/section/link guards are *config*, enforced by one engine
   `archived`⇒`archived_reason`, `implemented`⇒a checked `## Test plan` item) are
   `[[rules]]`, enforced at write time and by `verify`. "Removed from the product"
   is just a status (e.g. `archived`), never a deletion.
+- **Time-aware observations** (ADR-0101): a type may also declare `[ttl]` (a
+  status → how long a document may hold it) and `[max_visits]` (a status →
+  `{ limit, then }`). A document past its `ttl` is *stuck*; one whose history
+  records `limit` entries at its current status is *overflowed*. The two trip at
+  the same count but not in the same place: the observation counts the status the
+  document *holds* (the one a fix moves it out of), while the guard counts the
+  status being *entered*, so `set-status` refuses the move from anywhere, naming
+  `then`. Neither is a content problem: `verify` prints them in their own block
+  and exits `3` when they are all it found, and `verify --fix` performs the
+  configured transitions. `config validate` requires each `then` to be a
+  declared, non-terminal status and — where the type declares transitions — the
+  fix edge, the edge back (the recovery edge a fix under a running agent relies
+  on) and, for `max_visits`, the *escalation edge* to `then` from every status
+  that may enter the budgeted one, so the refusal never advertises an illegal
+  move.
+
+  `verify --fix` is deliberately timid: at most one fix per document per run
+  (overflow before stuck), a refused fix is a problem rather than an abort,
+  nothing is flushed on a run that fixed nothing, every fix — the overflow one
+  included — stays subject to the visit budget (the guard counts entries into
+  the status being *entered*, so a bypass could only ever suppress the budget of
+  the `then` being moved *to*, writing the one count the guard exists to
+  prevent; a spent `then` lands in the refusals instead, naming its own `then`),
+  and no fixing happens at all while `pcfg.validate()` has anything to say — a
+  fix is a move along the graph that check guards.
 - **Section checks** (`[[types.X.sections.checks]]`): a universal, config-driven
   validation attachable to any section. A `pattern` regex parses each line into
   named capture groups; an optional `file` group (a path that must exist under
@@ -363,8 +401,9 @@ All status/section/link guards are *config*, enforced by one engine
 
 opys generates no view files (no `INDEX.md`); slice the inventory live with
 `opys list` or `opys query`. Mutating commands (`new`, `set-status`, `tag`,
-`log`, `retire`, `block`, `close`, `cleanup`) call `maybe_sync` → `commands/sync::run`
-automatically unless `--no-sync` is passed. That pass reconciles relations,
+`log`, `retire`, `block`, `close`, `cleanup`, and `verify --fix` when it actually
+fixed something) call `maybe_sync` → `commands/sync::run` automatically unless
+`--no-sync` is passed. That pass reconciles relations,
 linkifies prose, and **relocates each document to its canonical layout path**
 (the store's `flush` renames a file when a status change or `[layout]` edit moved
 it, e.g. into `_archived/`); it refuses to run if any document fails to parse

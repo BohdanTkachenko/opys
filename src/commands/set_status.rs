@@ -69,6 +69,26 @@ pub fn core(
         )));
     }
 
+    // The visit budget (ADR-0101 decision 1), after the graph so a move the type
+    // does not declare at all keeps the clearer refusal. `limit = N` allows N
+    // entries into the status: a document that already has N gets no more, and
+    // the message names the `then` the config chose for exactly this moment.
+    // Unlike the graph check this does *not* skip the equal case — a no-op
+    // `set-status` appends an entry, and an entry is a visit. There is no
+    // bypass: `verify --fix` runs its moves through here like anything else, so
+    // the count a document can reach is `limit` and nothing opys writes can
+    // carry it past (see [`crate::observe::apply_fixes`]).
+    if let Some(mv) = t.max_visits.get(status) {
+        let n = crate::observe::visits(&doc, status);
+        if mv.limit >= 1 && n >= mv.limit {
+            return Err(usage(format!(
+                "cannot set {id} to {status}: type '{tname}' allows {} visit(s) to {status} \
+                 and this document has had {n} — max_visits sends it to {} instead",
+                mv.limit, mv.then
+            )));
+        }
+    }
+
     if let Some(r) = reason {
         // `--reason` writes `<status>_reason`, which must be a declared field for
         // the type or the very next `verify` rejects it as unknown frontmatter.

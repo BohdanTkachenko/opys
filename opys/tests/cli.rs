@@ -4036,6 +4036,75 @@ fn docs_ship_a_bulk_pipe_that_runs() {
     }
 }
 
+/// The minimal `[types.task]` header the two `format.md` fragments below are
+/// written against: the statuses their own text names, the conventional
+/// `default_status`, and the one terminal status. Splicing it on is the
+/// completion a reader makes, and it is where a fragment's own contradictions
+/// (a `default_status` with no outgoing edge, a `then` nothing can reach)
+/// surface.
+const FORMAT_MD_TASK_HEADER: &str = "pad = 4\n[types.task]\nprefix = \"TASK\"\n\
+statuses = [\"todo\", \"in-progress\", \"review\", \"stuck\", \"user-review\", \"done\"]\n\
+default_status = \"todo\"\nterminal_statuses = [\"done\"]\n";
+
+/// …and the shorter one, for the status-graph example, which names four.
+const FORMAT_MD_GRAPH_HEADER: &str = "pad = 4\n[types.task]\nprefix = \"TASK\"\n\
+statuses = [\"todo\", \"in-progress\", \"review\", \"user-review\", \"done\"]\n\
+default_status = \"todo\"\nterminal_statuses = [\"done\"]\n";
+
+/// The `toml` blocks in format.md are the configs readers copy, and the
+/// normative file's own subject is what `config validate` accepts — yet two
+/// successive rounds of new validator rules (`default_status` needs an outgoing
+/// edge; a `max_visits` budget needs its escalation edges) each left a
+/// documented example failing that very command. Feed them to the validator so
+/// the next rule cannot.
+#[test]
+fn the_config_examples_in_format_md_pass_config_validate() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let md = std::fs::read_to_string(repo.join("skills/opys/references/format.md")).unwrap();
+    // The first fenced `toml` block after a heading. A moved or renamed heading
+    // fails loudly here rather than quietly pinning nothing.
+    let block = |heading: &str| -> String {
+        let from = md
+            .find(heading)
+            .unwrap_or_else(|| panic!("format.md no longer has the heading `{heading}`"));
+        let open = from
+            + md[from..]
+                .find("```toml\n")
+                .unwrap_or_else(|| panic!("no toml block under `{heading}`"))
+            + "```toml\n".len();
+        let close = open + md[open..].find("```").expect("unterminated toml block");
+        md[open..close].to_string()
+    };
+    for (what, cfg) in [
+        (
+            "the `opys.toml` configuration reference",
+            block("## Configuration: `opys.toml`"),
+        ),
+        (
+            "the status-graph example",
+            format!("{FORMAT_MD_GRAPH_HEADER}{}", block("### The status graph")),
+        ),
+        (
+            "the time-aware example",
+            format!(
+                "{FORMAT_MD_TASK_HEADER}{}",
+                block("### Time-aware observations")
+            ),
+        ),
+    ] {
+        let dir = project_with(&cfg);
+        let out = opys(&dir).args(["config", "validate"]).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{what} in format.md does not pass `opys config validate`:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
 /// Rust ignores SIGPIPE, so an unguarded `println!` panics (exit 101, backtrace
 /// on stderr) as soon as the reader of a pipe goes away — and `opys list
 /// --format ids` is the documented producer of exactly such a pipe
@@ -6042,6 +6111,829 @@ done = [\"todo\"]\n",
         .stderr(predicate::str::contains(
             "default_status 'todo' has no outgoing transitions",
         ));
+}
+
+// ---------------------------------------------------------------------------
+// Time-aware verify: `[types.X.ttl]`, `[types.X.max_visits]`, `--fix`, exit 3
+// (ADR-0101 / FEAT-0108)
+// ---------------------------------------------------------------------------
+
+/// A `task` type with both observations configured, a graph that declares each
+/// fix *and* the edge back from it (the recovery edge `config validate`
+/// requires), the escalation edge `doing -> user-review` (the budget's refusal
+/// fires on the *entry* into `review`, so every status that may enter it has to
+/// be able to take the escape), and a `_stuck/` directory so a fix has a
+/// relocation to perform.
+const TTL_CFG: &str = "pad = 4\n\
+[types.task]\nprefix = \"TASK\"\n\
+statuses = [\"todo\", \"doing\", \"review\", \"stuck\", \"user-review\", \"done\"]\n\
+default_status = \"todo\"\n\
+terminal_statuses = [\"done\"]\n\
+status_dirs = { stuck = \"_stuck\" }\n\
+[types.task.transitions]\n\
+todo = [\"doing\"]\n\
+doing = [\"review\", \"todo\", \"stuck\", \"user-review\"]\n\
+review = [\"done\", \"doing\", \"user-review\"]\n\
+stuck = [\"doing\", \"todo\"]\n\
+user-review = [\"review\", \"doing\"]\n\
+[types.task.ttl]\n\
+doing = { after = \"10m\", then = \"stuck\" }\n\
+[types.task.max_visits]\n\
+review = { limit = 3, then = \"user-review\" }\n";
+
+/// The history key of the entry `set-status` writes at [`PINNED_NOW`], one
+/// microsecond past the `new` that seeded the document at the same instant.
+const SECOND_KEY: &str = "2026-01-02T03:04:05.000001Z";
+/// Well past the 10m `ttl` of `TTL_CFG`'s `doing`.
+const LATE_NOW: &str = "2026-01-02T03:20:00Z";
+
+/// A `TTL_CFG` project holding one task that entered `doing` at [`PINNED_NOW`].
+fn ttl_project() -> TempDir {
+    let dir = project_with(TTL_CFG);
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Work"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["set-status", "TASK-0001", "doing"])
+        .assert()
+        .success();
+    dir
+}
+
+/// A document past its status's `ttl` is an *observation*, not a problem: its
+/// own block, its own exit code, and nothing on the `verify: OK` line's stream.
+#[test]
+fn a_stuck_document_exits_three() {
+    let dir = ttl_project();
+    // Nothing has elapsed yet, and the boundary is strict: exactly `after` past
+    // the entry is not stuck.
+    opys(&dir).arg("verify").assert().success();
+    opys(&dir)
+        .env("OPYS_NOW", "2026-01-02T03:14:05.000001Z")
+        .arg("verify")
+        .assert()
+        .success();
+    opys(&dir)
+        .env("OPYS_NOW", "2026-01-02T03:14:05.000002Z")
+        .arg("verify")
+        .assert()
+        .code(3);
+    opys(&dir)
+        .env("OPYS_NOW", LATE_NOW)
+        .arg("verify")
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("verify: OK").not())
+        .stderr(predicate::str::contains("verify: 1 observation(s)"))
+        .stderr(predicate::str::contains(format!(
+            "TASK-0001: stuck in doing since {SECOND_KEY} (ttl 10m) — `--fix` moves it to stuck"
+        )));
+}
+
+/// Observations never change the exit-code class of content problems: a corpus
+/// with both is exit 1, and both blocks are printed.
+#[test]
+fn a_problem_beside_a_stuck_document_exits_one() {
+    let dir = ttl_project();
+    dir.child("opys/TASK-0002.md")
+        .write_str(&format!(
+            "---\nid: TASK-0002\nstatus: todo\ncreated: \"{PINNED_NOW}\"\nbogus: 1\n{}---\n\n# Other\n",
+            hist("todo")
+        ))
+        .unwrap();
+    opys(&dir)
+        .env("OPYS_NOW", LATE_NOW)
+        .arg("verify")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("verify: 1 problem(s)"))
+        .stderr(predicate::str::contains(
+            "TASK-0002: unknown frontmatter field 'bogus'",
+        ))
+        .stderr(predicate::str::contains("verify: 1 observation(s)"))
+        .stderr(predicate::str::contains("TASK-0001: stuck in doing"));
+    // …and a content problem does not stand `--fix` down. Only a *config*
+    // problem does (see `verify_fix_stands_down_while_the_config_is_broken`):
+    // the graph a fix walks is what that check guards, while an unrelated
+    // finding elsewhere in the corpus must not stop a node's autofix from
+    // unsticking this document. The problem survives the pass, so does the 1.
+    opys(&dir)
+        .env("OPYS_NOW", LATE_NOW)
+        .args(["verify", "--fix"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains(
+            "fixed TASK-0001: doing -> stuck (stuck)",
+        ))
+        .stderr(predicate::str::contains(
+            "TASK-0002: unknown frontmatter field 'bogus'",
+        ))
+        .stderr(predicate::str::contains("verify: --fix skipped").not());
+    dir.child("opys/_stuck/TASK-0001.md")
+        .assert(predicate::path::exists());
+}
+
+/// `--fix` performs the configured transition as an ordinary `set-status`:
+/// history appended, the document relocated to the layout path of its new
+/// status, the sync pass run over the result, and the re-verify exits on what
+/// remains — here, nothing.
+///
+/// The second document exists only to watch the sync pass: its body carries a
+/// bare `TASK-0001` mention, which only `links::linkify` turns into a link, and
+/// it must come out linkified — at the *relocated* path, since the relocation
+/// happened before the pass. `only_one_fix_per_document_runs_in_a_pass` asserts
+/// the mirror image under `--no-sync`.
+#[test]
+fn verify_fix_moves_a_stuck_document_and_relocates_it() {
+    let dir = ttl_project();
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Bystander"])
+        .assert()
+        .success();
+    let bystander = dir.path().join("opys/TASK-0002.md");
+    let mut text = std::fs::read_to_string(&bystander).unwrap();
+    text.push_str("\nSee TASK-0001 for context.\n");
+    std::fs::write(&bystander, &text).unwrap();
+    opys(&dir)
+        .env("OPYS_NOW", LATE_NOW)
+        .args(["verify", "--fix"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "fixed TASK-0001: doing -> stuck (stuck)",
+        ))
+        .stdout(predicate::str::contains("verify: OK (2 documents)"));
+    let text = std::fs::read_to_string(&bystander).unwrap();
+    assert!(
+        text.contains("See [TASK-0001 — Work](_stuck/TASK-0001.md) for context."),
+        "the fix pass must run sync, linkifying against the relocated path: {text}"
+    );
+    dir.child("opys/TASK-0001.md")
+        .assert(predicate::path::missing());
+    let text = std::fs::read_to_string(dir.path().join("opys/_stuck/TASK-0001.md")).unwrap();
+    assert!(text.contains("status: stuck"), "{text}");
+    assert!(
+        text.contains(&format!(
+            "history:\n  \"{PINNED_KEY}\": todo\n  \"{SECOND_KEY}\": doing\n  \
+             \"2026-01-02T03:20:00.000000Z\": stuck\n"
+        )),
+        "{text}"
+    );
+    // And the fixed corpus is clean at the very clock that found it stuck.
+    opys(&dir)
+        .env("OPYS_NOW", LATE_NOW)
+        .arg("verify")
+        .assert()
+        .success();
+}
+
+/// The visit budget: `limit = 3` allows three entries into `review`, the third
+/// *is* the limit — `set-status` refuses a fourth naming `then`, verify names
+/// the document as overflowed, and `--fix` moves it there.
+#[test]
+fn the_entry_past_max_visits_is_refused_and_the_document_is_named_as_overflowed() {
+    let dir = project_with(TTL_CFG);
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Ping pong"])
+        .assert()
+        .success();
+    for status in ["doing", "review", "doing", "review", "doing", "review"] {
+        opys(&dir)
+            .args(["set-status", "TASK-0001", status])
+            .assert()
+            .success();
+    }
+    // The fourth entry is refused — by the budget, not the graph: the document
+    // is *at* `review`, and a move to the current status has always been legal.
+    opys(&dir)
+        .args(["set-status", "TASK-0001", "review"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "cannot set TASK-0001 to review: type 'task' allows 3 visit(s) to review and this \
+             document has had 3 — max_visits sends it to user-review instead",
+        ));
+    // …and the same document is what verify names, at any clock.
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains(
+            "TASK-0001: 3 visits to review reaches its limit of 3 — `--fix` moves it to \
+             user-review",
+        ));
+    opys(&dir)
+        .args(["verify", "--fix"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "fixed TASK-0001: review -> user-review (max_visits)",
+        ));
+    let text = std::fs::read_to_string(dir.path().join("opys/TASK-0001.md")).unwrap();
+    assert!(text.contains("status: user-review"), "{text}");
+    assert_eq!(text.matches("\": review").count(), 3, "{text}");
+    // The budget is spent for good: `user-review -> review` is a declared edge,
+    // and the guard still refuses it. `then` is where a human takes over.
+    opys(&dir)
+        .args(["set-status", "TASK-0001", "review"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "max_visits sends it to user-review",
+        ));
+}
+
+/// The same bytes are clean or stuck depending only on `OPYS_NOW`: no wall
+/// clock reaches the observation, so one commit verifies the same way twice.
+#[test]
+fn observations_follow_opys_now_not_the_wall_clock() {
+    let dir = ttl_project();
+    for (now, code) in [
+        ("2025-01-01T00:00:00Z", 0),
+        (PINNED_NOW, 0),
+        ("2026-01-02T03:13:00Z", 0),
+        (LATE_NOW, 3),
+        ("2099-01-01T00:00:00Z", 3),
+    ] {
+        opys(&dir)
+            .env("OPYS_NOW", now)
+            .arg("verify")
+            .assert()
+            .code(code);
+    }
+}
+
+/// A fix must be safe to apply under a running agent, so the type has to declare
+/// the way back from where the fix sends the document (ADR-0101 decision 6).
+#[test]
+fn config_validate_flags_a_ttl_target_with_no_way_back() {
+    let dir = project_with(
+        "pad = 4\n\
+[types.task]\nprefix = \"TASK\"\n\
+statuses = [\"todo\", \"doing\", \"stuck\", \"done\"]\ndefault_status = \"todo\"\n\
+terminal_statuses = [\"done\"]\n\
+[types.task.transitions]\n\
+todo = [\"doing\"]\n\
+doing = [\"stuck\", \"done\"]\n\
+[types.task.ttl]\n\
+doing = { after = \"10m\", then = \"stuck\" }\n\
+[types.task.max_visits]\n\
+doing = { limit = 2, then = \"done\" }\n",
+    );
+    opys(&dir)
+        .args(["config", "validate"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "type 'task': ttl 'doing' -> 'stuck' has no way back ('stuck' declares no transition \
+             to 'doing' — the recovery edge a fix under a running agent relies on)",
+        ))
+        .stderr(predicate::str::contains(
+            "type 'task': max_visits 'doing' -> 'done' targets a terminal status",
+        ));
+}
+
+/// The observation block is byte-stable — the same corpus, the same clock, the
+/// same bytes, twice — and it is a block of its own, after the problems.
+#[test]
+fn the_observations_block_is_byte_stable_and_separate_from_the_problems() {
+    let dir = project_with(TTL_CFG);
+    for title in ["Stuck one", "Ping pong"] {
+        opys(&dir)
+            .args(["new", "--type", "task", "--title", title])
+            .assert()
+            .success();
+    }
+    opys(&dir)
+        .args(["set-status", "TASK-0001", "doing"])
+        .assert()
+        .success();
+    for status in ["doing", "review", "doing", "review", "doing", "review"] {
+        opys(&dir)
+            .args(["set-status", "TASK-0002", status])
+            .assert()
+            .success();
+    }
+    let expected = format!(
+        "verify: 2 observation(s)\n  \
+         TASK-0001: stuck in doing since {SECOND_KEY} (ttl 10m) — `--fix` moves it to stuck\n  \
+         TASK-0002: 3 visits to review reaches its limit of 3 — `--fix` moves it to user-review\n"
+    );
+    let run = || {
+        let out = opys(&dir)
+            .env("OPYS_NOW", LATE_NOW)
+            .arg("verify")
+            .assert()
+            .code(3)
+            .get_output()
+            .stderr
+            .clone();
+        String::from_utf8(out).unwrap()
+    };
+    assert_eq!(run(), expected);
+    assert_eq!(run(), expected);
+
+    // A problem does not merge into the block: it keeps its own heading, first.
+    dir.child("opys/TASK-0003.md")
+        .write_str(&format!(
+            "---\nid: TASK-0003\nstatus: todo\ncreated: \"{PINNED_NOW}\"\nbogus: 1\n{}---\n\n# Other\n",
+            hist("todo")
+        ))
+        .unwrap();
+    let out = opys(&dir)
+        .env("OPYS_NOW", LATE_NOW)
+        .arg("verify")
+        .assert()
+        .code(1)
+        .get_output()
+        .stderr
+        .clone();
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        out.starts_with("verify: 1 problem(s)\n  TASK-0003:"),
+        "{out}"
+    );
+    assert!(out.ends_with(&expected), "{out}");
+}
+
+/// A configured `then` can be a status whose `[[rules]]` demand something a fix
+/// cannot supply. No config check can foresee that, so the refusal is collected
+/// as a problem and the pass carries on — `verify --fix` never turns a content
+/// issue into exit 2.
+///
+/// And when no fix was applied the pass writes nothing at all — neither the
+/// flush nor the sync that follows it. The second document here is valid but
+/// written non-canonically (its declared fields out of alphabetical order, no
+/// `updated`), which is what the *sync* pass rewrites: it backfills the
+/// timestamp and re-renders the document canonically. The flush alone would
+/// leave it alone — it writes what a fix dirtied — so this pins the branch as a
+/// whole: a `verify --fix` that ran the pair unconditionally would be a silent
+/// `sync` over a corpus it found nothing to fix in.
+#[test]
+fn a_fix_the_rules_refuse_is_reported_and_does_not_abort_the_pass() {
+    let dir = project_with(
+        "pad = 4\n\
+[types.task]\nprefix = \"TASK\"\n\
+statuses = [\"todo\", \"doing\", \"blocked\", \"done\"]\ndefault_status = \"todo\"\n\
+terminal_statuses = [\"done\"]\n\
+[types.task.fields.blocked_reason]\ntype = \"string\"\n\
+[types.task.fields.alpha]\ntype = \"string\"\n\
+[types.task.fields.zeta]\ntype = \"string\"\n\
+[types.task.ttl]\ndoing = { after = \"10m\", then = \"blocked\" }\n\
+[[rules]]\nwhen = { status = \"blocked\" }\nrequire_field = \"blocked_reason\"\n",
+    );
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Work"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["set-status", "TASK-0001", "doing"])
+        .assert()
+        .success();
+    let hand_written = format!(
+        "---\nid: TASK-0002\nstatus: todo\ncreated: \"{PINNED_NOW}\"\nzeta: z\nalpha: a\n{}---\n\n# Other\n",
+        hist("todo")
+    );
+    dir.child("opys/TASK-0002.md")
+        .write_str(&hand_written)
+        .unwrap();
+    opys(&dir)
+        .env("OPYS_NOW", LATE_NOW)
+        .args(["verify", "--fix"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "TASK-0001: could not fix (stuck): cannot set TASK-0001 to blocked: field \
+             'blocked_reason' is required",
+        ));
+    // Nothing was written: a refused fix leaves the document where it stands,
+    // and it is still the stuck document verify observed.
+    let text = std::fs::read_to_string(dir.path().join("opys/TASK-0001.md")).unwrap();
+    assert!(text.contains("status: doing"), "{text}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("opys/TASK-0002.md")).unwrap(),
+        hand_written,
+        "a run that fixed nothing must not rewrite the corpus"
+    );
+    opys(&dir)
+        .env("OPYS_NOW", LATE_NOW)
+        .arg("verify")
+        .assert()
+        .code(3);
+}
+
+/// One document fixed and another refused in the *same* pass: the applied fix
+/// re-verifies the corpus from the medium, which discards every problem
+/// collected before it, so the refusals have to be put back afterwards or a
+/// stuck document nothing could move would leave the run claiming exit 3. Both
+/// halves are asserted from one run.
+#[test]
+fn a_refusal_beside_an_applied_fix_still_reports_the_problem() {
+    let dir = project_with(
+        "pad = 4\n\
+[types.task]\nprefix = \"TASK\"\n\
+statuses = [\"todo\", \"parked\", \"doing\", \"stuck\", \"done\"]\n\
+default_status = \"todo\"\nterminal_statuses = [\"done\"]\n\
+[types.task.fields.stuck_reason]\ntype = \"string\"\n\
+[types.task.ttl]\n\
+parked = { after = \"10m\", then = \"todo\" }\n\
+doing = { after = \"10m\", then = \"stuck\" }\n\
+[[rules]]\nwhen = { status = \"stuck\" }\nrequire_field = \"stuck_reason\"\n",
+    );
+    for title in ["Refused", "Fixable"] {
+        opys(&dir)
+            .args(["new", "--type", "task", "--title", title])
+            .assert()
+            .success();
+    }
+    opys(&dir)
+        .args(["set-status", "TASK-0001", "doing"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["set-status", "TASK-0002", "parked"])
+        .assert()
+        .success();
+    opys(&dir)
+        .env("OPYS_NOW", LATE_NOW)
+        .args(["verify", "--fix"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains(
+            "fixed TASK-0002: parked -> todo (stuck)",
+        ))
+        .stderr(predicate::str::contains("verify: 1 problem(s)"))
+        .stderr(predicate::str::contains(
+            "TASK-0001: could not fix (stuck): cannot set TASK-0001 to stuck: field \
+             'stuck_reason' is required",
+        ));
+    let text = std::fs::read_to_string(dir.path().join("opys/TASK-0001.md")).unwrap();
+    assert!(text.contains("status: doing"), "{text}");
+    let text = std::fs::read_to_string(dir.path().join("opys/TASK-0002.md")).unwrap();
+    assert!(text.contains("status: todo"), "{text}");
+}
+
+/// A document can be stuck *and* overflowed on the same status. Both are
+/// reported, but only one fix runs: the second would start from a status the
+/// first one just left. The overflow wins — the spent budget is the stronger
+/// signal — and `--no-sync` is honoured like everywhere else: the bystander's
+/// bare `TASK-0001` mention stays bare, where
+/// `verify_fix_moves_a_stuck_document_and_relocates_it` has the same mention
+/// linkified by the pass a plain `--fix` runs.
+#[test]
+fn only_one_fix_per_document_runs_in_a_pass() {
+    let dir = project_with(
+        "pad = 4\n\
+[types.task]\nprefix = \"TASK\"\n\
+statuses = [\"todo\", \"doing\", \"review\", \"user-review\", \"done\"]\n\
+default_status = \"todo\"\nterminal_statuses = [\"done\"]\n\
+[types.task.ttl]\nreview = { after = \"10m\", then = \"user-review\" }\n\
+[types.task.max_visits]\nreview = { limit = 2, then = \"user-review\" }\n",
+    );
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Both at once"])
+        .assert()
+        .success();
+    for status in ["review", "doing", "review"] {
+        opys(&dir)
+            .args(["set-status", "TASK-0001", status])
+            .assert()
+            .success();
+    }
+    // The bystander's bare mention goes in last: every mutating command before
+    // this point runs the sync pass, and any of them would have linkified it.
+    opys(&dir)
+        .args(["--no-sync", "new", "--type", "task", "--title", "Bystander"])
+        .assert()
+        .success();
+    let bystander = dir.path().join("opys/TASK-0002.md");
+    let mut bare = std::fs::read_to_string(&bystander).unwrap();
+    bare.push_str("\nSee TASK-0001 for context.\n");
+    std::fs::write(&bystander, &bare).unwrap();
+    opys(&dir)
+        .env("OPYS_NOW", LATE_NOW)
+        .arg("verify")
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("verify: 2 observation(s)"));
+    let out = opys(&dir)
+        .env("OPYS_NOW", LATE_NOW)
+        .args(["--no-sync", "verify", "--fix"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        out.starts_with("fixed TASK-0001: review -> user-review (max_visits)\n"),
+        "{out}"
+    );
+    assert_eq!(out.matches("fixed ").count(), 1, "{out}");
+    let text = std::fs::read_to_string(dir.path().join("opys/TASK-0001.md")).unwrap();
+    assert!(text.contains("status: user-review"), "{text}");
+    assert_eq!(
+        std::fs::read_to_string(&bystander).unwrap(),
+        bare,
+        "`--no-sync` must skip the fix pass's sync, leaving the bare mention bare"
+    );
+}
+
+/// The visit budget counts entries into the *target* status, so it refuses a
+/// move from anywhere — while [`observe::overflow`] keys on the status the
+/// document *holds*, so verify has nothing to observe here and `--fix` nothing
+/// to do. That asymmetry is only safe because `config validate` requires the
+/// **escalation edge**: the `then` the refusal advertises has to be a legal move
+/// from every status that may enter the budgeted one.
+#[test]
+fn a_spent_budget_refuses_re_entry_from_elsewhere_and_the_escape_is_a_legal_move() {
+    let dir = project_with(TTL_CFG);
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Ping pong"])
+        .assert()
+        .success();
+    for status in [
+        "doing", "review", "doing", "review", "doing", "review", "doing",
+    ] {
+        opys(&dir)
+            .args(["set-status", "TASK-0001", status])
+            .assert()
+            .success();
+    }
+    // Three visits to `review`, and the document now stands at `doing`.
+    opys(&dir)
+        .args(["set-status", "TASK-0001", "review"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "cannot set TASK-0001 to review: type 'task' allows 3 visit(s) to review and this \
+             document has had 3 — max_visits sends it to user-review instead",
+        ));
+    // Not an observation: the budgeted status is not the one it holds.
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("observation(s)").not());
+    // The escape the refusal named is a move the document can actually make.
+    opys(&dir)
+        .args(["set-status", "TASK-0001", "user-review"])
+        .assert()
+        .success();
+    let text = std::fs::read_to_string(dir.path().join("opys/TASK-0001.md")).unwrap();
+    assert!(text.contains("status: user-review"), "{text}");
+}
+
+/// …and a graph that does not declare that edge is a config problem, not a trap
+/// discovered on the day the budget runs out.
+#[test]
+fn config_validate_flags_a_max_visits_escape_a_predecessor_cannot_take() {
+    let dir = project_with(
+        "pad = 4\n\
+[types.task]\nprefix = \"TASK\"\n\
+statuses = [\"todo\", \"doing\", \"review\", \"user-review\", \"done\"]\n\
+default_status = \"todo\"\nterminal_statuses = [\"done\"]\n\
+[types.task.transitions]\n\
+todo = [\"doing\"]\n\
+doing = [\"review\", \"todo\"]\n\
+review = [\"doing\", \"user-review\", \"done\"]\n\
+user-review = [\"review\", \"doing\"]\n\
+[types.task.max_visits]\n\
+review = { limit = 3, then = \"user-review\" }\n",
+    );
+    opys(&dir)
+        .args(["config", "validate"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "type 'task': max_visits 'review' -> 'user-review': a document at 'doing' may enter \
+             'review' but not 'user-review' — once the budget is spent the refusal would name \
+             an escape it cannot take",
+        ));
+}
+
+/// A `ttl` fix is an ordinary move and stays subject to the visit budget — as
+/// is every other fix, the overflow one included
+/// (`an_overflow_fix_into_a_spent_target_is_refused_not_written`). That is what
+/// makes `--fix` unable to write the state the guard exists to prevent: a count
+/// past `limit`, which the `visits >= limit` predicate is built on being
+/// impossible.
+#[test]
+fn a_ttl_fix_cannot_push_a_document_past_its_max_visits_limit() {
+    let dir = project_with(
+        "pad = 4\n\
+[types.task]\nprefix = \"TASK\"\n\
+statuses = [\"todo\", \"doing\", \"review\", \"user-review\", \"done\"]\n\
+default_status = \"todo\"\nterminal_statuses = [\"done\"]\n\
+[types.task.transitions]\n\
+todo = [\"doing\"]\n\
+doing = [\"review\", \"todo\", \"user-review\"]\n\
+review = [\"doing\", \"user-review\", \"done\"]\n\
+user-review = [\"review\", \"doing\"]\n\
+[types.task.ttl]\n\
+doing = { after = \"10m\", then = \"review\" }\n\
+[types.task.max_visits]\n\
+review = { limit = 1, then = \"user-review\" }\n",
+    );
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Work"])
+        .assert()
+        .success();
+    for status in ["doing", "review", "doing"] {
+        opys(&dir)
+            .args(["set-status", "TASK-0001", status])
+            .assert()
+            .success();
+    }
+    // The document is stuck in `doing` and its `ttl` sends it back to `review`,
+    // whose single visit is spent. The fix is refused like any other.
+    opys(&dir)
+        .env("OPYS_NOW", LATE_NOW)
+        .args(["verify", "--fix"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "TASK-0001: could not fix (stuck): cannot set TASK-0001 to review: type 'task' \
+             allows 1 visit(s) to review and this document has had 1 — max_visits sends it to \
+             user-review instead",
+        ));
+    let text = std::fs::read_to_string(dir.path().join("opys/TASK-0001.md")).unwrap();
+    assert!(text.contains("status: doing"), "{text}");
+    assert_eq!(text.matches("\": review").count(), 1, "{text}");
+}
+
+/// …and so is the overflow fix, whose target is the one place a bypass could
+/// ever reach. The guard counts entries into the status being *entered*, so
+/// suppressing it for an overflow fix never suppresses the spent budget being
+/// escaped — only the budget of `then` itself, which is exactly the case that
+/// would write a count past a limit and perform the move `set-status` had just
+/// refused by name. A chained escalation (`review` -> `user-review` ->
+/// `escalated`) with both budgets spent is refused instead, naming the next
+/// step; the corpus is untouched, and a `verify --fix` loop terminates rather
+/// than oscillating between two spent statuses.
+#[test]
+fn an_overflow_fix_into_a_spent_target_is_refused_not_written() {
+    let dir = project_with(
+        "pad = 4\n\
+[types.task]\nprefix = \"TASK\"\n\
+statuses = [\"todo\", \"doing\", \"review\", \"user-review\", \"escalated\", \"done\"]\n\
+default_status = \"todo\"\nterminal_statuses = [\"done\"]\n\
+[types.task.transitions]\n\
+todo = [\"doing\"]\n\
+doing = [\"review\", \"user-review\", \"escalated\", \"todo\"]\n\
+review = [\"user-review\", \"escalated\", \"doing\", \"done\"]\n\
+user-review = [\"review\", \"escalated\", \"doing\"]\n\
+escalated = [\"user-review\", \"doing\", \"todo\"]\n\
+[types.task.max_visits]\n\
+review = { limit = 2, then = \"user-review\" }\n\
+user-review = { limit = 1, then = \"escalated\" }\n",
+    );
+    // The chain is a legal config: both budgets have their fix, recovery and
+    // escalation edges, so `--fix` does not stand down.
+    opys(&dir).args(["config", "validate"]).assert().success();
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Ping pong"])
+        .assert()
+        .success();
+    for status in ["doing", "review", "user-review", "review"] {
+        opys(&dir)
+            .args(["set-status", "TASK-0001", status])
+            .assert()
+            .success();
+    }
+    // Two visits to `review` (its limit) and one to `user-review` (its own), so
+    // the escape the overflow names is itself spent. `set-status` says so.
+    opys(&dir)
+        .args(["set-status", "TASK-0001", "user-review"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "cannot set TASK-0001 to user-review: type 'task' allows 1 visit(s) to user-review \
+             and this document has had 1 — max_visits sends it to escalated instead",
+        ));
+    let before = std::fs::read_to_string(dir.path().join("opys/TASK-0001.md")).unwrap();
+    for _ in 0..2 {
+        opys(&dir)
+            .args(["verify", "--fix"])
+            .assert()
+            .code(1)
+            .stdout(predicate::str::contains("fixed TASK-0001").not())
+            .stderr(predicate::str::contains(
+                "TASK-0001: could not fix (max_visits): cannot set TASK-0001 to user-review: \
+                 type 'task' allows 1 visit(s) to user-review and this document has had 1 — \
+                 max_visits sends it to escalated instead",
+            ))
+            .stderr(predicate::str::contains(
+                "TASK-0001: 2 visits to review reaches its limit of 2",
+            ));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("opys/TASK-0001.md")).unwrap(),
+            before,
+            "a refused fix must leave the document exactly where it stood, run after run"
+        );
+    }
+    // The escalation the refusal names is a move the document can still make,
+    // and it is the one a person takes.
+    opys(&dir)
+        .args(["set-status", "TASK-0001", "escalated"])
+        .assert()
+        .success();
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// `verify --fix` performs transitions along the graph `config validate` checks,
+/// so it stands down entirely while that check is failing: fixing under a broken
+/// config is how a document ends up parked in a dead end by the very run that
+/// reported the misconfiguration.
+#[test]
+fn verify_fix_stands_down_while_the_config_is_broken() {
+    let dir = project_with(
+        "pad = 4\n\
+[types.task]\nprefix = \"TASK\"\n\
+statuses = [\"todo\", \"doing\", \"stuck\", \"done\"]\n\
+default_status = \"todo\"\nterminal_statuses = [\"done\"]\n\
+[types.task.transitions]\n\
+todo = [\"doing\"]\n\
+doing = [\"stuck\", \"todo\"]\n\
+[types.task.ttl]\n\
+doing = { after = \"10m\", then = \"stuck\" }\n",
+    );
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Work"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["set-status", "TASK-0001", "doing"])
+        .assert()
+        .success();
+    opys(&dir)
+        .env("OPYS_NOW", LATE_NOW)
+        .args(["verify", "--fix"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "verify: --fix skipped — opys.toml has problems, and a fix follows the transitions \
+             it declares; run `opys config validate`",
+        ))
+        .stderr(predicate::str::contains(
+            "opys.toml: type 'task': ttl 'doing' -> 'stuck' has no way back",
+        ))
+        .stderr(predicate::str::contains("TASK-0001: stuck in doing"))
+        .stdout(predicate::str::contains("fixed TASK-0001").not());
+    // `stuck` declares no way out, so leaving the document where it stands is
+    // the only safe answer.
+    let text = std::fs::read_to_string(dir.path().join("opys/TASK-0001.md")).unwrap();
+    assert!(text.contains("status: doing"), "{text}");
+}
+
+/// The third re-verify outcome: a fix landed, and an observation that is not
+/// fixable at all survives it. A `ttl` written as a bare duration names no
+/// target, so `--fix` reports it and exits 3 — the corpus is still free of
+/// content problems.
+#[test]
+fn verify_fix_exits_three_when_an_observe_only_ttl_remains() {
+    let dir = project_with(
+        "pad = 4\n\
+[types.task]\nprefix = \"TASK\"\n\
+statuses = [\"todo\", \"doing\", \"idle\", \"stuck\", \"done\"]\n\
+default_status = \"todo\"\nterminal_statuses = [\"done\"]\n\
+[types.task.transitions]\n\
+todo = [\"doing\", \"idle\"]\n\
+doing = [\"stuck\", \"todo\"]\n\
+idle = [\"doing\", \"todo\"]\n\
+stuck = [\"doing\", \"todo\"]\n\
+[types.task.ttl]\n\
+idle = \"10m\"\n\
+doing = { after = \"10m\", then = \"stuck\" }\n",
+    );
+    for title in ["Idling", "Working"] {
+        opys(&dir)
+            .args(["new", "--type", "task", "--title", title])
+            .assert()
+            .success();
+    }
+    opys(&dir)
+        .args(["set-status", "TASK-0001", "idle"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["set-status", "TASK-0002", "doing"])
+        .assert()
+        .success();
+    opys(&dir)
+        .env("OPYS_NOW", LATE_NOW)
+        .args(["verify", "--fix"])
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains(
+            "fixed TASK-0002: doing -> stuck (stuck)",
+        ))
+        .stdout(predicate::str::contains("verify: OK").not())
+        .stderr(predicate::str::contains("verify: 1 observation(s)"))
+        .stderr(predicate::str::contains(format!(
+            "TASK-0001: stuck in idle since {SECOND_KEY} (ttl 10m) — no ttl target, nothing to fix"
+        )));
 }
 
 // ---------------------------------------------------------------------------

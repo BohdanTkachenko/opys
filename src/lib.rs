@@ -23,6 +23,7 @@ pub mod ids;
 pub mod lifecycle;
 pub mod links;
 pub mod mdprism;
+pub mod observe;
 pub mod project;
 pub mod project_config;
 pub mod refs;
@@ -71,9 +72,11 @@ impl Ctx {
 
 /// Execute a parsed CLI invocation, returning the process exit code.
 ///
-/// `verify` returns `1` when it finds problems (the CI-gate contract); all
-/// other commands return `0` on success and surface failures as
-/// [`OpysError`], which the binary maps to exit code `2`.
+/// `verify` returns `1` when it finds problems (the CI-gate contract) and `3`
+/// when all it found are [observations](observe) — a document past its `ttl` or
+/// at its `max_visits` limit, neither of which is a content problem; all other
+/// commands return `0` on success and surface failures as [`OpysError`], which
+/// the binary maps to exit code `2`.
 pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
     let ctx = Ctx {
         root: cli.root,
@@ -164,7 +167,7 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
             commands::block::unblock(&ctx, &ids, &by)?;
             Ok(0)
         }
-        Command::Verify => commands::verify::run(&ctx),
+        Command::Verify { fix } => commands::verify::run(&ctx, fix),
         Command::Sync => {
             commands::sync::run_command(&ctx)?;
             Ok(0)
