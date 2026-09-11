@@ -31,6 +31,27 @@ pub fn core(prj: &Project, store: &mut Store, id: &str, force: bool) -> Result<(
     let dkey = store.dkey_of(id)?;
     let closing = store.doc(dkey)?;
 
+    // `close` is the door to a terminal status, so when the type declares a
+    // status graph (ADR-0099 decision 1) the current status must have an edge
+    // through it. Without this, the terminal edges a type declares
+    // (`review = ["done", …]`) would mean nothing and a document could be closed
+    // straight out of `todo`. `--force` does not bypass it: that flag is about
+    // unchecked checklist items, not about the graph.
+    let from = closing.frontmatter.status().unwrap_or_default();
+    if !crate::lifecycle::can_close(t, from) {
+        let closers = crate::lifecycle::closing_statuses(t);
+        let how = if closers.is_empty() {
+            "no status declares a transition to one".to_string()
+        } else {
+            format!("only {} can close", closers.join(", "))
+        };
+        return Err(usage(format!(
+            "cannot close {id} from {from}: type '{tname}' declares no transition from there \
+             to a terminal status ({}) — {how}",
+            t.terminal_statuses.join(", ")
+        )));
+    }
+
     // Don't close with unfinished work unless forced: any required checklist
     // section must be fully checked.
     if !force {

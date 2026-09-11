@@ -71,6 +71,17 @@ terminal_statuses = []               # features are never closed/deleted
 tags_required = true
 status_dirs = { archived = "_archived" }   # archived features move to opys/_archived/
 
+# The status graph: a status → the statuses `set-status` may move it to. Omit
+# the table entirely and the type keeps the any-to-any rule. Declared, it is the
+# whole truth: a status that is not a key here is a dead end, and a terminal
+# status may have no outgoing edges (it is reached only via `close`).
+[types.feature.transitions]
+planned     = ["partial", "implemented", "wontfix"]
+partial     = ["planned", "implemented", "wontfix"]
+implemented = ["partial", "archived"]      # back to partial when it regresses
+wontfix     = ["planned"]                  # reconsidered
+archived    = ["planned"]                  # un-archived
+
 [types.feature.fields.spec]
 type = "string"
 pattern = '^\S.*$'                   # non-empty, single line

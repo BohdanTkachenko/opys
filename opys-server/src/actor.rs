@@ -22,6 +22,7 @@ use opys_engine::backend::Backend;
 use opys_engine::commands::{now_rfc3339, verify};
 use opys_engine::doc::Doc;
 use opys_engine::error::{OpysError, Result};
+use opys_engine::lifecycle;
 use opys_engine::project::Project;
 use opys_engine::refs;
 use opys_engine::store::Store;
@@ -112,22 +113,52 @@ pub struct DocView {
     #[serde(rename = "type")]
     pub type_name: String,
     pub status: String,
-    /// Every status `set-status` will accept for this document's type: the
-    /// type's declared statuses minus its terminal ones, which are reachable
-    /// only through `close`.
+    /// This document's type's whole status *vocabulary*, minus its terminal
+    /// statuses, which are reachable only through `close`.
     ///
     /// Here rather than in the client so nothing outside this crate has to read
     /// `opys.toml` — a UI that knew the status vocabulary would be a second
     /// interpretation of the config, drifting the moment a type is edited.
     /// Empty when the id's prefix matches no configured type, which is the same
     /// answer `type_name` gives.
+    ///
+    /// It answers "what statuses exist here", not "where may this document go":
+    /// once the type declares a status graph that is
+    /// [`DocView::allowed_targets`]'s question, and this field is the fallback
+    /// for a type that declares none.
     pub allowed_statuses: Vec<String>,
-    /// Whether `close` is even possible: a type with no terminal status has
-    /// nothing to close *to*, and the engine refuses. Without this the UI's
+    /// Where *this* document may go next: the edges its type declares out of its
+    /// current status (ADR-0099 decision 1), minus terminal ones, or `null` when
+    /// the type declares no graph at all and every status is reachable.
+    ///
+    /// Computed by the same engine helper `set-status`'s guard reads
+    /// ([`lifecycle::allowed_targets`]), so a menu built from it cannot offer a
+    /// move the node would then refuse. Terminal statuses are filtered out for
+    /// the same reason `allowed_statuses` filters them: an edge into one says
+    /// the document may be *closed* from here, and `close` — gated separately by
+    /// [`DocView::closable`] — is the only door. A dead-end status therefore
+    /// yields `[]`, which is the honest answer, not a missing one.
+    pub allowed_targets: Option<Vec<String>>,
+    /// Whether `close` would be accepted *from where this document stands*: its
+    /// type has a terminal status at all, and — when the type declares a status
+    /// graph — the current status has an edge into one. Without this the UI's
     /// close button would 422 on, say, an ADR no matter what the user did —
     /// [`DocView::allowed_statuses`] cannot express it, because a terminal
     /// status is precisely what it leaves out.
     pub closable: bool,
+    /// Whether the type has a terminal status *at all* — the other half of
+    /// [`DocView::closable`], which on its own conflates two refusals a reader
+    /// must not be told apart wrongly: "never, for this type" and "not from
+    /// here yet".
+    ///
+    /// A client cannot derive it from the fields above.
+    /// [`DocView::allowed_targets`] is non-null whenever the type declares a
+    /// *graph*, which says nothing about terminal statuses — the shipped
+    /// `feature` type is exactly that shape (a graph, `terminal_statuses = []`),
+    /// and so are this repo's own `feature` and `adr`. Only the node can tell
+    /// the two apart, the way `close` does: empty `terminal_statuses` first,
+    /// then the graph.
+    pub has_terminal_status: bool,
     pub title: String,
     pub path: String,
     pub tags: Vec<String>,
@@ -711,9 +742,9 @@ fn view(prj: &Project, doc: &Doc) -> DocView {
         .pcfg
         .type_name_for_id(&id)
         .and_then(|name| prj.pcfg.types.get(name));
+    let status = doc.frontmatter.status().unwrap_or_default().to_string();
     DocView {
         type_name: type_of(prj, &id),
-        status: doc.frontmatter.status().unwrap_or_default().to_string(),
         allowed_statuses: doc_type
             .map(|t| {
                 t.statuses
@@ -723,7 +754,17 @@ fn view(prj: &Project, doc: &Doc) -> DocView {
                     .collect()
             })
             .unwrap_or_default(),
-        closable: doc_type.is_some_and(|t| !t.terminal_statuses.is_empty()),
+        allowed_targets: doc_type.and_then(|t| {
+            lifecycle::allowed_targets(t, &status).map(|targets| {
+                targets
+                    .into_iter()
+                    .filter(|s| !t.terminal_statuses.contains(s))
+                    .collect()
+            })
+        }),
+        closable: doc_type
+            .is_some_and(|t| !t.terminal_statuses.is_empty() && lifecycle::can_close(t, &status)),
+        has_terminal_status: doc_type.is_some_and(|t| !t.terminal_statuses.is_empty()),
         declared_fields: doc_type
             .map(|t| {
                 t.fields
@@ -749,6 +790,7 @@ fn view(prj: &Project, doc: &Doc) -> DocView {
         fields,
         body_html: comrak::markdown_to_html(&doc.body, &markdown_options()),
         body: doc.body.clone(),
+        status,
         id,
     }
 }

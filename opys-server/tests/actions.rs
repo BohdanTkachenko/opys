@@ -364,15 +364,16 @@ async fn next_action_completed(
 #[tokio::test(flavor = "multi_thread")]
 async fn new_writes_what_the_cli_writes() {
     let fx = Fixture::new();
-    // No `status`, so the type's default has to be applied by `new::core` and
-    // not by anything in the server.
+    // The action carries no status at all — `new` has none any more — so the
+    // type's initial status has to be applied by `new::core` and not by anything
+    // in the server.
     let answer = fx
         .action(json!({
             "action": "new", "type": "task", "title": "Third thing", "tags": "alpha,beta"
         }))
         .await;
 
-    // No `--status` either, so clap's default reaches the core the same way.
+    // Nor does the CLI, so both reach the core with the same arguments.
     cli(
         &fx.reference,
         &[
@@ -693,6 +694,73 @@ async fn unknown_action_is_rejected() {
         fx.pristine,
         "a rejected body must not have touched the inventory"
     );
+}
+
+/// [`CONFIG`] with a status graph on `note` (ADR-0099 decision 1). `task` gets
+/// none on purpose: it declares `blocked`, and `block`'s temporary auto-set
+/// writes that status without consulting the graph, so a graph there would make
+/// [`block_writes_what_the_cli_writes`] produce a pair `verify` rejects. That
+/// auto-set goes away with TASK-0112.
+const GRAPH_CONFIG: &str = r#"
+base = "inventory"
+
+[types.note]
+prefix = "NOTE"
+statuses = ["open", "review", "parked", "closed"]
+default_status = "open"
+terminal_statuses = ["closed"]
+tags_required = false
+
+[types.note.transitions]
+open = ["review"]
+review = ["parked", "closed", "open"]
+parked = ["open"]
+
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "doing", "blocked", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]
+tags_required = false
+"#;
+
+/// A move the type's status graph does not declare is refused by the node with
+/// the CLI's own words — the engine guard is shared, so this pins that the node
+/// really does go through it rather than round a shortcut, and that a refusal
+/// writes nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_move_off_the_status_graph_is_a_422() {
+    let fx = Fixture::with_config(GRAPH_CONFIG);
+    // NOTE-0001 is `open`, whose only declared target is `review`.
+    let (status, answer) = fx
+        .try_action(json!({"action": "set-status", "id": "NOTE-0001", "status": "parked"}))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+
+    let refused = cli(&fx.reference, &["set-status", "NOTE-0001", "parked"])
+        .expect_err("the CLI refuses the same move");
+    assert_eq!(
+        answer["error"],
+        refused.to_string(),
+        "the message must be the one the CLI prints for the same attempt"
+    );
+    assert!(
+        answer["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("from open: review")),
+        "the refusal has to say where the document may go: {answer}"
+    );
+    assert_eq!(
+        snapshot(&fx.live),
+        fx.pristine,
+        "a refused write must not have touched the inventory at all"
+    );
+
+    // The declared edge lands, through the same endpoint.
+    let answer = fx
+        .action(json!({"action": "set-status", "id": "NOTE-0001", "status": "review"}))
+        .await;
+    assert_eq!(answer["message"], "NOTE-0001 -> review", "{answer}");
 }
 
 /// A write the corpus refuses is the caller's answer, not the node's failure:

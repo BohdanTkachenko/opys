@@ -80,12 +80,13 @@ ID prefix.
 
 ```sh
 opys init                                   # bootstrap opys.toml + opys/
-# edit opys.toml: types, statuses, fields, sections, rules
+# edit opys.toml: types, statuses, transitions, fields, sections, rules
 
 opys new --title "Tab title follows OSC 0/2" --tags osc,tabs
 opys list --status planned
 opys list --tag area                        # exact tag, or any tag with key `area`
-opys set-status FEAT-0001 implemented       # rejected unless a test item is checked
+opys set-status FEAT-0001 implemented       # a declared edge, and rejected here unless
+                                            # a test-plan item is checked
 opys verify                                 # integrity check; nonzero exit on problems
 opys stats                                  # configurable [[stats]] sections (default: status/coverage/tags)
 opys tags                                   # distinct tags (--keys for just keys)
@@ -124,11 +125,11 @@ without a `renumber`. Without a modulus, allocation is the dense sequence.
 | `new --type <T>` | allocate the next ID and write a skeleton document of type `T` (auto-syncs) |
 | `import --type <T>` | bulk-create documents of type `T` from a JSONL file (one ID block, one sync) |
 | `show` / `list` | retrieval (`--type`, `--tag`, `--status`, `--format table\|ids\|paths`) |
-| `set-status` | guarded transitions, enforced by the type's configured rules |
+| `set-status` | guarded transitions: the type's declared `[transitions]` edges (when it declares any) and its configured rules |
 | `tag` | add/remove tags (`--add a,b --remove c`) |
 | `retire` | delete document(s); each ID is logged and never reused |
 | `block` / `unblock` | record a directional blocker between documents |
-| `close` / `cleanup` | finish document(s) of a type with a terminal status; strip struck refs |
+| `close` / `cleanup` | finish document(s) of a type with a terminal status (and, where a status graph is declared, an edge into one from where the document stands); strip struck refs |
 | `verify` | full integrity check — wire into CI |
 | `sync` | reconcile references, linkify prose, relocate docs to their layout path (for hand edits) |
 | `stats` | render configured `[[stats]]` sections (each a SQL query over the corpus, shown as a table; default: status counts, coverage, tags) |

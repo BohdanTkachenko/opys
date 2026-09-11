@@ -39,6 +39,17 @@ terminal_statuses = []               # features are never closed/deleted
 tags_required = true
 status_dirs = { archived = "_archived" }   # archived features move to opys/_archived/
 
+# The status graph: a status → the statuses `set-status` may move it to. Omit
+# the table entirely and the type keeps the any-to-any rule. Declared, it is the
+# whole truth: a status that is not a key here is a dead end, and a terminal
+# status may have no outgoing edges (it is reached only via `close`).
+[types.feature.transitions]
+planned     = ["partial", "implemented", "wontfix"]
+partial     = ["planned", "implemented", "wontfix"]
+implemented = ["partial", "archived"]      # back to partial when it regresses
+wontfix     = ["planned"]                  # reconsidered
+archived    = ["planned"]                  # un-archived
+
 [types.feature.fields.priority]
 type = "int"                         # opt-in ordering (ADR-0095): lower = higher, board top = take next
 
@@ -94,6 +105,12 @@ statuses = ["proposed", "accepted", "superseded"]
 default_status = "proposed"
 terminal_statuses = []               # decisions are history; never closed/deleted
 tags_required = true
+
+# A decision is proposed, then either accepted or (rarely) superseded outright;
+# an accepted one is only ever superseded. `superseded` is a deliberate dead end.
+[types.adr.transitions]
+proposed = ["accepted", "superseded"]
+accepted = ["superseded"]
 
 [[types.adr.sections]]
 heading = "Context"

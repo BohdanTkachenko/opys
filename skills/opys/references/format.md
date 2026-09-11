@@ -174,6 +174,12 @@ status_dirs = { archived = "_archived" }   # per-status {status} segment; defaul
 tags_required = true
 # requires_link = { to = "feature", min = 1 }   # must reference ≥min docs of a type
 
+[types.feature.transitions]          # optional status graph; omit it for any-to-any
+planned     = ["partial", "implemented", "wontfix"]
+partial     = ["planned", "implemented", "wontfix"]
+implemented = ["partial", "archived"]
+wontfix     = ["planned"]            # a status absent from the map is a dead end
+
 [types.feature.fields.priority]      # custom frontmatter fields (the closed schema)
 type = "enum"                        # string | list | bool | int | enum
 values = ["low", "high"]             # an enum constrains the value
@@ -465,6 +471,16 @@ rebuilt from ground truth, so `sync` never repairs it — `verify` reports:
 - a last entry whose status is not the document's current `status`;
 - keys that do not strictly increase;
 - a `created` that is not the same second as the first key, when both exist;
+- a consecutive pair that is not an edge the type's
+  [status graph](#the-status-graph-typesnametransitions) declares, when it
+  declares one. Two silences here are deliberate. A pair whose two statuses are
+  **equal** is skipped, because `set-status <id> <its current status>` is a legal
+  no-op that appends an entry and no successful write may leave a red corpus. And
+  the **first** entry is never checked against `default_status`: `import` seeds a
+  document at whatever status its record carried and leaves no marker saying so,
+  so a rule of that shape could only be enforced by calling every imported
+  document a problem. The graph constrains *moves*; where a document entered it
+  is the seeding command's business;
 - a key written **unquoted**. This one is checked against the file, not the
   parsed map: opys reads YAML 1.2, which resolves `2026-06-16T14:30:00.000000Z:
   planned` to the very same string→status pair as the quoted form, so every
@@ -568,6 +584,67 @@ whose last tombstone it strips).
 Status changes go through `set-status`, never hand edits — the guards live
 there, and each one is recorded in the document's `history` map. It takes an
 id list, so a whole selection moves in one command (see **Bulk edits**).
+
+### The status graph (`[types.<name>.transitions]`)
+
+A type may declare which status may follow which:
+
+```toml
+[types.task.transitions]
+todo        = ["in-progress"]
+in-progress = ["review", "todo"]
+review      = ["done", "in-progress"]
+```
+
+Omit the table and the type keeps the **any-to-any** rule: every status may
+follow every other, which is what every config predating the graph does, and is
+still a perfectly good answer for a type whose statuses are labels rather than
+stages. Declare it and it is the whole truth:
+
+- a status that is **not a key** has no outgoing edges at all — a dead end, which
+  is often the point (`superseded` is where an ADR stops). Half a map does not
+  mean "these two moves are constrained and the rest are free";
+- a **terminal** status may not be a key. It is reached only through `close`,
+  which deletes the document, so there is nothing left to move on. An edge
+  *into* one (`review = ["done"]`) is meaningful and is exactly what says
+  "a task may be closed from review";
+- the **initial** status (`default_status`) must have at least one outgoing
+  edge, or every document of the type is stuck the moment `new` creates it. A
+  key with an empty list (`todo = []`) strands the corpus exactly as a missing
+  key does, and is reported the same way;
+- every key and every target must be a status the type declares. Duplicated
+  targets are deduplicated silently; declared order is preserved, and is the
+  order messages and the node's status menu use.
+
+Those four are `verify` / `config validate` problems (`opys.toml: type '…': …`,
+exit 1), reported like every other config problem rather than raised as a hard
+error — a typo in the graph must not change the exit code of every command.
+
+Three places enforce the graph:
+
+- **`set-status`** refuses a move the type does not declare, exit 2, naming
+  where the document stands and where it may go (`cannot move TASK-0007 from
+  todo to review: type 'task' declares no such transition (from todo:
+  in-progress)`). Setting a document to the status it already holds is *not* an
+  edge: it stays the legal no-op it has always been, and appends an entry.
+- **`close`** refuses unless the current status has an edge into one of the
+  type's terminal statuses, naming the statuses that can close. `--force` (about
+  unchecked checklist items) does not bypass it.
+- **`verify`** checks every consecutive pair of the `history` map against the
+  graph, so a hand edit, an older opys, or a graph tightened after the fact is a
+  CI finding rather than an invisible snapshot. See
+  [The lifecycle map](#the-lifecycle-map-history) for the two things it
+  deliberately does *not* check.
+
+`block`/`unblock` auto-set the `blocked` status on a type that declares one, and
+they do so **without consulting the graph**. Do not give a type both a `blocked`
+status and a `transitions` map until that auto-set is gone: the pairs it writes
+would be pairs `verify` then rejects.
+
+Tightening a graph is retroactive, because history is an ongoing record and is
+never repaired automatically: pairs already written that the new graph does not
+declare become `verify` findings. Keep the old edge declared, or repair the
+affected documents by hand (`docs/migration-history.md`).
 
 ## Test plan rules
 
@@ -697,9 +774,11 @@ features. Two supported bulk paths avoid that:
   auto-maintained `history` are rejected by name — import allocates the one and
   seeds the other with a single entry at the record's status. One ID allocation and one sync
   cover the whole batch, and it is **transactional** — if any record is
-  rejected, nothing is written. The same write-time status guards as `new`
-  apply (a record with `"status": "implemented"` must include a checked
-  test-plan item in its `body`). Run `opys verify` afterwards for the deep
+  rejected, nothing is written. The record's status is checked against the
+  type's statuses and its `[[rules]]` (a record with `"status": "implemented"`
+  must include a checked test-plan item in its `body`), but **not** against the
+  type's status graph: import is the one seam that seeds a document anywhere in
+  the lifecycle, and `verify` knows it (see the lifecycle map). Run `opys verify` afterwards for the deep
   checks (tag shape, reference resolution, field types). Example line:
 
   ```json

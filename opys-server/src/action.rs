@@ -49,11 +49,13 @@ pub type Attempt = std::result::Result<ActionOutcome, ActionError>;
 ///
 /// One variant per mutating CLI command, carrying that command's arguments in
 /// the same shape. Absent optional fields become the same values clap hands the
-/// core (an empty `tags`, an empty `status`, `None` for a reason), so an action
-/// and the corresponding `opys` invocation reach the engine identically; in
-/// particular the *empty* status is deliberate, because resolving a type's
-/// default status is `new::core`'s job and duplicating it here would be a second
-/// copy of a rule that can change.
+/// core (an empty `tags`, `None` for a reason), so an action and the
+/// corresponding `opys` invocation reach the engine identically. `New` carries
+/// no status at all, for the same reason the CLI no longer has `--status`: a
+/// document starts at its type's initial status (ADR-0099 decision 5), which is
+/// `new::core`'s to resolve, and `import` is the one seam that seeds elsewhere.
+/// Because the enum is `deny_unknown_fields`, a client still sending `status`
+/// is told so rather than silently ignored.
 ///
 /// `type` and `title` are the exception: the CLI defaults `--type` to `feature`
 /// for interactive convenience, but a client that forgets the field deserves to
@@ -69,8 +71,6 @@ pub enum Action {
         title: String,
         #[serde(default)]
         tags: String,
-        #[serde(default)]
-        status: String,
         #[serde(default)]
         features: String,
         reason: Option<String>,
@@ -296,7 +296,6 @@ pub fn perform(root: &Path, backend: &dyn Backend, action: &Action) -> Attempt {
             type_name,
             title,
             tags,
-            status,
             features,
             reason,
         } => {
@@ -312,7 +311,6 @@ pub fn perform(root: &Path, backend: &dyn Backend, action: &Action) -> Attempt {
                 type_name,
                 title,
                 tags,
-                status,
                 features,
                 reason.as_deref(),
                 &[],
@@ -464,8 +462,7 @@ mod tests {
     }
 
     /// Absent optionals must reach the cores as the values clap hands them, not
-    /// as something this crate invented — an empty status especially, since
-    /// resolving a type's default is the engine's job.
+    /// as something this crate invented.
     #[test]
     fn absent_optionals_become_the_cli_defaults() {
         let action = parse(serde_json::json!({
@@ -476,7 +473,6 @@ mod tests {
             type_name,
             title,
             tags,
-            status,
             features,
             reason,
         } = action
@@ -486,16 +482,25 @@ mod tests {
         assert_eq!(type_name, "note");
         assert_eq!(title, "Only the required fields");
         assert_eq!(tags, "", "`--tags` defaults to empty, not to a made-up tag");
-        assert_eq!(
-            status, "",
-            "the type's default status is `new::core`'s call"
-        );
         assert_eq!(features, "");
         assert_eq!(reason, None);
 
         let close = parse(serde_json::json!({"action": "close", "id": "NOTE-0001"}))
             .expect("force is optional");
         assert!(matches!(close, Action::Close { force: false, .. }));
+    }
+
+    /// `new` has no status of its own any more (ADR-0099 decision 5). A client
+    /// written against the old vocabulary must be *told*: silently dropping the
+    /// field would create the document at the type's initial status while the
+    /// caller believed it had chosen one.
+    #[test]
+    fn new_no_longer_accepts_a_status() {
+        let err = parse(serde_json::json!({
+            "action": "new", "type": "note", "title": "Seeded", "status": "closed"
+        }))
+        .expect_err("`status` is not a field of the new action");
+        assert!(err.contains("status"), "{err}");
     }
 
     /// Why removal is its own action: a `set-field` with no `value` must be a

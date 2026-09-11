@@ -16,6 +16,7 @@ pub mod file_refs;
 pub mod frontmatter;
 pub mod history;
 pub mod ids;
+pub mod lifecycle;
 pub mod links;
 pub mod mdprism;
 pub mod project;
@@ -84,7 +85,6 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
             type_name,
             title,
             tags,
-            status,
             features,
             reason,
             field,
@@ -94,7 +94,6 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
                 &type_name,
                 &title,
                 &tags,
-                &status,
                 &features,
                 reason.as_deref(),
                 &field,

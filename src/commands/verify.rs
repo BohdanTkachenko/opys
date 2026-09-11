@@ -12,7 +12,7 @@ use crate::doc::Doc;
 use crate::error::Result;
 use crate::frontmatter::Frontmatter;
 use crate::project::{id_format_re, Project, KEBAB_RE};
-use crate::project_config::{CheckScope, SectionCheck, SectionKind, SectionSpec};
+use crate::project_config::{CheckScope, DocType, SectionCheck, SectionKind, SectionSpec};
 use crate::refs;
 use crate::rules;
 use crate::Ctx;
@@ -157,6 +157,7 @@ pub fn collect_problems(prj: &Project, docs: &[Doc], parse_errors: Vec<String>) 
 
         check_timestamps(m, id, &mut errors);
         check_history(m, id, &mut errors);
+        check_transitions(m, id, tname, t, &mut errors);
         check_references(m, id, &doc_ids, &mut errors);
         for snip in crate::links::nested_links(&d.body) {
             errors.push(format!(
@@ -350,6 +351,54 @@ fn check_history(m: &Frontmatter, id: &str, errors: &mut Vec<String>) {
                 m.get_str("created").unwrap_or_default()
             ));
         }
+    }
+}
+
+/// Every consecutive pair in the lifecycle map must be an edge the type
+/// declares (ADR-0099 decision 1), when it declares any.
+///
+/// This is what makes the status graph a CI check and not merely a write-time
+/// guard: `set-status` refuses an undeclared move, but a document hand-edited
+/// into `done`, or one written by an older opys, or one whose type's graph was
+/// tightened afterwards, is a *snapshot* verify used to have nothing to say
+/// about. The history map turns each move into an event, and an event can be
+/// checked against the graph long after it happened.
+///
+/// Two deliberate silences:
+///
+/// - a pair whose two statuses are **equal** is skipped. `set-status <id> <its
+///   current status>` is a legal no-op that appends an entry, so refusing the
+///   pair it writes would make a successful write leave a red corpus — the one
+///   thing no check here may do;
+/// - the **first** entry is not checked against `default_status`. `import` seeds
+///   a document at whatever status its record carried and leaves no marker
+///   saying so, so a rule of that shape could only be enforced by calling every
+///   imported document a problem. The graph constrains *moves*; where a
+///   document entered it is the seeding command's business.
+///
+/// A botched or absent map yields no entries (`check_history` already reported
+/// it), so nothing here fires twice on the same document.
+fn check_transitions(
+    m: &Frontmatter,
+    id: &str,
+    tname: &str,
+    t: &DocType,
+    errors: &mut Vec<String>,
+) {
+    if t.transitions.is_empty() {
+        return;
+    }
+    let entries = crate::history::entries(m);
+    for pair in entries.windows(2) {
+        let (from, to) = (&pair[0].1, &pair[1].1);
+        if from == to || crate::lifecycle::allows(t, from, to) {
+            continue;
+        }
+        errors.push(format!(
+            "{id}: history records {from} -> {to}, which type '{tname}' does not declare as a \
+             transition ({})",
+            crate::lifecycle::targets_phrase(t, from)
+        ));
     }
 }
 

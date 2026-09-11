@@ -17,11 +17,15 @@
   // be two ten-second waits with one visible answer.
   //
   // What can be set is driven by the payload rather than by knowledge of the
-  // project's config. The status menu is `allowed_statuses` — the type's
-  // statuses minus its terminal ones, computed by the node — and close is
-  // gated on `closable`, because a type with no terminal status has nothing to
-  // close *to*. A UI that derived either from `opys.toml` would be a second
-  // interpretation of the config, wrong the first time a type was edited.
+  // project's config. The status menu is `allowed_targets` — where *this*
+  // document may go, computed by the node from the type's declared status graph
+  // — falling back to `allowed_statuses` (the type's whole vocabulary) for a
+  // type that declares no graph. Close is gated on `closable`, which answers the
+  // same question for the terminal door, with `has_terminal_status` saying
+  // which of its two refusals to word — no terminal status at all, or no edge
+  // into one from here. A UI that derived any of it from `opys.toml` would be a
+  // second interpretation of the config, wrong the first time a type was
+  // edited.
 
   import { tick } from 'svelte';
   import Icon from './lib/Icon.svelte';
@@ -122,15 +126,18 @@
   const AUTO = new Set(['blocked_from']);
 
   /**
-   * The status menu.
+   * The status menu: this document's declared targets when its type has a status
+   * graph, else its type's whole vocabulary. `null` is the "no graph" answer, so
+   * `??` picks the fallback while an empty array — a dead-end status — is
+   * honoured as the empty menu it is.
    *
-   * `allowed_statuses` leaves out terminal statuses on purpose — `set-status`
-   * refuses them — but the document might currently *be* in one, or in a status
-   * the type no longer declares. Prepending it keeps the menu from rendering
-   * blank; choosing it again is a no-op.
+   * Both leave out terminal statuses on purpose — `set-status` refuses them, and
+   * `close` is the door — but the document might currently *be* in one, or in a
+   * status the type no longer declares, or in a dead end. Prepending its own
+   * status keeps the menu from rendering blank; choosing it again is a no-op.
    */
   const statuses = $derived.by(() => {
-    const allowed = d?.allowed_statuses ?? [];
+    const allowed = d?.allowed_targets ?? d?.allowed_statuses ?? [];
     if (!d?.status || allowed.includes(d.status)) return allowed;
     return [d.status, ...allowed];
   });
@@ -830,7 +837,18 @@
 
     <div class="row closerow">
       <span class="label microlabel">Close</span>
-      {#if !d.closable}
+      {#if !d.closable && d.has_terminal_status}
+        <!-- The type *has* a terminal status, so what is missing is an edge
+             from where this document stands. `allowed_targets` cannot stand in
+             for that fact: it is non-null for any type that declares a graph,
+             terminal statuses or not — which is exactly the shipped `feature`
+             type — and this row would then promise a close that can never
+             happen. -->
+        <span class="small muted">
+          Not from <code>{d.status}</code>: the type's status graph declares no
+          move from here into a terminal status. Move it along first.
+        </span>
+      {:else if !d.closable}
         <span class="small muted">
           Never, for a <code>{d.type}</code>: the type declares no terminal
           status. Set one instead — archived, superseded, whatever the project

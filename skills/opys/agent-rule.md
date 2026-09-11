@@ -24,6 +24,10 @@ exists; otherwise ignore it.
   by hand buys nothing; a `history` map opys cannot read fails `verify` and is
   never repaired automatically — `set-status` (and `block`/`unblock`'s auto-set)
   refuse to run on that document until a human repairs the map.
+  A type may also declare a **status graph** (`[types.<name>.transitions]`):
+  where it does, a document moves only along a declared edge, and `set-status`
+  refuses anything else and names the statuses it will accept — take the answer
+  from the refusal rather than guessing a route.
   Run `opys verify` before finishing.
 - **Always say what an id is.** `PREFIX-NNNN` is a lookup key, not a name:
   a reader who sees `ADR-0082` learns nothing at all. Every time you write an id

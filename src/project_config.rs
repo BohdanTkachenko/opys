@@ -245,6 +245,22 @@ pub struct DocType {
     pub default_status: String,
     #[serde(default)]
     pub terminal_statuses: Vec<String>,
+    /// `[types.<name>.transitions]` — the legal status moves: a status → the
+    /// statuses `set-status` may move it to (ADR-0099 decision 1).
+    ///
+    /// Absent or empty, the type keeps the any-to-any rule byte-identically —
+    /// that is what makes this additive for every existing config. When it is
+    /// non-empty it is the whole truth: a status *absent* from the map has no
+    /// outgoing edges at all (a dead end, which is legal and sometimes the
+    /// point — `superseded` is where an ADR stops). `close` still owns the
+    /// terminal statuses, so a declared edge into one says "this status may
+    /// close", not "`set-status` may write it".
+    ///
+    /// Read it through [`crate::lifecycle::allowed_targets`], never directly:
+    /// that is the one place declared order and de-duplication are applied, and
+    /// the one place `set-status`, `close`, `verify` and the node agree.
+    #[serde(default)]
+    pub transitions: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub tags_required: bool,
     #[serde(default)]
@@ -629,6 +645,50 @@ impl ProjectConfig {
                     ));
                 }
             }
+            // `transitions` (ADR-0099 decision 1). A map that names a status the
+            // type does not declare is dead config: the edge can never fire, and
+            // the status it guards is unreachable or unleavable in a way nobody
+            // intended. A status absent from a non-empty map is *not* an error —
+            // it is a dead end, which is a legitimate shape.
+            for (from, targets) in &t.transitions {
+                if !t.statuses.contains(from) {
+                    errs.push(format!(
+                        "type '{name}': transitions key '{from}' is not a status"
+                    ));
+                }
+                // A terminal status is reached only through `close`, which
+                // deletes the document — there is nothing left to move on.
+                if t.terminal_statuses.contains(from) {
+                    errs.push(format!(
+                        "type '{name}': terminal status '{from}' must have no outgoing \
+                         transitions (it is reached only via `close`, which deletes)"
+                    ));
+                }
+                for to in targets {
+                    if !t.statuses.contains(to) {
+                        errs.push(format!(
+                            "type '{name}': transition '{from}' -> '{to}' targets a status \
+                             the type does not declare"
+                        ));
+                    }
+                }
+            }
+            // The initial status must be able to go somewhere, or every document
+            // of the type is stuck the moment `new` creates it. What matters is
+            // the outgoing *edge*, not the key: `todo = []` is a key and still
+            // leaves the whole corpus stranded.
+            if !t.transitions.is_empty()
+                && !t.default_status.is_empty()
+                && t.transitions
+                    .get(&t.default_status)
+                    .is_none_or(|targets| targets.is_empty())
+            {
+                errs.push(format!(
+                    "type '{name}': default_status '{}' has no outgoing transitions (every \
+                     document starts there, so it would have nowhere to go)",
+                    t.default_status
+                ));
+            }
             if let Some(lr) = &t.requires_link {
                 if !type_names.contains(lr.to.as_str()) {
                     errs.push(format!(
@@ -922,6 +982,108 @@ mod tests {
             "default config has problems: {problems:?}"
         );
         assert_eq!(cfg.types.len(), 4);
+    }
+
+    /// Every name a `transitions` map uses must be a status the type declares,
+    /// no terminal status may lead anywhere (it is reached only via `close`,
+    /// which deletes), and the status every document starts at must lead
+    /// somewhere — otherwise the type's whole corpus is stuck the moment `new`
+    /// runs.
+    #[test]
+    fn flags_broken_transitions_maps() {
+        let cfg: ProjectConfig = toml::from_str(
+            r#"
+[types.feature]
+prefix = "FEAT"
+statuses = ["planned", "partial", "done"]
+default_status = "planned"
+terminal_statuses = ["done"]
+
+[types.feature.transitions]
+partial = ["shipped", "done"]
+shipped = ["partial"]
+done = ["planned"]
+"#,
+        )
+        .unwrap();
+        let joined = cfg.validate().join("\n");
+        assert!(
+            joined.contains("type 'feature': transitions key 'shipped' is not a status"),
+            "{joined}"
+        );
+        assert!(
+            joined.contains(
+                "type 'feature': transition 'partial' -> 'shipped' targets a status the type \
+                 does not declare"
+            ),
+            "{joined}"
+        );
+        assert!(
+            joined.contains(
+                "type 'feature': terminal status 'done' must have no outgoing transitions"
+            ),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("type 'feature': default_status 'planned' has no outgoing transitions"),
+            "{joined}"
+        );
+    }
+
+    /// A key is not an edge: a `default_status` that is present in the map but
+    /// leads nowhere strands every document of the type just as surely as one
+    /// the map never mentions, so it is the same problem with the same message.
+    #[test]
+    fn flags_an_initial_status_whose_only_entry_is_empty() {
+        let cfg: ProjectConfig = toml::from_str(
+            r#"
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "doing", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]
+
+[types.task.transitions]
+todo = []
+doing = ["todo", "done"]
+"#,
+        )
+        .unwrap();
+        let problems = cfg.validate();
+        assert_eq!(
+            problems,
+            vec![
+                "type 'task': default_status 'todo' has no outgoing transitions (every document \
+                 starts there, so it would have nowhere to go)"
+                    .to_string()
+            ],
+        );
+    }
+
+    /// The two shapes that look like mistakes and are not: a status absent from
+    /// the map (a dead end — `superseded` is where an ADR stops), and a type with
+    /// no map at all (the any-to-any rule every config predating ADR-0099 has).
+    #[test]
+    fn a_dead_end_and_a_missing_map_are_both_legal() {
+        let cfg: ProjectConfig = toml::from_str(
+            r#"
+[types.adr]
+prefix = "ADR"
+statuses = ["proposed", "accepted", "superseded"]
+default_status = "proposed"
+
+[types.adr.transitions]
+proposed = ["accepted", "superseded"]
+accepted = ["superseded"]
+
+[types.note]
+prefix = "NOTE"
+statuses = ["open", "shut"]
+default_status = "open"
+"#,
+        )
+        .unwrap();
+        assert!(cfg.validate().is_empty(), "{:?}", cfg.validate());
     }
 
     #[test]
