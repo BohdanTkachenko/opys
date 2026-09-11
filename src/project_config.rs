@@ -406,6 +406,22 @@ pub struct DocType {
     /// what "live" means.
     #[serde(default)]
     pub releases_blocks: Vec<String>,
+    /// `[types.<name>] order_by` — the tiebreak chain documents of this type are
+    /// put in intentional order by (ADR-0099 decision 4), e.g.
+    /// `["priority", "blocks", "id"]`.
+    ///
+    /// Absent or empty is *not* "unordered": it is the implicit
+    /// [`crate::order::DEFAULT_ORDER_BY`], with the `priority` key dropped on a
+    /// type that declares no `int` field of that name — priority is opt-in
+    /// (ADR-0095) and the default may not demand it. Naming `priority`
+    /// explicitly on such a type is a [`ProjectConfig::validate`] problem, since
+    /// the author asked for something the type cannot answer.
+    ///
+    /// Read it through [`crate::order::chain`], never directly: that is the one
+    /// place the default and its carve-out live, so `list --sort` and everything
+    /// after it cannot order the same corpus two ways.
+    #[serde(default)]
+    pub order_by: Vec<crate::order::OrderKey>,
     /// `[types.<name>.ttl]` — how long a document may sit in a status before
     /// `verify` calls it **stuck** (ADR-0101 decision 1). A status maps either to
     /// a bare duration (observed only) or to `{ after, then }` (observed, with
@@ -594,6 +610,93 @@ pub struct StatSpec {
     pub template: Option<String>,
 }
 
+/// The `[types.*]` table: the declared document types, keyed by name *and* in
+/// the order the TOML declared them.
+///
+/// Lookup is a `BTreeMap` and every read goes through [`Deref`], so this behaves
+/// as the map it always was. What it adds is [`TypeMap::index_of`] — the
+/// position of a type in the config, which is how `list --sort` groups a mixed
+/// listing (a `BTreeMap` alone could only offer type-*name* order, which is an
+/// order the config never asked for). Declaration order is the order serde
+/// visits the entries in, which for TOML is document order.
+#[derive(Debug, Clone, Default)]
+pub struct TypeMap {
+    by_name: BTreeMap<String, DocType>,
+    /// The type names in declaration order — the same set as `by_name`'s keys.
+    order: Vec<String>,
+}
+
+impl TypeMap {
+    /// The position of `name` among the declared types, or `None` if no type
+    /// goes by that name.
+    pub fn index_of(&self, name: &str) -> Option<usize> {
+        self.order.iter().position(|n| n == name)
+    }
+
+    /// The type names in declaration order.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.order.iter().map(String::as_str)
+    }
+
+    /// Consume the map, yielding the types in declaration order.
+    pub fn into_values(self) -> impl Iterator<Item = DocType> {
+        let mut by_name = self.by_name;
+        self.order
+            .into_iter()
+            .filter_map(move |n| by_name.remove(&n))
+    }
+}
+
+/// Iteration is the map's — by name, the order every other reader (validation,
+/// `verify`, error messages) wants for a stable, alphabetical report. Only
+/// `--sort`'s grouping asks for declaration order, and it asks by name through
+/// [`TypeMap::index_of`].
+impl<'a> IntoIterator for &'a TypeMap {
+    type Item = (&'a String, &'a DocType);
+    type IntoIter = std::collections::btree_map::Iter<'a, String, DocType>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.by_name.iter()
+    }
+}
+
+impl std::ops::Deref for TypeMap {
+    type Target = BTreeMap<String, DocType>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.by_name
+    }
+}
+
+impl<'de> Deserialize<'de> for TypeMap {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        struct V;
+
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = TypeMap;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a table of document types")
+            }
+
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                mut m: M,
+            ) -> std::result::Result<TypeMap, M::Error> {
+                let mut out = TypeMap::default();
+                while let Some((name, t)) = m.next_entry::<String, DocType>()? {
+                    if out.by_name.insert(name.clone(), t).is_none() {
+                        out.order.push(name);
+                    }
+                }
+                Ok(out)
+            }
+        }
+
+        d.deserialize_map(V)
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProjectConfig {
     /// Inventory base directory, relative to the project root (the dir holding
@@ -612,7 +715,7 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub git: Git,
     #[serde(default)]
-    pub types: BTreeMap<String, DocType>,
+    pub types: TypeMap,
     #[serde(default)]
     pub rules: Vec<Rule>,
     /// Custom stats sections rendered by `opys stats`. Each is a single `sql`
@@ -845,6 +948,28 @@ impl ProjectConfig {
                         "type '{name}': releases_blocks '{s}' is not a status"
                     ));
                 }
+            }
+            // `order_by` (ADR-0099 decision 4). Both problems are about an
+            // *explicitly* declared chain: the implicit default silently drops
+            // the priority key on a type without the field, because priority is
+            // opt-in (ADR-0095) and the shipped config declares none.
+            let mut seen_key: HashSet<&str> = HashSet::new();
+            for key in &t.order_by {
+                if !seen_key.insert(key.as_str()) {
+                    errs.push(format!(
+                        "type '{name}': order_by lists '{}' more than once",
+                        key.as_str()
+                    ));
+                }
+            }
+            if t.order_by.contains(&crate::order::OrderKey::Priority)
+                && !crate::order::has_priority_field(t)
+            {
+                errs.push(format!(
+                    "type '{name}': order_by names 'priority' but the type declares no \
+                     [types.{name}.fields.priority] with type = \"int\" (ADR-0095: priority \
+                     is an opt-in declared field)"
+                ));
             }
             // `transitions` (ADR-0099 decision 1). A map that names a status the
             // type does not declare is dead config: the edge can never fire, and
@@ -1348,6 +1473,117 @@ mod tests {
             "default config has problems: {problems:?}"
         );
         assert_eq!(cfg.types.len(), 4);
+    }
+
+    /// Declaration order survives the parse, and it is not name order: the
+    /// types below are declared in an order a `BTreeMap` would reshuffle, and
+    /// `index_of` reports the order the file is written in. `list --sort`
+    /// groups a mixed listing by exactly this, so an alphabetising map would
+    /// silently reorder every mixed board.
+    #[test]
+    fn types_remember_the_order_the_config_declares_them_in() {
+        let cfg: ProjectConfig = toml::from_str(
+            r#"
+[types.zeta]
+prefix = "Z"
+statuses = ["open"]
+default_status = "open"
+
+[types.alpha]
+prefix = "A"
+statuses = ["open"]
+default_status = "open"
+
+[types.mid]
+prefix = "M"
+statuses = ["open"]
+default_status = "open"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.types.names().collect::<Vec<_>>(),
+            ["zeta", "alpha", "mid"]
+        );
+        assert_eq!(cfg.types.index_of("zeta"), Some(0));
+        assert_eq!(cfg.types.index_of("alpha"), Some(1));
+        assert_eq!(cfg.types.index_of("mid"), Some(2));
+        assert_eq!(cfg.types.index_of("nosuch"), None);
+        // Still the map it always was: lookup by name, keys alphabetical.
+        assert_eq!(cfg.types["alpha"].prefix, "A");
+        assert_eq!(
+            cfg.types.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["alpha", "mid", "zeta"]
+        );
+        assert_eq!(
+            cfg.types
+                .clone()
+                .into_values()
+                .map(|t| t.prefix)
+                .collect::<Vec<_>>(),
+            ["Z", "A", "M"]
+        );
+    }
+
+    /// The shipped config leads with `feature`, and the repo's own dogfooding
+    /// config puts `adr` second — both orders the file states rather than the
+    /// alphabet's.
+    #[test]
+    fn the_default_config_declares_feature_first() {
+        let cfg: ProjectConfig = toml::from_str(DEFAULT_OPYS_CONFIG).unwrap();
+        assert_eq!(cfg.types.names().next(), Some("feature"));
+    }
+
+    /// An explicitly declared chain is held to what the type can answer: the
+    /// `priority` key needs the `int` field ADR-0095 defines, and a key listed
+    /// twice is a chain whose author meant something else.
+    #[test]
+    fn flags_an_order_by_the_type_cannot_answer() {
+        let cfg: ProjectConfig = toml::from_str(
+            r#"
+[types.feature]
+prefix = "FEAT"
+statuses = ["planned", "done"]
+default_status = "planned"
+order_by = ["priority", "id", "id"]
+
+[types.feature.fields.priority]
+type = "enum"
+values = ["low", "high"]
+"#,
+        )
+        .unwrap();
+        let joined = cfg.validate().join("\n");
+        assert!(
+            joined.contains(
+                "type 'feature': order_by names 'priority' but the type declares no \
+                 [types.feature.fields.priority] with type = \"int\""
+            ),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("type 'feature': order_by lists 'id' more than once"),
+            "{joined}"
+        );
+    }
+
+    /// The implicit default is *not* held to the same rule: it drops the
+    /// priority key on a type without the field. That carve-out is what keeps
+    /// every config that never heard of priority — the shipped one included —
+    /// valid, which `default_config_validates_clean` pins from the other side.
+    #[test]
+    fn the_implicit_default_chain_never_demands_a_priority_field() {
+        let cfg: ProjectConfig = toml::from_str(
+            "[types.feature]\nprefix = \"FEAT\"\nstatuses = [\"planned\"]\n\
+             default_status = \"planned\"\n",
+        )
+        .unwrap();
+        assert!(cfg.validate().is_empty(), "{:?}", cfg.validate());
+        let t = cfg.types.get("feature").unwrap();
+        assert_eq!(
+            crate::order::chain(t),
+            vec![crate::order::OrderKey::Blocks, crate::order::OrderKey::Id]
+        );
     }
 
     /// Every name a `transitions` map uses must be a status the type declares,

@@ -230,6 +230,36 @@ pub fn is_blocked(doc: &Doc, corpus: &Corpus<'_>) -> bool {
     !live_blockers(doc, corpus).is_empty()
 }
 
+/// The `blocks` entries of `doc` that it still holds up — the mirror of
+/// [`live_blockers`], asked from the blocker's side: an entry counts when it is
+/// not struck, its target [`resolves`](Corpus::resolves), and `doc` itself
+/// [`holds`](Corpus::holds).
+///
+/// The third condition is what makes this a mirror rather than a count. A
+/// document that has reached one of its type's `releases_blocks` statuses holds
+/// nothing up any more, and every entry in its map is dead the moment it gets
+/// there — so it must report zero, not the size of a map nobody rewrote. That is
+/// exactly the reading [`live_blockers`] gives the other side of the same edge.
+///
+/// The `blocks` map is maintained as the inverse of `blocked_by` by
+/// [`crate::links::reconcile_blockers`], and a missing reverse entry is
+/// auto-fixed by sync rather than gated by `verify` — so on a corpus that has
+/// not been synced this can under-report. Reading `blocked_by` backwards instead
+/// would need the whole corpus rather than one document, which is the trade the
+/// relation maps exist to avoid.
+pub fn live_blocks(doc: &Doc, corpus: &Corpus<'_>) -> Vec<(String, String)> {
+    let Some(id) = doc.id() else {
+        return Vec::new();
+    };
+    if !corpus.holds(id) {
+        return Vec::new();
+    }
+    parse_in(&doc.frontmatter, BLOCKS)
+        .into_iter()
+        .filter(|(target, value)| !is_struck(value) && corpus.resolves(target))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

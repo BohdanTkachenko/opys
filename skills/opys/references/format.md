@@ -178,6 +178,7 @@ status_dirs = { archived = "_archived" }   # per-status {status} segment; defaul
 tags_required = true
 # requires_link = { to = "feature", min = 1 }   # must reference ≥min docs of a type
 releases_blocks = ["implemented", "wontfix", "archived"]   # stops blocking here (see Blockers)
+order_by = ["priority", "blocks", "id"]     # tiebreak chain (see Ordering); this is the default
 
 [types.feature.transitions]          # optional status graph; omit it for any-to-any
 planned     = ["partial", "implemented", "wontfix"]
@@ -192,10 +193,13 @@ partial = { after = "90d", then = "planned" }   # …and where it should go next
 [types.feature.max_visits]           # optional: how often a status may be entered
 partial = { limit = 8, then = "planned" }
 
-[types.feature.fields.priority]      # custom frontmatter fields (the closed schema)
+[types.feature.fields.risk]          # custom frontmatter fields (the closed schema)
 type = "enum"                        # string | list | bool | int | enum
 values = ["low", "high"]             # an enum constrains the value
 # pattern = '^JIRA-[0-9]+$'          # a string field may require a regex
+
+[types.feature.fields.priority]      # the field `order_by`'s priority key reads
+type = "int"                         # ADR-0095: opt-in, lower = higher
 
 [[types.feature.sections]]           # required/known body sections, by kind
 heading = "Test plan"
@@ -618,16 +622,19 @@ matches on equality; a `list` field matches when it *contains* the value.
 ```sh
 opys list --tag osc                             # exact tag, or key `osc`
 opys list --tag area --format ids               # any area:* / area=* tag
-opys list --field priority=high                 # enum/scalar equality
+opys list --field risk=high                     # enum/scalar equality
 opys list --status partial --field area=cli     # combine with status
 opys list --field tag-list=osc --format ids     # list-membership match
 opys list --blocked                             # something live still blocks it
 opys list --unblocked --format ids              # ready to pick up
+opys list --sort --format ids                   # the type's order_by chain, not load order
 ```
 
 `opys list --type <name>` restricts the listing to one document type.
 `--blocked` / `--unblocked` filter on the derived blocked predicate (see
 **Blockers**); they answer opposite questions, so passing both is a usage error.
+`--sort` orders the listing by each type's `order_by` chain (see **Ordering**)
+instead of load order.
 
 `opys tags` enumerates the distinct tags in the inventory (sorted, one per line);
 `opys tags --keys` collapses the `key:value` / `key=value` forms to their keys,
@@ -635,6 +642,53 @@ pairing with `list --tag <key>`. `opys stats` renders the project's configured
 `[[stats]]` sections (see [`[[stats]]`](#stats--custom-stats-sections-optional));
 the default config ships a per-type status breakdown, per-section coverage, and a
 tag breakdown, but the report is fully configurable.
+
+### Ordering (`order_by`) and `list --sort`
+
+A type's `order_by` is the chain of tiebreaks its documents are put in
+intentional order by. Four keys, each with a fixed direction:
+
+| key | orders by | direction |
+| --- | --- | --- |
+| `priority` | **effective** priority (below) | ascending — lower number first, unprioritised **last** |
+| `blocks` | how many live documents the item blocks | descending — unblock the most first |
+| `id` | the numeric part of the id | ascending — oldest first |
+| `updated` | the `updated` stamp | descending — newest first; missing last |
+
+The default, for a type that declares no `order_by`, is
+`["priority", "blocks", "id"]`. An `order_by = []` is the same as an absent one,
+not an instruction to leave the listing unordered — the same absent-or-empty
+reading `transitions` uses. Anything the chain cannot separate falls back to
+the lowest id, so the order is total whatever the chain says. A key outside the
+four is a **parse error** (exit 2), not a verify finding: the set is closed, and
+a misspelled key would otherwise produce a plausible-looking wrong order.
+
+**Effective priority** is the smallest `priority` over the document *and
+everything it still blocks*, transitively. A task at `priority: 30` holding up
+one at `priority: 1` sorts as a 1 — the work that unblocks the urgent thing is
+as urgent as the thing. "Still blocks" is the live half of the `blocks` map (see
+**Blockers**): not struck through, the target resolves, and the document itself
+has not reached one of its type's `releases_blocks` statuses. A `blocks` cycle
+terminates, and a document with no number of its own inherits whatever it holds
+up. A `priority` that is not an integer reads as absent here; verify reports it
+as a field-type problem.
+
+`priority` is an **opt-in declared field** (`[types.<name>.fields.priority]`
+with `type = "int"`, lower = higher) and the engine never demands it: on a type
+that declares no such field the *implicit default* chain simply drops the
+`priority` key, so the type sorts by blocks count, then id. Naming `priority` in
+an **explicit** `order_by` on such a type is a config problem instead
+(`config validate` / `verify` name the type), as is listing any key twice.
+
+`opys list --sort` applies it. A mixed listing groups by type — the types in
+the order `opys.toml` declares them, so a config leads with whichever type it
+puts first — and orders each group by that type's chain; a document whose id
+prefix matches no declared type sorts into a final group. With `--type` there is
+one group, so it is simply the chain.
+Without the flag `list` is in load order, unchanged. The chain is what `opys
+next` and the flow view will pick with; today `list --sort` is its only
+consumer, and the web UI board orders a column by the raw `priority` field,
+because that is the number drag-to-reorder writes.
 
 ## Blockers
 
@@ -1183,7 +1237,8 @@ none of them. Narrow the list — or fix that document — rather than reaching 
 Test results, execution dates, completion claims, assignees, or sprint
 metadata. CI owns automated results; this system owns intent only. (Priority
 is the one carve-out: a project may declare a `priority` int *field* —
-lower = higher — and tools may order by it. It is frontmatter, never prose.
+lower = higher — and tools order by it through a type's `order_by` chain (see
+**Ordering**). It is frontmatter, never prose.
 The auto-maintained `created`/`updated`/`history` timestamps are not an
 exception either: they record when opys wrote, not when work happened, and so
 do a `log` section's stamps, which `opys log` writes and nobody types.)

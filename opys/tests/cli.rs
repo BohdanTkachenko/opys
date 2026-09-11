@@ -6879,3 +6879,391 @@ fn the_shipped_work_item_graph_closes_only_from_review() {
         .code(2)
         .stderr(predicate::str::contains("review, user-review"));
 }
+
+// ---------------------------------------------------------------------------
+// The ordering chain: `order_by`, effective priority, `list --sort`
+// (ADR-0099 decision 4)
+// ---------------------------------------------------------------------------
+
+/// Three types with three different answers to ordering: a permanent `feature`
+/// that releases what it blocks, an ephemeral `task`, and a `note` that declares
+/// no `priority` field at all and so sorts by the rest of the default chain.
+const SORT_CFG: &str = r#"pad = 4
+[types.feature]
+prefix = "FEAT"
+statuses = ["planned", "implemented"]
+default_status = "planned"
+releases_blocks = ["implemented"]
+[types.feature.fields.priority]
+type = "int"
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]
+[types.task.fields.priority]
+type = "int"
+[types.note]
+prefix = "NOTE"
+statuses = ["open"]
+default_status = "open"
+"#;
+
+/// One type with an *explicitly declared* chain that is not the default, for the
+/// config -> `list --sort` junction. `priority` is declared as a field too, so
+/// the default chain would be a complete, and different, answer.
+const SORT_UPDATED_CFG: &str = r#"pad = 4
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]
+order_by = ["updated", "id"]
+[types.task.fields.priority]
+type = "int"
+"#;
+
+/// Write `<id>.md` at `status`, carrying a `blocks` map and/or a `priority`, with
+/// the one history entry `verify` wants.
+///
+/// The frontmatter is canonical — serialization order is `id`, `status`,
+/// `created`, `updated`, then the rest alphabetically, which puts `blocks`
+/// before `history` and `priority` after it — so nothing here churns under a
+/// sync pass and the fixtures stay byte-stable.
+fn sort_doc(dir: &TempDir, id: &str, title: &str, status: &str, blocks: &str, priority: &str) {
+    sort_doc_at(dir, id, title, status, blocks, priority, PINNED_NOW);
+}
+
+/// [`sort_doc`] with an explicit `updated` stamp, for the `updated` key — which
+/// needs documents that differ in it (and in the offset it is written with).
+/// `created` stays at [`PINNED_NOW`], which is what the history check compares
+/// against; `updated` is only required to be RFC3339.
+fn sort_doc_at(
+    dir: &TempDir,
+    id: &str,
+    title: &str,
+    status: &str,
+    blocks: &str,
+    priority: &str,
+    updated: &str,
+) {
+    dir.child(format!("opys/{id}.md"))
+        .write_str(&format!(
+            "---\nid: {id}\nstatus: {status}\ncreated: \"{PINNED_NOW}\"\n\
+             updated: \"{updated}\"\n{blocks}{}{priority}---\n\n# {title}\n",
+            hist(status)
+        ))
+        .unwrap();
+}
+
+/// The default chain, falling through key by key: equal effective priority is
+/// decided by how many live documents each one blocks, and an equal count by the
+/// lowest id. Without the flag the listing is load order, byte for byte.
+#[test]
+fn list_sort_falls_through_priority_to_blocks_then_id() {
+    let dir = project_with(SORT_CFG);
+    sort_doc(&dir, "TASK-0001", "First", "todo", "", "priority: 10\n");
+    sort_doc(
+        &dir,
+        "TASK-0002",
+        "Second",
+        "todo",
+        "blocks:\n  TASK-0003: Third\n",
+        "priority: 10\n",
+    );
+    sort_doc(&dir, "TASK-0003", "Third", "todo", "", "priority: 10\n");
+
+    opys(&dir)
+        .args(["--no-sync", "list", "--sort", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout("TASK-0002\nTASK-0001\nTASK-0003\n");
+    // The flag is the whole of the difference: without it, load order.
+    opys(&dir)
+        .args(["--no-sync", "list", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout("TASK-0001\nTASK-0002\nTASK-0003\n");
+}
+
+/// Effective priority is transitive and unprioritised sorts last: a task at 30
+/// that still holds up one at 1 is worth doing as if it were the 1, and it wins
+/// the tie against the 1 itself because it is the one blocking something.
+#[test]
+fn list_sort_lifts_a_blocker_to_what_it_blocks_and_puts_unprioritised_last() {
+    let dir = project_with(SORT_CFG);
+    sort_doc(
+        &dir,
+        "TASK-0001",
+        "Holds up the urgent one",
+        "todo",
+        "blocks:\n  TASK-0004: Urgent\n",
+        "priority: 30\n",
+    );
+    sort_doc(&dir, "TASK-0002", "Middling", "todo", "", "priority: 20\n");
+    sort_doc(&dir, "TASK-0003", "Unranked", "todo", "", "");
+    sort_doc(&dir, "TASK-0004", "Urgent", "todo", "", "priority: 1\n");
+
+    opys(&dir)
+        .args(["--no-sync", "list", "--sort", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout("TASK-0001\nTASK-0004\nTASK-0002\nTASK-0003\n");
+}
+
+/// `--sort` and `--blocked`/`--unblocked` compose: the derived filter picks the
+/// rows and the chain orders what survives. The two flags read different
+/// indexes — a blocker index for the filter, that index plus the priority
+/// closure for the chain — and passing both must share one, not build two or
+/// pick the wrong one.
+#[test]
+fn list_sort_composes_with_the_blocked_filter() {
+    let dir = project_with(SORT_CFG);
+    sort_doc(
+        &dir,
+        "TASK-0001",
+        "Holds up the urgent one",
+        "todo",
+        "blocks:\n  TASK-0002: Urgent\n",
+        "priority: 30\n",
+    );
+    sort_doc(
+        &dir,
+        "TASK-0002",
+        "Urgent",
+        "todo",
+        "blocked_by:\n  TASK-0001: Holds up the urgent one\n",
+        "priority: 1\n",
+    );
+    sort_doc(&dir, "TASK-0003", "Middling", "todo", "", "priority: 20\n");
+
+    // The blocker inherits the 1 it holds up, so it leads the ready work.
+    opys(&dir)
+        .args([
+            "--no-sync",
+            "list",
+            "--sort",
+            "--unblocked",
+            "--format",
+            "ids",
+        ])
+        .assert()
+        .success()
+        .stdout("TASK-0001\nTASK-0003\n");
+    opys(&dir)
+        .args([
+            "--no-sync",
+            "list",
+            "--sort",
+            "--blocked",
+            "--format",
+            "ids",
+        ])
+        .assert()
+        .success()
+        .stdout("TASK-0002\n");
+}
+
+/// A struck entry, a dangling one and a blocker that has released all carry
+/// nothing: the feature at `implemented` holds up nothing, so it keeps its own
+/// number and sorts behind the one that does.
+#[test]
+fn list_sort_ignores_a_blocks_entry_that_is_not_live() {
+    let dir = project_with(SORT_CFG);
+    sort_doc(
+        &dir,
+        "FEAT-0001",
+        "Released",
+        "implemented",
+        "blocks:\n  TASK-0004: Urgent\n",
+        "priority: 40\n",
+    );
+    sort_doc(
+        &dir,
+        "FEAT-0002",
+        "Struck and dangling",
+        "planned",
+        "blocks:\n  TASK-0008: Vanished\n  TASK-0009: '~~Gone~~'\n",
+        "priority: 35\n",
+    );
+    sort_doc(
+        &dir,
+        "FEAT-0003",
+        "Still holding",
+        "planned",
+        "blocks:\n  TASK-0004: Urgent\n",
+        "priority: 50\n",
+    );
+    sort_doc(&dir, "TASK-0004", "Urgent", "todo", "", "priority: 1\n");
+
+    opys(&dir)
+        .args([
+            "--no-sync",
+            "list",
+            "--type",
+            "feature",
+            "--sort",
+            "--format",
+            "ids",
+        ])
+        .assert()
+        .success()
+        // FEAT-0003 alone reaches the 1; the other two keep 35 and 40.
+        .stdout("FEAT-0003\nFEAT-0002\nFEAT-0001\n");
+}
+
+/// A type that declares no `priority` field sorts by the rest of its chain —
+/// blocks count, then id — and its config is clean, because the implicit default
+/// drops the key rather than demanding the field.
+#[test]
+fn list_sort_on_a_type_without_a_priority_field_uses_the_rest_of_the_chain() {
+    let dir = project_with(SORT_CFG);
+    sort_doc(&dir, "NOTE-0001", "Alone", "open", "", "");
+    sort_doc(
+        &dir,
+        "NOTE-0002",
+        "Holds one up",
+        "open",
+        "blocks:\n  NOTE-0003: Third\n",
+        "",
+    );
+    sort_doc(&dir, "NOTE-0003", "Third", "open", "", "");
+
+    opys(&dir).args(["config", "validate"]).assert().success();
+    opys(&dir)
+        .args(["--no-sync", "list", "--sort", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout("NOTE-0002\nNOTE-0001\nNOTE-0003\n");
+}
+
+/// A mixed listing stays well defined: documents group by type — the types in
+/// the order the config declares them — and each group is ordered by its own
+/// chain. With `--type` there is one group, so it is simply the chain.
+///
+/// [`SORT_CFG`] declares `feature`, `task`, `note`, which is deliberately *not*
+/// their alphabetical order: a `BTreeMap` of types would put the note between
+/// the features and the tasks, so this assertion pins declaration order
+/// surviving the parse rather than merely "some stable order".
+#[test]
+fn list_sort_groups_a_mixed_listing_by_type() {
+    let dir = project_with(SORT_CFG);
+    sort_doc(&dir, "FEAT-0001", "Later", "planned", "", "priority: 9\n");
+    sort_doc(&dir, "FEAT-0002", "Sooner", "planned", "", "priority: 5\n");
+    sort_doc(&dir, "NOTE-0003", "A note", "open", "", "");
+    sort_doc(&dir, "TASK-0004", "Second", "todo", "", "priority: 2\n");
+    sort_doc(&dir, "TASK-0005", "First", "todo", "", "priority: 1\n");
+
+    opys(&dir)
+        .args(["--no-sync", "list", "--sort", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout("FEAT-0002\nFEAT-0001\nTASK-0005\nTASK-0004\nNOTE-0003\n");
+    opys(&dir)
+        .args([
+            "--no-sync",
+            "list",
+            "--type",
+            "task",
+            "--sort",
+            "--format",
+            "ids",
+        ])
+        .assert()
+        .success()
+        .stdout("TASK-0005\nTASK-0004\n");
+}
+
+/// A type whose `order_by` is *declared* rather than defaulted: the chain in the
+/// config is the chain `list --sort` applies. `["updated", "id"]` deliberately
+/// disagrees with the default on this fixture — by priority (and by id) the
+/// order would be 1, 2, 3 — so the declared chain has to be read for the
+/// assertion to hold.
+///
+/// It also pins the direction and the parse of `updated`: newest first, and
+/// TASK-0002's `2026-01-31T23:00:00-04:00` is `2026-02-01T03:00Z`, the newest of
+/// the three, even though it sorts *last* of the three as plain text. A string
+/// comparison would put TASK-0001 first.
+#[test]
+fn list_sort_applies_a_declared_order_by_chain() {
+    let dir = project_with(SORT_UPDATED_CFG);
+    sort_doc_at(
+        &dir,
+        "TASK-0001",
+        "Stamped in UTC",
+        "todo",
+        "",
+        "priority: 1\n",
+        "2026-02-01T00:00:00Z",
+    );
+    sort_doc_at(
+        &dir,
+        "TASK-0002",
+        "Stamped with an offset",
+        "todo",
+        "",
+        "priority: 2\n",
+        "2026-01-31T23:00:00-04:00",
+    );
+    sort_doc_at(
+        &dir,
+        "TASK-0003",
+        "Oldest",
+        "todo",
+        "",
+        "priority: 3\n",
+        "2026-01-15T00:00:00Z",
+    );
+
+    opys(&dir).args(["config", "validate"]).assert().success();
+    opys(&dir).args(["verify"]).assert().success();
+    opys(&dir)
+        .args(["--no-sync", "list", "--sort", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout("TASK-0002\nTASK-0001\nTASK-0003\n");
+}
+
+/// An explicitly declared chain is held to what the type can answer. Naming
+/// `priority` on a type that declares no `int` field of that name asks for an
+/// order nothing can produce, and a key listed twice is a chain whose author
+/// meant something else — both are config problems, named with the type.
+#[test]
+fn config_validate_flags_an_order_by_the_type_cannot_answer() {
+    let dir = project_with(
+        "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\n\
+statuses = [\"planned\", \"implemented\"]\ndefault_status = \"planned\"\n\
+order_by = [\"priority\", \"blocks\", \"blocks\"]\n",
+    );
+    opys(&dir)
+        .args(["config", "validate"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "type 'feature': order_by names 'priority' but the type declares no \
+             [types.feature.fields.priority] with type = \"int\"",
+        ))
+        .stderr(predicate::str::contains(
+            "type 'feature': order_by lists 'blocks' more than once",
+        ));
+}
+
+/// An `order_by` key outside the closed set is a parse error, not a content
+/// problem: the chain is a closed enum like `kind`/`scope`, so a typo stops
+/// every command with exit 2 rather than quietly producing a plausible order.
+#[test]
+fn an_unknown_order_by_key_is_refused_at_parse_time() {
+    let dir = project_with(
+        "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\n\
+statuses = [\"planned\"]\ndefault_status = \"planned\"\n\
+order_by = [\"created\"]\n",
+    );
+    opys(&dir)
+        .args(["list"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("order_by"));
+}
