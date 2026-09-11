@@ -224,7 +224,26 @@ pub enum Command {
     },
 
     /// Integrity check (CI gate).
-    Verify,
+    ///
+    /// Exit codes: 0 clean; 1 content problems; 2 an error (bad flags, IO, a
+    /// missing config); 3 observations and nothing else — a document has sat in
+    /// a status past its type's `ttl`, or entered one as often as `max_visits`
+    /// allows. Gate CI on 1: most scripts gate on any nonzero code, which trips
+    /// on 3 as well, and 3 is a corpus that was clean when it was written.
+    Verify {
+        /// Perform the fixable observations: move each stuck document to its
+        /// `ttl` target and each overflowed one to its `then`, as ordinary
+        /// transitions (history appended, the sync pass run, the layout
+        /// relocation performed), then re-verify and exit on what remains.
+        ///
+        /// At most one fix per document per run; a fix the rules refuse is
+        /// reported as a problem rather than aborting the pass; nothing is
+        /// written when nothing was fixed; and no fixing happens at all while
+        /// `opys config validate` reports a problem, since a fix is a move
+        /// along the graph that check guards.
+        #[arg(long)]
+        fix: bool,
+    },
 
     /// Reconcile references, linkify prose, and relocate docs to their layout path (after hand edits).
     Sync,

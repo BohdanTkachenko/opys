@@ -182,8 +182,15 @@ releases_blocks = ["implemented", "wontfix", "archived"]   # stops blocking here
 [types.feature.transitions]          # optional status graph; omit it for any-to-any
 planned     = ["partial", "implemented", "wontfix"]
 partial     = ["planned", "implemented", "wontfix"]
-implemented = ["partial", "archived"]
+implemented = ["partial", "planned", "archived"]   # `planned` is the escalation edge
 wontfix     = ["planned"]            # a status absent from the map is a dead end
+
+[types.feature.ttl]                  # optional: how long a status may hold a doc
+planned = "2y"                       # a bare duration is observed, never fixed
+partial = { after = "90d", then = "planned" }   # `verify --fix` performs this
+
+[types.feature.max_visits]           # optional: how often a status may be entered
+partial = { limit = 8, then = "planned" }
 
 [types.feature.fields.priority]      # custom frontmatter fields (the closed schema)
 type = "enum"                        # string | list | bool | int | enum
@@ -561,6 +568,11 @@ rest of it.
 A document that has history but no `created` takes `created` from its first key
 on the next write, rather than from the wall clock.
 
+The map is also what makes `verify`'s two [time-aware
+observations](#time-aware-observations-ttl-and-max_visits) possible: its last
+key is when the document entered the status it holds, and the number of entries
+recording a status is how often it has been there.
+
 Seeding the map on an inventory that predates it is a one-time procedure, and
 `opys history --seed <id>` is the tool for it: it reads the document's real
 status timeline out of git (see `[git]` above) and writes one entry per status it
@@ -730,7 +742,9 @@ Three places enforce the graph:
   where the document stands and where it may go (`cannot move TASK-0007 from
   todo to review: type 'task' declares no such transition (from todo:
   in-progress)`). Setting a document to the status it already holds is *not* an
-  edge: it stays the legal no-op it has always been, and appends an entry.
+  edge: it stays the legal no-op it has always been, and appends an entry —
+  unless the type's `max_visits` budget for that status is spent, since an entry
+  is a visit (see [Time-aware observations](#time-aware-observations-ttl-and-max_visits)).
 - **`close`** refuses unless the current status has an edge into one of the
   type's terminal statuses, naming the statuses that can close. `--force` (about
   unchecked checklist items) does not bypass it.
@@ -744,6 +758,146 @@ Tightening a graph is retroactive, because history is an ongoing record and is
 never repaired automatically: pairs already written that the new graph does not
 declare become `verify` findings. Keep the old edge declared, or repair the
 affected documents by hand (`docs/migration-history.md`).
+
+### Time-aware observations (`ttl` and `max_visits`)
+
+Two things worth noticing are not content problems. A document can sit in a
+status past any reasonable time for the project — whoever took it is gone — and
+a document can bounce between two statuses forever, because the coder and the
+reviewer disagree and neither is a person. Neither is a snapshot invariant: a
+corpus is valid when written and *becomes* stuck with no write at all. So they
+are **observations**: reported apart from problems, with their own exit code,
+and never mixed into the problem list.
+
+Both thresholds are per-type, per-status config — a fast repository wants
+minutes where a "ship the game" feature may legitimately sit for two years:
+
+```toml
+[types.task.ttl]
+review      = "2d"                               # observed only, nothing to fix
+in-progress = { after = "10m", then = "stuck" }  # `verify --fix` performs this
+
+[types.task.max_visits]
+review = { limit = 3, then = "user-review" }
+
+[types.task.transitions]
+todo        = ["in-progress"]
+in-progress = ["review", "stuck", "user-review"]   # …and the escalation edge
+stuck       = ["in-progress", "todo"]   # the recovery edge a fix relies on
+review      = ["in-progress", "user-review", "done"]
+user-review = ["review", "in-progress"]
+```
+
+A **duration** is one or more `<integer><unit>` groups, units `s`, `m`, `h`,
+`d`, `w` (7 days), `y` (365 days): `10m`, `2d`, `1h30m`, `2y`. Nothing else — no
+spaces, no sign, no decimal point, no bare number.
+
+- **Stuck** — the document's last history key is more than `after` in the past.
+  A `ttl` written as a bare duration is reported and nothing more; the
+  `{ after, then }` form names where `--fix` moves it.
+- **Overflowed** — the document's history records it entering the status it
+  currently holds `limit` times. `limit = N` *allows* N entries: a document that
+  has made its N-th is at its limit, so `verify` reports it and `set-status`
+  refuses another entry, naming `then` (`cannot set TASK-0007 to review: type
+  'task' allows 3 visit(s) to review and this document has had 3 — max_visits
+  sends it to user-review instead`). The guard and the observation deliberately
+  trip at the same count: a refusal with no observation saying where the
+  document should go instead would be a dead end rather than an escape hatch.
+
+They trip at the same count but not in the same *place*, and the difference is
+what the config checks below are for. The **observation** counts the status the
+document holds *now* — that is the one a fix moves it out of. The **guard**
+counts the status being entered, so it refuses the move from wherever the
+document stands; a document that has already bounced back out of the budgeted
+status is not observed (there is nothing to fix: it is not there) but still
+cannot return.
+
+`config validate` (and so `verify`) checks each entry, exit 1 like every other
+config problem: every key and every `then` is a declared status; `then` is not
+the key itself and not terminal (a terminal status is reached only via `close`,
+which `set-status` refuses, so the fix could never run); `limit` is at least 1;
+the duration parses. Where the type also declares a **status graph**, the fix
+edge `key -> then` must exist — the fix is an ordinary `set-status` — and so
+must the **recovery edge** `then -> key`, because a fix may land under a running
+agent and that agent must be one `set-status` away from where it was. A
+`max_visits` budget is checked once more: every status with an edge *into* the
+budgeted one must declare an edge to `then` as well — the **escalation edge**,
+because that is where the guard's refusal sends a document standing there, and
+advice that is not a legal move is a trap. (`then` itself is exempt: a document
+already there needs no move.) A type with no graph is exempt from all three: it
+allows every move already.
+
+One consequence worth stating: once a document has spent its `max_visits`
+budget it cannot re-enter that status even along a declared edge. `then` is
+where a person (or a different agent) takes over.
+
+`block`/`unblock`'s auto-set does not go through `set-status`, so — exactly as
+with the graph — it is not subject to the visit budget.
+
+### `verify` exit codes and `--fix`
+
+| Code | Meaning |
+|---|---|
+| `0` | clean |
+| `1` | content problems (with or without observations) |
+| `2` | a real failure: bad flags, IO, a missing or unreadable config |
+| `3` | observations, and nothing else |
+
+Problems and observations are two blocks on **stderr**, problems first:
+
+```
+verify: 1 problem(s)
+  FEAT-0002: missing required '## Test plan' section
+verify: 2 observation(s)
+  TASK-0001: stuck in in-progress since 2026-01-02T03:04:05.000001Z (ttl 10m) — `--fix` moves it to stuck
+  TASK-0002: 3 visits to review reaches its limit of 3 — `--fix` moves it to user-review
+```
+
+`verify: OK (N documents)` is printed on stdout for exit `0` only — a nonzero
+run never claims to be OK. **Gate CI on `1`**: most scripts gate on any nonzero
+code, which trips on `3` as well, and a corpus that only has observations was
+clean when it was written.
+
+`verify --fix` performs the fixable observations first: each is an ordinary
+transition (history appended, the layout relocation performed, the sync pass run
+— skipped, like every other mutating command's, under `--no-sync`). One line per
+fix goes to **stdout**, before the re-verify's blocks:
+
+```
+fixed TASK-0001: in-progress -> stuck (stuck)
+fixed TASK-0002: review -> user-review (max_visits)
+```
+
+The exit code then reports what *remains* — including any observe-only `ttl`
+entry, whose observation line ends `— no ttl target, nothing to fix` and which is
+exit `3` again. Five rules make it safe to run unattended:
+
+- at most **one fix per document per run**: a document can be both stuck and
+  overflowed, and the second move would start from a status the first one just
+  left. The overflow goes first;
+- a **refusal** — a `then` the engine will not move the document to, whether
+  because the status has a `[[rules]]` guard the document cannot satisfy or
+  because its own visit budget is spent — is reported as a problem
+  (`TASK-0001: could not fix (stuck): …`) and the pass continues, so one bad
+  document never turns `verify` into exit `2`;
+- **nothing is written at all when there was nothing to fix**, so a clean run is
+  never a silent `sync` over hand-written bytes;
+- **every fix is subject to the visit budget**, the overflow fix included: the
+  guard counts entries into the status being *entered*, so exempting a fix could
+  only ever waive the budget of the target it moves *to* — writing the very
+  count `limit` is defined to be the last of, and performing a move `set-status`
+  refuses by name. A target whose own budget is spent lands in the refusals
+  instead, naming *its* `then` (the next step up an escalation chain), which
+  also means a `verify --fix` loop terminates;
+- and `--fix` **stands down entirely while the config has problems** — it
+  performs transitions along the graph `config validate` checks, so fixing under
+  a config that check rejects is how a document ends up parked in a dead end. It
+  says so once on stderr (`verify: --fix skipped — opys.toml has problems, …`)
+  and reports the observations unfixed.
+
+The clock is injectable: **`OPYS_NOW`** (RFC3339) overrides it for every
+timestamp opys writes and every observation it measures, so tests and repeated
+CI runs of one commit are deterministic.
 
 ## Test plan rules
 

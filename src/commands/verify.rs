@@ -17,29 +17,107 @@ use crate::refs;
 use crate::rules;
 use crate::Ctx;
 
-pub fn run(ctx: &Ctx) -> Result<i32> {
+/// The CI gate. Exit `0` clean, `1` content problems, `3`
+/// [observations](crate::observe) and nothing else; a real failure is an
+/// `OpysError` the binary maps to `2`.
+///
+/// With `fix`, the fixable observations are performed first — as ordinary
+/// transitions through `set_status::core`, then flushed, synced, and
+/// re-verified, so the code reports what *remains*. Only then is verify a
+/// mutating command; the inventory flock it has always taken through
+/// `Backend::load` is what makes that safe.
+pub fn run(ctx: &Ctx, fix: bool) -> Result<i32> {
     let prj = ctx.open()?;
     // Read the corpus through the store; unparsable files surface as errors
     // exactly as `load_docs` reported them, and the reconstructed docs are
     // byte-identical to the parsed ones (the store round-trip is a fixpoint).
     let (mut store, parse_errors) = ctx.load(&prj)?;
-    let docs: Vec<Doc> = store.all_docs()?.into_iter().map(|(_, d)| d).collect();
+    let mut docs: Vec<Doc> = store.all_docs()?.into_iter().map(|(_, d)| d).collect();
     let mut errors = collect_problems(&prj, &docs, parse_errors);
     // …plus the checks that read the medium's own text (see below). The command
     // has not written anything, so what the backend hands back is still the
     // corpus the store was built from.
     errors.extend(spelling_problems(&docs, ctx.backend.as_ref()));
+    let mut observations = crate::observe::observations(&prj, &docs, crate::observe::now());
 
-    if errors.is_empty() {
-        print_lines([format!("verify: OK ({} documents)", docs.len())])?;
-        Ok(0)
-    } else {
+    // A fix is an ordinary `set-status` along the graph the config declares, and
+    // `config validate` is what checks that graph leaves a fixed document a way
+    // back (ADR-0101 decision 6). Performing fixes while that check is failing
+    // would park documents in a dead end named by the very run that reported the
+    // misconfiguration — so `--fix` stands down and says so, once, on stderr.
+    // The problems themselves are already in `errors` (`collect_problems` runs
+    // `pcfg.validate()`), so the code is 1 either way.
+    if fix && !prj.pcfg.validate().is_empty() {
+        eprintln!(
+            "verify: --fix skipped — opys.toml has problems, and a fix follows the \
+             transitions it declares; run `opys config validate`"
+        );
+    } else if fix {
+        let fixes = crate::observe::apply_fixes(&prj, &mut store, &observations);
+        if fixes.applied.is_empty() {
+            // Nothing moved: no flush, and — the load-bearing half — no sync.
+            // The flush alone would write nothing anyway (it writes the
+            // documents a fix dirtied, and there are none), but the sync pass
+            // that follows it below backfills the auto-maintained timestamps
+            // and rewrites every document it touches canonically. Running the
+            // pair unconditionally would turn `verify --fix` into a silent
+            // `sync` over a corpus it found nothing to fix in.
+            errors.extend(fixes.refused);
+        } else {
+            // Flush, then announce, then sync — the order every mutating
+            // command uses: nothing claims a fix the flush did not land, and the
+            // flush is what drops the inventory flock, which `sync` then takes
+            // again for itself.
+            ctx.flush(&prj, store)?;
+            print_lines(&fixes.applied)?;
+            crate::commands::maybe_sync(ctx, &prj);
+            // Re-verify from the medium: the relocation happened at flush, and
+            // `spelling_problems` reads the stored text.
+            let (mut store, parse_errors) = ctx.load(&prj)?;
+            docs = store.all_docs()?.into_iter().map(|(_, d)| d).collect();
+            errors = collect_problems(&prj, &docs, parse_errors);
+            errors.extend(spelling_problems(&docs, ctx.backend.as_ref()));
+            errors.extend(fixes.refused);
+            observations = crate::observe::observations(&prj, &docs, crate::observe::now());
+        }
+    }
+
+    report(&docs, &errors, &observations)
+}
+
+/// Print the outcome and return the exit code: problems first, observations
+/// after them, both on stderr; the clean line on stdout.
+///
+/// One function, so the block's exact bytes have one place to change.
+///
+/// `verify: OK` is printed only for exit `0`. A corpus with observations *is*
+/// free of content problems, but a nonzero exit whose stdout says `OK` is the
+/// one line a CI script would grep and get wrong; what it found is on stderr
+/// with the problems, and the code says which of the two it was.
+fn report(
+    docs: &[Doc],
+    errors: &[String],
+    observations: &[crate::observe::Observation],
+) -> Result<i32> {
+    if !errors.is_empty() {
         eprintln!("verify: {} problem(s)", errors.len());
-        for e in &errors {
+        for e in errors {
             eprintln!("  {e}");
         }
-        Ok(1)
+    } else if observations.is_empty() {
+        print_lines([format!("verify: OK ({} documents)", docs.len())])?;
     }
+    if !observations.is_empty() {
+        eprintln!("verify: {} observation(s)", observations.len());
+        for o in observations {
+            eprintln!("  {o}");
+        }
+    }
+    Ok(match (errors.is_empty(), observations.is_empty()) {
+        (true, true) => 0,
+        (true, false) => 3,
+        (false, _) => 1,
+    })
 }
 
 /// The problems only the *stored* text can reveal: invariants about how a value

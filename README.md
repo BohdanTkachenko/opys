@@ -87,7 +87,8 @@ opys list --status planned
 opys list --tag area                        # exact tag, or any tag with key `area`
 opys set-status FEAT-0001 implemented       # a declared edge, and rejected here unless
                                             # a test-plan item is checked
-opys verify                                 # integrity check; nonzero exit on problems
+opys verify                                 # integrity check; exit 1 on problems, 3 on
+                                            # time observations (`--fix` performs those)
 opys stats                                  # configurable [[stats]] sections (default: status/coverage/tags)
 opys tags                                   # distinct tags (--keys for just keys)
 
@@ -112,10 +113,10 @@ opys list --type task --status review --format ids | opys close -
 ```
 
 Mutating commands (`new`, `set-status`, `tag`, `log`, `retire`, `block`,
-`close`, `cleanup`) reconcile cross-references, linkify prose, and relocate documents to
-their canonical layout path (e.g. an archived doc moves into `_archived/`)
-automatically; pass `--no-sync` to skip, or run `opys sync` after editing files
-by hand.
+`close`, `cleanup`, and `verify --fix` on a run that fixed something) reconcile
+cross-references, linkify prose, and relocate documents to their canonical
+layout path (e.g. an archived doc moves into `_archived/`) automatically; pass
+`--no-sync` to skip, or run `opys sync` after editing files by hand.
 
 Ids come from one global, never-reused sequence. A project that creates
 documents on several branches at once sets `[ids] modulus = M` in `opys.toml`:
@@ -132,13 +133,13 @@ without a `renumber`. Without a modulus, allocation is the dense sequence.
 | `new --type <T>` | allocate the next ID and write a skeleton document of type `T` (auto-syncs) |
 | `import --type <T>` | bulk-create documents of type `T` from a JSONL file (one ID block, one sync) |
 | `show` / `list` | retrieval (`--type`, `--tag`, `--status`, `--field`, `--blocked`/`--unblocked`, `--format table\|ids\|paths`) |
-| `set-status` | guarded transitions: the type's declared `[transitions]` edges (when it declares any) and its configured rules |
+| `set-status` | guarded transitions: the type's declared `[transitions]` edges (when it declares any), its `max_visits` budget for the target status (the refusal names the configured `then`), and its configured rules |
 | `tag` | add/remove tags (`--add a,b --remove c`) |
 | `log` | append a dated entry to a document's `kind = "log"` section (`opys log TASK-0042 "…"`, or `-` to read it from stdin) |
 | `retire` | delete document(s); each ID is logged and never reused |
 | `block` / `unblock` | record a directional blocker between documents; blocked is derived from the live entries, never stored |
 | `close` / `cleanup` | finish document(s) of a type with a terminal status (and, where a status graph is declared, an edge into one from where the document stands); strip struck refs |
-| `verify` | full integrity check — wire into CI |
+| `verify [--fix]` | full integrity check — wire into CI. Exit `0` clean, `1` content problems, `2` a real failure, `3` [time observations](#time-aware-verify-stuck-and-overflowed-documents) only; `--fix` performs the fixable ones and exits on what remains |
 | `sync` | reconcile references, linkify prose, relocate docs to their layout path (for hand edits) |
 | `history <id>` | the document's status timeline across commits, read out of git in-process (gix, never a spawned `git`), following the file across relocations |
 | `history --seed <id>` | one-time migration: write the `history` lifecycle map from that timeline; refuses to overwrite an existing map (see `docs/migration-history.md`) |
@@ -188,6 +189,62 @@ references:
 
 See `skills/opys/references/format.md` for the normative document format and the
 `opys.toml` config reference.
+
+## Time-aware verify: stuck and overflowed documents
+
+A corpus is valid when it is written and *becomes* wrong with no write at all: a
+document sits in `in-progress` for a week because whoever took it is gone, or
+bounces between `review` and `in-progress` forever because the coder and the
+reviewer are both agents. Those are not content problems, so a type can declare
+what "too long" and "too often" mean for it and `verify` reports them apart:
+
+```toml
+[types.task.ttl]
+in-progress = { after = "2d", then = "stuck" }   # or a bare "2d" to observe only
+
+[types.task.max_visits]
+review = { limit = 3, then = "user-review" }
+```
+
+```console
+$ opys verify
+verify: 2 observation(s)
+  TASK-0001: stuck in in-progress since 2026-06-16T14:30:00.000001Z (ttl 2d) — `--fix` moves it to stuck
+  TASK-0002: 3 visits to review reaches its limit of 3 — `--fix` moves it to user-review
+$ echo $?
+3
+```
+
+`verify --fix` performs those transitions itself — an ordinary `set-status`
+each, history and relocation included — and exits on what remains:
+
+```console
+$ opys verify --fix
+fixed TASK-0001: in-progress -> stuck (stuck)
+fixed TASK-0002: review -> user-review (max_visits)
+verify: OK (2 documents)
+$ echo $?
+0
+```
+
+It is deliberately conservative: at most one fix per document per run, a refusal
+(a `then` whose rules the document cannot satisfy) is reported as a problem
+rather than aborting the pass, a run that fixed nothing writes nothing at all,
+and it stands down entirely while `opys config validate` has anything to say —
+a fix is a move along the graph that check guards.
+
+Where the type also declares `[transitions]`, `config validate` insists the
+graph holds the edges those moves need: `key -> then` for the fix itself,
+`then -> key` so a document flipped under a running agent is one `set-status`
+from where it was, and — for `max_visits` — an edge to `then` from every status
+that may enter the budgeted one, because the guard refuses the *entry* and the
+escape it names has to be legal from wherever the document stands.
+
+**Exit codes:** `0` clean, `1` content problems, `2` a real failure (bad flags,
+IO, a missing config), `3` observations and nothing else. Gate CI on **`1`**:
+most scripts gate on any nonzero code, which trips on `3` as well, and a corpus
+that only has observations was clean when it was written. `OPYS_NOW` (RFC3339)
+overrides the clock, so a rerun of one commit always says the same thing.
 
 ## The always-on node (`opys web`)
 
