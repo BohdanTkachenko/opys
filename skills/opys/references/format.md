@@ -177,6 +177,7 @@ terminal_statuses = []               # statuses reached only via `close` (which 
 status_dirs = { archived = "_archived" }   # per-status {status} segment; default empty
 tags_required = true
 # requires_link = { to = "feature", min = 1 }   # must reference ≥min docs of a type
+releases_blocks = ["implemented", "wontfix", "archived"]   # stops blocking here (see Blockers)
 
 [types.feature.transitions]          # optional status graph; omit it for any-to-any
 planned     = ["partial", "implemented", "wontfix"]
@@ -465,7 +466,6 @@ key written in the wrong slot is moved to its canonical one by the next write.
 | `updated` | no | RFC3339 datetime; refreshed on every user-initiated write; auto-maintained |
 | `references` | no | ID→title map of linked work items (and features); auto-maintained |
 | `blocked_by` / `blocks` | no | ID→title maps of the blocker relation; auto-maintained (see Blockers) |
-| `blocked_from` | no | the status held before `block` auto-set `blocked`; auto-maintained — restored (then removed) by `unblock` |
 | `history` | yes | the lifecycle map: RFC3339 **UTC** timestamp (six fractional digits, `Z`) → status, one quoted entry per line, sorted by key; auto-maintained — nothing hand-edits it (see The lifecycle map) |
 | `wontfix_reason` | iff wontfix | one-line ADR for the scope exception |
 | `spec` | no | pointer to long-form shared material (a plain string field) |
@@ -509,8 +509,8 @@ key is bumped by one microsecond, so two transitions inside the same second
 cannot collide.
 
 `new` writes the first entry (keyed to the same instant as `created`),
-`set-status` appends, `import` seeds one entry at the status it was given, and
-`block`/`unblock` append when they auto-set the status. **Nothing else writes
+`set-status` appends, and `import` seeds one entry at the status it was given.
+`block`/`unblock` write no entry — they change no status. **Nothing else writes
 it except the one-time migration seed below, and nothing hand-edits it** —
 `import` rejects a record that carries a `history` key, and the node's
 `set-field` refuses it by name. A status change on
@@ -551,8 +551,8 @@ The shape rule is **all-or-nothing**, and it covers every YAML shape, not only
 mappings: one bad pair makes the whole map unreadable, and so does a list or a
 one-line string that carries entries. That is deliberate. A value opys cannot
 read is data it must not destroy, so it is kept verbatim, reported, and left for
-a human — and every write that would append to it (`set-status`, and
-`block`/`unblock`'s auto-set) **refuses** rather than replacing it. Only a value
+a human — and every write that would append to it (`set-status`) **refuses**
+rather than replacing it. Only a value
 holding no entries at all may be replaced by a seed. Reading only the
 well-formed entries, or blessing a non-mapping as empty, would bless a map the
 tool could not actually maintain, and the next status change would overwrite the
@@ -590,7 +590,7 @@ is data. `docs/migration-history.md` is the full procedure, including the
 
 An `enum` field must declare a non-empty `values` array (verify errors on an
 empty one). Reserved keys (`id`, `status`, `tags`, `created`, `updated`,
-`history`, `references`, `blocked_by`, `blocks`, `blocked_from`) are always allowed; every other key must be
+`history`, `references`, `blocked_by`, `blocks`) are always allowed; every other key must be
 declared under the type's
 `[types.<name>.fields.*]` or verify rejects it. Richer YAML does not relax
 the declare-or-fail rule.
@@ -609,9 +609,13 @@ opys list --tag area --format ids               # any area:* / area=* tag
 opys list --field priority=high                 # enum/scalar equality
 opys list --status partial --field area=cli     # combine with status
 opys list --field tag-list=osc --format ids     # list-membership match
+opys list --blocked                             # something live still blocks it
+opys list --unblocked --format ids              # ready to pick up
 ```
 
 `opys list --type <name>` restricts the listing to one document type.
+`--blocked` / `--unblocked` filter on the derived blocked predicate (see
+**Blockers**); they answer opposite questions, so passing both is a usage error.
 
 `opys tags` enumerates the distinct tags in the inventory (sorted, one per line);
 `opys tags --keys` collapses the `key:value` / `key=value` forms to their keys,
@@ -632,16 +636,43 @@ every other mutating command (see **Bulk edits** below), so
 `opys block FEAT-0001 FEAT-0002 --by FEAT-0009` points several documents at one blocker
 in a single command.
 
-Blocking a document whose type has a `blocked` status auto-sets it — the blocker
-link itself serves as the `blocked_reason`, so none is required; `unblock`
-reverts it to `in-progress` once no blocker (and no free-text reason) remains. A
-type without a `blocked` status (e.g. `feature`) treats the link as purely
-informational.
-
 Blocker entries resolve, tombstone on close (`TASK-0042: ~~title~~`), and reserve
 ids exactly like `references`; a closed blocker is therefore safe to leave in
 place, and `opys cleanup` strips the struck entries (ledger-reserving any id
 whose last tombstone it strips).
+
+### Blocked is derived
+
+There is no `blocked` status, no `blocked_from` and no `blocked_reason`. A
+document is blocked **iff it holds a live `blocked_by` entry**, and an entry is
+live when all three of these hold:
+
+- it is not struck through (`~~title~~` is a closed blocker's tombstone);
+- it resolves to a document that exists;
+- that document's status is not listed in its own type's `releases_blocks`.
+
+So blocking and unblocking are relation writes and nothing else: `block` and
+`unblock` never touch `status` and never append to `history`. A blocker stops
+blocking by *moving*, without anything being written to the document it blocks.
+
+`releases_blocks` is the per-type list of statuses at which a document of that
+type lets go of whatever it blocks:
+
+```toml
+[types.feature]
+releases_blocks = ["implemented", "wontfix", "archived"]
+```
+
+It earns its keep on a **permanent** type — one that is never closed, and would
+otherwise block forever. On an **ephemeral** type it is accepted but redundant:
+`close` deletes the document and strikes every entry pointing at it, so such a
+type releases by construction. Absent (the default) a document of the type
+blocks at every status it can hold. A status in `releases_blocks` that the type
+does not declare is a config problem `verify` and `config validate` report.
+
+Everything that blocks is a *document*: "waiting on a vendor" is a chore, not a
+free-text reason. `opys list --blocked` / `--unblocked` filter on the predicate,
+and the node's board badge and document view read the same function.
 
 ## Status semantics
 
@@ -665,7 +696,8 @@ A type may declare which status may follow which:
 [types.task.transitions]
 todo        = ["in-progress"]
 in-progress = ["review", "todo"]
-review      = ["done", "in-progress"]
+review      = ["done", "in-progress", "user-review"]
+user-review = ["done", "in-progress"]
 ```
 
 Omit the table and the type keeps the **any-to-any** rule: every status may
@@ -707,11 +739,6 @@ Three places enforce the graph:
   CI finding rather than an invisible snapshot. See
   [The lifecycle map](#the-lifecycle-map-history) for the two things it
   deliberately does *not* check.
-
-`block`/`unblock` auto-set the `blocked` status on a type that declares one, and
-they do so **without consulting the graph**. Do not give a type both a `blocked`
-status and a `transitions` map until that auto-set is gone: the pairs it writes
-would be pairs `verify` then rejects.
 
 Tightening a graph is retroactive, because history is an ongoing record and is
 never repaired automatically: pairs already written that the new graph does not
@@ -980,7 +1007,7 @@ comma, space and newline separation all accepted. So a query and an edit
 compose:
 
 ```sh
-opys list --type task --status in-progress --format ids | opys close -
+opys list --type task --status review --format ids | opys close -
 opys list --tag legacy --format ids | opys tag - --add deprecated
 ```
 

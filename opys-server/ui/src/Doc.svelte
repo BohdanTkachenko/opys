@@ -122,9 +122,6 @@
   const unsetDeclared = $derived(
     (d?.declared_fields ?? []).filter((f) => !(f.name in (d?.fields ?? {}))),
   );
-  /** Auto-maintained bookkeeping: shown, never editable (the engine refuses too). */
-  const AUTO = new Set(['blocked_from']);
-
   /**
    * The status menu: this document's declared targets when its type has a status
    * graph, else its type's whole vocabulary. `null` is the "no graph" answer, so
@@ -152,7 +149,7 @@
 
   // Status. Choosing one writes it at once — the same gesture as dragging a
   // card between columns — and a refusal for want of a `<status>_reason`
-  // (blocked with no blocker, wontfix, whatever the project's rules say) opens
+  // (wontfix, archived, whatever the project's rules say) opens
   // a reason box on the row, holding the picked status, so the second attempt
   // is one line of typing rather than a second trip through the menu.
   /** `{ status, reason }` while a refused change waits for its reason. */
@@ -411,7 +408,7 @@
   }
 
   function startFieldEdit(key, value) {
-    if (pending || AUTO.has(key)) return;
+    if (pending) return;
     fieldEdit = { key, text: fieldSource(value) };
   }
 
@@ -726,6 +723,19 @@
           <div class="chips">
             {#each entries as [refId, title] (refId)}
               {@const shown = relationTitle(title)}
+              <!-- Blocked is derived (ADR-0099 decision 3), so a `blocked_by`
+                   entry can be perfectly live-looking and no longer block. The
+                   node says which ones still hold; this view must not show the
+                   rest as if they did — and must not tell the reader the wrong
+                   reason, so it takes the two ways an entry stops holding from
+                   the node too: the target released, or nothing answers to the
+                   id (`verify` reports that one). -->
+              {@const dangling =
+                relation.key === 'blocked_by' && (d.dangling_blockers ?? []).includes(refId)}
+              {@const released =
+                relation.key === 'blocked_by' &&
+                !dangling &&
+                !(d.live_blockers ?? []).includes(refId)}
               {#if shown.struck}
                 <!-- A tombstone: the document was closed and its file deleted,
                      so this is deliberately not a link to anywhere. -->
@@ -734,7 +744,15 @@
                   {shown.text}
                 </span>
               {:else if relation.editable}
-                <span class="chip">
+                <span
+                  class="chip"
+                  class:released={released || dangling}
+                  title={dangling
+                    ? `${refId} no longer blocks ${d.id}: no document answers to that id — run opys verify`
+                    : released
+                      ? `${refId} no longer blocks ${d.id}: it has reached a status its type releases at`
+                      : undefined}
+                >
                   <a class="reflink" href={href(docPath(cid, refId))}>
                     <span class="mono">{refId}</span>
                     {shown.text}
@@ -810,8 +828,6 @@
             </button>
             <button class="btn small" onclick={() => (fieldEdit = null)}>Cancel</button>
           </span>
-        {:else if AUTO.has(key)}
-          <span class="value" title={isTimestamp(value) ? value : undefined}>{fieldDisplay(value)}</span>
         {:else}
           <span class="value editable">
             <button

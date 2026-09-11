@@ -2000,8 +2000,11 @@ fn work_item_list_filters_by_custom_field() {
         .stdout(predicate::str::contains("TASK-0003").not());
 }
 
+/// `block` writes the two relation maps and nothing else (ADR-0099 decision 3).
+/// The work-item fixture still *declares* a `blocked` status — a project may —
+/// and the task stays at `todo` regardless: there is no auto-set left to fire.
 #[test]
-fn block_links_both_directions_and_sets_blocked_status() {
+fn block_links_both_directions_without_touching_status() {
     let dir = project();
     enable_work_items(&dir);
     opys(&dir)
@@ -2031,16 +2034,23 @@ fn block_links_both_directions_and_sets_blocked_status() {
         .success()
         .stdout(predicate::str::contains("TASK-0003 blocked by FEAT-0002"));
 
-    // The blocked work item gained blocked_by and was auto-set to blocked.
+    // The blocked work item gained `blocked_by` and kept the status it had.
     dir.child("opys/work-items/TASK-0003.md")
-        .assert(predicate::str::contains("status: blocked"))
-        .assert(predicate::str::contains("FEAT-0002: Beta"));
+        .assert(predicate::str::contains("status: todo"))
+        .assert(predicate::str::contains("FEAT-0002: Beta"))
+        .assert(predicate::str::contains("blocked_from").not());
     // The blocker gained the reverse `blocks` edge.
     dir.child("opys/features/FEAT-0002.md")
         .assert(predicate::str::contains("blocks:"))
         .assert(predicate::str::contains("TASK-0003: Wire"));
-    // No blocked_reason is needed — the blocker link satisfies the guard.
     opys(&dir).arg("verify").assert().success();
+    // Blocked is derived from that entry: this fixture's `feature` type declares
+    // no `releases_blocks`, so a live `FEAT-0002` still holds.
+    opys(&dir)
+        .args(["list", "--blocked", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout("TASK-0003\n");
 
     // An item cannot block itself.
     opys(&dir)
@@ -2050,8 +2060,11 @@ fn block_links_both_directions_and_sets_blocked_status() {
         .stderr(predicate::str::contains("cannot block itself"));
 }
 
+/// `unblock` is the mirror: it removes the entry from both sides and leaves the
+/// status where it found it. The document stops being blocked because the entry
+/// is gone, not because anything set a status.
 #[test]
-fn unblock_removes_link_and_reverts_status() {
+fn unblock_removes_the_link_from_both_sides() {
     let dir = project();
     enable_work_items(&dir);
     opys(&dir)
@@ -2083,8 +2096,7 @@ fn unblock_removes_link_and_reverts_status() {
         .args(["unblock", "TASK-0003", "--by", "FEAT-0002"])
         .assert()
         .success();
-    // Both sides cleared, and the auto-blocked status restored to the pre-block
-    // status (the task was created at `todo`), with the bookkeeping field gone.
+    // Both sides cleared; the status is the one the task was created at.
     dir.child("opys/work-items/TASK-0003.md")
         .assert(predicate::str::contains("status: todo"))
         .assert(predicate::str::contains("blocked_by").not())
@@ -2092,6 +2104,11 @@ fn unblock_removes_link_and_reverts_status() {
     dir.child("opys/features/FEAT-0002.md")
         .assert(predicate::str::contains("blocks").not());
     opys(&dir).arg("verify").assert().success();
+    opys(&dir)
+        .args(["list", "--blocked", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout("");
 
     // Unblocking an edge that does not exist is an error.
     opys(&dir)
@@ -2099,93 +2116,6 @@ fn unblock_removes_link_and_reverts_status() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("no blocker"));
-}
-
-/// BUG-0033: unblock restores the exact pre-block status, not a hardcoded
-/// `in-progress`.
-#[test]
-fn unblock_restores_pre_block_status() {
-    let dir = project();
-    enable_work_items(&dir);
-    opys(&dir)
-        .args(["new", "--title", "Alpha", "--tags", "a"])
-        .assert()
-        .success();
-    opys(&dir)
-        .args([
-            "new",
-            "--type",
-            "task",
-            "--title",
-            "Wire",
-            "--features",
-            "FEAT-0001",
-        ])
-        .assert()
-        .success();
-    // Advance the task, then block it — the pre-block status is `in-progress`.
-    opys(&dir)
-        .args(["set-status", "TASK-0002", "in-progress"])
-        .assert()
-        .success();
-    opys(&dir)
-        .args(["block", "TASK-0002", "--by", "FEAT-0001"])
-        .assert()
-        .success();
-    dir.child("opys/work-items/TASK-0002.md")
-        .assert(predicate::str::contains("status: blocked"))
-        .assert(predicate::str::contains("blocked_from: in-progress"));
-    // Unblock restores in-progress (not todo/default), and clears the field.
-    opys(&dir)
-        .args(["unblock", "TASK-0002", "--by", "FEAT-0001"])
-        .assert()
-        .success();
-    dir.child("opys/work-items/TASK-0002.md")
-        .assert(predicate::str::contains("status: in-progress"))
-        .assert(predicate::str::contains("blocked_from").not());
-    opys(&dir).arg("verify").assert().success();
-}
-
-/// BUG-0033: a type with a `blocked` status but no `in-progress` unblocks back to
-/// its default status (was left stuck at `blocked`, failing verify).
-#[test]
-fn unblock_without_in_progress_falls_back_to_default() {
-    let cfg = format!(
-        "{}\n{}",
-        default_cfg(),
-        "[types.job]\n\
-prefix = \"JOB\"\n\
-dir = \"work-items\"\n\
-statuses = [\"open\", \"blocked\", \"done\"]\n\
-default_status = \"open\"\n\
-terminal_statuses = [\"done\"]\n\
-[[types.job.sections]]\nheading = \"Tasks\"\nkind = \"checklist\"\nrequired = true\n\
-[[rules]]\nwhen = { status = \"blocked\" }\n\
-require_any = [{ link = \"blocked_by\" }]\n"
-    );
-    let dir = project_with(&cfg);
-    opys(&dir)
-        .args(["new", "--title", "Alpha", "--tags", "a"])
-        .assert()
-        .success();
-    opys(&dir)
-        .args(["new", "--type", "job", "--title", "Do it"])
-        .assert()
-        .success();
-    opys(&dir)
-        .args(["block", "JOB-0002", "--by", "FEAT-0001"])
-        .assert()
-        .success();
-    dir.child("opys/work-items/JOB-0002.md")
-        .assert(predicate::str::contains("status: blocked"))
-        .assert(predicate::str::contains("blocked_from: open"));
-    opys(&dir)
-        .args(["unblock", "JOB-0002", "--by", "FEAT-0001"])
-        .assert()
-        .success();
-    dir.child("opys/work-items/JOB-0002.md")
-        .assert(predicate::str::contains("status: open"));
-    opys(&dir).arg("verify").assert().success();
 }
 
 /// BUG-0036: `--reason` is rejected when `<status>_reason` is not a declared
@@ -2850,10 +2780,12 @@ fn import_seeds_one_history_entry_at_the_given_status() {
     opys(&dir).arg("verify").assert().success();
 }
 
-/// `block`'s auto-set into `blocked` and `unblock`'s restore are status changes,
-/// so each appends an entry — the map is a complete record of the lifecycle.
+/// Blocked is derived, so `block`/`unblock` are not status changes and neither
+/// appends a history entry (ADR-0099 decision 3). The map stays a faithful
+/// record of the lifecycle precisely because only real transitions reach it —
+/// and the task ends where it started even though its type declares `blocked`.
 #[test]
-fn block_and_unblock_append_the_auto_set_status() {
+fn block_and_unblock_change_neither_status_nor_history() {
     let dir = project();
     enable_work_items(&dir);
     opys(&dir)
@@ -2876,43 +2808,27 @@ fn block_and_unblock_append_the_auto_set_status() {
         .args(["block", "TASK-0002", "--by", "FEAT-0001"])
         .assert()
         .success();
+    let blocked = std::fs::read_to_string(dir.path().join("opys/work-items/TASK-0002.md")).unwrap();
+    assert!(blocked.contains("status: todo"), "{blocked}");
+    assert!(
+        blocked.contains(&format!("history:\n  \"{PINNED_KEY}\": todo\n")),
+        "{blocked}"
+    );
+    // One entry, the one `new` wrote: `block` added none.
+    assert_eq!(blocked.matches("\": ").count(), 1, "{blocked}");
+
     opys(&dir)
         .args(["unblock", "TASK-0002", "--by", "FEAT-0001"])
         .assert()
         .success();
     let text = std::fs::read_to_string(dir.path().join("opys/work-items/TASK-0002.md")).unwrap();
+    assert!(text.contains("status: todo"), "{text}");
     assert!(
-        text.contains(
-            "history:\n  \
-             \"2026-01-02T03:04:05.000000Z\": todo\n  \
-             \"2026-01-02T03:04:05.000001Z\": blocked\n  \
-             \"2026-01-02T03:04:05.000002Z\": todo\n"
-        ),
+        text.contains(&format!("history:\n  \"{PINNED_KEY}\": todo\n")),
         "{text}"
     );
+    assert_eq!(text.matches("\": ").count(), 1, "{text}");
     opys(&dir).arg("verify").assert().success();
-}
-
-/// Delete a document's `history:` block, turning a file `opys` just wrote into
-/// one that predates the map — the state an inventory is in before the
-/// migration in `docs/migration-history.md` runs.
-fn strip_history(path: &std::path::Path) {
-    let text = std::fs::read_to_string(path).unwrap();
-    let kept: String = text
-        .lines()
-        .scan(false, |in_block, line| {
-            *in_block = if line == "history:" {
-                true
-            } else {
-                *in_block && line.starts_with("  ")
-            };
-            Some((*in_block, line))
-        })
-        .filter(|(in_block, _)| !in_block)
-        .map(|(_, line)| format!("{line}\n"))
-        .collect();
-    assert!(kept.len() < text.len(), "no history block in {text}");
-    std::fs::write(path, kept).unwrap();
 }
 
 /// A document written before `history` existed keeps its migration handle. A
@@ -2948,47 +2864,6 @@ fn a_status_change_seeds_history_on_a_document_that_predates_the_map() {
             "history:\n  \
              \"2024-01-05T14:00:00.000000Z\": planned\n  \
              \"2026-01-02T03:04:05.000000Z\": partial\n"
-        ),
-        "{text}"
-    );
-    opys(&dir).arg("verify").assert().success();
-}
-
-/// The same seeding covers `block`'s auto-set, which changes status outside
-/// `set-status`.
-#[test]
-fn block_seeds_history_on_a_document_that_predates_the_map() {
-    let dir = project();
-    enable_work_items(&dir);
-    opys(&dir)
-        .args(["new", "--title", "Alpha", "--tags", "a"])
-        .assert()
-        .success();
-    opys(&dir)
-        .args([
-            "new",
-            "--type",
-            "task",
-            "--title",
-            "Wire",
-            "--features",
-            "FEAT-0001",
-        ])
-        .assert()
-        .success();
-    let task = dir.path().join("opys/work-items/TASK-0002.md");
-    strip_history(&task);
-
-    opys(&dir)
-        .args(["block", "TASK-0002", "--by", "FEAT-0001"])
-        .assert()
-        .success();
-    let text = std::fs::read_to_string(&task).unwrap();
-    assert!(
-        text.contains(
-            "history:\n  \
-             \"2026-01-02T03:04:05.000000Z\": todo\n  \
-             \"2026-01-02T03:04:05.000001Z\": blocked\n"
         ),
         "{text}"
     );
@@ -3241,10 +3116,12 @@ fn a_botched_history_is_reported_and_no_write_touches_it() {
         ));
 
     // Every write path that would append refuses, before touching anything.
+    // `block`/`unblock` are not on this list: they record a relation, never a
+    // status, so they append nothing and have nothing to refuse (asserted at the
+    // end of this test).
     for args in [
         vec!["set-status", "FEAT-0001", "partial"],
         vec!["set-status", "FEAT-0003", "partial"],
-        vec!["block", "TASK-0002", "--by", "FEAT-0001"],
     ] {
         opys(&dir)
             .args(&args)
@@ -3284,6 +3161,21 @@ fn a_botched_history_is_reported_and_no_write_touches_it() {
              \"2026-02-01T00:00:00.000000Z\": null\n"
         ),
         "{text}"
+    );
+
+    // `block` is the same kind of write: it records a relation, not a status,
+    // so it runs on a document whose map opys cannot read — and leaves the map
+    // exactly as it found it.
+    opys(&dir)
+        .args(["block", "TASK-0002", "--by", "FEAT-0001", "--no-sync"])
+        .assert()
+        .success();
+    let after = std::fs::read_to_string(dir.path().join("opys/TASK-0002.md")).unwrap();
+    assert!(after.contains("status: todo"), "{after}");
+    assert!(after.contains("FEAT-0001: A"), "{after}");
+    assert!(
+        after.contains("history:\n  \"2026-01-01T00:00:00.000000Z\": 5\n"),
+        "{after}"
     );
 }
 
@@ -4009,8 +3901,7 @@ fn bulk_stdin_pipe_from_list_closes_the_selection() {
 /// The bulk-edit pipe the docs ship verbatim: README, format.md, SKILL.md, the
 /// web query console and FEAT-0013 all print this exact line, and
 /// `docs_ship_a_bulk_pipe_that_runs` pins them to it.
-const DOC_BULK_PIPE: &str =
-    "opys list --type task --status in-progress --format ids | opys close -";
+const DOC_BULK_PIPE: &str = "opys list --type task --status review --format ids | opys close -";
 
 /// Every file that writes the bulk-edit story for a human. All of them are
 /// checked by `docs_ship_a_bulk_pipe_that_runs`.
@@ -4027,6 +3918,10 @@ const BULK_DOCS: [&str; 5] = [
 /// document can ever hold (`done` is terminal for task/bug/chore and reached
 /// only through `close`, which deletes the file), so the producer was always
 /// empty and the example always exited 2 with `expected at least one id`.
+///
+/// It now selects on `review`, and that is not cosmetic: the shipped task graph
+/// puts the only edges into `done` on `review` and `user-review`, so those are
+/// the two statuses `close` may be run from at all.
 #[test]
 fn documented_bulk_pipe_runs_under_the_default_config() {
     let dir = TempDir::new().unwrap();
@@ -4058,8 +3953,22 @@ fn documented_bulk_pipe_runs_under_the_default_config() {
             .replace("- [ ]", "- [x]");
         std::fs::write(&path, text).unwrap();
     }
+    // `todo -> in-progress -> review`: the shipped graph has no shortcut, and
+    // `review` is where an edge into `done` (so, `close`) first exists.
     opys(&dir)
         .args(["set-status", "TASK-0002", "TASK-0003", "in-progress"])
+        .assert()
+        .success();
+    // The shipped config also demands a checkpoint before a handoff into
+    // `review` (`require_log_since_status`), which is what a real user does.
+    for id in ["TASK-0002", "TASK-0003"] {
+        opys(&dir)
+            .args(["log", id, "ready for review"])
+            .assert()
+            .success();
+    }
+    opys(&dir)
+        .args(["set-status", "TASK-0002", "TASK-0003", "review"])
         .assert()
         .success();
 
@@ -4463,8 +4372,14 @@ fn bulk_block_and_unblock_read_ids_from_stdin() {
         .stdout(predicate::str::contains("TASK-0003 blocked by FEAT-0001"));
     for n in [2, 3] {
         dir.child(format!("opys/work-items/TASK-000{n}.md"))
-            .assert(predicate::str::contains("status: blocked"));
+            .assert(predicate::str::contains("FEAT-0001: Feature"))
+            .assert(predicate::str::contains("status: todo"));
     }
+    opys(&dir)
+        .args(["list", "--blocked", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout("TASK-0002\nTASK-0003\n");
     opys(&dir)
         .args(["unblock", "-", "--by", "FEAT-0001"])
         .write_stdin("TASK-0002\nTASK-0003\n")
@@ -4475,6 +4390,7 @@ fn bulk_block_and_unblock_read_ids_from_stdin() {
         ));
     for n in [2, 3] {
         dir.child(format!("opys/work-items/TASK-000{n}.md"))
+            .assert(predicate::str::contains("blocked_by").not())
             .assert(predicate::str::contains("status: todo"));
     }
 }
@@ -6126,4 +6042,260 @@ done = [\"todo\"]\n",
         .stderr(predicate::str::contains(
             "default_status 'todo' has no outgoing transitions",
         ));
+}
+
+// ---------------------------------------------------------------------------
+// Derived blocked: `releases_blocks` and `list --blocked` (ADR-0099 decision 3)
+// ---------------------------------------------------------------------------
+
+/// A permanent `feature` that releases what it blocks once it is `implemented`,
+/// and an ephemeral `task` that declares nothing — it releases by construction,
+/// because `close` deletes it and strikes every entry pointing at it.
+const RELEASE_CFG: &str = r#"pad = 4
+[types.feature]
+prefix = "FEAT"
+statuses = ["planned", "implemented"]
+default_status = "planned"
+releases_blocks = ["implemented"]
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]
+"#;
+
+/// Write `<id>.md` titled `title` at `status`, optionally carrying a
+/// `blocked_by` map, with the one history entry `verify` wants. Hand-written
+/// rather than driven through `new`, so a struck tombstone and a released
+/// blocker can both be set up without closing anything.
+///
+/// The frontmatter is *canonical* — keys in serialization order, `created` and
+/// `updated` both present — and the title is never the document's own id, so a
+/// sync pass over this fixture has nothing to backfill, restamp or linkify.
+/// That is what lets a test assert one of these files is byte-identical after a
+/// write elsewhere in the corpus.
+fn blocker_doc(dir: &TempDir, id: &str, title: &str, status: &str, blocked_by: &str) {
+    dir.child(format!("opys/{id}.md"))
+        .write_str(&format!(
+            "---\nid: {id}\nstatus: {status}\ncreated: \"{PINNED_NOW}\"\n\
+             updated: \"{PINNED_NOW}\"\n{blocked_by}{}---\n\n# {title}\n",
+            hist(status)
+        ))
+        .unwrap();
+}
+
+/// The shapes a `blocked_by` entry can have, end to end through `list`. Only a
+/// live, non-struck entry whose target has not released still blocks.
+#[test]
+fn list_blocked_reads_the_live_blockers() {
+    let dir = project_with(RELEASE_CFG);
+    blocker_doc(&dir, "FEAT-0001", "Engine", "implemented", "");
+    blocker_doc(&dir, "FEAT-0002", "Parser", "planned", "");
+    // Blocked by a feature that has released.
+    blocker_doc(
+        &dir,
+        "TASK-0003",
+        "Wire the engine",
+        "todo",
+        "blocked_by:\n  FEAT-0001: Engine\n",
+    );
+    // Blocked by a feature that has not.
+    blocker_doc(
+        &dir,
+        "TASK-0004",
+        "Wire the parser",
+        "todo",
+        "blocked_by:\n  FEAT-0002: Parser\n",
+    );
+    // Blocked by a *closed* task: the struck tombstone reserves the id and
+    // nothing more.
+    blocker_doc(
+        &dir,
+        "TASK-0005",
+        "Follow up",
+        "todo",
+        "blocked_by:\n  TASK-0009: '~~Gone~~'\n",
+    );
+    // Blocked by an id no document answers to: there is nothing left to wait
+    // for (the dangling entry is a separate `verify` finding).
+    blocker_doc(
+        &dir,
+        "TASK-0006",
+        "Loose end",
+        "todo",
+        "blocked_by:\n  TASK-0008: Vanished\n",
+    );
+
+    opys(&dir)
+        .args(["--no-sync", "list", "--blocked", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout("TASK-0004\n");
+    opys(&dir)
+        .args(["--no-sync", "list", "--unblocked", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout("FEAT-0001\nFEAT-0002\nTASK-0003\nTASK-0005\nTASK-0006\n");
+    // The filter composes with the others, and with neither flag nothing is cut.
+    opys(&dir)
+        .args([
+            "--no-sync",
+            "list",
+            "--type",
+            "task",
+            "--unblocked",
+            "--format",
+            "ids",
+        ])
+        .assert()
+        .success()
+        .stdout("TASK-0003\nTASK-0005\nTASK-0006\n");
+    opys(&dir)
+        .args(["--no-sync", "list", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout("FEAT-0001\nFEAT-0002\nTASK-0003\nTASK-0004\nTASK-0005\nTASK-0006\n");
+}
+
+/// A blocker releases by *moving*, not by anyone editing the document it blocks:
+/// the entry stays exactly where it is and stops counting.
+#[test]
+fn a_blocker_releases_when_it_reaches_a_releasing_status() {
+    let dir = project_with(RELEASE_CFG);
+    blocker_doc(&dir, "FEAT-0001", "Engine", "planned", "");
+    blocker_doc(
+        &dir,
+        "TASK-0002",
+        "Wire the engine",
+        "todo",
+        "blocked_by:\n  FEAT-0001: Engine\n",
+    );
+    opys(&dir)
+        .args(["--no-sync", "list", "--blocked", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout("TASK-0002\n");
+
+    let blocked_path = dir.path().join("opys/TASK-0002.md");
+    let before = std::fs::read_to_string(&blocked_path).unwrap();
+    opys(&dir)
+        .args(["set-status", "FEAT-0001", "implemented"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["list", "--blocked", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout("");
+    // Nothing was written to the blocked document — not a cached `blocked:`,
+    // not a status, not a history entry. Byte-identity is the whole claim: the
+    // release happened on the blocker's side, and the reading of an untouched
+    // relation changed with it. (The blocker itself does move: the sync pass
+    // adds its reverse `blocks` entry.)
+    let after = std::fs::read_to_string(&blocked_path).unwrap();
+    assert_eq!(before, after, "the blocked document was rewritten");
+    assert!(after.contains("FEAT-0001: Engine"), "{after}");
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// The two flags answer opposite questions, so asking both is a usage error clap
+/// refuses before a document is loaded.
+#[test]
+fn list_blocked_and_unblocked_are_mutually_exclusive() {
+    let dir = project_with(RELEASE_CFG);
+    opys(&dir)
+        .args(["list", "--blocked", "--unblocked"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+/// `releases_blocks` naming a status the type cannot hold is dead config, and
+/// dead config here has no symptom: every blocker of that type would simply stay
+/// live forever. `config validate` names it like any other config problem.
+#[test]
+fn config_validate_flags_a_releases_blocks_non_status() {
+    let dir = project_with(
+        "pad = 4\n\
+[types.feature]\nprefix = \"FEAT\"\n\
+statuses = [\"planned\", \"implemented\"]\ndefault_status = \"planned\"\n\
+releases_blocks = [\"shipped\"]\n",
+    );
+    opys(&dir)
+        .args(["config", "validate"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "type 'feature': releases_blocks 'shipped' is not a status",
+        ));
+}
+
+/// `blocked_from` and `blocked_reason` were the two frontmatter keys the old
+/// blocked *status* needed. Neither is reserved any more, and the shipped config
+/// declares neither, so under it they are ordinary unknown keys — which is the
+/// signal a corpus still carrying them has not been migrated.
+#[test]
+fn blocked_from_and_blocked_reason_are_unknown_keys_under_the_shipped_config() {
+    let dir = TempDir::new().unwrap();
+    opys(&dir).arg("init").assert().success();
+    dir.child("opys/FEAT-0001.md")
+        .write_str(&format!(
+            "---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n\
+             blocked_from: todo\nblocked_reason: waiting\n{}---\n\n# A\n",
+            hist("planned")
+        ))
+        .unwrap();
+    opys(&dir)
+        .args(["--no-sync", "verify"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "FEAT-0001: unknown frontmatter field 'blocked_from' \
+             (declare it in type 'feature' [fields.blocked_from])",
+        ))
+        .stderr(predicate::str::contains(
+            "FEAT-0001: unknown frontmatter field 'blocked_reason'",
+        ));
+}
+
+/// The shipped work-item graph, in the two facts a user meets first: `blocked`
+/// is not a status any more, and `close` works only from `review`/`user-review`
+/// — which is why the documented bulk pipe selects on `review`.
+#[test]
+fn the_shipped_work_item_graph_closes_only_from_review() {
+    let dir = TempDir::new().unwrap();
+    opys(&dir).arg("init").assert().success();
+    opys(&dir)
+        .args(["new", "--title", "Feature", "--tags", "a"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args([
+            "new",
+            "--type",
+            "task",
+            "--title",
+            "Wire",
+            "--features",
+            "FEAT-0001",
+        ])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["set-status", "TASK-0002", "blocked"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "unknown status \"blocked\" for type 'task' \
+             (allowed: todo, in-progress, review, user-review, done)",
+        ));
+    opys(&dir)
+        .args(["close", "TASK-0002"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("review, user-review"));
 }

@@ -75,11 +75,11 @@ its ID prefix.
 | `config init` / `config validate` | generate / check the universal `opys.toml` |
 | `new --type T --title … [--tags a,b] [--features F1,F2] [--reason R] [--field k=v]` | create a doc of type `T` with the next ID, at the type's initial status — there is no `--status`, `import` is the seam that seeds elsewhere (`--type` defaults to `feature`; auto-syncs) |
 | `import --type T FILE.jsonl` | bulk-create docs of type `T` from JSONL (one ID block, one sync, transactional) |
-| `show ID [--refs]` / `list [--type T] [--tag T] [--status S] [--field k=v]… [--format table\|ids\|paths]` | retrieval; `--field` filters by any custom field (repeatable, ANDed); `show --refs` appends code mentions of the id (per `[file_refs]`) |
+| `show ID [--refs]` / `list [--type T] [--tag T] [--status S] [--field k=v]… [--blocked\|--unblocked] [--format table\|ids\|paths]` | retrieval; `--field` filters by any custom field (repeatable, ANDed); `--blocked`/`--unblocked` filter on the derived blocked predicate (see `block` below); `show --refs` appends code mentions of the id (per `[file_refs]`) |
 | `set-status IDS… S [--reason R]` | guarded transition against the type's statuses, its declared `[transitions]` edges (when it declares any — the refusal names the legal targets) and its rules; a terminal status is reached only via `close`. `IDS` is an id list (see below) |
 | `tag IDS… --add a,b --remove c` | tag maintenance; `IDS` is an id list |
 | `log ID "TEXT"\|- [--section H]` | append a dated entry (`- <UTC ts> text`) to the type's `kind = "log"` section; `-` reads the entry from stdin (continuation lines indent two spaces). Takes **one** id — the second positional is the text. A missing-but-declared section is created; a type with none, or with two and no `--section`, exits 2 |
-| `block IDS… --by BLOCKER` / `unblock IDS… --by BLOCKER` | record/remove a blocker link (`blocked_by`/`blocks`); the blocked side is an id list; blocking auto-sets `blocked` when the type has it |
+| `block IDS… --by BLOCKER` / `unblock IDS… --by BLOCKER` | record/remove a blocker link (`blocked_by`/`blocks`); the blocked side is an id list. Status is untouched: **blocked is derived** — a document is blocked while it holds a `blocked_by` entry that is not struck, still resolves, and whose target is not at a status its type lists in `releases_blocks`. Everything that blocks is a document |
 | `retire IDS… [--reason R]` | delete file(s), strike inbound references (warning when a struck link leaves a `requires_link` rule failing), log each ID (with its title) to `_retired.md` so it is never reallocated; `--reason` is echoed, not persisted (git records the why) |
 | `close IDS… [--force]` / `cleanup` | finish doc(s) whose type has a terminal status — and, where the type declares `[transitions]`, an edge into one from the document's current status (strike its refs everywhere and log the ID to `_retired.md`); strip struck refs (ledger-reserving any id whose last tombstone is stripped) |
 | `verify` | full integrity check; nonzero exit on problems — wire into CI |
@@ -94,7 +94,7 @@ Every id-taking mutating command (`set-status`, `tag`, `retire`, `block`,
 ids (`set-status FEAT-0001 FEAT-0002 partial`), a comma-separated list (`FEAT-0001,FEAT-0002`),
 or `-` to read the list from stdin (comma/space/newline separation all
 accepted), which composes with `list`:
-`opys list --type task --status in-progress --format ids | opys close -`. A batch is
+`opys list --type task --status review --format ids | opys close -`. A batch is
 **all-or-nothing** — ids are applied in order and the first failure aborts the
 whole invocation with exit 2, writing nothing, so a widened list that hits a bad
 id cannot land half a change. That includes a rule refusal: one document with an
@@ -185,7 +185,13 @@ resets and is greppable, deleted when you finish.
    covered test-plan items and add refs, `opys set-status … implemented`, write
    spec prose. The feature is what survives.
 5. `opys close ID` — deletes the file and strikes its reference through in the
-   feature as a tombstone. Do this only after step 4.
+   feature as a tombstone. Do this only after step 4. Where the type declares a
+   status graph (the shipped work items do), `close` needs an edge from where the
+   document stands into a terminal status, so walk the document there first —
+   under the shipped graph a work item created at `todo` takes two hops,
+   `opys set-status ID in-progress` then `opys set-status ID review`. Every
+   refusal names the statuses it will accept, so take the route from it rather
+   than guessing.
 6. `opys verify`.
 
 ## Workflow: authoring features (interview style)

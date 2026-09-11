@@ -256,8 +256,13 @@ mod tests {
         assert!(evaluate(&p, "feature", "implemented", &fm, done, &ids(&[])).is_empty());
     }
 
+    /// The shipped `task` type's one rule. There is no blocked rule to pair it
+    /// with any more: blocked is derived from the live `blocked_by` entries
+    /// (ADR-0099 decision 3), so there is no status left for a rule to fire on.
+    /// The `require_any` *assertion* is untouched, and still covered by
+    /// `require_any_accepts_a_tag_term` below.
     #[test]
-    fn task_requires_feature_link_and_blocked_needs_reason_or_link() {
+    fn task_requires_a_feature_link() {
         let p = cfg();
         // No references → the require_link rule fails.
         let mut fm = Frontmatter::new();
@@ -271,18 +276,13 @@ mod tests {
         refs::set(&mut fm, &[("FEAT-0001".into(), "F".into())]);
         assert!(evaluate(&p, "task", "todo", &fm, "# T\n", &ids(&["FEAT-0001"])).is_empty());
 
-        // blocked with neither reason nor blocker link → require_any fails.
-        let blocked = evaluate(&p, "task", "blocked", &fm, "# T\n", &ids(&["FEAT-0001"]));
-        assert!(
-            blocked.iter().any(|m| m.contains("requires one of")),
-            "{blocked:?}"
-        );
-        // A blocked_by link satisfies it.
+        // A blocker link is a relation, not a rule trigger: it adds nothing to
+        // check at any status.
         refs::set_in(&mut fm, "blocked_by", &[("FEAT-0002".into(), "B".into())]);
         assert!(evaluate(
             &p,
             "task",
-            "blocked",
+            "in-progress",
             &fm,
             "# T\n",
             &ids(&["FEAT-0001", "FEAT-0002"])
