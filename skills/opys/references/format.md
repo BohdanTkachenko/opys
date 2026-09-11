@@ -520,9 +520,11 @@ key is bumped by one microsecond, so two transitions inside the same second
 cannot collide.
 
 `new` writes the first entry (keyed to the same instant as `created`),
-`set-status` appends, and `import` seeds one entry at the status it was given.
-`block`/`unblock` write no entry — they change no status. **Nothing else writes
-it except the one-time migration seed below, and nothing hand-edits it** —
+`set-status` appends — as does [`apply --status`](#composite-writes-opys-apply),
+which is that same write inside a composite batch — and `import` seeds one entry
+at the status it was given. `block`/`unblock` write no entry — they change no
+status. **Nothing else writes it except the one-time migration seed below, and
+nothing hand-edits it** —
 `import` rejects a record that carries a `history` key, and the node's
 `set-field` refuses it by name. A status change on
 a document that predates the map seeds its first entry from `created`, at the
@@ -562,8 +564,8 @@ The shape rule is **all-or-nothing**, and it covers every YAML shape, not only
 mappings: one bad pair makes the whole map unreadable, and so does a list or a
 one-line string that carries entries. That is deliberate. A value opys cannot
 read is data it must not destroy, so it is kept verbatim, reported, and left for
-a human — and every write that would append to it (`set-status`) **refuses**
-rather than replacing it. Only a value
+a human — and every write that would append to it (`set-status`, and
+`apply --status` through it) **refuses** rather than replacing it. Only a value
 holding no entries at all may be replaced by a seed. Reading only the
 well-formed entries, or blessing a non-mapping as empty, would bless a map the
 tool could not actually maintain, and the next status change would overwrite the
@@ -748,9 +750,11 @@ and the node's board badge and document view read the same function.
 - `wontfix` — deliberate exception, reason required; stays in the inventory so
   the decision is recorded and not re-litigated.
 
-Status changes go through `set-status`, never hand edits — the guards live
-there, and each one is recorded in the document's `history` map. It takes an
-id list, so a whole selection moves in one command (see **Bulk edits**).
+Status changes go through `set-status` — or through
+[`apply --status`](#composite-writes-opys-apply), which performs the same write
+as one part of a composite batch — never hand edits: the guards live there, and
+each one is recorded in the document's `history` map. Both take an id list, so a
+whole selection moves in one command (see **Bulk edits**).
 A `log` section is the same kind of thing: it is written by `opys log`, never by
 hand (see [Log sections](#log-sections)).
 
@@ -790,7 +794,7 @@ Those four are `verify` / `config validate` problems (`opys.toml: type '…': �
 exit 1), reported like every other config problem rather than raised as a hard
 error — a typo in the graph must not change the exit code of every command.
 
-Three places enforce the graph:
+Four places enforce the graph:
 
 - **`set-status`** refuses a move the type does not declare, exit 2, naming
   where the document stands and where it may go (`cannot move TASK-0007 from
@@ -799,6 +803,12 @@ Three places enforce the graph:
   edge: it stays the legal no-op it has always been, and appends an entry —
   unless the type's `max_visits` budget for that status is spent, since an entry
   is a visit (see [Time-aware observations](#time-aware-observations-ttl-and-max_visits)).
+- **`apply --status`** refuses the same undeclared moves, and one more: the
+  equal case. A composite write *asserts a transition*, so a document that
+  already holds the status being asked for is refused rather than written to a
+  second time — whether or not the type declares a map. That is what makes a
+  claim race decidable; see
+  [Composite writes](#composite-writes-opys-apply).
 - **`close`** refuses unless the current status has an edge into one of the
   type's terminal statuses, naming the statuses that can close. `--force` (about
   unchecked checklist items) does not bypass it.
@@ -1094,6 +1104,11 @@ each bounce needs its own checkpoint. The shipped config puts this on the move
 into `review` for `task`, `bug` and `chore`, so a handoff without a checkpoint
 is refused.
 
+The checkpoint and the transition still fit in one invocation:
+`opys apply … --status review --log "…"` writes the entry before it evaluates
+the rule, so the rule is satisfied by the very command it guards (see
+[Composite writes](#composite-writes-opys-apply)).
+
 ## Structured sections
 
 A `structured` section's content shape is **configured**, not hardcoded: the
@@ -1198,11 +1213,11 @@ guarded by the rules and leaves a valid document — SQL cannot bypass that.
 ## Bulk edits
 
 Every id-taking mutating command (`set-status`, `tag`, `retire`, `block`,
-`unblock`, `close`) takes a **list** of ids, three interchangeable ways: several
-positionals (`opys set-status FEAT-0001 FEAT-0002 partial`), a comma-separated list
-(`FEAT-0001,FEAT-0002`), or the literal `-`, which reads the list from stdin with
-comma, space and newline separation all accepted. So a query and an edit
-compose:
+`unblock`, `close`, `apply`) takes a **list** of ids, three interchangeable
+ways: several positionals (`opys set-status FEAT-0001 FEAT-0002 partial`), a
+comma-separated list (`FEAT-0001,FEAT-0002`), or the literal `-`, which reads
+the list from stdin with comma, space and newline separation all accepted. So a
+query and an edit compose:
 
 ```sh
 opys list --type task --status review --format ids | opys close -
@@ -1232,6 +1247,138 @@ So one document that a rule refuses stops the batch its list belongs to: a
 none of them. Narrow the list — or fix that document — rather than reaching for
 `close --force`, which drops the checklist guard for every id in the list.
 
+## Composite writes (`opys apply`)
+
+**Bulk edits** are all-or-nothing along the *id* axis. `opys apply` is
+all-or-nothing along the *action* axis: a status transition, one or more field
+writes, and a log entry, named in one invocation, applied against one loaded
+corpus and flushed once or not at all.
+
+```sh
+# claim a document: take it, record who took it, say so — atomically
+opys apply TASK-0007 --status in-progress --field claimed_by=agent-7 --log "picked up"
+
+# release it again: the same shape, backwards
+opys apply TASK-0007 --status todo --remove-field claimed_by --log "handing back"
+```
+
+The two axes compose. `apply` takes an id list like every other mutating
+command, and a refusal anywhere — any part, any id — abandons the whole
+invocation with exit 2 and leaves every document byte-identical.
+
+### The parts are applied in a fixed order
+
+**`--field` writes, then the log entry, then the status, then `--remove-field`
+removals** — and the order is not the caller's to change. The two steps before
+the status are there because the status step reads them; the removals are last
+because nothing reads them at all.
+
+The status step evaluates the type's rules against the document as it stands in
+the corpus at that moment, so both steps before it are already visible:
+
+- a `require_field` rule on the target status sees the field this very
+  invocation wrote;
+- a [`require_log_since_status`](#require_log_since_status) rule sees the entry
+  this very invocation appended — so a move into a status guarded by it is legal
+  in one command, where a bare `set-status` is refused for want of a checkpoint.
+
+**The verify gate is taken once around the whole batch**, not once per field.
+The corpus's findings are recorded before the first step and compared after the
+last, so every part of the batch is judged against the document the batch
+*finishes* with — never against a half-applied one at a status the invocation is
+on its way out of. Take the natural claim config, which is what makes a claim
+mean anything at all:
+
+```toml
+[[rules]]
+when = { type = "task", status = "doing" }
+require_field = "claimed_by"
+
+[[rules]]
+when = { type = "task", status = "doing" }
+field_matches = { field = "claimed_by", pattern = "^agent-" }
+```
+
+Both halves of a hand-off stay one command under it:
+
+- releasing — `--status todo --remove-field claimed_by` — is not refused by the
+  `doing`-only `require_field` rule the document is leaving;
+- handing on — `--status review --field claimed_by=reviewer-3` — is not refused
+  by the `doing`-only `field_matches` rule, which the finished document is no
+  longer subject to.
+
+A write or a removal the **target** status forbids is still refused by name: the
+target status is the one the finished document holds. Only the status being left
+loses its say, and only over the parts of the batch that leave with it.
+
+### The race it settles
+
+Two agents read the same document as pickable and both try to take it. Exactly
+one may win, and the loser must write nothing at all: not a partial claim, not a
+log line, not a field.
+
+What decides which one wins is the **state machine, not the lock**. `--status`
+here asserts a *transition*: the document must not already hold the status being
+asked for. The inventory lock only serializes the two invocations; whichever
+takes it second loads a corpus in which the winner's claim has already landed,
+finds the document in the working status, and is refused before it has written
+anything:
+
+```
+cannot move TASK-0007 from in-progress to in-progress: it is already
+in-progress, and a composite write asserts a transition — another writer got
+there first
+```
+
+That refusal is the one place `apply` and `set-status` differ, and deliberately
+so: `set-status TASK-0007 in-progress` on a document already there is the legal
+no-op it has always been, while a claim that silently overwrote the previous
+claimant would be no claim at all. It holds whether or not the type declares a
+`[transitions]` map — a graph-less type still cannot be claimed twice — and
+where a map is declared, an ordinary undeclared edge is refused with the graph's
+own message. A refusal for the lock (`… waiting for the inventory lock …`) says
+so in its own words, and means the write never ran at all rather than that it
+lost.
+
+### The claimant is an ordinary declared field
+
+opys has no notion of an agent. The field that records who took a document is
+one the project declares, like any other:
+
+```toml
+[types.task.fields.claimed_by]
+type = "string"
+```
+
+It filters with `list --field claimed_by=agent-7` and appears in the SQL
+`fields` table, and that is the whole of opys' involvement: it stores who
+claimed a document and knows nothing else about them. Leases, expiry, agent
+identity, and the policy of *which* document to claim belong to whatever
+dispatches the work, not to the tracker.
+
+### Grammar notes
+
+- Every part is optional, but an invocation that asks for nothing at all is a
+  usage error rather than a write that only bumps `updated`.
+- `--reason` writes `<status>_reason`, exactly as it does for `set-status`, and
+  so requires `--status`. `--section` names the section `--log` appends to, and
+  so requires `--log`. Each is read by exactly one step, and passing one without
+  that step is a usage error rather than a flag that silently does nothing —
+  `--section` in particular is checked against the type's sections, so a
+  misspelling must not depend on which other flags happen to be present.
+- `--field key=value` and `--remove-field key` are repeatable and go through the
+  same verify gate the node's edit-in-place uses: an undeclared key, a value
+  that does not fit the declared type, a broken `enum` or `pattern` — each is
+  refused by name and abandons the invocation.
+- `--log -` does **not** read stdin. `-` already means "read the id list from
+  stdin", and one invocation cannot have two stdin consumers; pass the entry as
+  a single argument, or use `opys log <id> -` for the single-document case.
+- The node exposes the same composite as one typed `apply` action, so a
+  dispatcher over HTTP gets exactly the atomicity a dispatcher over the CLI
+  gets — including these usage errors, which the engine raises rather than the
+  CLI parser: a body naming no part, or a `reason`/`section` with no
+  `status`/`log`, comes back 422 with the words above.
+
 ## What never goes in feature files
 
 Test results, execution dates, completion claims, assignees, or sprint
@@ -1242,6 +1389,12 @@ lower = higher — and tools order by it through a type's `order_by` chain (see
 The auto-maintained `created`/`updated`/`history` timestamps are not an
 exception either: they record when opys wrote, not when work happened, and so
 do a `log` section's stamps, which `opys log` writes and nobody types.)
+
+A *work item* — never a feature — may also declare a field recording who
+currently holds it (`claimed_by`), written atomically with the transition that
+takes it (see [Composite writes](#composite-writes-opys-apply)). That is a
+lock, not an assignment: it says who is working on a throwaway document right
+now, and it goes away with the document.
 
 Implementation logs, task checklists, and branch/PR links also do not belong
 here — they go in an ephemeral document (a `task`/`bug`/`chore`), which is

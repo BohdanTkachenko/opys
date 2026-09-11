@@ -5,29 +5,76 @@
 //! (rules engine) on that transient clone, and only then write it back via
 //! `Store::put_doc` (which re-decomposes into the tables). Guards run before
 //! any write, so a failed id leaves the store untouched.
+//!
+//! The guards themselves ([`check_move`]) are shared with the composite write
+//! [`crate::commands::apply`], which differs in exactly one of them — see
+//! [`Move`] — so the two commands cannot drift apart on what a legal status
+//! change is.
 
 use crate::commands::{apply_batch, maybe_sync, print_lines, resolve_ids, touch};
 use crate::error::{usage, Result};
 use crate::project::Project;
+use crate::project_config::DocType;
 use crate::rules;
 use crate::store::Store;
 use crate::Ctx;
 
-/// Apply a status transition to the store. Does not flush/print/sync.
-pub fn core(
+/// What a status write asserts about where the document currently stands.
+///
+/// The two differ in exactly one place: the equal case. `set-status` has always
+/// treated "move it to the status it already holds" as a legal no-op that
+/// appends a history entry — [`crate::lifecycle::allows`] is never even
+/// consulted for it — and that must not change. A composite write
+/// ([`crate::commands::apply`]) means something stronger: it *asserts a
+/// transition*, and that assertion is what makes a claim race decidable. The
+/// second claimant finds the document already in the working status and is
+/// refused, instead of quietly overwriting the winner's claim.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Move {
+    /// `opys set-status`: the equal case is a no-op that still appends an entry.
+    Set,
+    /// `opys apply --status`: the equal case is a refusal.
+    Transition,
+}
+
+/// The structural guards on a status write — unrecognized id prefix, unknown
+/// status, a terminal target, and the status graph — run against the store
+/// **without mutating anything**.
+///
+/// Split out of [`core_with`] so a composite write can be refused before it has
+/// written a field or a log entry: the loser of a claim race must get the
+/// transition guard's answer, not whatever the first part of its batch happened
+/// to hit. `core_with` re-runs these itself, so this is a cheap, unambiguous
+/// pre-flight rather than the enforcement point.
+pub fn check_move(
     prj: &Project,
     store: &mut Store,
     id: &str,
     status: &str,
-    reason: Option<&str>,
+    mode: Move,
 ) -> Result<()> {
-    let pcfg = &prj.pcfg;
-    let tname = pcfg
+    let (tname, t) = resolve_type(prj, id)?;
+    check_status(t, &tname, id, status)?;
+    let dkey = store.dkey_of(id)?;
+    let current = store.doc(dkey)?;
+    let current = current.frontmatter.status().unwrap_or_default().to_string();
+    check_graph(t, &tname, id, &current, status, mode)
+}
+
+/// The document type of `id`, or a usage error naming the unrecognized prefix.
+fn resolve_type<'a>(prj: &'a Project, id: &str) -> Result<(String, &'a DocType)> {
+    let tname = prj
+        .pcfg
         .type_name_for_id(id)
         .ok_or_else(|| usage(format!("unrecognized id prefix in {id}")))?
         .to_string();
-    let t = &pcfg.types[&tname];
+    let t = &prj.pcfg.types[&tname];
+    Ok((tname, t))
+}
 
+/// `status` is one of the type's, and is not terminal — terminal statuses are
+/// `close`'s door alone.
+fn check_status(t: &DocType, tname: &str, id: &str, status: &str) -> Result<()> {
     if !t.statuses.iter().any(|s| s == status) {
         return Err(usage(format!(
             "unknown status {status:?} for type '{tname}' (allowed: {})",
@@ -39,15 +86,82 @@ pub fn core(
             "{status} is terminal — use `opys close {id}` to reach it"
         )));
     }
+    Ok(())
+}
+
+/// The status graph (ADR-0099 decision 1), plus the equal-case rule `mode`
+/// selects.
+///
+/// A type with no `[transitions]` keeps the any-to-any rule byte-identically.
+/// The equal case is answered *before* [`crate::lifecycle::allows`] is
+/// consulted, and by `mode` rather than by the map: under [`Move::Set`] it is
+/// the legal no-op it has always been, and under [`Move::Transition`] it is
+/// refused whether or not the type declares a graph — so a composite write
+/// settles a claim race for every type, not only for one whose author wrote a
+/// map.
+fn check_graph(
+    t: &DocType,
+    tname: &str,
+    id: &str,
+    current: &str,
+    status: &str,
+    mode: Move,
+) -> Result<()> {
+    if current.is_empty() {
+        return Ok(());
+    }
+    if current == status {
+        return match mode {
+            Move::Set => Ok(()),
+            Move::Transition => Err(usage(format!(
+                "cannot move {id} from {current} to {status}: it is already {status}, and a \
+                 composite write asserts a transition — another writer got there first"
+            ))),
+        };
+    }
+    if !crate::lifecycle::allows(t, current, status) {
+        return Err(usage(format!(
+            "cannot move {id} from {current} to {status}: type '{tname}' declares no such \
+             transition ({})",
+            crate::lifecycle::set_status_targets_phrase(t, current)
+        )));
+    }
+    Ok(())
+}
+
+/// Apply a status transition to the store. Does not flush/print/sync.
+pub fn core(
+    prj: &Project,
+    store: &mut Store,
+    id: &str,
+    status: &str,
+    reason: Option<&str>,
+) -> Result<()> {
+    core_with(prj, store, id, status, reason, Move::Set)
+}
+
+/// [`core`] with the equal-case rule chosen by the caller: `set-status` passes
+/// [`Move::Set`], the composite write passes [`Move::Transition`].
+pub fn core_with(
+    prj: &Project,
+    store: &mut Store,
+    id: &str,
+    status: &str,
+    reason: Option<&str>,
+    mode: Move,
+) -> Result<()> {
+    let pcfg = &prj.pcfg;
+    let (tname, t) = resolve_type(prj, id)?;
+    check_status(t, &tname, id, status)?;
 
     let dkey = store.dkey_of(id)?;
     let doc_ids = store.doc_ids()?;
     let mut doc = store.doc(dkey)?;
 
     // A `history` opys cannot read is data it must not touch. Refuse *before*
-    // any mutation: `run` flushes whether or not this returns an error, so a
-    // refusal after `put_doc` would still land the status change on disk without
-    // its entry. (`Store::append_history` refuses too, as a backstop.)
+    // any mutation, so a partly-applied change cannot be left in the store for
+    // some later caller to flush. (`Store::append_history` refuses too, as a
+    // backstop.)
     if let Some(why) = crate::history::botched(&doc.frontmatter) {
         return Err(usage(format!(
             "cannot set {id} to {status}: {why}; repair the lifecycle map by hand \
@@ -55,19 +169,10 @@ pub fn core(
         )));
     }
 
-    // The status graph (ADR-0099 decision 1). A type with no `[transitions]`
-    // keeps the any-to-any rule byte-identically; one that declares them accepts
-    // only a declared edge. Setting a document to the status it already holds is
-    // *not* an edge and never was — it is a legal no-op that appends a history
-    // entry — so it is skipped rather than refused for want of a self-edge.
+    // The status graph (ADR-0099 decision 1) and the equal-case rule `mode`
+    // selects — see [`check_graph`].
     let current = doc.frontmatter.status().unwrap_or_default().to_string();
-    if !current.is_empty() && current != status && !crate::lifecycle::allows(t, &current, status) {
-        return Err(usage(format!(
-            "cannot move {id} from {current} to {status}: type '{tname}' declares no such \
-             transition ({})",
-            crate::lifecycle::set_status_targets_phrase(t, &current)
-        )));
-    }
+    check_graph(t, &tname, id, &current, status, mode)?;
 
     // The visit budget (ADR-0101 decision 1), after the graph so a move the type
     // does not declare at all keeps the clearer refusal. `limit = N` allows N

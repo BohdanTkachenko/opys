@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use gluesql::prelude::{ParamLiteral, Value as GValue};
 
 use crate::cli::ListFormat;
-use crate::commands::{parse_field_filters, print_lines};
+use crate::commands::{parse_key_values, print_lines};
 use crate::doc::Doc;
 use crate::error::Result;
 use crate::order;
@@ -65,7 +65,7 @@ pub fn run(
     format: ListFormat,
 ) -> Result<()> {
     let prj = ctx.open()?;
-    let filters = parse_field_filters(field)?;
+    let filters = parse_key_values(field)?;
     let (mut store, _) = ctx.load(&prj)?;
 
     // Ahead of the SELECT: both want `&mut store`. Each flag pays only for what

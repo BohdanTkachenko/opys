@@ -306,8 +306,8 @@ fn check_timestamps(m: &Frontmatter, id: &str, errors: &mut Vec<String>) {
     }
 }
 
-/// The `history` lifecycle map (written by `new`/`set-status`/`import`, never by
-/// hand) must be present and well formed. Four checks, in order:
+/// The `history` lifecycle map (written by `new`/`set-status`/`apply`/`import`,
+/// never by hand) must be present and well formed. Four checks, in order:
 ///
 /// 1. it is a lifecycle map at all — `history::is_map`, the *one* shape rule the
 ///    store and `history::entries` use too. A value that carries entries but
@@ -346,7 +346,7 @@ fn check_history(m: &Frontmatter, id: &str, errors: &mut Vec<String>) {
     let entries = crate::history::entries(m);
     if entries.is_empty() {
         errors.push(format!(
-            "{id}: missing history (the lifecycle map is written by new/set-status/import; \
+            "{id}: missing history (the lifecycle map is written by new/set-status/apply/import; \
              see docs/migration-history.md to seed an existing document)"
         ));
         return;

@@ -15,8 +15,8 @@ exists; otherwise ignore it.
 - **Reads.** Never bulk-read `opys/`. Use `rg` by tag/status (or `opys list`),
   then open the 2–5 relevant files. There is no generated index.
 - **Writes go through the `opys` CLI** so invariants hold and parallel agents
-  don't collide: `opys new --type <T>`, `set-status`, `tag`, `log`, `retire`,
-  `block`, `close`. Body prose, `## Test plan`, and `## Tasks` edits are normal
+  don't collide: `opys new --type <T>`, `set-status`, `tag`, `log`, `apply`,
+  `retire`, `block`, `close`. Body prose, `## Test plan`, and `## Tasks` edits are normal
   file edits. A **`log` section is not** — a `## Progress` is the usual one:
   its entries are dated, so append them with `opys log <id> "…"` (or `-` to read
   a multi-line entry from stdin), which stamps each one with the UTC time.
@@ -41,6 +41,14 @@ exists; otherwise ignore it.
   closed. A type may also cap how often a document may enter a status
   (`max_visits`); that refusal names the status the config escalates to instead,
   and it is always a legal move from where the document stands.
+  **A claim is one command.** Taking a document — moving it into the working
+  status, recording who took it in the field the project declares for that, and
+  logging that you took it — is a single `opys apply <id> --status … --field
+  … --log "…"`, applied as one all-or-nothing batch. Never spell it as three
+  commands: `apply --status` asserts a *transition*, so if another agent claimed
+  it first the whole invocation is refused (exit 2) and writes nothing, which is
+  what stops two agents working the same item. Releasing and handing on are the
+  same shape.
   Run `opys verify` before finishing. Exit 1 is content problems and must be
   fixed; exit **3** means the corpus is clean and only *time* observations
   remain (a document past its type's `ttl`, or at its `max_visits` limit).

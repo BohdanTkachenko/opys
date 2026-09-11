@@ -1470,3 +1470,298 @@ async fn remove_field_removes_and_a_missing_field_is_named() {
         "{answer}"
     );
 }
+
+/// [`CONFIG`] with everything the composite write needs on `task`: a status
+/// graph (so the transition guard has edges to name), the ordinary declared
+/// field a project records a claimant in, and a log section. `required` stays
+/// unset on the section, as in [`log_writes_what_the_cli_writes`], so the
+/// fixture documents do not start out failing verify.
+const CLAIM_CONFIG: &str = r#"
+base = "inventory"
+
+[types.note]
+prefix = "NOTE"
+statuses = ["open", "closed"]
+default_status = "open"
+terminal_statuses = ["closed"]
+tags_required = false
+
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "doing", "review", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]
+tags_required = false
+
+[types.task.transitions]
+todo = ["doing"]
+doing = ["review", "todo"]
+review = ["done", "doing"]
+
+[types.task.fields.claimed_by]
+type = "string"
+
+[[types.task.sections]]
+heading = "Progress"
+kind = "log"
+"#;
+
+/// The composite action is `opys apply`: one status transition, one field
+/// write and one log entry, and the node leaves exactly the bytes the CLI
+/// leaves — which is the whole point of exposing it, so a dispatcher over HTTP
+/// gets the atomicity a dispatcher over the CLI gets.
+#[tokio::test(flavor = "multi_thread")]
+async fn apply_writes_what_the_cli_writes() {
+    let fx = Fixture::with_config(CLAIM_CONFIG);
+    let answer = fx
+        .action(json!({
+            "action": "apply",
+            "id": "TASK-0002",
+            "status": "doing",
+            "fields": {"claimed_by": "agent-7"},
+            "log": "claimed"
+        }))
+        .await;
+    assert_eq!(answer["id"], "TASK-0002");
+    assert_eq!(
+        answer["message"],
+        "TASK-0002 -> doing, claimed_by set, logged to '## Progress' (section created)"
+    );
+
+    cli(
+        &fx.reference,
+        &[
+            "apply",
+            "TASK-0002",
+            "--status",
+            "doing",
+            "--field",
+            "claimed_by=agent-7",
+            "--log",
+            "claimed",
+        ],
+    )
+    .expect("the CLI accepts the same batch");
+    fx.assert_mirrors_reference();
+
+    let text = fx.read("inventory/TASK-0002.md");
+    assert!(text.contains("status: doing"), "{text}");
+    assert!(text.contains("claimed_by: agent-7"), "{text}");
+    assert!(
+        text.contains("## Progress\n- 2026-02-03T04:05:06Z claimed\n"),
+        "{text}"
+    );
+}
+
+/// A second claimant over HTTP loses exactly as it loses at the CLI: the
+/// transition guard refuses it with the engine's own words, 422, and the
+/// inventory is byte-identical to what the winner left.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_claim_over_the_api_is_a_422_that_writes_nothing() {
+    let fx = Fixture::with_config(CLAIM_CONFIG);
+    let claim = |who: &'static str| {
+        json!({
+            "action": "apply",
+            "id": "TASK-0002",
+            "status": "doing",
+            "fields": {"claimed_by": who},
+            "log": "claimed"
+        })
+    };
+    fx.action(claim("agent-7")).await;
+    cli(
+        &fx.reference,
+        &[
+            "apply",
+            "TASK-0002",
+            "--status",
+            "doing",
+            "--field",
+            "claimed_by=agent-7",
+            "--log",
+            "claimed",
+        ],
+    )
+    .expect("the CLI accepts the first claim too");
+    fx.assert_mirrors_reference();
+    let claimed = snapshot(&fx.live);
+
+    let (status, answer) = fx.try_action(claim("agent-9")).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+    let refused = cli(
+        &fx.reference,
+        &[
+            "apply",
+            "TASK-0002",
+            "--status",
+            "doing",
+            "--field",
+            "claimed_by=agent-9",
+            "--log",
+            "claimed",
+        ],
+    )
+    .expect_err("the CLI refuses the second claim");
+    assert_eq!(
+        answer["error"],
+        refused.to_string(),
+        "the message must be the one the CLI prints for the same attempt"
+    );
+    assert!(
+        answer["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("asserts a transition")),
+        "the refusal has to be the transition guard's: {answer}"
+    );
+    assert_eq!(
+        snapshot(&fx.live),
+        claimed,
+        "a refused claim must not have touched the inventory at all"
+    );
+    assert_eq!(snapshot(&fx.reference), claimed);
+}
+
+/// [`CLAIM_CONFIG`] plus the rule that makes a claim enforceable: the working
+/// status requires the claimant field. Its own const rather than an addition to
+/// `CLAIM_CONFIG`, which several tests move in and out of `doing` with no field
+/// at all.
+const GUARDED_CLAIM_CONFIG: &str = r#"
+base = "inventory"
+
+[types.note]
+prefix = "NOTE"
+statuses = ["open", "closed"]
+default_status = "open"
+terminal_statuses = ["closed"]
+tags_required = false
+
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "doing", "review", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]
+tags_required = false
+
+[types.task.transitions]
+todo = ["doing"]
+doing = ["review", "todo"]
+review = ["done", "doing"]
+
+[types.task.fields.claimed_by]
+type = "string"
+
+[[types.task.sections]]
+heading = "Progress"
+kind = "log"
+
+[[rules]]
+when = { type = "task", status = "doing" }
+require_field = "claimed_by"
+"#;
+
+/// Releasing over HTTP is the claim backwards, and it stays one action even
+/// when the status being left is the one that *requires* the field being
+/// cleared — the configuration that makes a claim mean anything. The verify
+/// gate brackets the whole batch, so the removal is judged against the finished
+/// document, at `todo`, where the rule no longer applies. The node and the CLI
+/// leave the same bytes, as always.
+#[tokio::test(flavor = "multi_thread")]
+async fn apply_releases_a_guarded_claim_in_one_action() {
+    let fx = Fixture::with_config(GUARDED_CLAIM_CONFIG);
+    let claim = &[
+        "apply",
+        "TASK-0002",
+        "--status",
+        "doing",
+        "--field",
+        "claimed_by=agent-7",
+        "--log",
+        "claimed",
+    ];
+    fx.action(json!({
+        "action": "apply",
+        "id": "TASK-0002",
+        "status": "doing",
+        "fields": {"claimed_by": "agent-7"},
+        "log": "claimed"
+    }))
+    .await;
+    cli(&fx.reference, claim).expect("the CLI accepts the claim");
+    fx.assert_mirrors_reference();
+
+    let answer = fx
+        .action(json!({
+            "action": "apply",
+            "id": "TASK-0002",
+            "status": "todo",
+            "remove_fields": ["claimed_by"],
+            "log": "handing back"
+        }))
+        .await;
+    assert_eq!(
+        answer["message"],
+        "TASK-0002 -> todo, claimed_by removed, logged to '## Progress'"
+    );
+    cli(
+        &fx.reference,
+        &[
+            "apply",
+            "TASK-0002",
+            "--status",
+            "todo",
+            "--remove-field",
+            "claimed_by",
+            "--log",
+            "handing back",
+        ],
+    )
+    .expect("the CLI accepts the same release");
+    fx.assert_mirrors_reference();
+
+    let text = fx.read("inventory/TASK-0002.md");
+    assert!(text.contains("status: todo"), "{text}");
+    assert!(!text.contains("claimed_by"), "{text}");
+}
+
+/// A body that names no part at all is the usage error the CLI calls it, not a
+/// 200 that flushes nothing: every part but `id` is optional at the wire, so
+/// the refusal has to come from the engine, and it comes back with the words
+/// `opys apply` prints. The other two dropped-flag cases (`reason` without
+/// `status`, `section` without `log`) go the same way.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_apply_that_asks_for_nothing_is_a_422() {
+    let fx = Fixture::with_config(CLAIM_CONFIG);
+    let before = snapshot(&fx.live);
+
+    let cases: [(Value, &str); 3] = [
+        (
+            json!({"action": "apply", "id": "TASK-0002"}),
+            "apply needs something to do",
+        ),
+        (
+            json!({"action": "apply", "id": "TASK-0002", "reason": "because",
+                   "fields": {"claimed_by": "agent-7"}}),
+            "--reason writes <status>_reason and needs --status",
+        ),
+        (
+            json!({"action": "apply", "id": "TASK-0002", "section": "Nope",
+                   "fields": {"claimed_by": "agent-7"}}),
+            "--section names the section --log appends to and needs --log",
+        ),
+    ];
+    for (body, message) in cases {
+        let (status, answer) = fx.try_action(body.clone()).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}: {answer}");
+        assert!(
+            answer["error"]
+                .as_str()
+                .is_some_and(|e| e.contains(message)),
+            "{body}: {answer}"
+        );
+    }
+    assert_eq!(
+        snapshot(&fx.live),
+        before,
+        "a refused composite must not have written anything"
+    );
+}

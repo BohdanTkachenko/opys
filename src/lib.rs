@@ -158,6 +158,30 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
             commands::log::run(&ctx, &id, &text, section.as_deref())?;
             Ok(0)
         }
+        Command::Apply {
+            ids,
+            status,
+            reason,
+            field,
+            remove_field,
+            log,
+            section,
+        } => {
+            let set_fields = commands::parse_key_values(&field)?;
+            commands::apply::run(
+                &ctx,
+                &ids,
+                &commands::apply::Apply {
+                    status: status.as_deref(),
+                    reason: reason.as_deref(),
+                    set_fields: &set_fields,
+                    remove_fields: &remove_field,
+                    log: log.as_deref(),
+                    section: section.as_deref(),
+                },
+            )?;
+            Ok(0)
+        }
         Command::Retire { ids, reason } => {
             commands::retire::run(&ctx, &ids, reason.as_deref())?;
             Ok(0)

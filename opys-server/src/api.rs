@@ -14,7 +14,7 @@
 //! **No endpoint executes commands or accepts a filesystem path** (ADR-0077).
 //! Corpora are addressed by their opaque `cid`, and the set of them comes from
 //! the allowlist file the user owns — the route surface here is exhaustive. The
-//! one endpoint that writes takes a closed enum of the six mutating commands and
+//! one endpoint that writes takes a closed enum of the mutating commands and
 //! their arguments, never anything shell- or path-shaped; see [`crate::action`].
 //!
 //! A loopback bind keeps other machines out, but not the user's own browser:
@@ -1131,7 +1131,7 @@ fn refusal(cid: &str, e: ActionError) -> ApiError {
 
 /// Perform one write against a corpus.
 ///
-/// The body is a closed enum of the six mutating commands
+/// The body is a closed enum of the mutating commands
 /// ([`crate::action::Action`]); an unknown action or an undeclared field fails
 /// deserialization and comes back as a 400, which is what makes this endpoint
 /// incapable of executing anything the node did not implement.

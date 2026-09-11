@@ -186,6 +186,55 @@ pub enum Command {
         section: Option<String>,
     },
 
+    /// Several writes as one all-or-nothing batch: a status transition, field
+    /// writes, and a log entry, applied together or not at all.
+    ///
+    /// This is how an agent claims a document — move it into the working
+    /// status, stamp the field the project declares for who took it, and log
+    /// that it was taken — in a single invocation. Two claimants racing for the
+    /// same document cannot both win: `--status` here asserts a *transition*,
+    /// so the second one finds the document already in the working status and
+    /// the whole batch is refused, writing nothing. (`set-status` keeps its
+    /// no-op for the same request.)
+    ///
+    /// The parts are applied in a fixed order — field writes, the log entry,
+    /// the status, then field removals — so a rule on the target status
+    /// (`require_field`, `require_log_since_status`) sees what this very
+    /// invocation wrote, and a removal is judged at the status the document is
+    /// moving *to*: releasing a claim the working status required is one
+    /// command, exactly as taking it was.
+    Apply {
+        /// One or more ids: several positionals (`FEAT-0001 FEAT-0002`), a
+        /// comma-separated list (`FEAT-0001,FEAT-0002`), or `-` to read the list from
+        /// stdin (comma/space/newline-separated). Ids are applied in order in a
+        /// single pass and any failure aborts the whole invocation — nothing is
+        /// written.
+        #[arg(required = true)]
+        ids: Vec<String>,
+        /// The status to transition to. Refused if the document already holds
+        /// it, or if the type's `[transitions]` do not declare the edge.
+        #[arg(long)]
+        status: Option<String>,
+        /// Sets `<status>_reason` — only where the type declares that field.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Custom field key=value (repeatable). Refused unless the type
+        /// declares the field and the value fits it.
+        #[arg(long = "field")]
+        field: Vec<String>,
+        /// Custom field to remove (repeatable) — how a claim is released.
+        #[arg(long = "remove-field")]
+        remove_field: Vec<String>,
+        /// A dated entry to append to the type's `log` section. Unlike
+        /// `opys log`, `-` is not stdin here: `-` already means the id list.
+        #[arg(long)]
+        log: Option<String>,
+        /// Which log section `--log` appends to. Required only for a type that
+        /// declares more than one.
+        #[arg(long)]
+        section: Option<String>,
+    },
+
     /// Delete one or more documents; each ID is logged and never reused.
     /// Inbound references are struck into `~~title~~` tombstones, like `close`.
     Retire {

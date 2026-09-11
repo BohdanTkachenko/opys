@@ -14,9 +14,12 @@ pub const CLAUDE_MD_SNIPPET: &str = r#"## Feature inventory
 - To find documents: `rg` by tag/status or `opys list`, then read only the
   relevant files. Do not bulk-read the inventory.
 - To create or change documents, use `opys` (`new --type`, set-status, tag,
-  log, retire, block, close). Body prose and section edits are normal file
+  log, apply, retire, block, close). Body prose and section edits are normal file
   edits, with one exception: a `kind = "log"` section (typically `## Progress`)
   holds dated entries, so append to it with `opys log <id> "…"`, never by hand.
+  `opys apply <id> --status … --field … --log "…"` performs a status change,
+  field writes and a log entry as one all-or-nothing batch — how a document is
+  claimed, since a second claimant is refused and writes nothing.
   Run `opys verify` before finishing.
 - When implementing a feature: read its file fully; implement; add tests; check
   the matching test-plan items and append backticked test references; set status
@@ -159,6 +162,15 @@ todo        = ["in-progress"]
 in-progress = ["review", "todo"]
 review      = ["done", "in-progress", "user-review"]
 user-review = ["done", "in-progress"]
+
+# Who currently holds the document, for a project whose work is picked up by
+# more than one agent. An ordinary declared field: opys stores the name and
+# knows nothing else about agents. Taking the document is then one atomic
+# command — `opys apply TASK-0007 --status in-progress --field claimed_by=…
+# --log "picked up"` — and a second claimant is refused, because `apply
+# --status` asserts a transition (format.md, "Composite writes").
+# [types.task.fields.claimed_by]
+# type = "string"
 
 # Time-aware observations (ADR-0101). `ttl` is how long a document may sit in a
 # status, `max_visits` how often it may enter one; `verify` reports both apart

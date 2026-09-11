@@ -2,6 +2,7 @@
 //! its parsed arguments.
 
 pub mod agent_rules;
+pub mod apply;
 pub mod block;
 pub mod cleanup;
 pub mod close;
@@ -263,8 +264,11 @@ pub fn print_text(text: &str) -> Result<()> {
     to_stdout(|out| out.write_all(text.as_bytes()))
 }
 
-/// Parse repeatable `--field key=value` list filters into `(key, value)` pairs.
-pub fn parse_field_filters(args: &[String]) -> Result<Vec<(String, String)>> {
+/// Parse repeatable `--field key=value` arguments into `(key, raw value)` pairs.
+/// Shared by `list --field` (where the pair is a filter) and `apply --field`
+/// (where it is a write, coerced by [`crate::project::parse_field_value`]
+/// inside the verify gate) — one grammar, one message for getting it wrong.
+pub fn parse_key_values(args: &[String]) -> Result<Vec<(String, String)>> {
     args.iter()
         .map(|a| {
             a.split_once('=')
