@@ -27,12 +27,18 @@ exists; otherwise ignore it.
   them. opys reconciles the relation maps on every write — a hand-added link is
   kept, but its title is refreshed and the reverse side added, so editing them
   by hand buys nothing; a `history` map opys cannot read fails `verify` and is
-  never repaired automatically — `set-status` (and `block`/`unblock`'s auto-set)
-  refuse to run on that document until a human repairs the map.
+  never repaired automatically — `set-status` refuses to run on that
+  document until a human repairs the map. There is no blocked *status*:
+  `block` records a relation, and a document is blocked while something
+  live still blocks it (`opys list --blocked`), so everything that blocks
+  is itself a document.
   A type may also declare a **status graph** (`[types.<name>.transitions]`):
   where it does, a document moves only along a declared edge, and `set-status`
   refuses anything else and names the statuses it will accept — take the answer
-  from the refusal rather than guessing a route.
+  from the refusal rather than guessing a route. `close` reads the same graph: it
+  needs a declared edge from where the document stands into a terminal status, so
+  a work item is moved along (to `review`, under the shipped config) before it is
+  closed.
   Run `opys verify` before finishing.
 - **Always say what an id is.** `PREFIX-NNNN` is a lookup key, not a name:
   a reader who sees `ADR-0082` learns nothing at all. Every time you write an id

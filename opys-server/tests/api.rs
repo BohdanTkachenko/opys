@@ -112,9 +112,16 @@ fn project(root: &Path) -> PathBuf {
     std::fs::canonicalize(root).unwrap()
 }
 
-/// A project that loads but does not verify: frontmatter is closed, so the
-/// undeclared `bogus` key is exactly one problem. Without it every assertion
-/// about verify problems would hold whether or not they reach the client.
+/// A project that loads but does not verify, in exactly two ways: frontmatter
+/// is closed, so the undeclared `bogus` key is one problem, and the `blocked_by`
+/// entry points at an id no document answers to, which is the other. Without
+/// them every assertion about verify problems would hold whether or not they
+/// reach the client.
+///
+/// The dangling entry is also the only servable shape of a *non-live blocker
+/// that is not a release* (ADR-0099 decision 3 lets it release the document
+/// precisely because `verify` reports it), so the document view has something
+/// to distinguish.
 fn messy_project(root: &Path) -> PathBuf {
     let inventory = root.join("inventory");
     std::fs::create_dir_all(&inventory).unwrap();
@@ -122,6 +129,7 @@ fn messy_project(root: &Path) -> PathBuf {
     std::fs::write(
         inventory.join("NOTE-0003.md"),
         "---\nid: NOTE-0003\nstatus: open\nbogus: 1\n\
+         blocked_by:\n  TASK-0009: Vanished\n\
          history:\n  \"2026-01-01T00:00:00.000000Z\": open\n\
          ---\n\n# Messy\n\nText.\n",
     )
@@ -304,7 +312,7 @@ async fn projects_carry_counts_and_surface_a_broken_config() {
     // The count is the badge a UI shows, so it has to be the real one.
     let messy = find(&fx.messy_cid);
     assert_eq!(messy["doc_count"], 1, "{messy:#}");
-    assert_eq!(messy["verify_problems"], 1, "{messy:#}");
+    assert_eq!(messy["verify_problems"], 2, "{messy:#}");
 
     let broken = find(&fx.broken_cid);
     assert!(
@@ -330,15 +338,19 @@ async fn docs_filters_are_optional_and_and_combined() {
     assert_eq!(note["tags"], json!(["alpha", "shared"]));
     assert_eq!(note["path"], "inventory/NOTE-0001.md");
     assert_eq!(note["updated"], "2026-01-01T00:00:00Z");
-    // The board's relation badges: live counts, from the summary itself. The
-    // fixture's note blocks the task and nothing blocks the note.
-    assert_eq!(note["blocked_by"], 0);
+    // The board's relation badges. Blocked is derived (ADR-0099 decision 3), so
+    // the summary names the live blockers rather than counting map entries: the
+    // fixture's note blocks the task, `note` declares no `releases_blocks` so it
+    // still holds, and nothing blocks the note.
+    assert_eq!(note["blocked"], false);
+    assert_eq!(note["live_blockers"], json!([]));
     assert_eq!(note["blocks"], 1);
     // Priority rides along when the frontmatter has one (the board orders a
     // column by it); a document without one says null, which sorts last.
     assert_eq!(note["priority"], json!(null));
     let task = all.iter().find(|d| d["id"] == "TASK-0002").unwrap();
-    assert_eq!(task["blocked_by"], 1);
+    assert_eq!(task["blocked"], true);
+    assert_eq!(task["live_blockers"], json!(["NOTE-0001"]));
     assert_eq!(task["blocks"], 0);
     assert_eq!(task["priority"], 5);
 
@@ -541,6 +553,51 @@ async fn doc_carries_the_moves_its_type_declares() {
     assert_eq!(task["closable"], true);
 }
 
+/// Blocked is derived (ADR-0099 decision 3), and the document view says which
+/// `blocked_by` entries still hold. The map alone cannot: liveness depends on
+/// the rest of the corpus and on the blocker type's `releases_blocks`, so a
+/// client deriving it would be a second interpretation of `opys.toml`.
+#[tokio::test]
+async fn doc_says_which_of_its_blockers_still_hold() {
+    let fx = Fixture::new();
+
+    let (status, task) = fx
+        .get(&format!("/api/corpus/{}/doc/TASK-0002", fx.cid))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(task["blocked_by"], json!({"NOTE-0001": "Note one"}));
+    // `note` declares no `releases_blocks`, so an open one still holds.
+    assert_eq!(task["live_blockers"], json!(["NOTE-0001"]));
+    assert_eq!(task["blocked"], true);
+
+    assert_eq!(
+        task["dangling_blockers"],
+        json!([]),
+        "the blocker is a real document: {task:#}"
+    );
+
+    let (status, note) = fx
+        .get(&format!("/api/corpus/{}/doc/NOTE-0001", fx.cid))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(note["live_blockers"], json!([]));
+    assert_eq!(note["blocked"], false);
+
+    // The other way an entry stops holding, and the reason `live_blockers`
+    // alone cannot explain itself: nothing answers to the id. The document is
+    // released all the same — that is the recorded judgement call — but a view
+    // that called this "released" would be naming a status transition for a
+    // document that is not there, so the payload separates the two.
+    let (status, messy) = fx
+        .get(&format!("/api/corpus/{}/doc/NOTE-0003", fx.messy_cid))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(messy["blocked_by"], json!({"TASK-0009": "Vanished"}));
+    assert_eq!(messy["live_blockers"], json!([]));
+    assert_eq!(messy["dangling_blockers"], json!(["TASK-0009"]));
+    assert_eq!(messy["blocked"], false);
+}
+
 #[tokio::test]
 async fn an_unknown_document_is_404() {
     let fx = Fixture::new();
@@ -680,12 +737,12 @@ async fn verify_reports_problems_and_when_they_were_computed() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["ok"], false, "{body:#}");
     let problems = body["problems"].as_array().expect("a list of problems");
-    assert_eq!(problems.len(), 1, "{body:#}");
+    assert_eq!(problems.len(), 2, "{body:#}");
     assert!(
-        problems[0]
-            .as_str()
-            .is_some_and(|p| p.contains("NOTE-0003")),
-        "the problem names the document: {body:#}"
+        problems
+            .iter()
+            .all(|p| p.as_str().is_some_and(|p| p.contains("NOTE-0003"))),
+        "every problem names the document: {body:#}"
     );
     assert!(body["loaded_at"].is_string(), "{body}");
 

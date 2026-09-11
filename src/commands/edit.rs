@@ -114,7 +114,6 @@ fn owned_elsewhere(key: &str) -> Option<&'static str> {
         "status" => Some("use set-status, which runs the status rules"),
         "tags" => Some("use tag"),
         "updated" => Some("it is auto-maintained; every write refreshes it"),
-        "blocked_from" => Some("it is auto-maintained bookkeeping for block/unblock"),
         "history" => {
             Some("it is auto-maintained lifecycle history written by new/set-status/import")
         }

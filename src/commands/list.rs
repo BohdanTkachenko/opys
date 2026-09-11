@@ -2,14 +2,23 @@
 //! store: a JOIN per `--tag`/`--field` filter (AND semantics), column
 //! predicates for `--type`/`--status`, DISTINCT against multi-row matches,
 //! ordered by load (path) order.
+//!
+//! `--blocked`/`--unblocked` is the one filter that is *not* SQL. Blocked is
+//! derived (ADR-0099 decision 3) from three things no single table holds —
+//! whether an entry is struck, whether its target still exists, and whether
+//! that target's type releases at its status — and expressing it would need
+//! exactly the correlated subqueries the store forbids. It runs in Rust over
+//! the reconstructed corpus, and only when one of the two flags is passed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use gluesql::prelude::ParamLiteral;
 
 use crate::cli::ListFormat;
 use crate::commands::{parse_field_filters, print_lines};
+use crate::doc::Doc;
 use crate::error::Result;
+use crate::refs;
 use crate::store::{g_i64, g_str, IntoParam};
 use crate::Ctx;
 
@@ -19,11 +28,28 @@ pub fn run(
     tag: Option<&str>,
     status: Option<&str>,
     field: &[String],
+    blocked: Option<bool>,
     format: ListFormat,
 ) -> Result<()> {
     let prj = ctx.open()?;
     let filters = parse_field_filters(field)?;
     let (mut store, _) = ctx.load(&prj)?;
+
+    // Ahead of the SELECT: both want `&mut store`. `None` skips the whole
+    // reconstruction, so an unfiltered `list` costs exactly what it did.
+    let blocked_ids: Option<HashSet<String>> = match blocked {
+        None => None,
+        Some(_) => {
+            let docs: Vec<Doc> = store.all_docs()?.into_iter().map(|(_, d)| d).collect();
+            let corpus = refs::Corpus::of_docs(&prj.pcfg, &docs);
+            Some(
+                docs.iter()
+                    .filter(|d| refs::is_blocked(d, &corpus))
+                    .filter_map(|d| d.id().map(str::to_string))
+                    .collect(),
+            )
+        }
+    };
 
     // Build the one SELECT: joins for tag/field filters, predicates for
     // type/status. Values always as parameters.
@@ -102,6 +128,12 @@ pub fn run(
 
     let lines: Vec<String> = rows
         .iter()
+        .filter(|r| match (&blocked_ids, blocked) {
+            (Some(ids), Some(want)) => {
+                ids.contains(g_str(&r[1]).unwrap_or_default().as_str()) == want
+            }
+            _ => true,
+        })
         .map(|r| {
             let dkey = g_i64(&r[0]).unwrap_or(0);
             let id = g_str(&r[1]).unwrap_or_default();

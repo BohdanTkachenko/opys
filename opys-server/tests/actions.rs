@@ -634,12 +634,14 @@ async fn block_writes_what_the_cli_writes() {
         .expect("the CLI accepts the same link");
     fx.assert_mirrors_reference();
 
-    // The task type declares a `blocked` status, so the core auto-set it and
-    // remembered where it came from. Both are the engine's doing, and the byte
-    // comparison above is what proves the server did not reimplement either.
+    // The task type declares a `blocked` status and still does not get it:
+    // blocked is derived from the live `blocked_by` entries (ADR-0099 decision
+    // 3), so `block` writes the two relation maps and nothing else. The byte
+    // comparison above is what proves the server did not reimplement any of it.
     let task = fx.read("inventory/TASK-0002.md");
-    assert!(task.contains("status: blocked"), "{task}");
-    assert!(task.contains("blocked_from: todo"), "{task}");
+    assert!(task.contains("status: todo"), "{task}");
+    assert!(task.contains("NOTE-0001:"), "{task}");
+    assert!(!task.contains("blocked_from"), "{task}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -667,10 +669,11 @@ async fn unblock_writes_what_the_cli_writes() {
     .expect("the CLI accepts the same removal");
     fx.assert_mirrors_reference();
 
-    // The status the document held before it was auto-blocked comes back, and
-    // the bookkeeping key goes away with it.
+    // The entry is gone from both sides; the status never moved in either
+    // direction, because neither command ever touches one.
     let task = fx.read("inventory/TASK-0002.md");
     assert!(task.contains("status: todo"), "{task}");
+    assert!(!task.contains("blocked_by"), "{task}");
     assert!(!task.contains("blocked_from"), "{task}");
 }
 
@@ -727,11 +730,11 @@ async fn unknown_action_is_rejected() {
     );
 }
 
-/// [`CONFIG`] with a status graph on `note` (ADR-0099 decision 1). `task` gets
-/// none on purpose: it declares `blocked`, and `block`'s temporary auto-set
-/// writes that status without consulting the graph, so a graph there would make
-/// [`block_writes_what_the_cli_writes`] produce a pair `verify` rejects. That
-/// auto-set goes away with TASK-0112.
+/// [`CONFIG`] with a status graph on `note` (ADR-0099 decision 1). `task`
+/// deliberately keeps none, so one fixture carries both shapes the engine has to
+/// serve: a type whose moves are declared, and a type that kept the any-to-any
+/// rule. `task`'s `blocked` status is ordinary vocabulary here — nothing writes
+/// it, because blocked is derived (decision 3).
 const GRAPH_CONFIG: &str = r#"
 base = "inventory"
 

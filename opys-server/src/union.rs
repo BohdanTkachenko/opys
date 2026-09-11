@@ -401,7 +401,8 @@ mod tests {
             tags: Vec::new(),
             path: format!("inventory/{id}.md"),
             updated: None,
-            blocked_by: 0,
+            blocked: false,
+            live_blockers: Vec::new(),
             blocks: 0,
             priority: None,
         }

@@ -321,6 +321,23 @@ pub struct DocType {
     /// the one place `set-status`, `close`, `verify` and the node agree.
     #[serde(default)]
     pub transitions: BTreeMap<String, Vec<String>>,
+    /// `releases_blocks` — the statuses of *this* type at which a document of it
+    /// stops blocking whatever it blocks (ADR-0099 decision 3).
+    ///
+    /// Blocked is derived, never stored: a `blocked_by` entry is live while its
+    /// target still holds. Empty (the default) means a document of this type
+    /// blocks at every status it can hold, which is the right answer for an
+    /// **ephemeral** type — it releases by construction, because `close` deletes
+    /// it and strikes every inbound entry, and a struck entry is never live. On
+    /// such a type the key is accepted but redundant. It earns its keep on a
+    /// **permanent** type, which is never closed and would otherwise block
+    /// forever: a feature releases at `implemented`, `wontfix`, `archived`.
+    ///
+    /// Read it through [`crate::refs::Corpus`], never directly — that is the one
+    /// place `list --blocked`, the board badge and the document view agree on
+    /// what "live" means.
+    #[serde(default)]
+    pub releases_blocks: Vec<String>,
     #[serde(default)]
     pub tags_required: bool,
     #[serde(default)]
@@ -732,6 +749,17 @@ impl ProjectConfig {
                 if !t.statuses.contains(s) {
                     errs.push(format!(
                         "type '{name}': status_dirs key '{s}' is not a status"
+                    ));
+                }
+            }
+            // `releases_blocks` (ADR-0099 decision 3). A status the type cannot
+            // hold releases nothing, so the entry is dead config — and the
+            // silent failure mode is the bad one: every blocker of that type
+            // stays live forever with no symptom to chase.
+            for s in &t.releases_blocks {
+                if !t.statuses.contains(s) {
+                    errs.push(format!(
+                        "type '{name}': releases_blocks '{s}' is not a status"
                     ));
                 }
             }
@@ -1185,6 +1213,35 @@ default_status = "open"
         )
         .unwrap();
         assert!(cfg.validate().is_empty(), "{:?}", cfg.validate());
+    }
+
+    /// `releases_blocks` naming a status the type cannot hold is dead config
+    /// with no symptom — every blocker of that type would simply stay live — so
+    /// validate names it. An empty set is legal and means "never releases",
+    /// which is exactly what an ephemeral type wants.
+    #[test]
+    fn flags_a_releases_blocks_status_the_type_does_not_declare() {
+        let cfg: ProjectConfig = toml::from_str(
+            r#"
+[types.feature]
+prefix = "FEAT"
+statuses = ["planned", "implemented"]
+default_status = "planned"
+releases_blocks = ["implemented", "shipped"]
+
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.validate(),
+            vec!["type 'feature': releases_blocks 'shipped' is not a status".to_string()],
+        );
+        assert!(cfg.types["task"].releases_blocks.is_empty());
     }
 
     #[test]

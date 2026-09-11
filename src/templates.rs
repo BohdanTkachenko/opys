@@ -22,7 +22,9 @@ pub const CLAUDE_MD_SNIPPET: &str = r#"## Feature inventory
   the matching test-plan items and append backticked test references; set status
   via the CLI. If a test plan's case enumeration looks incomplete, raise it.
 - Track ephemeral implementation work in work-item-style types (e.g.
-  `opys new --type bug --features FEAT-0001`), and `opys close` them when done.
+  `opys new --type bug --features FEAT-0001`), and `opys close` them when the
+  work lands — move one along its type's status graph first (the shipped work
+  items close from `review`).
   Never record test results, dates, or completion claims in documents.
 "#;
 
@@ -83,6 +85,12 @@ terminal_statuses = []               # features are never closed/deleted
 tags_required = true
 status_dirs = { archived = "_archived" }   # archived features move to opys/_archived/
 
+# Blocked is derived, never stored: a `blocked_by` entry pointing here stops
+# blocking once this feature reaches one of these statuses. Only meaningful on a
+# type that is never closed — an ephemeral one releases by construction, because
+# `close` deletes it and strikes every entry pointing at it.
+releases_blocks = ["implemented", "wontfix", "archived"]
+
 # The status graph: a status → the statuses `set-status` may move it to. Omit
 # the table entirely and the type keeps the any-to-any rule. Declared, it is the
 # whole truth: a status that is not a key here is a dead end, and a terminal
@@ -138,14 +146,19 @@ structure = '''
 # Ephemeral implementation work. Deleted on `close`.
 [types.task]
 prefix = "TASK"
-statuses = ["todo", "in-progress", "blocked", "review", "done"]
+statuses = ["todo", "in-progress", "review", "user-review", "done"]
 default_status = "todo"
 terminal_statuses = ["done"]         # "done" reached only via `close`
 tags_required = false
 requires_link = { to = "feature", min = 1 }
 
-[types.task.fields.blocked_reason]
-type = "string"
+# There is no `blocked` status: a task is blocked because something live blocks
+# it (`opys block`, then `opys list --blocked`), never because a flag says so.
+[types.task.transitions]
+todo        = ["in-progress"]
+in-progress = ["review", "todo"]
+review      = ["done", "in-progress", "user-review"]
+user-review = ["done", "in-progress"]
 
 [[types.task.sections]]
 heading = "Tasks"
@@ -161,14 +174,17 @@ required = true
 # Like task, plus a required Reproduction section.
 [types.bug]
 prefix = "BUG"
-statuses = ["todo", "in-progress", "blocked", "review", "done"]
+statuses = ["todo", "in-progress", "review", "user-review", "done"]
 default_status = "todo"
 terminal_statuses = ["done"]
 tags_required = false
 requires_link = { to = "feature", min = 1 }
 
-[types.bug.fields.blocked_reason]
-type = "string"
+[types.bug.transitions]
+todo        = ["in-progress"]
+in-progress = ["review", "todo"]
+review      = ["done", "in-progress", "user-review"]
+user-review = ["done", "in-progress"]
 
 [[types.bug.sections]]
 heading = "Reproduction"
@@ -189,14 +205,17 @@ required = true
 # Maintenance/tooling work with no user-facing behavior change.
 [types.chore]
 prefix = "CHORE"
-statuses = ["todo", "in-progress", "blocked", "review", "done"]
+statuses = ["todo", "in-progress", "review", "user-review", "done"]
 default_status = "todo"
 terminal_statuses = ["done"]
 tags_required = false
 requires_link = { to = "feature", min = 1 }
 
-[types.chore.fields.blocked_reason]
-type = "string"
+[types.chore.transitions]
+todo        = ["in-progress"]
+in-progress = ["review", "todo"]
+review      = ["done", "in-progress", "user-review"]
+user-review = ["done", "in-progress"]
 
 [[types.chore.sections]]
 heading = "Tasks"
@@ -224,10 +243,6 @@ require_field = "archived_reason"
 [[rules]]
 when = { type = "feature", status = "implemented" }
 require_checked_section = "Test plan"
-
-[[rules]]
-when = { status = "blocked" }
-require_any = [{ field = "blocked_reason" }, { link = "blocked_by" }]
 
 # A handoff needs a checkpoint: moving a work item into `review` requires a
 # `## Progress` entry stamped at or after the moment its status last changed, so

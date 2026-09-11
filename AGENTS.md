@@ -202,7 +202,9 @@ Layering, roughly outermost-in:
   (FEAT-0105/ADR-0100).
 - `src/refs.rs` — the uniform relation maps (`references`/`blocked_by`/`blocks`),
   ID→title: parse/serialize (sorted by item number), strikethrough tombstone
-  helpers, `id_number`.
+  helpers, `id_number`. Also the derived-blocked predicate — `Corpus` (config +
+  an id→status index, built once per command), `live_blockers` and `is_blocked`
+  — which `list --blocked` and the node both read rather than reimplement.
 - `src/history.rs` — the `history` lifecycle map (UTC RFC3339 with six
   fractional digits → status): key formatting, `is_canonical_key` (the exact
   spelling `verify` demands), the same-instant `+1µs` bump, and the
@@ -285,14 +287,22 @@ All status/section/link guards are *config*, enforced by one engine
   skipping code spans/fences.
 - **Blockers** (`blocked_by` / `blocks` maps): a directional relation on the same
   ID→title machinery. `opys block <id> --by <id>` / `unblock` write `blocked_by`
-  on the blocked side and the inverse `blocks` on the blocker. Blocking a doc
-  whose type has a `blocked` status auto-sets it (the link satisfies the
-  blocked-reason rule); `unblock` reverts to `in-progress` when no blocker/reason
-  remains. `refs::RELATION_FIELDS` drives close/cleanup/verify/id-reservation
-  uniformly.
+  on the blocked side and the inverse `blocks` on the blocker — and nothing else:
+  no status, no history entry. **Blocked is derived, never stored** (ADR-0099
+  decision 3): a document is blocked iff it holds a live `blocked_by` entry — not
+  struck, resolving to a document that exists, and that document's status not in
+  its own type's `releases_blocks`. A permanent type declares that set (a feature
+  releases at `implemented`/`wontfix`/`archived`); an ephemeral one releases by
+  construction, because `close` deletes it and strikes the entry. The one
+  predicate is `refs::live_blockers` / `refs::is_blocked` over a `refs::Corpus`
+  (config + id→status), read by `list --blocked`/`--unblocked`, the board badge
+  and the document view alike. There is no `blocked` status, `blocked_from` or
+  `blocked_reason`; everything that blocks is a document.
+  `refs::RELATION_FIELDS` drives close/cleanup/verify/id-reservation uniformly.
 - **Lifecycle history**: every status change is appended to the reserved
-  `history` map (`new` seeds it from `created`, `set-status`/`import`/`block`'s
-  auto-set write it; nothing hand-edits it). Keys are UTC RFC3339 with *exactly*
+  `history` map (`new` seeds it from `created`, `set-status`/`import` write it;
+  `block`/`unblock` change no status so they write nothing; nothing hand-edits
+  it). Keys are UTC RFC3339 with *exactly*
   six fractional digits — `verify` rejects any other width, because only fixed
   width makes lexical order chronological, and the serializer sorts the block —
   and a colliding key is bumped one microsecond. A status change on a document
@@ -316,8 +326,8 @@ All status/section/link guards are *config*, enforced by one engine
   cannot drift. A terminal status is reached only via `close` (`set-status`
   rejects it), and `new` has no `--status` at all — a document starts at its
   type's initial status and `import` is the one seam that seeds elsewhere. The
-  conditional guards (e.g. feature `wontfix`⇒`wontfix_reason`, `implemented`⇒a
-  checked `## Test plan` item; any `blocked`⇒a reason or blocker link) are
+  conditional guards (e.g. feature `wontfix`⇒`wontfix_reason`,
+  `archived`⇒`archived_reason`, `implemented`⇒a checked `## Test plan` item) are
   `[[rules]]`, enforced at write time and by `verify`. "Removed from the product"
   is just a status (e.g. `archived`), never a deletion.
 - **Section checks** (`[[types.X.sections.checks]]`): a universal, config-driven

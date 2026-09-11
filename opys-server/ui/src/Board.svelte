@@ -720,13 +720,16 @@
                         <Icon name="flag" size={9} />{doc.priority}
                       </span>
                     {/if}
-                    {#if doc.blocked_by > 0}
+                    <!-- Blocked is derived server-side from the live blockers
+                         (ADR-0099): not struck, still there, and not at a status
+                         their type releases at. Naming them beats a bare count. -->
+                    {#if doc.blocked}
                       <span
                         class="badge blocked mono"
-                        title={`blocked by ${doc.blocked_by} live ${doc.blocked_by === 1 ? 'document' : 'documents'}`}
+                        title={`blocked by ${doc.live_blockers.join(', ')}`}
                       >
                         <Icon name="lock" size={10} />
-                        {doc.blocked_by}
+                        {doc.live_blockers.length}
                       </span>
                     {/if}
                     {#if doc.blocks > 0}

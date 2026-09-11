@@ -200,8 +200,8 @@ pub fn collect_problems(prj: &Project, docs: &[Doc], parse_errors: Vec<String>) 
     check_unique_numbers(docs, &mut errors);
 
     // The status-conditional guards (wontfix⇒reason, implemented⇒checked test
-    // plan, blocked⇒reason/link, required links, required sections) are enforced
-    // by the engine against `prj.pcfg`.
+    // plan, required links, required sections) are enforced by the engine
+    // against `prj.pcfg`.
     check_rules(prj, docs, &doc_ids, &mut errors);
 
     // Each configured `[[stats]]` section must run cleanly against the real
@@ -239,15 +239,12 @@ fn check_stats(prj: &Project, docs: &[Doc], errors: &mut Vec<String>) {
 /// Frontmatter keys allowed on any document regardless of type (everything else
 /// must be a declared field of the doc's type).
 fn reserved_fields() -> Vec<&'static str> {
-    // `blocked_from` is auto-maintained bookkeeping: the status a doc held before
-    // `block` auto-set it to `blocked`, restored by `unblock` (see commands/block).
     let mut v = vec![
         "id",
         "status",
         "tags",
         "created",
         "updated",
-        "blocked_from",
         crate::history::FIELD,
     ];
     v.extend(refs::RELATION_FIELDS);

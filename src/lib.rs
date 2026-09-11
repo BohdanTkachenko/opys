@@ -117,14 +117,21 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
             tag,
             status,
             field,
+            blocked,
+            unblocked,
             format,
         } => {
+            // One tri-state rather than two bools: clap has already refused the
+            // pair, and the pair would push `run` past the argument count
+            // clippy allows.
+            let blocked = blocked.then_some(true).or(unblocked.then_some(false));
             commands::list::run(
                 &ctx,
                 type_name.as_deref(),
                 tag.as_deref(),
                 status.as_deref(),
                 &field,
+                blocked,
                 format,
             )?;
             Ok(0)

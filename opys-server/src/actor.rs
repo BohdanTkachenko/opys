@@ -87,10 +87,18 @@ pub struct DocSummary {
     /// Relative to the project root.
     pub path: String,
     pub updated: Option<String>,
-    /// How many *live* documents block this one — struck tombstones are closed
-    /// blockers and do not count. Counts, not maps: the board renders a badge,
-    /// and the full relation is one click away on the document view.
-    pub blocked_by: usize,
+    /// Whether anything live still blocks this document (ADR-0099 decision 3):
+    /// a `blocked_by` entry that is not struck, that resolves, and whose
+    /// target's status its type does not release at. Computed by the same
+    /// [`refs::is_blocked`] behind `opys list --blocked`, so the board badge and
+    /// the CLI cannot drift.
+    pub blocked: bool,
+    /// The ids of exactly those live blockers, for the badge's count and its
+    /// tooltip. Ids rather than a count *and* a map, because a count that
+    /// disagreed with the list would be the very drift this replaced: the full
+    /// relation, titles and tombstones included, is one click away on the
+    /// document view.
+    pub live_blockers: Vec<String>,
     /// The mirror: how many live documents this one is blocking.
     pub blocks: usize,
     /// The `priority` frontmatter field, when it is an integer (ADR-0095:
@@ -169,6 +177,27 @@ pub struct DocView {
     pub references: BTreeMap<String, String>,
     /// What blocks this document, id → title.
     pub blocked_by: BTreeMap<String, String>,
+    /// Which of those entries still *hold* (ADR-0099 decision 3) — the rest are
+    /// struck tombstones, dangling ids, or targets whose type releases at the
+    /// status they have reached.
+    ///
+    /// The map above cannot answer it: whether an entry is live depends on the
+    /// rest of the corpus and on the blocker type's `releases_blocks`, so a
+    /// client deriving it would be a second interpretation of `opys.toml` —
+    /// exactly what [`DocView::allowed_statuses`] exists to avoid.
+    pub live_blockers: Vec<String>,
+    /// Which non-struck `blocked_by` entries point at an id no document answers
+    /// to — `verify`'s "does not resolve to a known document".
+    ///
+    /// A subset of the entries missing from `live_blockers`, and the reason that
+    /// list alone cannot explain itself: an entry drops out either because its
+    /// target released or because there is no target, and a view that renders
+    /// both as "released" tells the reader a status transition happened to a
+    /// document that does not exist.
+    pub dangling_blockers: Vec<String>,
+    /// Whether anything in `live_blockers` remains — the whole of what "blocked"
+    /// means. There is no blocked status and no blocked flag on disk.
+    pub blocked: bool,
     /// What this document blocks, id → title.
     pub blocks: BTreeMap<String, String>,
     /// Every frontmatter key, as JSON.
@@ -606,7 +635,15 @@ impl Actor {
             return Ok(None);
         };
         let doc = warm.store.doc(dkey)?;
-        Ok(Some(view(&warm.prj, &doc)))
+        // The summaries are this corpus's id → status index, already built by
+        // the last load — the same one the board's badges came from.
+        let corpus = refs::Corpus::new(
+            &warm.prj.pcfg,
+            warm.summaries
+                .iter()
+                .map(|s| (s.id.as_str(), s.status.as_str())),
+        );
+        Ok(Some(view(&warm.prj, &doc, &corpus)))
     }
 
     /// Run user SQL. The outer error is ours (no warm store, projections would
@@ -683,7 +720,13 @@ impl Actor {
         // against it too — the dashboard's verify dot then says what `opys
         // verify` says.
         problems.extend(verify::spelling_problems(&docs, self.backend.as_ref()));
-        let summaries = docs.iter().filter_map(|d| summary(&prj, d)).collect();
+        // One index for the whole board: blocked is derived from the corpus, not
+        // from a document on its own (ADR-0099 decision 3).
+        let corpus = refs::Corpus::of_docs(&prj.pcfg, &docs);
+        let summaries = docs
+            .iter()
+            .filter_map(|d| summary(&prj, d, &corpus))
+            .collect();
         Ok(Warm {
             prj,
             store,
@@ -711,8 +754,12 @@ fn rel_path(prj: &Project, doc: &Doc) -> String {
         .into_owned()
 }
 
-fn summary(prj: &Project, doc: &Doc) -> Option<DocSummary> {
+fn summary(prj: &Project, doc: &Doc, corpus: &refs::Corpus<'_>) -> Option<DocSummary> {
     let id = doc.id()?.to_string();
+    let live_blockers: Vec<String> = refs::live_blockers(doc, corpus)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
     Some(DocSummary {
         type_name: type_of(prj, &id),
         status: doc.frontmatter.status().unwrap_or_default().to_string(),
@@ -720,14 +767,17 @@ fn summary(prj: &Project, doc: &Doc) -> Option<DocSummary> {
         tags: doc.frontmatter.tags().unwrap_or_default(),
         path: rel_path(prj, doc),
         updated: doc.frontmatter.get_str("updated").map(str::to_string),
-        blocked_by: live_relations(doc, refs::BLOCKED_BY),
+        blocked: !live_blockers.is_empty(),
+        live_blockers,
         blocks: live_relations(doc, refs::BLOCKS),
         priority: doc.frontmatter.get("priority").and_then(|v| v.as_i64()),
         id,
     })
 }
 
-/// How many entries of a relation map point at documents that still exist.
+/// How many entries of a relation map are not struck-through tombstones. The
+/// mirror side (`blocks`) only: what makes a *blocker* live is
+/// [`refs::live_blockers`], which also asks whether the target has released.
 fn live_relations(doc: &Doc, field: &str) -> usize {
     refs::parse_in(&doc.frontmatter, field)
         .into_iter()
@@ -735,7 +785,7 @@ fn live_relations(doc: &Doc, field: &str) -> usize {
         .count()
 }
 
-fn view(prj: &Project, doc: &Doc) -> DocView {
+fn view(prj: &Project, doc: &Doc, corpus: &refs::Corpus<'_>) -> DocView {
     let id = doc.id().unwrap_or_default().to_string();
     let mut fields = BTreeMap::new();
     for key in doc.frontmatter.keys() {
@@ -753,6 +803,15 @@ fn view(prj: &Project, doc: &Doc) -> DocView {
         .type_name_for_id(&id)
         .and_then(|name| prj.pcfg.types.get(name));
     let status = doc.frontmatter.status().unwrap_or_default().to_string();
+    let live_blockers: Vec<String> = refs::live_blockers(doc, corpus)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    let dangling_blockers: Vec<String> = refs::parse_in(&doc.frontmatter, refs::BLOCKED_BY)
+        .into_iter()
+        .filter(|(id, title)| !refs::is_struck(title) && !corpus.resolves(id))
+        .map(|(id, _)| id)
+        .collect();
     DocView {
         type_name: type_of(prj, &id),
         allowed_statuses: doc_type
@@ -805,6 +864,9 @@ fn view(prj: &Project, doc: &Doc) -> DocView {
         updated: doc.frontmatter.get_str("updated").map(str::to_string),
         references: relation(doc, refs::FIELD),
         blocked_by: relation(doc, refs::BLOCKED_BY),
+        blocked: !live_blockers.is_empty(),
+        live_blockers,
+        dangling_blockers,
         blocks: relation(doc, refs::BLOCKS),
         fields,
         body_html: comrak::markdown_to_html(&doc.body, &markdown_options()),
@@ -914,7 +976,8 @@ mod tests {
             tags: vec!["server".into(), "core".into()],
             path: "inventory/FEAT-0001.md".into(),
             updated: None,
-            blocked_by: 0,
+            blocked: false,
+            live_blockers: Vec::new(),
             blocks: 0,
             priority: None,
         };

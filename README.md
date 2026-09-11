@@ -93,7 +93,12 @@ opys tags                                   # distinct tags (--keys for just key
 
 # Ephemeral work, linked to a feature (default types: task/bug/chore):
 opys new --type bug --title "Survive profile switch" --features FEAT-0001
-opys close BUG-0002                         # deletes the file; reference struck through
+opys set-status BUG-0002 in-progress        # the shipped work-item graph runs
+opys set-status BUG-0002 review             # todo -> in-progress -> review, and
+opys close BUG-0002                         # `close` needs an edge from where the
+                                            # document stands into the terminal
+                                            # status, and its `## Tasks` checked;
+                                            # deletes the file, strikes the reference
 
 # Bulk: every id-taking mutating command (set-status, tag, retire, block,
 # unblock, close) takes an id list — several ids, a comma-separated list, or
@@ -103,7 +108,7 @@ opys close BUG-0002                         # deletes the file; reference struck
 # Filter on a status a live doc can hold — `done` is reached only *through*
 # `close`, so it selects nothing, and an empty selection exits 2.
 opys set-status FEAT-0001 FEAT-0002 wontfix --reason "superseded"
-opys list --type task --status in-progress --format ids | opys close -
+opys list --type task --status review --format ids | opys close -
 ```
 
 Mutating commands (`new`, `set-status`, `tag`, `log`, `retire`, `block`,
@@ -126,12 +131,12 @@ without a `renumber`. Without a modulus, allocation is the dense sequence.
 | `config <init\|validate>` | generate / validate the universal `opys.toml` |
 | `new --type <T>` | allocate the next ID and write a skeleton document of type `T` (auto-syncs) |
 | `import --type <T>` | bulk-create documents of type `T` from a JSONL file (one ID block, one sync) |
-| `show` / `list` | retrieval (`--type`, `--tag`, `--status`, `--format table\|ids\|paths`) |
+| `show` / `list` | retrieval (`--type`, `--tag`, `--status`, `--field`, `--blocked`/`--unblocked`, `--format table\|ids\|paths`) |
 | `set-status` | guarded transitions: the type's declared `[transitions]` edges (when it declares any) and its configured rules |
 | `tag` | add/remove tags (`--add a,b --remove c`) |
 | `log` | append a dated entry to a document's `kind = "log"` section (`opys log TASK-0042 "…"`, or `-` to read it from stdin) |
 | `retire` | delete document(s); each ID is logged and never reused |
-| `block` / `unblock` | record a directional blocker between documents |
+| `block` / `unblock` | record a directional blocker between documents; blocked is derived from the live entries, never stored |
 | `close` / `cleanup` | finish document(s) of a type with a terminal status (and, where a status graph is declared, an edge into one from where the document stands); strip struck refs |
 | `verify` | full integrity check — wire into CI |
 | `sync` | reconcile references, linkify prose, relocate docs to their layout path (for hand edits) |

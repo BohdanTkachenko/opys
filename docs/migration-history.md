@@ -9,8 +9,8 @@
 `history` is a reserved, auto-maintained frontmatter key: a map of RFC3339 UTC
 timestamp (six fractional digits, `Z`) to status, recording every status a
 document has held (see the format spec, *The lifecycle map*). `new`,
-`set-status`, `import` and `block`/`unblock`'s auto-set write it; **no ordinary
-write rebuilds it**. An inventory created before the key existed therefore has no
+`set-status` and `import` write it; **no ordinary write rebuilds it**. An
+inventory created before the key existed therefore has no
 history at all, and `opys verify` reports one problem per document:
 
 ```
@@ -107,9 +107,8 @@ For each document `verify` named, add exactly one entry:
 
 The block is spliced into the frontmatter **in its canonical position**: the
 serializer emits `id`, `status`, `tags`, `created`, `updated` first and then the
-remaining keys alphabetically, so `history` goes after `blocked_by` /
-`blocked_from` / `blocks` and before `priority` / `references` / `spec` /
-`wontfix_reason`. Position matters more than it looks: `opys` compares a file
+remaining keys alphabetically, so `history` goes after `blocked_by` / `blocks`
+and before `priority` / `references` / `spec` / `wontfix_reason`. Position matters more than it looks: `opys` compares a file
 against the *canonical rendering of what it parsed*, so a history block appended
 at the end of the frontmatter is invisible to `verify` and `sync` — and then
 silently reordered by the next unrelated write.
@@ -119,8 +118,7 @@ entries but is not a lifecycle map — a key that is not canonical, a status tha
 is not a string, or a **list** of entries rather than a mapping — is **not**
 repaired by any command. `verify` names the offending key or entry (or, for a
 value that is not a mapping at all, its shape), and
-`set-status` (and `block`/`unblock`'s auto-set) refuse to run on that document
-until a human fixes it, rather than appending beside a value opys cannot read
+`set-status` refuses to run on that document until a human fixes it, rather than appending beside a value opys cannot read
 and destroying the rest of the map. A botched seed therefore wedges exactly the
 documents it touched; it never silently loses them.
 
@@ -266,3 +264,63 @@ opys sync          # then again — the diff must be empty the second time
 
 From here on, append with the command — `opys log <id> "…"`, or `opys log <id> -`
 for a multi-line entry — and the stamps take care of themselves.
+
+# Retiring the `blocked` status
+
+A second one-time procedure, for an inventory written before blocked became
+derived ([ADR-0099](../inventory/ADR-0099.md) decision 3). It is unrelated to the
+history seeding above except in shape: a text pass an agent runs once, not a
+tool.
+
+Blocked used to be a *status*. `opys block` auto-set it, remembered the status it
+came from in `blocked_from`, and a free-text `blocked_reason` counted as blocked
+too. All three are gone: `block` writes the two relation maps and nothing else,
+and a document is blocked while it holds a live `blocked_by` entry. So when
+`blocked` leaves a type's `statuses` in `opys.toml`, every document sitting at it
+turns red at once:
+
+```
+TASK-0112: invalid status 'blocked'
+TASK-0112: unknown frontmatter field 'blocked_from' (declare it in type 'task' [fields.blocked_from])
+```
+
+The config change and the document pass have to land together. Per document at
+`status: blocked`:
+
+1. `status: blocked` becomes the value of its `blocked_from` line — the status it
+   was auto-set away from — or the type's `default_status` when it has none.
+2. the `blocked_from:` line is deleted. So is any `blocked_reason:`, unless the
+   project keeps declaring it as an ordinary field.
+3. in the `history:` map, an entry whose value is `blocked` is rewritten to the
+   status the document now holds. These documents never really left the one they
+   came from — the entry recorded the auto-set, not a decision — and leaving it
+   is not free. The unconditional reason is the last-entry check: once the
+   document moves off `blocked`, a trailing `blocked` entry no longer names the
+   status it holds, and `verify` says so whatever the type declares —
+
+   ```
+   TASK-0112: history's last entry (blocked) does not match status (todo)
+   ```
+
+   That is the shape every document the auto-set touched has, since `block` wrote
+   the entry last. A `blocked` entry with a *successor* fails a second check, but
+   only where the type also gains a `transitions` map: the pair around it is no
+   longer a declared edge (`history records blocked -> todo, which type 'task'
+   does not declare as a transition (no transitions out of blocked)`).
+
+`blocked_by` and `blocks` stay exactly as they are: they are what makes derived
+blockedness work, and rewriting them would lose the dependency.
+
+Nothing else moves — in particular not `created` and not the history *keys*,
+which `verify` checks against each other. Then the usual close-out: `opys verify`
+clean, and `opys sync` twice with an empty VCS diff.
+
+Two consequences worth knowing before the pass, not after:
+
+- If the same change gives the type a `transitions` map (as the shipped config
+  now does), `close` works only from a status with a declared edge into a
+  terminal one. Under the shipped task graph that is `review` and `user-review`,
+  so `opys close` on a `todo` document is refused until it is moved along.
+- A document blocked *only* because someone wrote a `blocked_reason` has no
+  blocker to derive from. That is the point of the change: make the thing it is
+  waiting on a document, and `opys block` it.

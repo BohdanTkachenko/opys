@@ -29,10 +29,11 @@ pub const RESERVED_FIELDS: [&str; 11] = [
     "blocks",
 ];
 
-/// Work-item reserved field keys. Work items share `id`/`status`/`tags`/
-/// `created`/`updated`/`history`/`references`/`blocked_by`/`blocks` with
-/// features and add `blocked_reason`.
-pub const WI_RESERVED_FIELDS: [&str; 10] = [
+/// Work-item reserved field keys: `id`/`status`/`tags`/`created`/`updated`/
+/// `history`/`references`/`blocked_by`/`blocks`, the same set features carry
+/// minus the two feature-only fields. Blocked is derived from `blocked_by`
+/// (ADR-0099 decision 3), so there is no `blocked_reason` and no `blocked_from`.
+pub const WI_RESERVED_FIELDS: [&str; 9] = [
     "id",
     "status",
     "tags",
@@ -42,7 +43,6 @@ pub const WI_RESERVED_FIELDS: [&str; 10] = [
     "references",
     "blocked_by",
     "blocks",
-    "blocked_reason",
 ];
 
 /// Core fields emitted first, in this order, before the remaining keys

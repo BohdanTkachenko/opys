@@ -6,10 +6,10 @@
 //! not strictly greater than the document's greatest existing key is bumped by
 //! one microsecond — two transitions inside one second can never collide.
 //! `new`/`import` seed the first entry from `created`, so `created` and the
-//! first key always denote the same instant; `set-status` (and, until
-//! TASK-0112 removes the auto-set, `block`/`unblock`) append. A status change on
-//! a document that predates the map seeds it first, at the status being left
-//! (see [`record`]), so no write can leave `created` and the first key
+//! first key always denote the same instant; `set-status` appends. Nothing else
+//! writes here — `block`/`unblock` change no status, so they leave no entry. A
+//! status change on a document that predates the map [`seed`]s it first, at the
+//! status being left, so no write can leave `created` and the first key
 //! disagreeing.
 //!
 //! Nothing hand-edits the map. `verify` reports a botched one (see
@@ -373,23 +373,6 @@ pub fn seed(fm: &mut Frontmatter, status: &str, now: &str) {
     fm.insert(FIELD, Value::Mapping(map));
 }
 
-/// Record a status change: append `status` at `want`, after seeding a first
-/// entry when the document predates the map.
-///
-/// The seed is what keeps a *migration* possible. Appending straight onto a
-/// history-less document would make the wall clock its *first* key, which
-/// contradicts `created` (verify check 4) and no longer says `missing history`
-/// — the corpus would be red, the migration procedure could neither find nor
-/// fix it, and the only repair would be hand-editing a map the spec forbids
-/// hand-editing. Seeding from `created` at the status the document was *leaving*
-/// lands this transition as the second entry instead, so `created` still matches
-/// the first and the tool keeps its promise that every write leaves the corpus
-/// green.
-pub fn record(fm: &mut Frontmatter, want: &str, prev: &str, status: &str) -> String {
-    seed(fm, prev, want);
-    append(fm, want, status)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,14 +452,17 @@ mod tests {
         assert!(is_utc_key("2026-01-02T03:04:05Z"));
     }
 
-    /// `record` seeds a document that predates the map from `created` at the
-    /// status it is leaving, so the appended entry lands second and `created`
-    /// still matches the first key.
+    /// The seed-then-append pair every status change runs (`set_status::core`):
+    /// a document that predates the map is seeded from `created` at the status
+    /// it is leaving, so the new entry lands *second* and `created` still
+    /// matches the first key. A map that already holds entries is appended to,
+    /// not reseeded.
     #[test]
-    fn record_seeds_a_history_less_document_before_appending() {
+    fn seeding_before_appending_keeps_created_as_the_first_key() {
         let mut fm = Frontmatter::new();
         fm.set_str("created", "2026-01-02T03:04:05-04:00");
-        let key = record(&mut fm, "2026-06-16T14:30:00.000000Z", "planned", "partial");
+        seed(&mut fm, "planned", "2026-06-16T14:30:00.000000Z");
+        let key = append(&mut fm, "2026-06-16T14:30:00.000000Z", "partial");
         assert_eq!(key, "2026-06-16T14:30:00.000000Z");
         assert_eq!(
             entries(&fm),
@@ -485,8 +471,8 @@ mod tests {
                 ("2026-06-16T14:30:00.000000Z".into(), "partial".into()),
             ]
         );
-        // A map that already holds entries is appended to, not reseeded.
-        let key = record(&mut fm, "2026-06-16T14:30:00.000000Z", "partial", "planned");
+        seed(&mut fm, "partial", "2026-06-16T14:30:00.000000Z");
+        let key = append(&mut fm, "2026-06-16T14:30:00.000000Z", "planned");
         assert_eq!(key, "2026-06-16T14:30:00.000001Z");
         assert_eq!(entries(&fm).len(), 3);
     }

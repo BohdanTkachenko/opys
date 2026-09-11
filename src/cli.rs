@@ -104,6 +104,14 @@ pub enum Command {
         /// field equals the value (or, for list fields, contains it).
         #[arg(long = "field")]
         field: Vec<String>,
+        /// Only documents something live still blocks: a `blocked_by` entry
+        /// that is not struck through and whose target's status is not one its
+        /// type releases at (`releases_blocks`).
+        #[arg(long, conflicts_with = "unblocked")]
+        blocked: bool,
+        /// Only documents nothing live blocks — what to pick up next.
+        #[arg(long)]
+        unblocked: bool,
         #[arg(long, value_enum, default_value_t = ListFormat::Table)]
         format: ListFormat,
     },
@@ -187,8 +195,8 @@ pub enum Command {
     },
 
     /// Mark one or more documents as blocked by another, linking both
-    /// directions. Each blocked document is auto-set to `blocked` if its type
-    /// has that status.
+    /// directions. Status is untouched: blocked is derived from the live
+    /// `blocked_by` entries (see `list --blocked`).
     Block {
         /// The blocked document(s): several positionals (`FEAT-0001 FEAT-0002`), a
         /// comma-separated list (`FEAT-0001,FEAT-0002`), or `-` to read the list from
