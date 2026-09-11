@@ -40,6 +40,16 @@ pad = 4                              # zero-padding width for the numeric id par
 # [ids]
 # modulus = 16
 
+# Reading the inventory out of git: which branch is truth (everything else is
+# work in flight, diffed against it) and which refs count. Patterns are matched
+# against fully qualified ref names, so `*` crosses `/`; the default is local
+# heads only, and remote-tracking refs are opt-in because keeping them fetched
+# is your job. Linked worktree heads are always read. A project that is not a
+# git repository degrades to main-only.
+# [git]
+# main = "main"                      # falls back to "master" when absent
+# branches = ["refs/heads/*"]        # add "refs/remotes/*" to include remotes
+
 # On-disk layout. Each document's path (under `base`) is this template with
 # {type} → the type's `dir`, {status} → the type's `status_dirs[status]`, and
 # {id} → PREFIX-NNNN. Both segments are empty by default, so documents live flat

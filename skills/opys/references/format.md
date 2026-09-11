@@ -164,6 +164,10 @@ pad = 4                              # zero-padding width for the numeric id par
 # [layout]                           # on-disk path template (relative to base)
 # path = "{type}/{status}/{id}.md"   # default; {type}/{status} empty → flat
 
+# [git]                              # reading the inventory out of git
+# main = "main"                      # the truth branch (falls back to "master")
+# branches = ["refs/heads/*"]        # which refs count; remotes are opt-in
+
 [types.feature]                      # one [types.<name>] block per document type
 prefix = "FEAT"                      # ^[A-Z][A-Z0-9]*$, unique across types
 # dir = "features"                   # the {type} layout segment; default empty (flat)
@@ -214,6 +218,58 @@ assertion set for `[[rules]]` is `require_field`, `field_matches`,
 (whose terms are `{field}`, `{link}`, `{section}`, or `{tag}`), and
 `require_log_since_status` (see [Log sections](#log-sections)).
 `opys list --field <key>=<value>` filters by any custom field (see below).
+
+### `[git]` — reading branches (optional)
+
+opys reads the inventory as it stands on other branches and worktree heads,
+in-process through gix and never by spawning `git`. **Main is truth** — the
+baseline every other ref is diffed against; everything else is *progress*.
+
+```toml
+[git]
+main = "main"                        # the truth branch; falls back to "master"
+branches = ["refs/heads/*"]          # which refs count (default: local heads)
+```
+
+`main` names the truth branch. When `refs/heads/<main>` does not resolve the
+reader falls back to `master`, so a repository that never renamed its default
+branch needs no `[git]` table at all.
+
+The `[git]` table accepts only `main` and `branches`: any other *key* inside it
+(a misspelled `branches`, say) is a TOML parse error that stops every command
+with exit 2, like a syntax error, rather than silently reading the refs you did
+not mean. As with `[ids]`, a misspelled *table* name (`[gti]`) is another matter
+— unknown top-level tables are ignored — so such a typo does leave the defaults
+in force, silently.
+
+`branches` is a list of glob patterns matched against **fully qualified** ref
+names with git's own wildmatch, in which `*` crosses `/`: `refs/heads/*` covers
+`refs/heads/feat/x`, exactly as a refspec does. The default reads local heads
+only; add `"refs/remotes/*"` to include remote-tracking refs, which are opt-in
+because keeping them fetched is your job and a stale one reports work that ended
+days ago. Every **linked worktree head** is read whatever the patterns say (a
+worktree head is not a ref name, so no pattern could select it) — both the
+symbolic `HEAD` plain git writes and the bare object id a jj-colocated checkout
+leaves behind.
+
+Refs are deduplicated **by commit** — one commit is one column — and labelled by
+the branch name when one points at that commit, else by the checkout directory
+names of the worktrees parked on it, sorted and joined. The truth branch is never
+a column of its own. Each ref is diffed against main under the inventory base,
+keyed by **filename** (which is the document's id, so the relocation a status
+change causes is not read as a delete plus an add), and only the blobs that
+differ are decoded, through the real parser.
+
+A project that is not a git repository — or one whose truth branch does not
+exist, or an `opys` built without the `git` feature — is main-only and says so
+with a single notice. Nothing fails.
+
+That is the *reader*, which always has a main-only answer to give. `opys history
+<id>` has none: it reports the committed timeline and nothing else, so outside a
+repository it says so and exits 2, and a binary built without the `git` feature
+answers the command by naming the feature it lacks (also exit 2) rather than
+reporting an empty history it never looked for. The subcommand exists in every
+build for exactly that reason.
 
 ### `[file_refs]` — code mentions of an id (optional)
 
@@ -455,8 +511,9 @@ cannot collide.
 `new` writes the first entry (keyed to the same instant as `created`),
 `set-status` appends, `import` seeds one entry at the status it was given, and
 `block`/`unblock` append when they auto-set the status. **Nothing else writes
-it, and nothing hand-edits it** — `import` rejects a record that carries a
-`history` key, and the node's `set-field` refuses it by name. A status change on
+it except the one-time migration seed below, and nothing hand-edits it** —
+`import` rejects a record that carries a `history` key, and the node's
+`set-field` refuses it by name. A status change on
 a document that predates the map seeds its first entry from `created`, at the
 status being left, before appending — so a write never leaves a document whose
 `created` and first key disagree. Unlike the relation maps, history cannot be
@@ -504,8 +561,20 @@ rest of it.
 A document that has history but no `created` takes `created` from its first key
 on the next write, rather than from the wall clock.
 
-Seeding the map on an inventory that predates it is a one-time procedure:
-see `docs/migration-history.md`.
+Seeding the map on an inventory that predates it is a one-time procedure, and
+`opys history --seed <id>` is the tool for it: it reads the document's real
+status timeline out of git (see `[git]` above) and writes one entry per status it
+held, keyed by the commit that introduced it — UTC, six digits, quoted, like
+every other entry. Three rules keep a seeded document green: the first entry is
+keyed from `created` when the document has one (a document is never committed in
+the second it was created, and the two must denote the same second); a key that
+is not strictly greater than the previous one is bumped by a microsecond, so a
+timeline predating `created` still increases; and a working copy whose `status`
+is ahead of the last commit gets a final entry at the wall clock. It **refuses**
+to overwrite anything carrying entries, and refuses when git has no committed
+revision carrying a status — history is not rebuildable, so what is already there
+is data. `docs/migration-history.md` is the full procedure, including the
+`created` fallback for documents git cannot answer for.
 
 ### Custom-field type mapping
 

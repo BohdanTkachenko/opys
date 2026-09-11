@@ -135,10 +135,28 @@ without a `renumber`. Without a modulus, allocation is the dense sequence.
 | `close` / `cleanup` | finish document(s) of a type with a terminal status (and, where a status graph is declared, an edge into one from where the document stands); strip struck refs |
 | `verify` | full integrity check — wire into CI |
 | `sync` | reconcile references, linkify prose, relocate docs to their layout path (for hand edits) |
+| `history <id>` | the document's status timeline across commits, read out of git in-process (gix, never a spawned `git`), following the file across relocations |
+| `history --seed <id>` | one-time migration: write the `history` lifecycle map from that timeline; refuses to overwrite an existing map (see `docs/migration-history.md`) |
 | `stats` | render configured `[[stats]]` sections (each a SQL query over the corpus, shown as a table; default: status counts, coverage, tags) |
 | `query "SELECT …"` | run a read-only SQL query over the inventory (`-` reads it from stdin; `--stdin` binds stdin to `$1` for escape-free values) and print the result table. Every statement must be a SELECT — writes are lifecycle commands, so bulk edits pipe `list --format ids` into one. The `blocks` table decomposes bodies into `##` sections, for querying into prose |
 | `agent-rules --tool <editor>` | generate a rules-based editor's instruction file from the canonical rule |
 | `web <start\|add\|remove\|list\|scan\|install\|uninstall>` | the always-on node: serve the allowlisted projects over HTTP — see [below](#the-always-on-node-opys-web) |
+
+Both `history` forms read git **in-process through gix**, never by spawning
+`git`: the document's blob is found under the inventory base by *filename* —
+which is its id — so the relocation a status change causes is not read as a
+delete plus an add, and only the revisions that differ are decoded, through the
+real parser. That same engine-side reader also answers which branches and
+worktree heads hold the inventory and where they disagree with main, which is
+what `[git]` in `opys.toml` configures (the truth branch, and which refs count:
+local heads by default, remote-tracking refs opt-in). Nothing surfaces those
+branch columns yet — the dashboard's union view still shows one column per
+checked-out worktree. That reader degrades rather than failing: a project that
+is not a repository, or a binary built without the `git` cargo feature
+(`--no-default-features`), is main-only and says so. The `history` *command* is
+the exception — its whole subject is the committed timeline, so rather than
+print an empty one it says why and exits 2, naming the missing feature or the
+missing repository.
 
 A feature file looks like (`history` and the `references` map are
 auto-maintained — `history` records every status change, and a work item that

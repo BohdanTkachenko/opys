@@ -3448,10 +3448,34 @@ fn sync_backfills_created_from_the_first_history_entry() {
     opys(&dir).arg("verify").assert().success();
 }
 
-// --- `opys history` (optional `history` feature) -------------------------------
+// --- `opys history` (the `git` feature, on by default) -------------------------
+
+/// A git repository built in the project dir through gix's write API alone.
+///
+/// [`Fixture`](opys_engine::git::fixture::Fixture) is the engine's shared test
+/// support, so the binary's tests and the reader's own unit tests exercise one
+/// definition of "a repository with a branch, or a detached worktree head" —
+/// and neither spawns `git`, whose default branch name, identity and
+/// `safe.directory` come from whichever machine the tests happen to run on.
+#[cfg(feature = "git")]
+fn repo(dir: &TempDir) -> opys_engine::git::fixture::Fixture {
+    opys_engine::git::fixture::Fixture::init(dir.path())
+}
+
+/// A document with no lifecycle map — what an inventory that predates `history`
+/// looks like, and the only thing `--seed` will write to.
+#[cfg(feature = "git")]
+fn unseeded_doc(status: &str) -> String {
+    format!(
+        "---\nid: FEAT-0001\nstatus: {status}\ntags: [auth]\n\
+created: \"{PINNED_NOW}\"\nupdated: \"{PINNED_NOW}\"\n---\n\n# Login\n"
+    )
+}
 
 /// Run a git command in `dir`, asserting success. Author identity is passed per
-/// invocation so commits don't depend on ambient global git config.
+/// invocation so commits don't depend on ambient global git config. Still a
+/// subprocess because its one remaining caller tests `opys renumber`, which
+/// shells out to `git merge-base` itself.
 fn git(dir: &TempDir, args: &[&str]) {
     let ok = std::process::Command::new("git")
         .current_dir(dir.path())
@@ -3480,23 +3504,23 @@ fn git_commit(dir: &TempDir, author: &str, message: &str) {
     );
 }
 
-#[cfg(feature = "history")]
+#[cfg(feature = "git")]
 #[test]
 fn history_shows_status_timeline_with_authors() {
     let dir = project();
-    git(&dir, &["init", "-q"]);
+    let mut fx = repo(&dir);
 
     opys(&dir)
         .args(["new", "--title", "Login", "--tags", "auth"])
         .assert()
         .success();
-    git_commit(&dir, "Alice", "create feature");
+    fx.commit("Alice", "create feature");
 
     opys(&dir)
         .args(["set-status", "FEAT-0001", "partial"])
         .assert()
         .success();
-    git_commit(&dir, "Bob", "move to partial");
+    fx.commit("Bob", "move to partial");
 
     // Newest-first timeline: both revisions, their statuses, and per-commit authors.
     opys(&dir)
@@ -3510,7 +3534,7 @@ fn history_shows_status_timeline_with_authors() {
         .stdout(predicate::str::contains("Bob"));
 }
 
-#[cfg(feature = "history")]
+#[cfg(feature = "git")]
 #[test]
 fn history_follows_a_relocation_without_leaking_paths() {
     // A config whose `archived` status relocates the file into an `_archived/`
@@ -3525,13 +3549,13 @@ default_status = \"planned\"\n\
 tags_required = true\n\
 [[types.feature.sections]]\nheading = \"Notes\"\nkind = \"prose\"\n";
     let dir = project_with(cfg);
-    git(&dir, &["init", "-q"]);
+    let mut fx = repo(&dir);
 
     opys(&dir)
         .args(["new", "--title", "Login", "--tags", "auth"])
         .assert()
         .success();
-    git_commit(&dir, "Alice", "create feature");
+    fx.commit("Alice", "create feature");
     dir.child("opys/features/FEAT-0001.md")
         .assert(predicate::path::exists());
 
@@ -3542,7 +3566,7 @@ tags_required = true\n\
     // The file physically moved into the `_archived/` subdir.
     dir.child("opys/features/_archived/FEAT-0001.md")
         .assert(predicate::path::exists());
-    git_commit(&dir, "Bob", "archive feature");
+    fx.commit("Bob", "archive feature");
 
     // History still spans both revisions despite the move — and never surfaces
     // the on-disk path (taxonomy is opys's concern, not the user's).
@@ -3558,21 +3582,21 @@ tags_required = true\n\
 
 /// BUG-0030: a revision is attributed to the commit that introduced it, not the
 /// newest commit while the content was still current.
-#[cfg(feature = "history")]
+#[cfg(feature = "git")]
 #[test]
 fn history_attributes_revision_to_the_introducing_commit() {
     let dir = project();
-    git(&dir, &["init", "-q"]);
+    let mut fx = repo(&dir);
     opys(&dir)
         .args(["new", "--title", "Login", "--tags", "auth"])
         .assert()
         .success();
-    git_commit(&dir, "Alice", "create feature");
+    fx.commit("Alice", "create feature");
     // Several unrelated commits on top, by a different author, touching other
     // files — the document blob is unchanged across all of them.
     for i in 0..3 {
         dir.child(format!("notes-{i}.txt")).write_str("x").unwrap();
-        git_commit(&dir, "Mallory", "unrelated work");
+        fx.commit("Mallory", "unrelated work");
     }
     // The single revision is credited to Alice (who introduced it), never to the
     // later Mallory commits that merely carried the same content forward.
@@ -3583,6 +3607,269 @@ fn history_attributes_revision_to_the_introducing_commit() {
         .stdout(predicate::str::contains("1 revision,"))
         .stdout(predicate::str::contains("Alice"))
         .stdout(predicate::str::contains("Mallory").not());
+}
+
+/// The command's output is a fixed-width table, and other tools read it: pin it
+/// line for line, not by `contains`.
+#[cfg(feature = "git")]
+#[test]
+fn history_output_is_pinned_line_for_line() {
+    let dir = project();
+    let mut fx = repo(&dir);
+    opys(&dir)
+        .args(["new", "--title", "Login", "--tags", "auth"])
+        .assert()
+        .success();
+    let commit = fx.commit("Alice", "create feature");
+
+    let short = opys_engine::git::fixture::short(commit);
+    let expected = format!(
+        "History of FEAT-0001 (1 revision, newest first):\n  \
+         {short}  2026-02-01  Alice  {:<14}  create feature\n",
+        "planned"
+    );
+    opys(&dir)
+        .args(["history", "FEAT-0001"])
+        .assert()
+        .success()
+        .stdout(expected);
+}
+
+/// The migration path of `docs/migration-history.md` §2: a document that
+/// predates the lifecycle map gets one built from what git actually recorded.
+#[cfg(feature = "git")]
+#[test]
+fn history_seed_writes_the_lifecycle_map_from_the_git_timeline() {
+    let dir = project();
+    let mut fx = repo(&dir);
+    let doc = dir.child("opys/features/FEAT-0001.md");
+    doc.write_str(&unseeded_doc("planned")).unwrap();
+    fx.commit("Alice", "create feature");
+    doc.write_str(&unseeded_doc("partial")).unwrap();
+    fx.commit("Bob", "move to partial");
+
+    // The state the migration starts from.
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("FEAT-0001: missing history"));
+
+    // A *later* clock than the one the document was written under: a seed
+    // reconstructs the past, so `updated` must come out untouched below rather
+    // than stamped with this instant (docs/migration-history.md §2, on which
+    // §4's round-trip probe rests). Under the shared `PINNED_NOW` a stray
+    // `touch` would rewrite `updated` to the identical string and hide itself.
+    opys(&dir)
+        .args(["history", "--seed", "FEAT-0001"])
+        .env("OPYS_NOW", "2026-03-04T05:06:07Z")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "seeded 2 history entries from git",
+        ));
+
+    doc.assert(predicate::str::contains(format!(
+        "updated: \"{PINNED_NOW}\""
+    )));
+
+    // One entry per status the document held. The first is keyed from `created`
+    // (verify requires the two to denote the same second — a document is never
+    // committed in the second it was created); the second is the commit that
+    // introduced `partial`, in UTC with six digits, quoted.
+    let second = opys_engine::git::fixture::commit_key(1);
+    doc.assert(predicate::str::contains(format!(
+        "history:\n  \"{PINNED_KEY}\": planned\n  \"{second}\": partial\n"
+    )));
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// The ordinary mid-migration state: the working copy is ahead of the last
+/// commit. That status is recorded last, at the wall clock, bumped past the
+/// entry it collides with — because verify requires the last entry to match
+/// `status`.
+#[cfg(feature = "git")]
+#[test]
+fn history_seed_records_an_uncommitted_status_last() {
+    let dir = project();
+    let mut fx = repo(&dir);
+    let doc = dir.child("opys/features/FEAT-0001.md");
+    doc.write_str(&unseeded_doc("planned")).unwrap();
+    fx.commit("Alice", "create feature");
+    doc.write_str(&unseeded_doc("partial")).unwrap();
+
+    opys(&dir)
+        .args(["history", "--seed", "FEAT-0001"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "seeded 2 history entries from git",
+        ));
+
+    doc.assert(predicate::str::contains(format!(
+        "history:\n  \"{PINNED_KEY}\": planned\n  \"2026-01-02T03:04:05.000001Z\": partial\n"
+    )));
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// History cannot be rebuilt from ground truth, so a map that is already there
+/// is data: `--seed` refuses rather than replacing it, and writes nothing.
+#[cfg(feature = "git")]
+#[test]
+fn history_seed_refuses_to_overwrite_an_existing_map() {
+    let dir = project();
+    let mut fx = repo(&dir);
+    // `new` seeds the map itself, so every document opys created has one.
+    opys(&dir)
+        .args(["new", "--title", "Login", "--tags", "auth"])
+        .assert()
+        .success();
+    fx.commit("Alice", "create feature");
+
+    opys(&dir)
+        .args(["history", "--seed", "FEAT-0001"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "FEAT-0001 already has a lifecycle map (1 entry); --seed refuses to overwrite it",
+        ));
+    dir.child("opys/features/FEAT-0001.md")
+        .assert(predicate::str::contains(format!(
+            "history:\n  \"{PINNED_KEY}\": planned\n"
+        )));
+}
+
+/// The second refusal of `docs/migration-history.md` §2: a `history` that is
+/// present but is not a lifecycle map is repaired by hand, never overwritten.
+/// It is the one refusal that fires before the store is consulted for a
+/// timeline at all, so the document must come back byte-identical.
+#[cfg(feature = "git")]
+#[test]
+fn history_seed_refuses_a_botched_lifecycle_map() {
+    let dir = project();
+    // A repository with a commit, so the refusal cannot be mistaken for the
+    // "no committed revision" one below.
+    let mut fx = repo(&dir);
+    let doc = dir.child("opys/features/FEAT-0001.md");
+    // A YAML *sequence* where the timestamp→status mapping belongs — what a
+    // hand edit or an older exporter leaves behind.
+    let botched = format!(
+        "---\nid: FEAT-0001\nstatus: planned\ntags: [auth]\n\
+created: \"{PINNED_NOW}\"\nhistory:\n  - planned\n  - partial\n\
+updated: \"{PINNED_NOW}\"\n---\n\n# Login\n"
+    );
+    doc.write_str(&botched).unwrap();
+    fx.commit("Alice", "create feature");
+
+    opys(&dir)
+        .args(["history", "--seed", "FEAT-0001"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "'history' is a sequence, not a timestamp→status mapping",
+        ))
+        .stderr(predicate::str::contains("repair the lifecycle map by hand"));
+
+    // Nothing was written: the refusal precedes every mutation.
+    assert_eq!(std::fs::read_to_string(doc.path()).unwrap(), botched);
+}
+
+/// Git can only show what was committed. With nothing committed there is no
+/// timeline to seed from, and inventing one from the wall clock would be worse
+/// than the `created` fallback the migration document describes.
+#[cfg(feature = "git")]
+#[test]
+fn history_seed_refuses_when_git_has_no_committed_revision() {
+    let dir = project();
+    let _fx = repo(&dir);
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str(&unseeded_doc("planned"))
+        .unwrap();
+
+    opys(&dir)
+        .args(["history", "--seed", "FEAT-0001"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "git has no committed revision carrying a status",
+        ));
+}
+
+/// A project that is no git repository at all: the *reader* degrades to
+/// main-only plus one notice (`git::tests::a_non_repository_yields_empty_
+/// occupancy_and_a_single_notice`), but the **command** whose whole subject is
+/// the committed timeline has nothing to print, so it says why and exits 2
+/// rather than reporting an empty history it never looked for. The path it
+/// names is the project root without the interior `.` the default `--root`
+/// leaves behind — a message that reads as a paste-able path.
+#[cfg(feature = "git")]
+#[test]
+fn history_outside_a_repository_says_there_is_none_and_exits_2() {
+    let dir = project();
+    // Unseeded, so `--seed` reaches the repository check instead of refusing on
+    // the lifecycle map it would otherwise overwrite.
+    dir.child("opys/features/FEAT-0001.md")
+        .write_str(&unseeded_doc("planned"))
+        .unwrap();
+
+    let root = dir.path().display().to_string();
+    for args in [
+        vec!["history", "FEAT-0001"],
+        vec!["history", "--seed", "FEAT-0001"],
+    ] {
+        opys(&dir)
+            .args(&args)
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(format!(
+                "git history: {root} is not in a git repository — there is no \
+                 committed timeline to read"
+            )));
+    }
+
+    // The same run with the *default* `--root .`, where the discovered root
+    // carries an interior `.`: the message still names a plain path.
+    Command::cargo_bin("opys")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("OPYS_NOW", PINNED_NOW)
+        .args(["history", "FEAT-0001"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(format!(
+            "git history: {root} is not"
+        )));
+}
+
+/// Built without the `git` feature, `history` is still a subcommand — and its
+/// answer names the feature. Compiling the variant out instead left clap saying
+/// "unrecognized subcommand 'history'; a similar subcommand exists: 'list'",
+/// which tells a user their command does not exist rather than that their
+/// binary was built without the half that implements it. Runs only in the
+/// `--no-default-features` CI job, which is the build it describes.
+#[cfg(not(feature = "git"))]
+#[test]
+fn history_without_the_git_feature_names_the_missing_feature() {
+    let dir = project();
+    opys(&dir)
+        .args(["new", "--title", "Login", "--tags", "auth"])
+        .assert()
+        .success();
+
+    opys(&dir)
+        .args(["history", "FEAT-0001"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("`git` cargo feature"))
+        .stderr(predicate::str::contains("--no-default-features"))
+        .stderr(predicate::str::contains("unrecognized subcommand").not());
+
+    // And it is documented, not merely accepted: `--help` lists it.
+    opys(&dir)
+        .args(["--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("history"));
 }
 
 #[test]

@@ -41,8 +41,10 @@
 //! migration script plausibly produces) is data, so [`botched`] names its shape
 //! and [`seed`] leaves it alone.
 //!
-//! Not to be confused with [`crate::commands::history`], the `opys history`
-//! command that reads a document's timeline out of git (feature `history`).
+//! Not to be confused with [`crate::git`], which reconstructs a timeline out of
+//! git, or with [`crate::commands::history`], the `opys history` command over
+//! it — whose `--seed` is the one migration path that writes this map from that
+//! timeline.
 
 use serde_norway::{Mapping, Value};
 use time::{

@@ -14,6 +14,10 @@ pub mod doc;
 pub mod error;
 pub mod file_refs;
 pub mod frontmatter;
+/// Reading the inventory out of git — the branch/worktree reader, the history
+/// command's timeline, and the migration seed. Not [`history`], which is the
+/// lifecycle map kept *in* frontmatter.
+pub mod git;
 pub mod history;
 pub mod ids;
 pub mod lifecycle;
@@ -170,9 +174,8 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
             commands::query::run(&ctx, &sql, plain, stdin)?;
             Ok(0)
         }
-        #[cfg(feature = "history")]
-        Command::History { id } => {
-            commands::history::run(&ctx, &id)?;
+        Command::History { id, seed } => {
+            commands::history::run(&ctx, &id, seed)?;
             Ok(0)
         }
         Command::Close { ids, force } => {

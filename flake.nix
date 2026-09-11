@@ -120,10 +120,14 @@
           # build installs no binary.
           buildAndTestSubdir = "opys";
 
-          # git as well as sh: `renumber_keeps_a_relocated_base_document` and the
-          # history tests build a real repo in a tempdir, and the sandbox has no
-          # git on PATH either. Without it `nix build .#opys` fails in the check
-          # phase — which is the path every `pkgs.opys` consumer takes.
+          # git as well as sh: `renumber_keeps_a_relocated_base_document` builds a
+          # real repo in a tempdir (and `opys renumber` itself shells out to `git
+          # merge-base`), and the sandbox has no git on PATH either. Without it
+          # `nix build .#opys` fails in the check phase — which is the path every
+          # `pkgs.opys` consumer takes. The `opys history` tests no longer need
+          # it: they build their repositories through gix (`opys_engine::git::
+          # fixture`), which is also what lets them produce a detached worktree
+          # head.
           nativeCheckInputs = [ shForTests pkgs.git ];
 
           meta = {

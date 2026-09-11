@@ -11,7 +11,11 @@ keywords = ["opys", "markdown", "storage", "backend", "inventory"]
 categories = ["development-tools", "filesystem"]
 
 [dependencies]
-opys-engine = { path = "..", version = "0.12.0" }
+# `default-features = false`: this crate needs nothing from the engine's `git`
+# feature, and leaving the edge on defaults would pull gix into the workspace's
+# `--no-default-features` build, where the main-only fallback is what CI is
+# supposed to be compiling.
+opys-engine = { path = "..", version = "0.12.0", default-features = false }
 walkdir = "2"
 regex = "1"
 time = { version = "0.3", features = ["formatting"] }

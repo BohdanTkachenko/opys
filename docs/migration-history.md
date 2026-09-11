@@ -9,17 +9,18 @@
 `history` is a reserved, auto-maintained frontmatter key: a map of RFC3339 UTC
 timestamp (six fractional digits, `Z`) to status, recording every status a
 document has held (see the format spec, *The lifecycle map*). `new`,
-`set-status`, `import` and `block`/`unblock`'s auto-set write it; **nothing
-rebuilds it**. An inventory created before the key existed therefore has no
+`set-status`, `import` and `block`/`unblock`'s auto-set write it; **no ordinary
+write rebuilds it**. An inventory created before the key existed therefore has no
 history at all, and `opys verify` reports one problem per document:
 
 ```
 FEAT-0001: missing history (the lifecycle map is written by new/set-status/import; …)
 ```
 
-This is a **one-time procedure an agent runs**, not a tool. `opys sync` cannot
-help: unlike the relation maps, history is not derivable from the corpus, so
-sync would have to invent it.
+This is a **one-time procedure**, and only half of it is a tool: `opys history
+--seed` (§2) reconstructs the map where git has the timeline, and an agent fills
+in the rest by hand (§3). `opys sync` cannot help either way: unlike the relation
+maps, history is not derivable from the corpus, so sync would have to invent it.
 
 ## 1. Find the documents
 
@@ -38,15 +39,56 @@ reconcile/linkify churn is indistinguishable from the migration.
 
 ## 2. Preferred: seed from git
 
-**Not yet implemented** — [TASK-0117](../inventory/TASK-0117.md) adds
-`opys history --seed`, which reads each document's real status timeline out of
-git (the same branch reader behind `opys history <id>`) and writes one entry per
-observed transition, with the commit's author date as the key. Where git has the
-timeline, that is the better history: it is the truth, not an approximation.
+`opys history --seed <id>` reads a document's real status timeline out of git —
+the same reader behind `opys history <id>`, in-process through gix — and writes
+one entry per status the document held, keyed by the commit that introduced it
+(the commit time, in UTC with six digits). Where git has the timeline, that is
+the better history: it is the truth, not an approximation.
 
-Until it lands, use the fallback below. Documents seeded from `created` can be
-re-seeded from git later without loss — a full timeline simply replaces the
-single entry.
+One document at a time, so a document git cannot answer for stops nothing:
+
+```sh
+for id in $(opys list --format ids); do opys history --seed "$id"; done
+```
+
+Each iteration is its own process, so the loop runs to the end; the ones that
+refuse print why and exit 2, and you deal with them under §3. What it writes:
+
+- **the first entry** is keyed from the document's `created`, not from the first
+  commit — `verify` requires the two to denote the same second, and a document is
+  essentially never committed in the second it was created. Its *status* is the
+  one the earliest commit carried. A document with no `created` takes the first
+  commit's instant instead, and the seed's own auto-sync pass writes `created`
+  from that first entry in the same command — `--no-sync` is what defers it to
+  the next write;
+- **later entries**, one per status change, at the commit that introduced it. A
+  key that is not strictly greater than the previous one is bumped by a
+  microsecond, so commits that predate `created`, or two transitions in one
+  second, still produce a strictly increasing map;
+- **a final entry at the wall clock** when the working copy's `status` is ahead
+  of the last commit — the ordinary mid-migration state, since the change that
+  prompted the migration is usually uncommitted. `verify` requires the last entry
+  to match `status`.
+
+`updated` is not touched: a seed reconstructs the past, it is not an edit.
+
+It **refuses**, writing nothing and exiting 2, in three cases:
+
+- the document already carries entries (`--seed refuses to overwrite it`).
+  History is not rebuildable from ground truth, so an existing map is data — the
+  same promise every other write path makes. Re-seeding means deleting the block
+  by hand first, deliberately;
+- the `history` value is present but is not a lifecycle map — repair it by hand
+  (§3) and retry;
+- git has no committed revision carrying a status. That is the caveat for
+  **documents created before the tool tracked status**: git can only show what
+  was committed, and a revision whose frontmatter has no `status` (or does not
+  parse) is skipped rather than guessed at. A document whose every revision is
+  like that, or that has never been committed, has no timeline to seed from —
+  use §3 for those.
+
+Documents seeded from `created` under §3 can be re-seeded from git later, but
+only after their block is removed by hand: `--seed` will not overwrite one.
 
 ## 3. Fallback: one entry from `created`
 
