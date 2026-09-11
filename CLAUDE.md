@@ -144,8 +144,10 @@ Layering, roughly outermost-in:
 - `src/cli.rs` + `src/lib.rs` — `Cli`/`Command` enums, the dispatch `match`,
   and the `Ctx` struct (root dir, inventory `dir`, `no_sync` flag).
 - `src/commands/` — one module per subcommand, each a `run(ctx, …)` fn.
-  `commands/mod.rs` holds shared helpers: `today()`, `split_csv()`, and
-  `maybe_sync()` (the auto-sync hook: reconcile + linkify + relocate).
+  `commands/mod.rs` holds shared helpers: `today()`, the clock family
+  (`now_rfc3339`/`now_utc_micros`/`now_utc_seconds` — the last is the log-entry
+  stamp), `split_csv()`, and `maybe_sync()` (the auto-sync hook: reconcile +
+  linkify + relocate).
 - `src/project_config.rs` — `ProjectConfig` (the parsed `opys.toml`): the `types`
   map of `DocType` (prefix, dir, status_dirs, statuses, fields, sections, the
   `requires_link` shorthand), the `[layout]` path template, and the `[[rules]]`
@@ -154,7 +156,10 @@ Layering, roughly outermost-in:
 - `src/rules.rs` — `rules::evaluate(prj, type, status, fm, body, doc_ids)`: runs
   the applicable `[[rules]]` (plus the type-level `requires_link` shorthand) and
   returns one problem per failed assertion. Called at every write point and by
-  `verify`.
+  `verify`. `require_log_since_status` is the one assertion that reads the
+  evaluated *status*: `since_instant` resolves it to the last `history` entry
+  whose status differs, which is what makes the write-time answer (before the
+  new entry is appended) and the verify-time answer agree.
 - `src/store/` — **the internal working representation.** Per CLI invocation the
   corpus is loaded and decomposed into an in-memory GlueSQL database
   (`Store::open`); commands run SQL over it (plus reconstructed `Doc`s for the
@@ -192,9 +197,10 @@ Layering, roughly outermost-in:
   the single document struct (`{path, frontmatter, body, title}`; type derived
   from the id prefix). `frontmatter` parses YAML with `serde_norway` and
   re-serializes canonically; `body` extracts the title, sections
-  (`section`/`sections`/`section_spans`), and checkbox items (`checklist_items`),
-  and `apply_section_edits` splices new content into a section byte-accurately
-  (the dated-log append path, FEAT-0105).
+  (`section`/`sections`/`section_spans`), checkbox items (`checklist_items`) and
+  log entries (`log_entries`), and `apply_section_edits` splices new content
+  into a section byte-accurately — `commands/log.rs` is its one owner
+  (FEAT-0105/ADR-0100).
 - `src/refs.rs` — the uniform relation maps (`references`/`blocked_by`/`blocks`),
   ID→title: parse/serialize (sorted by item number), strikethrough tombstone
   helpers, `id_number`.
@@ -299,6 +305,12 @@ All status/section/link guards are *config*, enforced by one engine
   section's content against its `structure` (an `mdprism` schema) via
   `mdprism::Schema::validate`; `new` scaffolds the required ones (a `structured`
   section from `mdprism::Schema::scaffold`).
+- **Log sections** (`kind = "log"`): a dated timeline, written only by
+  `opys log` (`commands/log.rs`), which stamps each entry `- <RFC3339 UTC
+  seconds> text`. `verify` reports an undated bullet and a stamp that goes
+  *backwards* — non-strict, so two entries may share a second. The
+  `require_log_since_status` rule makes an entry a precondition of a transition;
+  the shipped config puts it on the move into `review` for task/bug/chore.
 - **Frontmatter is closed**: only the reserved keys (`id`/`status`/`tags`/
   `history` + `references`/`blocked_by`/`blocks`) plus the doc type's declared `[fields.*]`
   are allowed; unknown keys fail `verify`. Declared fields are type-checked
@@ -310,7 +322,7 @@ All status/section/link guards are *config*, enforced by one engine
 
 opys generates no view files (no `INDEX.md`); slice the inventory live with
 `opys list` or `opys query`. Mutating commands (`new`, `set-status`, `tag`,
-`retire`, `block`, `close`, `cleanup`) call `maybe_sync` → `commands/sync::run`
+`log`, `retire`, `block`, `close`, `cleanup`) call `maybe_sync` → `commands/sync::run`
 automatically unless `--no-sync` is passed. That pass reconciles relations,
 linkifies prose, and **relocates each document to its canonical layout path**
 (the store's `flush` renames a file when a status change or `[layout]` edit moved
@@ -402,7 +414,9 @@ than editing the block by hand.
 - The dashboard (`opys-server/ui/`, embedded by `assets.rs`) is a sidebar of
   projects/corpora — each with a verify dot — over four views: board, document,
   query console, and the worktree union. Its writes are the same typed actions;
-  there is no create-document view, so `opys new` stays a CLI job.
+  there is no create-document view, so `opys new` stays a CLI job. The document
+  view's log entry box reads `DocView::log_sections`, so the client never has to
+  work out which sections are logs.
 
 `opys/tests/web.rs` covers the surface end to end. `opys/tests/cli.rs` is the
 byte-identity pin for every pre-existing command and must keep passing untouched.
@@ -438,8 +452,10 @@ This repo tracks its own features with opys: the inventory lives under
 `inventory/` (configured in `opys.toml` at the root; `opys/` was taken by the
 binary crate). To find documents: `rg` by tag/status or `opys list`, then read
 only the relevant files. To create or change documents, use the CLI (`new
---type`, `set-status`, `tag`, `retire`, `block`, `close`); body prose edits are
-normal file edits — run `opys verify` before finishing. Known code-review
+--type`, `set-status`, `tag`, `log`, `retire`, `block`, `close`); body prose
+edits are normal file edits, but a `## Progress` entry goes through `opys log`
+(it is a `log` section, so its bullets must be dated) — run `opys verify` before
+finishing. Known code-review
 findings are filed as `bug`/`chore` docs linked to their feature.
 
 This repository allocates ids densely today — there is no `[ids]` table in its

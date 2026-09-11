@@ -28,7 +28,7 @@
 use std::path::Path;
 
 use opys_engine::backend::Backend;
-use opys_engine::commands::{block, close, edit, new, set_status, sync, tag};
+use opys_engine::commands::{block, close, edit, log, new, set_status, sync, tag};
 use opys_engine::error::OpysError;
 use opys_engine::project::Project;
 use opys_engine::store::Store;
@@ -87,6 +87,20 @@ pub enum Action {
         add: Option<String>,
         remove: Option<String>,
     },
+    /// Append a dated entry to the document's `log` section — the CLI's
+    /// `opys log`, whose stamp and splice this reuses verbatim.
+    ///
+    /// `section` carries the CLI's `--section`, per this enum's rule that a
+    /// variant holds its command's arguments in the same shape: a type with two
+    /// log sections would otherwise be unreachable from the node. Absent is the
+    /// same `None` clap hands the core, which is every type the shipped config
+    /// declares.
+    Log {
+        id: String,
+        text: String,
+        #[serde(default)]
+        section: Option<String>,
+    },
     /// Record that `id` is blocked by `by`, writing both directions.
     Block { id: String, by: String },
     /// Remove that blocker link from both sides.
@@ -130,6 +144,7 @@ impl Action {
             Action::New { .. } => "new",
             Action::SetStatus { .. } => "set-status",
             Action::Tag { .. } => "tag",
+            Action::Log { .. } => "log",
             Action::Block { .. } => "block",
             Action::Unblock { .. } => "unblock",
             Action::Close { .. } => "close",
@@ -340,6 +355,12 @@ pub fn perform(root: &Path, backend: &dyn Backend, action: &Action) -> Attempt {
         Action::Tag { id, add, remove } => {
             let done = tag::core(&prj, &mut store, id, add.as_deref(), remove.as_deref())
                 .map(|tags| ActionOutcome::new(id, format!("{id} tags: {}", tags.join(", "))))
+                .map_err(ActionError::Refused);
+            finish(&prj, backend, store, done)
+        }
+        Action::Log { id, text, section } => {
+            let done = log::core(&prj, &mut store, id, text, section.as_deref())
+                .map(|line| ActionOutcome::new(id, line))
                 .map_err(ActionError::Refused);
             finish(&prj, backend, store, done)
         }
@@ -583,6 +604,10 @@ mod tests {
             (
                 serde_json::json!({"action": "tag", "id": "N-1", "add": "a"}),
                 "tag",
+            ),
+            (
+                serde_json::json!({"action": "log", "id": "N-1", "text": "did a thing"}),
+                "log",
             ),
             (
                 serde_json::json!({"action": "block", "id": "N-1", "by": "N-2"}),

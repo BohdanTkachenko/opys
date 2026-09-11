@@ -14,8 +14,10 @@ pub const CLAUDE_MD_SNIPPET: &str = r#"## Feature inventory
 - To find documents: `rg` by tag/status or `opys list`, then read only the
   relevant files. Do not bulk-read the inventory.
 - To create or change documents, use `opys` (`new --type`, set-status, tag,
-  retire, block, close). Body prose and section edits are normal file edits —
-  run `opys verify` before finishing.
+  log, retire, block, close). Body prose and section edits are normal file
+  edits, with one exception: a `kind = "log"` section (typically `## Progress`)
+  holds dated entries, so append to it with `opys log <id> "…"`, never by hand.
+  Run `opys verify` before finishing.
 - When implementing a feature: read its file fully; implement; add tests; check
   the matching test-plan items and append backticked test references; set status
   via the CLI. If a test plan's case enumeration looks incomplete, raise it.
@@ -126,7 +128,7 @@ structure = '''
 # Ephemeral implementation work. Deleted on `close`.
 [types.task]
 prefix = "TASK"
-statuses = ["todo", "in-progress", "blocked", "done"]
+statuses = ["todo", "in-progress", "blocked", "review", "done"]
 default_status = "todo"
 terminal_statuses = ["done"]         # "done" reached only via `close`
 tags_required = false
@@ -149,7 +151,7 @@ required = true
 # Like task, plus a required Reproduction section.
 [types.bug]
 prefix = "BUG"
-statuses = ["todo", "in-progress", "blocked", "done"]
+statuses = ["todo", "in-progress", "blocked", "review", "done"]
 default_status = "todo"
 terminal_statuses = ["done"]
 tags_required = false
@@ -177,7 +179,7 @@ required = true
 # Maintenance/tooling work with no user-facing behavior change.
 [types.chore]
 prefix = "CHORE"
-statuses = ["todo", "in-progress", "blocked", "done"]
+statuses = ["todo", "in-progress", "blocked", "review", "done"]
 default_status = "todo"
 terminal_statuses = ["done"]
 tags_required = false
@@ -199,7 +201,7 @@ required = true
 # ------------------------------ validation rules -----------------------------
 # Each rule: an optional `when { type?, status? }` + one assertion. Closed set:
 # require_field, field_matches, require_section, require_checked_section,
-# require_link, require_any.
+# require_link, require_any, require_log_since_status.
 
 [[rules]]
 when = { type = "feature", status = "wontfix" }
@@ -216,6 +218,22 @@ require_checked_section = "Test plan"
 [[rules]]
 when = { status = "blocked" }
 require_any = [{ field = "blocked_reason" }, { link = "blocked_by" }]
+
+# A handoff needs a checkpoint: moving a work item into `review` requires a
+# `## Progress` entry stamped at or after the moment its status last changed, so
+# whoever picks it up reads what happened rather than guessing. Append one with
+# `opys log <id> "…"`.
+[[rules]]
+when = { type = "task", status = "review" }
+require_log_since_status = "Progress"
+
+[[rules]]
+when = { type = "bug", status = "review" }
+require_log_since_status = "Progress"
+
+[[rules]]
+when = { type = "chore", status = "review" }
+require_log_since_status = "Progress"
 
 # ---------------------------------- stats ------------------------------------
 # `opys stats` renders these sections (and the TUI stats screen shows the same

@@ -178,6 +178,9 @@ pub fn collect_problems(prj: &Project, docs: &[Doc], parse_errors: Vec<String>) 
             if sec.kind == SectionKind::Structured {
                 check_structured(d, id, sec, &mut errors);
             }
+            if sec.kind == SectionKind::Log {
+                check_log(d, id, sec, &mut errors);
+            }
             // Universal content checks, run regardless of kind.
             for chk in &sec.checks {
                 run_check(
@@ -752,6 +755,62 @@ fn check_structured(d: &Doc, id: &str, sec: &SectionSpec, errors: &mut Vec<Strin
     for p in schema.validate(&content) {
         errors.push(format!("{id}: section '{}': {p}", sec.heading));
     }
+}
+
+/// A `log` section: every bullet carries a UTC timestamp, and the timestamps
+/// do not go backwards.
+///
+/// Non-strict on purpose — equal stamps are fine. Two `opys log` calls inside
+/// one second produce the same stamp, and so does a migration that dates a
+/// document's undated bullets from its `created`; the property worth defending
+/// is that a log reads forwards, not that no two entries share a second. (The
+/// `history` map *is* strict, for a different reason: its keys are also its
+/// sort order.)
+fn check_log(d: &Doc, id: &str, sec: &SectionSpec, errors: &mut Vec<String>) {
+    if !body::has_section(&d.body, &sec.heading) {
+        return;
+    }
+    let entries = body::log_entries(&body::section(&d.body, &sec.heading));
+    let mut prev: Option<(String, OffsetDateTime)> = None;
+    for entry in &entries {
+        let Some(ts) = &entry.ts else {
+            errors.push(format!(
+                "{id}: section '{}': undated log entry {} (every entry starts \
+                 with a UTC timestamp — append entries with `opys log`, which \
+                 stamps them; see docs/migration-history.md to date existing ones)",
+                sec.heading,
+                pyrepr(Some(&first_words(&entry.text)))
+            ));
+            continue;
+        };
+        let Some(dt) = crate::history::parse(ts) else {
+            errors.push(format!(
+                "{id}: section '{}': log entry timestamp '{ts}' is not RFC3339",
+                sec.heading
+            ));
+            continue;
+        };
+        if let Some((pk, pdt)) = &prev {
+            if dt < *pdt {
+                errors.push(format!(
+                    "{id}: section '{}': log entries must not go backwards \
+                     ('{ts}' follows '{pk}')",
+                    sec.heading
+                ));
+            }
+        }
+        prev = Some((ts.clone(), dt));
+    }
+}
+
+/// The opening of a log entry, for naming it in a problem message.
+fn first_words(text: &str) -> String {
+    let line = text.lines().next().unwrap_or_default().trim();
+    let mut out: String = line.chars().take(40).collect();
+    if out.chars().count() < line.chars().count() {
+        out.push('…');
+    }
+    out
 }
 
 fn type_ok(v: &Value, want: FieldType) -> bool {

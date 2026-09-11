@@ -97,15 +97,17 @@ opys close BUG-0002                         # deletes the file; reference struck
 
 # Bulk: every id-taking mutating command (set-status, tag, retire, block,
 # unblock, close) takes an id list — several ids, a comma-separated list, or
-# `-` for stdin. All-or-nothing: one bad id writes nothing.
+# `-` for stdin. All-or-nothing: one bad id writes nothing. (`log` is the
+# exception: one id, because its second positional is the entry text and `-`
+# there means stdin.)
 # Filter on a status a live doc can hold — `done` is reached only *through*
 # `close`, so it selects nothing, and an empty selection exits 2.
 opys set-status FEAT-0001 FEAT-0002 wontfix --reason "superseded"
 opys list --type task --status in-progress --format ids | opys close -
 ```
 
-Mutating commands (`new`, `set-status`, `tag`, `retire`, `block`, `close`,
-`cleanup`) reconcile cross-references, linkify prose, and relocate documents to
+Mutating commands (`new`, `set-status`, `tag`, `log`, `retire`, `block`,
+`close`, `cleanup`) reconcile cross-references, linkify prose, and relocate documents to
 their canonical layout path (e.g. an archived doc moves into `_archived/`)
 automatically; pass `--no-sync` to skip, or run `opys sync` after editing files
 by hand.
@@ -127,6 +129,7 @@ without a `renumber`. Without a modulus, allocation is the dense sequence.
 | `show` / `list` | retrieval (`--type`, `--tag`, `--status`, `--format table\|ids\|paths`) |
 | `set-status` | guarded transitions: the type's declared `[transitions]` edges (when it declares any) and its configured rules |
 | `tag` | add/remove tags (`--add a,b --remove c`) |
+| `log` | append a dated entry to a document's `kind = "log"` section (`opys log TASK-0042 "…"`, or `-` to read it from stdin) |
 | `retire` | delete document(s); each ID is logged and never reused |
 | `block` / `unblock` | record a directional blocker between documents |
 | `close` / `cleanup` | finish document(s) of a type with a terminal status (and, where a status graph is declared, an edge into one from where the document stands); strip struck refs |
@@ -242,7 +245,7 @@ security boundary. Two guarantees follow from it:
   no way to add one.
 - **The API is typed; the node cannot execute arbitrary commands.** Every write
   the dashboard makes is a named action with named arguments — `set-status`,
-  `tag`, `block`, `unblock`, `close` — run through the same engine, the same
+  `tag`, `log`, `block`, `unblock`, `close` — run through the same engine, the same
   inventory lock and the same write-time rules as the CLI. The request body is a
   closed set: there is no shell endpoint, no "run this opys command" endpoint,
   and no endpoint anywhere that accepts a filesystem path.
@@ -327,7 +330,9 @@ state (clean, *N* problems, or not read yet). Pick one and you get:
   PageUp/PageDown switch projects;
 - **a document** — its frontmatter and rendered body, both edited in place:
   status, tags, blockers and custom fields on the panel, the markdown body by
-  clicking into it, and close behind a confirmation. Every write is a typed
+  clicking into it, and close behind a confirmation. A document whose type
+  declares a `log` section gets an entry box under the body, which appends a
+  timestamped entry the way `opys log` does. Every write is a typed
   action taking the same write path as the equivalent `opys` command, so a
   write the CLI would refuse — a status change whose rule is unmet, say — is
   refused here too, with the same message. Creating documents stays a CLI job.

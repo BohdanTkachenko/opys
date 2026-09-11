@@ -15,9 +15,14 @@ exists; otherwise ignore it.
 - **Reads.** Never bulk-read `opys/`. Use `rg` by tag/status (or `opys list`),
   then open the 2–5 relevant files. There is no generated index.
 - **Writes go through the `opys` CLI** so invariants hold and parallel agents
-  don't collide: `opys new --type <T>`, `set-status`, `tag`, `retire`, `block`,
-  `close`. Body prose, `## Test plan`, and `## Tasks` edits are normal file
-  edits — frontmatter is not: the relation maps and `history` (the lifecycle
+  don't collide: `opys new --type <T>`, `set-status`, `tag`, `log`, `retire`,
+  `block`, `close`. Body prose, `## Test plan`, and `## Tasks` edits are normal
+  file edits. A **`log` section is not** — a `## Progress` is the usual one:
+  its entries are dated, so append them with `opys log <id> "…"` (or `-` to read
+  a multi-line entry from stdin), which stamps each one with the UTC time.
+  `verify` reports an undated bullet and one whose stamp goes backwards, so a
+  hand-written line turns the corpus red. Frontmatter is not a hand edit
+  either: the relation maps and `history` (the lifecycle
   map recording every status change) are auto-maintained, so do not hand-edit
   them. opys reconciles the relation maps on every write — a hand-added link is
   kept, but its title is refreshed and the reverse side added, so editing them

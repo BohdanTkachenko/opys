@@ -137,6 +137,10 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
             commands::tag::run(&ctx, &ids, add.as_deref(), remove.as_deref())?;
             Ok(0)
         }
+        Command::Log { id, text, section } => {
+            commands::log::run(&ctx, &id, &text, section.as_deref())?;
+            Ok(0)
+        }
         Command::Retire { ids, reason } => {
             commands::retire::run(&ctx, &ids, reason.as_deref())?;
             Ok(0)

@@ -24,7 +24,7 @@ references:
 - [ ] purge remaining TUI references from all docs after [TASK-0065 — Remove the opys-tui crate](TASK-0065.md) lands
 
 ## Progress
-- Filed from the pre-announcement review.
-- Extended with the history-erase + sanitization pass and the
+- 2026-07-06T05:14:48Z Filed from the pre-announcement review.
+- 2026-07-06T05:14:48Z Extended with the history-erase + sanitization pass and the
   TUI purge; the sweep targets the launch announcement, not the
   original CLI-only launch.

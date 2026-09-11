@@ -180,6 +180,16 @@ pub struct DocView {
     /// be a second interpretation of the config. Empty when the id's prefix
     /// matches no configured type.
     pub declared_fields: Vec<FieldView>,
+    /// The headings of this type's `kind = "log"` sections, in declaration
+    /// order — what the document view's entry box writes to, and which
+    /// `--section` name it sends when there is more than one.
+    ///
+    /// Same reasoning as [`DocView::allowed_statuses`]: a client that worked
+    /// out which sections are logs would be a second reading of `opys.toml`,
+    /// drifting the moment a type is edited. Empty when the id's prefix matches
+    /// no configured type, or when the type declares no log section — which is
+    /// also how the UI knows not to offer the box at all.
+    pub log_sections: Vec<String>,
     /// The markdown body, verbatim.
     pub body: String,
     /// The body rendered. Raw HTML in the source stays escaped — comrak's
@@ -765,6 +775,15 @@ fn view(prj: &Project, doc: &Doc) -> DocView {
         closable: doc_type
             .is_some_and(|t| !t.terminal_statuses.is_empty() && lifecycle::can_close(t, &status)),
         has_terminal_status: doc_type.is_some_and(|t| !t.terminal_statuses.is_empty()),
+        log_sections: doc_type
+            .map(|t| {
+                t.sections
+                    .iter()
+                    .filter(|s| s.kind.is_log())
+                    .map(|s| s.heading.clone())
+                    .collect()
+            })
+            .unwrap_or_default(),
         declared_fields: doc_type
             .map(|t| {
                 t.fields

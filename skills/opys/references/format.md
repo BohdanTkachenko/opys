@@ -211,7 +211,8 @@ fails — undeclared fields are how schema drift starts. An `enum` constrains it
 value to the declared `values`; a string field may carry a `pattern`. The closed
 assertion set for `[[rules]]` is `require_field`, `field_matches`,
 `require_section`, `require_checked_section`, `require_link`, `require_any`
-(whose terms are `{field}`, `{link}`, `{section}`, or `{tag}`).
+(whose terms are `{field}`, `{link}`, `{section}`, or `{tag}`), and
+`require_log_since_status` (see [Log sections](#log-sections)).
 `opys list --field <key>=<value>` filters by any custom field (see below).
 
 ### `[file_refs]` — code mentions of an id (optional)
@@ -584,6 +585,8 @@ whose last tombstone it strips).
 Status changes go through `set-status`, never hand edits — the guards live
 there, and each one is recorded in the document's `history` map. It takes an
 id list, so a whole selection moves in one command (see **Bulk edits**).
+A `log` section is the same kind of thing: it is written by `opys log`, never by
+hand (see [Log sections](#log-sections)).
 
 ### The status graph (`[types.<name>.transitions]`)
 
@@ -710,6 +713,93 @@ The corpus grep is language-agnostic but **unsound** — it matches any occurren
 point `file` at the defining file and make `must_match` a definition pattern
 (e.g. `fn ${name}\b`).
 
+## Log sections
+
+A section declared `kind = "log"` is a **dated timeline**: a flat list of
+top-level `- ` bullets, each stamped with the UTC time it was written.
+
+```markdown
+## Progress
+- 2026-09-05T14:03:22Z picked it up; the flock is the part that needs care
+  a lease file can go stale, a flock cannot — the OS releases it with
+  the process
+- 2026-09-05T18:41:07Z landed, gate green
+```
+
+- The stamp is **RFC3339 UTC at whole seconds, `Z`** — the same clock as the
+  `history` map, one precision coarser, because a log is read by people.
+- A bullet's continuation lines are indented two spaces under it and belong to
+  that entry. Anything that is not a top-level `- ` bullet is continuation.
+
+### `opys log`
+
+Entries go in through the command, never by hand:
+
+```sh
+opys log TASK-0042 "chose the flock; a lease file can go stale"
+opys log TASK-0042 - <<'EOF'            # `-` reads the entry from stdin
+chose the flock
+rejected: a lock directory, which a crash leaves behind
+EOF
+opys log NOTE-0007 "…" --section Decisions   # only when the type has >1
+```
+
+It resolves the document type's `kind = "log"` sections: none is an error (exit
+2, naming the type), more than one needs `--section`, and a section the type
+declares but *this document* lacks is created at the end of the body. Then it
+stamps the entry, splices it into the section without moving a byte outside it,
+bumps `updated`, and runs the ordinary sync pass — so a bare `FEAT-0001` in the
+entry is linkified like any other prose.
+
+`log` is the one mutating command that takes a **single** id. The second
+positional is the entry text and `-` there already means "read it from stdin",
+so an id list would be ambiguous about which of the two the pipe is feeding
+(contrast **Bulk edits**).
+
+### What verify checks
+
+1. **Every bullet is dated.** An undated one is reported by name and by its
+   opening words. Existing inventories therefore report their old bullets until
+   they are migrated — see `docs/migration-history.md`.
+2. **Entries do not go backwards.** The check is *non-decreasing*, not strictly
+   increasing: two entries may share a stamp (two `opys log` calls in one
+   second, or a migration dating a document's bullets from its `created`). Only
+   a stamp *earlier* than the one above it is a problem. (The `history` map is
+   strict, for a different reason: its keys are also its sort order.)
+
+### `require_log_since_status`
+
+The rule assertion that makes a log *required at a transition*:
+
+```toml
+[[rules]]
+when = { type = "task", status = "review" }
+require_log_since_status = "Progress"
+```
+
+It passes when the named log section holds an entry stamped at or after
+**`since`**, compared at seconds granularity. `since` is the timestamp of the
+**last `history` entry whose status differs** from the status being evaluated,
+falling back to the first key when every entry holds it. A document with no
+`history` at all passes (verify reports that separately).
+
+That definition, rather than "the last history key", is what makes the
+write-time and the verify-time answer agree. `set-status` evaluates the rules
+*before* appending the new entry, so at write time the map ends at the status
+being left; at verify time the new entry is there and "last differing" skips it.
+Worked example — a task moving to `review`:
+
+| history | evaluated at | `since` |
+| --- | --- | --- |
+| `todo@T0, in-progress@T1` | write time (`set-status … review`) | `T1` |
+| `todo@T0, in-progress@T1, review@T2` | verify time | `T1` |
+| `…, review@T2, in-progress@T3` | the bounce back into `review` | `T3` |
+
+So the entry that satisfied the first visit to `review` is stale for the second:
+each bounce needs its own checkpoint. The shipped config puts this on the move
+into `review` for `task`, `bug` and `chore`, so a handoff without a checkpoint
+is refused.
+
 ## Structured sections
 
 A `structured` section's content shape is **configured**, not hardcoded: the
@@ -831,6 +921,9 @@ violation) aborts the whole invocation with exit code 2 and writes nothing —
 not even the ids that had already succeeded. Repeated ids are collapsed, keeping
 first-seen order.
 
+`opys log` is the exception: it takes one id, because its second positional is
+the entry text and `-` there means stdin (see [Log sections](#log-sections)).
+
 Select on a status a live document can actually hold. A terminal status is only
 ever reached *through* `close`, which deletes the document, so
 `--status done | opys close -` selects nothing, and an empty selection is a
@@ -852,7 +945,8 @@ metadata. CI owns automated results; this system owns intent only. (Priority
 is the one carve-out: a project may declare a `priority` int *field* —
 lower = higher — and tools may order by it. It is frontmatter, never prose.
 The auto-maintained `created`/`updated`/`history` timestamps are not an
-exception either: they record when opys wrote, not when work happened.)
+exception either: they record when opys wrote, not when work happened, and so
+do a `log` section's stamps, which `opys log` writes and nobody types.)
 
 Implementation logs, task checklists, and branch/PR links also do not belong
 here — they go in an ephemeral document (a `task`/`bug`/`chore`), which is

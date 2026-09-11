@@ -78,6 +78,7 @@ its ID prefix.
 | `show ID [--refs]` / `list [--type T] [--tag T] [--status S] [--field k=v]… [--format table\|ids\|paths]` | retrieval; `--field` filters by any custom field (repeatable, ANDed); `show --refs` appends code mentions of the id (per `[file_refs]`) |
 | `set-status IDS… S [--reason R]` | guarded transition against the type's statuses, its declared `[transitions]` edges (when it declares any — the refusal names the legal targets) and its rules; a terminal status is reached only via `close`. `IDS` is an id list (see below) |
 | `tag IDS… --add a,b --remove c` | tag maintenance; `IDS` is an id list |
+| `log ID "TEXT"\|- [--section H]` | append a dated entry (`- <UTC ts> text`) to the type's `kind = "log"` section; `-` reads the entry from stdin (continuation lines indent two spaces). Takes **one** id — the second positional is the text. A missing-but-declared section is created; a type with none, or with two and no `--section`, exits 2 |
 | `block IDS… --by BLOCKER` / `unblock IDS… --by BLOCKER` | record/remove a blocker link (`blocked_by`/`blocks`); the blocked side is an id list; blocking auto-sets `blocked` when the type has it |
 | `retire IDS… [--reason R]` | delete file(s), strike inbound references (warning when a struck link leaves a `requires_link` rule failing), log each ID (with its title) to `_retired.md` so it is never reallocated; `--reason` is echoed, not persisted (git records the why) |
 | `close IDS… [--force]` / `cleanup` | finish doc(s) whose type has a terminal status — and, where the type declares `[transitions]`, an edge into one from the document's current status (strike its refs everywhere and log the ID to `_retired.md`); strip struck refs (ledger-reserving any id whose last tombstone is stripped) |
@@ -102,6 +103,7 @@ rather than reaching for `--force`, which drops that guard for every id. Filter
 on a status a live document can hold: a terminal status is reached only through
 `close` (which deletes the document), so `--status done` selects nothing, and an
 empty selection exits 2 (`expected at least one id`) without writing.
+`log` is the exception — one id, because its `-` is the entry text.
 
 ## Code references to IDs
 
@@ -167,9 +169,13 @@ resets and is greppable, deleted when you finish.
    `chore`). This scaffolds the type's required sections (`## Tasks` / `## Progress`,
    plus `## Reproduction` for a bug) and links the feature(s); the CLI rejects a
    link to a feature that doesn't exist, and auto-adds the reverse link.
-3. As you work, edit `## Tasks` (check items off) and append dated `## Progress`
-   lines with branch/commit/PR — normal file edits. Don't hand-maintain the
-   `references` map or linkify prose; `opys` does both on each write.
+3. As you work, edit `## Tasks` (check items off) — a normal file edit — and
+   record what happened with `opys log ID "…"` (branch/commit/PR, a decision and
+   why, what you ruled out). A `## Progress` section is a `log`: the command
+   stamps each entry with the UTC time, and `verify` checks every bullet is
+   dated and that they do not go backwards, so never append to it by hand. Use
+   `opys log ID -` for a multi-line note. Don't hand-maintain the `references`
+   map or linkify prose; `opys` does both on each write.
 4. Fold anything durable back into the **feature**, not the work item: check the
    covered test-plan items and add refs, `opys set-status … implemented`, write
    spec prose. The feature is what survives.
