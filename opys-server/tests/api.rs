@@ -34,8 +34,29 @@ default_status = "todo"
 terminal_statuses = ["done"]
 tags_required = false
 
+# A status graph on one type, so the doc payload has to distinguish "this type
+# declares no graph" from "these are the moves" (`note` declares none).
+[types.task.transitions]
+todo = ["doing"]
+doing = ["todo", "done"]
+
 [types.task.fields.priority]
 type = "int"
+
+# The shape the shipped `feature` type has, and this repo's own `feature` and
+# `adr`: a status graph and *no* terminal status. `closable` is false for every
+# document of it, and not because of the graph — the payload has to say which of
+# the two refusals applies, or a client reads "not from here yet" into "never".
+[types.idea]
+prefix = "IDEA"
+statuses = ["draft", "live"]
+default_status = "draft"
+terminal_statuses = []
+tags_required = false
+
+[types.idea.transitions]
+draft = ["live"]
+live = ["draft"]
 "#;
 
 fn backend() -> Box<dyn Backend + Send> {
@@ -43,7 +64,8 @@ fn backend() -> Box<dyn Backend + Send> {
 }
 
 /// A project with two linked documents of two types, so the filters and the
-/// relation maps both have something to say.
+/// relation maps both have something to say, plus a third of the graph-without-
+/// a-terminal-status type nothing else covers.
 fn project(root: &Path) -> PathBuf {
     let inventory = root.join("inventory");
     std::fs::create_dir_all(&inventory).unwrap();
@@ -72,6 +94,15 @@ fn project(root: &Path) -> PathBuf {
          priority: 5\n\
          references:\n  NOTE-0001: Note one\n\
          ---\n\n# Do the thing\n\nWork.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        inventory.join("IDEA-0003.md"),
+        "---\n\
+         id: IDEA-0003\n\
+         status: draft\n\
+         history:\n  \"2026-01-01T00:00:00.000000Z\": draft\n\
+         ---\n\n# An idea\n\nThink.\n",
     )
     .unwrap();
     std::fs::canonicalize(root).unwrap()
@@ -261,7 +292,7 @@ async fn projects_carry_counts_and_surface_a_broken_config() {
         fx.root.join("inventory").display().to_string()
     );
     assert_eq!(good["is_primary"], true);
-    assert_eq!(good["doc_count"], 2);
+    assert_eq!(good["doc_count"], 3);
     assert_eq!(good["verify_problems"], 0, "{good:#}");
     assert!(good["loaded_at"].is_string(), "{good:#}");
     assert!(good.get("error").is_none(), "a healthy corpus has no error");
@@ -287,7 +318,7 @@ async fn docs_filters_are_optional_and_and_combined() {
     let (status, all) = fx.get(&format!("/api/corpus/{}/docs", fx.cid)).await;
     assert_eq!(status, StatusCode::OK);
     let all = all.as_array().unwrap().clone();
-    assert_eq!(all.len(), 2, "{all:#?}");
+    assert_eq!(all.len(), 3, "{all:#?}");
     let note = all.iter().find(|d| d["id"] == "NOTE-0001").unwrap();
     assert_eq!(note["type"], "note");
     assert_eq!(note["status"], "open");
@@ -354,7 +385,7 @@ async fn docs_filters_are_optional_and_and_combined() {
         .await;
     assert_eq!(
         empty_filter.as_array().unwrap().len(),
-        2,
+        3,
         "{empty_filter:#}"
     );
 }
@@ -392,6 +423,10 @@ async fn doc_exposes_relations_and_the_rendered_body() {
 /// status picker never has to read `opys.toml`. Terminal statuses are left out
 /// because `set-status` refuses them — `close` is the only way there — and
 /// `closable` says whether that door exists at all.
+///
+/// This is the type's whole vocabulary, unchanged by the status graph: narrowing
+/// it would have answered a different question under the same name.
+/// `allowed_targets` (below) is where the graph shows up.
 #[tokio::test]
 async fn doc_carries_the_statuses_a_write_would_accept() {
     let fx = Fixture::new();
@@ -416,6 +451,83 @@ async fn doc_carries_the_statuses_a_write_would_accept() {
         json!(["todo", "doing"]),
         "{task:#}"
     );
+    assert_eq!(task["closable"], true);
+}
+
+/// `closable` is false for two different reasons, and the payload has to say
+/// which: a type may declare a whole status graph and still have no terminal
+/// status — the shipped `feature` type, and this repo's `feature` and `adr`.
+///
+/// Without `has_terminal_status` a client can only guess from `allowed_targets`,
+/// which is non-null for *any* graph — and would then tell the reader to "move
+/// it along first" towards a close that can never happen.
+#[tokio::test]
+async fn a_graph_without_a_terminal_status_is_never_closable() {
+    let fx = Fixture::new();
+
+    let (status, idea) = fx
+        .get(&format!("/api/corpus/{}/doc/IDEA-0003", fx.cid))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(idea["status"], "draft");
+    assert_eq!(
+        idea["allowed_targets"],
+        json!(["live"]),
+        "`idea` declares a graph, so the menu is its edges: {idea:#}"
+    );
+    assert_eq!(
+        idea["closable"], false,
+        "no terminal status, so no close: {idea:#}"
+    );
+    assert_eq!(
+        idea["has_terminal_status"], false,
+        "…and the reason is the missing terminal status, not the graph: {idea:#}"
+    );
+
+    // The other shape, to pin that the two fields really do differ: `task` has
+    // both a graph and a terminal status, and `note` has a terminal status
+    // without a graph.
+    let (_, task) = fx
+        .get(&format!("/api/corpus/{}/doc/TASK-0002", fx.cid))
+        .await;
+    assert_eq!(task["has_terminal_status"], true, "{task:#}");
+    let (_, note) = fx
+        .get(&format!("/api/corpus/{}/doc/NOTE-0001", fx.cid))
+        .await;
+    assert_eq!(note["allowed_targets"], json!(null), "{note:#}");
+    assert_eq!(note["has_terminal_status"], true, "{note:#}");
+}
+
+/// Where *this* document may go, computed by the node from the type's declared
+/// status graph with the same engine helper `set-status`'s guard reads — so a
+/// menu built from it cannot offer a move the node would then refuse. `null`,
+/// not `[]`, for a type that declares no graph: "everything" and "nothing" are
+/// different answers, and the client needs to tell them apart to fall back.
+#[tokio::test]
+async fn doc_carries_the_moves_its_type_declares() {
+    let fx = Fixture::new();
+
+    let (status, note) = fx
+        .get(&format!("/api/corpus/{}/doc/NOTE-0001", fx.cid))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        note["allowed_targets"],
+        json!(null),
+        "`note` declares no transitions, so every status is reachable: {note:#}"
+    );
+
+    let (status, task) = fx
+        .get(&format!("/api/corpus/{}/doc/TASK-0002", fx.cid))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        task["allowed_targets"],
+        json!(["todo"]),
+        "TASK-0002 is `doing`, whose declared targets are todo and the terminal \
+         done — and a terminal status is `close`'s, not the menu's: {task:#}"
+    );
+    // The edge into `done` is still real: it is what makes the task closable.
     assert_eq!(task["closable"], true);
 }
 
@@ -462,7 +574,7 @@ async fn query_answers_select_and_refuses_anything_else() {
     // the cache is rebuilt only by a load, so it could not notice either way.
     let (status, body) = fx.post(&uri, json!({"sql": "SELECT id FROM docs"})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["rows"].as_array().unwrap().len(), 2, "{body}");
+    assert_eq!(body["rows"].as_array().unwrap().len(), 3, "{body}");
 
     let (status, body) = fx.post(&uri, json!({"sql": "SELECT * FROM nope"})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");

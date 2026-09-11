@@ -443,31 +443,71 @@ fn verify_accepts_namespaced_and_keyed_tags_but_rejects_duplicate_keys() {
         ));
 }
 
+/// The write-time rules bite whatever seeds a document at a status. `new` no
+/// longer takes one (ADR-0099 decision 5), so `import` — the one seam that does
+/// — is where they are exercised.
 #[test]
-fn new_enforces_status_guards() {
+fn import_enforces_status_guards() {
     let dir = project();
+    let jsonl = dir.child("seed.jsonl");
+    jsonl
+        .write_str("{\"title\": \"X\", \"tags\": [\"a\"], \"status\": \"implemented\"}\n")
+        .unwrap();
     opys(&dir)
-        .args([
-            "new",
-            "--title",
-            "X",
-            "--tags",
-            "a",
-            "--status",
-            "implemented",
-        ])
+        .args(["import", jsonl.path().to_str().unwrap()])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
             "'## Test plan' needs at least one checked item",
         ));
+    jsonl
+        .write_str("{\"title\": \"X\", \"tags\": [\"a\"], \"status\": \"wontfix\"}\n")
+        .unwrap();
     opys(&dir)
-        .args(["new", "--title", "X", "--tags", "a", "--status", "wontfix"])
+        .args(["import", jsonl.path().to_str().unwrap()])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
             "field 'wontfix_reason' is required",
         ));
+}
+
+/// `--status` is gone from `new` (ADR-0099 decision 5): a document starts at its
+/// type's initial status, and `import` is the one seam that seeds elsewhere. An
+/// unknown flag rather than a silently ignored one, so a stale script is told.
+#[test]
+fn new_rejects_the_removed_status_flag() {
+    let dir = project();
+    opys(&dir)
+        .args(["new", "--title", "X", "--tags", "a", "--status", "wontfix"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("unexpected argument '--status'"));
+}
+
+/// `--reason` survives `--status`'s removal, but it can now only ever write
+/// `<default_status>_reason`. Where the type does not declare that field the
+/// write would be frontmatter the next `verify` rejects, so it is refused up
+/// front — the same bargain `set-status` strikes.
+#[test]
+fn new_refuses_a_reason_with_nowhere_to_go() {
+    let dir = project();
+    opys(&dir)
+        .args(["new", "--title", "X", "--tags", "a", "--reason", "because"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "--reason has nowhere to go: 'planned_reason' is not a declared field",
+        ));
+    // …and it lands where the field *is* declared.
+    let cfg = opys_cfg("[types.feature.fields.planned_reason]\ntype = \"string\"\n");
+    let dir = project_with(&cfg);
+    opys(&dir)
+        .args(["new", "--title", "X", "--tags", "a", "--reason", "because"])
+        .assert()
+        .success();
+    let text = std::fs::read_to_string(dir.path().join("opys/features/FEAT-0001.md")).unwrap();
+    assert!(text.contains("planned_reason: because"), "{text}");
 }
 
 #[test]
@@ -5209,4 +5249,230 @@ fn renumber_under_a_modulus_stays_in_the_slot() {
         .assert()
         .success()
         .stdout(predicate::str::contains("TASK-0001 → TASK-0003"));
+}
+
+// ---------------------------------------------------------------------------
+// The status graph: `[types.X.transitions]` (ADR-0099 decision 1)
+// ---------------------------------------------------------------------------
+
+/// A `task` type with a declared status graph. `todo` is the initial status and
+/// only `review` may close; `blocked` is a deliberate dead end, so a document
+/// that reaches it can go nowhere without a config change — the shape the engine
+/// has to be able to express.
+const GRAPH_CFG: &str = "pad = 4\n\
+[types.task]\nprefix = \"TASK\"\n\
+statuses = [\"todo\", \"doing\", \"review\", \"blocked\", \"done\"]\n\
+default_status = \"todo\"\n\
+terminal_statuses = [\"done\"]\n\
+[types.task.transitions]\n\
+todo = [\"doing\"]\n\
+doing = [\"review\", \"todo\"]\n\
+review = [\"done\", \"doing\"]\n";
+
+/// A type that declares no graph keeps the any-to-any rule byte-identically —
+/// the promise that makes `transitions` additive for every config that predates
+/// it. (The rest of this file is the wide version of this test: every fixture
+/// here declares no graph.)
+#[test]
+fn a_type_without_transitions_accepts_any_status_change() {
+    let dir = project();
+    opys(&dir)
+        .args(["new", "--title", "Alpha", "--tags", "a"])
+        .assert()
+        .success();
+    for status in ["partial", "planned", "partial"] {
+        opys(&dir)
+            .args(["set-status", "FEAT-0001", status])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(format!("FEAT-0001 -> {status}")));
+    }
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// An undeclared move is refused before anything is written, exit 2, naming
+/// where the document stands and where it may go.
+#[test]
+fn set_status_refuses_an_undeclared_edge() {
+    let dir = project_with(GRAPH_CFG);
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Work"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["set-status", "TASK-0001", "review"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "cannot move TASK-0001 from todo to review: type 'task' declares no such transition \
+             (from todo: doing)",
+        ));
+    // Nothing was written: the document is still where it was, with one entry.
+    let text = std::fs::read_to_string(dir.path().join("opys/TASK-0001.md")).unwrap();
+    assert!(text.contains("status: todo"), "{text}");
+    assert_eq!(text.matches("\": ").count(), 1, "{text}");
+    // And the declared edge goes through.
+    opys(&dir)
+        .args(["set-status", "TASK-0001", "doing"])
+        .assert()
+        .success();
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// A status that is not a key in a non-empty map is a dead end, not a wildcard:
+/// half a graph must not leave every unlisted status wide open.
+#[test]
+fn set_status_refuses_every_move_out_of_a_dead_end() {
+    let dir = project_with(GRAPH_CFG);
+    dir.child("opys/TASK-0001.md")
+        .write_str(&format!(
+            "---\nid: TASK-0001\nstatus: blocked\ncreated: \"{PINNED_NOW}\"\n{}---\n\n# Work\n",
+            hist("blocked")
+        ))
+        .unwrap();
+    opys(&dir)
+        .args(["set-status", "TASK-0001", "doing"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "cannot move TASK-0001 from blocked to doing: type 'task' declares no such transition \
+             (no transitions out of blocked)",
+        ));
+}
+
+/// Setting a document to the status it already holds has always been a legal
+/// no-op that appends an entry. A graph must not turn it into a refusal for want
+/// of a self-edge nobody would think to declare — and the resulting equal pair
+/// must stay verify-clean, or a successful write would leave a red corpus.
+#[test]
+fn set_status_to_the_current_status_survives_a_graph() {
+    let dir = project_with(GRAPH_CFG);
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Work"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["set-status", "TASK-0001", "todo"])
+        .assert()
+        .success();
+    let text = std::fs::read_to_string(dir.path().join("opys/TASK-0001.md")).unwrap();
+    assert_eq!(text.matches("\": todo").count(), 2, "{text}");
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// `close` is the door to a terminal status, so the graph gates it too: without
+/// this the terminal edges a type declares would mean nothing.
+#[test]
+fn close_needs_an_edge_into_a_terminal_status() {
+    let dir = project_with(GRAPH_CFG);
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Work"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["close", "TASK-0001"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "cannot close TASK-0001 from todo: type 'task' declares no transition from there to \
+             a terminal status (done) — only review can close",
+        ));
+    // `--force` is about unchecked checklist items; it does not open the door.
+    opys(&dir)
+        .args(["close", "TASK-0001", "--force"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("only review can close"));
+    for status in ["doing", "review"] {
+        opys(&dir)
+            .args(["set-status", "TASK-0001", status])
+            .assert()
+            .success();
+    }
+    opys(&dir).args(["close", "TASK-0001"]).assert().success();
+    dir.child("opys/TASK-0001.md")
+        .assert(predicate::path::missing());
+}
+
+/// The graph is a CI check as well as a write-time guard: a hand-edited document
+/// whose history records a move the type does not declare is a verify problem —
+/// and the very same document is clean under a config that declares no graph.
+#[test]
+fn verify_flags_a_history_pair_that_is_not_a_declared_edge() {
+    let doc = format!(
+        "---\nid: TASK-0001\nstatus: review\ncreated: \"{PINNED_NOW}\"\n\
+         history:\n  \"{PINNED_KEY}\": todo\n  \"2026-01-02T03:04:06.000000Z\": review\n\
+         ---\n\n# Work\n"
+    );
+    let dir = project_with(GRAPH_CFG);
+    dir.child("opys/TASK-0001.md").write_str(&doc).unwrap();
+    opys(&dir)
+        .arg("verify")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "TASK-0001: history records todo -> review, which type 'task' does not declare as a \
+             transition (from todo: doing)",
+        ));
+
+    // The same bytes under a graph-less type: accepted, byte-identically to the
+    // world before transitions existed.
+    let no_graph = GRAPH_CFG
+        .split("[types.task.transitions]")
+        .next()
+        .expect("the config starts before the transitions table");
+    let dir = project_with(no_graph);
+    dir.child("opys/TASK-0001.md").write_str(&doc).unwrap();
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// `import` seeds a document wherever its record says, and leaves no marker
+/// saying it did — so verify checks *moves*, never where a document entered the
+/// graph. An imported document that starts at a non-initial status is clean.
+#[test]
+fn an_imported_document_seeded_off_the_initial_status_verifies() {
+    let dir = project_with(GRAPH_CFG);
+    let jsonl = dir.child("tasks.jsonl");
+    jsonl
+        .write_str("{\"title\": \"Seeded mid-flight\", \"status\": \"review\"}\n")
+        .unwrap();
+    opys(&dir)
+        .args(["import", "--type", "task", jsonl.path().to_str().unwrap()])
+        .assert()
+        .success();
+    let text = std::fs::read_to_string(dir.path().join("opys/TASK-0001.md")).unwrap();
+    assert!(
+        text.contains(&format!("history:\n  \"{PINNED_KEY}\": review\n")),
+        "{text}"
+    );
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// A graph the config cannot mean is a config problem, reported by `verify` and
+/// `config validate` like every other one — not a hard error at open time, which
+/// would change the exit code of every command over a typo.
+#[test]
+fn config_validate_flags_a_broken_transitions_map() {
+    let dir = project_with(
+        "pad = 4\n\
+[types.task]\nprefix = \"TASK\"\n\
+statuses = [\"todo\", \"doing\", \"done\"]\ndefault_status = \"todo\"\n\
+terminal_statuses = [\"done\"]\n\
+[types.task.transitions]\n\
+doing = [\"shipped\"]\n\
+done = [\"todo\"]\n",
+    );
+    opys(&dir)
+        .args(["config", "validate"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "transition 'doing' -> 'shipped' targets a status the type does not declare",
+        ))
+        .stderr(predicate::str::contains(
+            "terminal status 'done' must have no outgoing transitions",
+        ))
+        .stderr(predicate::str::contains(
+            "default_status 'todo' has no outgoing transitions",
+        ));
 }

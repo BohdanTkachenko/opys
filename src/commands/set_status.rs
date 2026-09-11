@@ -55,6 +55,20 @@ pub fn core(
         )));
     }
 
+    // The status graph (ADR-0099 decision 1). A type with no `[transitions]`
+    // keeps the any-to-any rule byte-identically; one that declares them accepts
+    // only a declared edge. Setting a document to the status it already holds is
+    // *not* an edge and never was — it is a legal no-op that appends a history
+    // entry — so it is skipped rather than refused for want of a self-edge.
+    let current = doc.frontmatter.status().unwrap_or_default().to_string();
+    if !current.is_empty() && current != status && !crate::lifecycle::allows(t, &current, status) {
+        return Err(usage(format!(
+            "cannot move {id} from {current} to {status}: type '{tname}' declares no such \
+             transition ({})",
+            crate::lifecycle::set_status_targets_phrase(t, &current)
+        )));
+    }
+
     if let Some(r) = reason {
         // `--reason` writes `<status>_reason`, which must be a declared field for
         // the type or the very next `verify` rejects it as unknown frontmatter.

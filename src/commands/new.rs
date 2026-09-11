@@ -21,7 +21,6 @@ pub fn core(
     type_name: &str,
     title: &str,
     tags: &str,
-    status: &str,
     features: &str,
     reason: Option<&str>,
     fields: &[String],
@@ -39,12 +38,13 @@ pub fn core(
     let first = ids.reserve(store, 1)?;
     let id = crate::ids::format_id(&t.prefix, first, pcfg.pad);
 
-    // Resolve status: empty → the type's default. Reject unknown / terminal.
-    let status = if status.is_empty() {
-        t.default_status.as_str()
-    } else {
-        status
-    };
+    // A document always starts at its type's initial status (ADR-0099 decision
+    // 5): `--status` is gone, and `import` is the one seam that seeds elsewhere.
+    // The two guards below still earn their place — `Project::open` never runs
+    // `ProjectConfig::validate`, so a `default_status` that is undeclared or
+    // terminal reaches here, and creating a document at one would mean a type
+    // whose every document is invalid, or unclosable, from birth.
+    let status = t.default_status.as_str();
     if !t.statuses.iter().any(|s| s == status) {
         return Err(usage(format!(
             "unknown status {status:?} for type '{type_name}' (allowed: {})",
@@ -81,9 +81,21 @@ pub fn core(
         refs::set(&mut fm, &references);
     }
 
-    // `--reason` sets the conventional `<status>_reason` field (wontfix/blocked/…).
+    // `--reason` sets the conventional `<status>_reason` field. With `--status`
+    // gone that can only ever be `<default_status>_reason`, which most types do
+    // not declare — and an undeclared key is frontmatter the very next `verify`
+    // rejects. Refuse instead, exactly as `set-status` does, so a successful
+    // command never leaves a red corpus.
     if let Some(r) = reason {
-        fm.set_str(&format!("{status}_reason"), r);
+        let field = format!("{status}_reason");
+        if !t.fields.contains_key(&field) {
+            return Err(usage(format!(
+                "--reason has nowhere to go: '{field}' is not a declared field for type \
+                 '{type_name}' (a new document starts at {status}; add \
+                 [types.{type_name}.fields.{field}], or drop --reason)"
+            )));
+        }
+        fm.set_str(&field, r);
     }
     for kv in fields {
         let (k, v) = project::parse_field(kv)?;
@@ -116,13 +128,11 @@ pub fn core(
     Ok(doc)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn run(
     ctx: &Ctx,
     type_name: &str,
     title: &str,
     tags: &str,
-    status: &str,
     features: &str,
     reason: Option<&str>,
     fields: &[String],
@@ -131,7 +141,7 @@ pub fn run(
     let mut ids = ctx.id_source(&prj)?;
     let (mut store, _) = ctx.load(&prj)?;
     let doc = core(
-        &prj, &mut store, &mut *ids, type_name, title, tags, status, features, reason, fields,
+        &prj, &mut store, &mut *ids, type_name, title, tags, features, reason, fields,
     )?;
     print_lines([doc.path.display().to_string()])?;
     ctx.flush(&prj, store)?;

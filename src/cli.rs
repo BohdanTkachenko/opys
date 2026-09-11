@@ -56,13 +56,10 @@ pub enum Command {
         /// Comma-separated, kebab-case (required when the type requires tags).
         #[arg(long, default_value = "")]
         tags: String,
-        /// Defaults to the type's `default_status`.
-        #[arg(long, default_value = "")]
-        status: String,
         /// Comma-separated IDs this document references (e.g. linked features).
         #[arg(long, default_value = "")]
         features: String,
-        /// Sets `<status>_reason` (e.g. wontfix/blocked/archived).
+        /// Sets `<default_status>_reason` — only where the type declares that field.
         #[arg(long)]
         reason: Option<String>,
         /// Custom field key=value (repeatable).
@@ -119,8 +116,10 @@ pub enum Command {
         keys: bool,
     },
 
-    /// Guarded status transition. Takes several ids to move a batch at once
-    /// (the same status/reason applied to each); a refused id aborts the batch.
+    /// Guarded status transition: the type's statuses, the edges its
+    /// `[transitions]` map declares (when it declares any), and its rules. Takes
+    /// several ids to move a batch at once (the same status/reason applied to
+    /// each); a refused id aborts the batch.
     SetStatus {
         /// One or more ids: several positionals (`FEAT-0001 FEAT-0002`), a
         /// comma-separated list (`FEAT-0001,FEAT-0002`), or `-` to read the list from
@@ -242,9 +241,10 @@ pub enum Command {
     #[cfg(feature = "history")]
     History { id: String },
 
-    /// Finish a document of a type with a terminal status: delete the file,
-    /// strike its title in every referencing doc, and log the ID to
-    /// `_retired.md` so it is never reused.
+    /// Finish a document of a type with a terminal status — and, where the type
+    /// declares `[transitions]`, an edge into one from the document's current
+    /// status: delete the file, strike its title in every referencing doc, and
+    /// log the ID to `_retired.md` so it is never reused.
     Close {
         /// One or more ids: several positionals (`FEAT-0001 FEAT-0002`), a
         /// comma-separated list (`FEAT-0001,FEAT-0002`), or `-` to read the list from

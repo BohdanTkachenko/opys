@@ -203,6 +203,11 @@ Layering, roughly outermost-in:
   spelling `verify` demands), the same-instant `+1µs` bump, and the
   `seed`/`append`/`record` writers. Distinct from `commands::history`, the
   git-timeline command behind the `history` *feature*.
+- `src/lifecycle.rs` — the status graph: `allowed_targets`/`allows`/`can_close`
+  over a type's `[transitions]` map, plus the one wording of the "…may move to"
+  phrase. The single reader of that map, so `set-status`, `close`, `verify` and
+  the node's `DocView` cannot disagree about declared order, duplicates, or what
+  an absent map means (any-to-any) versus an absent *key* (a dead end).
 - `src/links.rs` — the auto-sync engine: `reconcile`/`reconcile_blockers`
   (bidirectional, title-fresh relation maps between live docs) and `linkify`
   (bare `PREFIX-NNNN` mentions in prose → markdown links, skipping code; the
@@ -258,11 +263,23 @@ All status/section/link guards are *config*, enforced by one engine
   that predates the map seeds its first entry from `created` at the status being
   left, so the write lands second and never contradicts `created`. `verify`
   checks presence, the last entry against `status`, strictly increasing
-  canonical keys, and `created` against the first key — and never repairs, since
-  history cannot be rebuilt from ground truth.
+  canonical keys, `created` against the first key, and every consecutive pair
+  against the type's status graph — and never repairs, since history cannot be
+  rebuilt from ground truth. Two silences in the pair check are deliberate: an
+  equal pair is skipped (a same-status `set-status` is a legal no-op that
+  appends), and the first entry is never checked against `default_status`
+  (`import` may seed anywhere and leaves no marker).
 - **Status lifecycle**: each type declares its own `statuses`, `default_status`,
-  and `terminal_statuses`. No FSM — any status → any status — except a terminal
-  status is reached only via `close` (`new`/`set-status` reject it). The
+  `terminal_statuses` and, optionally, `transitions` — a status → the statuses it
+  may move to (ADR-0099). Without it the type keeps any-to-any, byte-identically;
+  with it `set-status` refuses an undeclared edge (exit 2, naming the legal
+  targets), `close` refuses unless the current status has an edge into a terminal
+  one, and `verify` checks every consecutive `history` pair. A status absent from
+  a non-empty map is a dead end; a terminal status may have no outgoing edges. The
+  map is read only through `lifecycle::allowed_targets`, so the four call sites
+  cannot drift. A terminal status is reached only via `close` (`set-status`
+  rejects it), and `new` has no `--status` at all — a document starts at its
+  type's initial status and `import` is the one seam that seeds elsewhere. The
   conditional guards (e.g. feature `wontfix`⇒`wontfix_reason`, `implemented`⇒a
   checked `## Test plan` item; any `blocked`⇒a reason or blocker link) are
   `[[rules]]`, enforced at write time and by `verify`. "Removed from the product"
