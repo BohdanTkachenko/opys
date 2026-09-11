@@ -104,9 +104,15 @@ opys close BUG-0002                         # `close` needs an edge from where t
                                             # status, and its `## Tasks` checked;
                                             # deletes the file, strikes the reference
 
+# Claim a document atomically: one status transition, one field write and one
+# log entry, applied together or not at all. Two agents racing for the same
+# document cannot both win — `--status` asserts a *transition*, so the second
+# finds it already taken and the whole batch is refused, writing nothing.
+opys apply TASK-0007 --status in-progress --field claimed_by=agent-7 --log "picked up"
+
 # Bulk: every id-taking mutating command (set-status, tag, retire, block,
-# unblock, close) takes an id list — several ids, a comma-separated list, or
-# `-` for stdin. All-or-nothing: one bad id writes nothing. (`log` is the
+# unblock, close, apply) takes an id list — several ids, a comma-separated list,
+# or `-` for stdin. All-or-nothing: one bad id writes nothing. (`log` is the
 # exception: one id, because its second positional is the entry text and `-`
 # there means stdin.)
 # Filter on a status a live doc can hold — `done` is reached only *through*
@@ -115,8 +121,8 @@ opys set-status FEAT-0001 FEAT-0002 wontfix --reason "superseded"
 opys list --type task --status review --format ids | opys close -
 ```
 
-Mutating commands (`new`, `set-status`, `tag`, `log`, `retire`, `block`,
-`close`, `cleanup`) reconcile cross-references, linkify prose, and relocate
+Mutating commands (`new`, `set-status`, `tag`, `log`, `apply`, `retire`,
+`block`, `close`, `cleanup`) reconcile cross-references, linkify prose, and relocate
 documents to their canonical layout path (e.g. an archived doc moves into
 `_archived/`) automatically; pass `--no-sync` to skip, or run `opys sync` after
 editing files by hand.
@@ -139,6 +145,7 @@ without a `renumber`. Without a modulus, allocation is the dense sequence.
 | `set-status` | guarded transitions: the type's declared `[transitions]` edges (when it declares any), its `max_visits` budget for the target status (the refusal names the configured `then`), and its configured rules |
 | `tag` | add/remove tags (`--add a,b --remove c`) |
 | `log` | append a dated entry to a document's `kind = "log"` section (`opys log TASK-0042 "…"`, or `-` to read it from stdin) |
+| `apply` | several writes as one all-or-nothing batch — a status transition, `--field`/`--remove-field` writes and a `--log` entry, flushed once or not at all. How an agent claims a document: `--status` asserts a *transition*, so a second claimant is refused and writes nothing. Releasing is the same shape backwards, and stays one command even where the working status `require_field`s the claimant: the verify gate is taken once around the whole batch, so every part is judged against the document it finishes with |
 | `retire` | delete document(s); each ID is logged and never reused |
 | `block` / `unblock` | record a directional blocker between documents; blocked is derived from the live entries, never stored |
 | `close` / `cleanup` | finish document(s) of a type with a terminal status (and, where a status graph is declared, an edge into one from where the document stands); strip struck refs |
@@ -320,11 +327,12 @@ security boundary. Two guarantees follow from it:
   you. Discovery only ever *suggests*: `opys web scan` prints candidates and has
   no way to add one.
 - **The API is typed; the node cannot execute arbitrary commands.** Every write
-  the dashboard makes is a named action with named arguments — `set-status`,
-  `tag`, `log`, `block`, `unblock`, `close` — run through the same engine, the same
-  inventory lock and the same write-time rules as the CLI. The request body is a
-  closed set: there is no shell endpoint, no "run this opys command" endpoint,
-  and no endpoint anywhere that accepts a filesystem path.
+  the node accepts is a named action with named arguments — `set-status`, `tag`,
+  `log`, `apply`, `block`, `unblock`, `close` — run through the same engine, the
+  same inventory lock and the same write-time rules as the CLI. (The dashboard
+  sends a subset of them; the rest are there for an API client.) The request
+  body is a closed set: there is no shell endpoint, no "run this opys command"
+  endpoint, and no endpoint anywhere that accepts a filesystem path.
 
 ### More than one project
 

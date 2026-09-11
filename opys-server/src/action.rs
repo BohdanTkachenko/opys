@@ -28,7 +28,7 @@
 use std::path::Path;
 
 use opys_engine::backend::Backend;
-use opys_engine::commands::{block, close, edit, log, new, set_status, sync, tag};
+use opys_engine::commands::{apply, block, close, edit, log, new, set_status, sync, tag};
 use opys_engine::error::OpysError;
 use opys_engine::project::Project;
 use opys_engine::store::Store;
@@ -133,6 +133,40 @@ pub enum Action {
     /// Remove one custom frontmatter field, verify-gated like `set-field` (so
     /// removing a required field is refused by name).
     RemoveField { id: String, key: String },
+    /// The composite write (`opys apply`): a status transition, field writes
+    /// and a log entry as one all-or-nothing batch — the primitive an agent
+    /// claims a document with, so a dispatcher over HTTP gets exactly the
+    /// atomicity a dispatcher over the CLI gets.
+    ///
+    /// `status` here asserts a *transition*: a second claimant, finding the
+    /// document already in the working status, is refused and writes nothing.
+    ///
+    /// `fields` is an object rather than the CLI's repeatable `--field k=v`,
+    /// the way `set-field` splits key from value. Its iteration order is
+    /// alphabetical where the CLI's is the order given, which changes nothing
+    /// on disk — frontmatter serialization is canonical — and can only decide
+    /// *which* of two simultaneously-bad fields is named in the refusal.
+    ///
+    /// Every part but `id` is optional at the wire, and the combinations that
+    /// mean nothing are refused by the engine rather than here: `apply::core`
+    /// runs the CLI's own usage checks first, so a body that asks for nothing,
+    /// or names a `reason` with no `status` or a `section` with no `log`, comes
+    /// back 422 carrying the words `opys apply` would have printed.
+    Apply {
+        id: String,
+        #[serde(default)]
+        status: Option<String>,
+        #[serde(default)]
+        reason: Option<String>,
+        #[serde(default)]
+        fields: std::collections::BTreeMap<String, String>,
+        #[serde(default)]
+        remove_fields: Vec<String>,
+        #[serde(default)]
+        log: Option<String>,
+        #[serde(default)]
+        section: Option<String>,
+    },
 }
 
 impl Action {
@@ -151,6 +185,7 @@ impl Action {
             Action::EditBody { .. } => "edit-body",
             Action::SetField { .. } => "set-field",
             Action::RemoveField { .. } => "remove-field",
+            Action::Apply { .. } => "apply",
         }
     }
 }
@@ -405,6 +440,35 @@ pub fn perform(root: &Path, backend: &dyn Backend, action: &Action) -> Attempt {
             outcome.sync_skipped = auto_sync(&prj, backend);
             Ok(outcome)
         }
+        Action::Apply {
+            id,
+            status,
+            reason,
+            fields,
+            remove_fields,
+            log,
+            section,
+        } => {
+            // The one parse-error-taking action that still routes through
+            // `finish`: unlike edit-body/set-field/remove-field, nothing here
+            // has to be inlined — `apply::core` returns the printed line and
+            // `finish` propagates its refusal before the flush — so only the
+            // spec is assembled first.
+            let set_fields: Vec<(String, String)> =
+                fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            let spec = apply::Apply {
+                status: status.as_deref(),
+                reason: reason.as_deref(),
+                set_fields: &set_fields,
+                remove_fields,
+                log: log.as_deref(),
+                section: section.as_deref(),
+            };
+            let done = apply::core(&prj, &mut store, id, &spec, &parse_errors)
+                .map(|line| ActionOutcome::new(id, line))
+                .map_err(ActionError::Refused);
+            finish(&prj, backend, store, done)
+        }
         Action::Close { id, force } => {
             let done = close::core(&prj, &mut store, id, *force)
                 .map(|()| {
@@ -524,6 +588,43 @@ mod tests {
         assert!(err.contains("status"), "{err}");
     }
 
+    /// The composite's optionals are all absent-able, and absent must mean "do
+    /// not do that part" rather than "do it with a made-up value" — a body
+    /// carrying only `--log` has to reach the core as a log-only batch.
+    #[test]
+    fn an_apply_names_only_the_parts_it_carries() {
+        let action = parse(serde_json::json!({
+            "action": "apply", "id": "TASK-0002", "log": "checkpoint"
+        }))
+        .expect("id is the only required field");
+        let Action::Apply {
+            id,
+            status,
+            reason,
+            fields,
+            remove_fields,
+            log,
+            section,
+        } = action
+        else {
+            panic!("deserialized as the wrong variant");
+        };
+        assert_eq!(id, "TASK-0002");
+        assert_eq!(status, None, "no `--status` means no transition asserted");
+        assert_eq!(reason, None);
+        assert!(fields.is_empty(), "{fields:?}");
+        assert!(remove_fields.is_empty(), "{remove_fields:?}");
+        assert_eq!(log.as_deref(), Some("checkpoint"));
+        assert_eq!(section, None);
+
+        // And the vocabulary stays closed over the new variant too.
+        let unknown = parse(serde_json::json!({
+            "action": "apply", "id": "TASK-0002", "tags": "core"
+        }))
+        .expect_err("`tags` is not part of the composite");
+        assert!(unknown.contains("unknown field"), "{unknown}");
+    }
+
     /// Why removal is its own action: a `set-field` with no `value` must be a
     /// request error, not a silent field deletion.
     #[test]
@@ -625,6 +726,17 @@ mod tests {
             (
                 serde_json::json!({"action": "remove-field", "id": "N-1", "key": "k"}),
                 "remove-field",
+            ),
+            (
+                serde_json::json!({"action": "edit-body", "id": "N-1", "body": "# T\n"}),
+                "edit-body",
+            ),
+            (
+                serde_json::json!({
+                    "action": "apply", "id": "N-1", "status": "doing",
+                    "fields": {"claimed_by": "agent-7"}, "log": "claimed"
+                }),
+                "apply",
             ),
         ];
         for (body, name) in cases {

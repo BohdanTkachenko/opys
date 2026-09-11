@@ -9,12 +9,13 @@
 `history` is a reserved, auto-maintained frontmatter key: a map of RFC3339 UTC
 timestamp (six fractional digits, `Z`) to status, recording every status a
 document has held (see the format spec, *The lifecycle map*). `new`,
-`set-status` and `import` write it; **no ordinary write rebuilds it**. An
-inventory created before the key existed therefore has no
-history at all, and `opys verify` reports one problem per document:
+`set-status`, `apply --status` (the same append inside a composite batch) and
+`import` write it; **no ordinary write rebuilds it**. An inventory created
+before the key existed therefore has no history at all, and `opys verify`
+reports one problem per document:
 
 ```
-FEAT-0001: missing history (the lifecycle map is written by new/set-status/import; …)
+FEAT-0001: missing history (the lifecycle map is written by new/set-status/apply/import; …)
 ```
 
 This is a **one-time procedure**, and only half of it is a tool: `opys history

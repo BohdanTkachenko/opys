@@ -149,8 +149,23 @@ Layering, roughly outermost-in:
 - `src/commands/` — one module per subcommand, each a `run(ctx, …)` fn.
   `commands/mod.rs` holds shared helpers: `today()`, the clock family
   (`now_rfc3339`/`now_utc_micros`/`now_utc_seconds` — the last is the log-entry
-  stamp), `split_csv()`, and `maybe_sync()` (the auto-sync hook: reconcile +
-  linkify + relocate).
+  stamp), `split_csv()`, `apply_batch()` (all-or-nothing over a list of ids) and
+  `maybe_sync()` (the auto-sync hook: reconcile + linkify + relocate).
+  `commands/apply.rs` is the composite write (`opys apply`): all-or-nothing over
+  several *actions* on one document — `--field` writes, a log entry, the status
+  transition, then `--remove-field` removals — reusing `edit::field_core`,
+  `log::core` and `set_status::core_with` against one loaded store, flushed once
+  or not at all. The order is fixed so a `require_field` /
+  `require_log_since_status` rule on the target status sees what the same
+  invocation just wrote; the verify gate is then taken **once around the whole
+  batch** (`edit::problems` before the first step, `edit::refuse_new_problems`
+  after the last, with the ungated `edit::field_write` in between instead of
+  `field_core`), so every part is judged against the document the batch finishes
+  with rather than at a status the invocation is on its way out of — which is
+  what keeps releasing a claim, and handing one on, a one-command shape. `Apply::check` is
+  the corpus-free usage gate (nothing to do; `--reason` without `--status`;
+  `--section` without `--log`), called from `core` so the node's typed action
+  refuses the same bodies with the same words.
 - `src/project_config.rs` — `ProjectConfig` (the parsed `opys.toml`): the `types`
   map of `DocType` (prefix, dir, status_dirs, statuses, fields, sections, the
   `requires_link` shorthand), the `[layout]` path template, and the `[[rules]]`
@@ -337,9 +352,9 @@ All status/section/link guards are *config*, enforced by one engine
   while the implicit default just drops the key. `list --sort` applies it,
   grouped by type.
 - **Lifecycle history**: every status change is appended to the reserved
-  `history` map (`new` seeds it from `created`, `set-status`/`import` write it;
-  `block`/`unblock` change no status so they write nothing; nothing hand-edits
-  it). Keys are UTC RFC3339 with *exactly*
+  `history` map (`new` seeds it from `created`, `set-status`/`apply
+  --status`/`import` write it; `block`/`unblock` change no status so they write
+  nothing; nothing hand-edits it). Keys are UTC RFC3339 with *exactly*
   six fractional digits — `verify` rejects any other width, because only fixed
   width makes lexical order chronological, and the serializer sorts the block —
   and a colliding key is bumped one microsecond. A status change on a document
@@ -360,7 +375,10 @@ All status/section/link guards are *config*, enforced by one engine
   one, and `verify` checks every consecutive `history` pair. A status absent from
   a non-empty map is a dead end; a terminal status may have no outgoing edges. The
   map is read only through `lifecycle::allowed_targets`, so the four call sites
-  cannot drift. A terminal status is reached only via `close` (`set-status`
+  cannot drift. `apply --status` (the composite write) runs the same guard with
+  one difference, `set_status::Move::Transition`: the equal case is a refusal
+  rather than the no-op `set-status` keeps, whether or not a map is declared,
+  and that is what makes a claim race decidable (TASK-0123). A terminal status is reached only via `close` (`set-status`
   rejects it), and `new` has no `--status` at all — a document starts at its
   type's initial status and `import` is the one seam that seeds elsewhere. The
   conditional guards (e.g. feature `wontfix`⇒`wontfix_reason`,
@@ -426,7 +444,7 @@ All status/section/link guards are *config*, enforced by one engine
 
 opys generates no view files (no `INDEX.md`); slice the inventory live with
 `opys list` or `opys query`. Mutating commands (`new`, `set-status`, `tag`,
-`log`, `retire`, `block`, `close`, `cleanup`) call `maybe_sync` →
+`log`, `apply`, `retire`, `block`, `close`, `cleanup`) call `maybe_sync` →
 `commands/sync::run` automatically unless `--no-sync` is passed. That pass
 reconciles relations, linkifies prose, and **relocates each document to its
 canonical layout path** (the store's `flush` renames a file when a status change

@@ -9,10 +9,18 @@
 //! the gate's one implementation — `opys query` is read-only and every other
 //! write is a lifecycle command, guarded by the rules engine instead.
 //!
-//! There is deliberately no CLI subcommand mounted on this yet: in a terminal,
-//! editing a body *is* editing the file. The core lives in the engine rather
-//! than in the server so that the invariant ("a body write is verify-gated")
-//! has exactly one implementation when a CLI or another consumer wants it.
+//! The gate has a CLI caller too: `opys apply --field k=v` and
+//! `--remove-field k` are field writes inside a composite batch, and they go
+//! through this gate rather than growing a second, weaker declared-field
+//! check. `apply` takes the pair apart, though: it calls [`field_write`] per
+//! field and brackets the *whole* batch with one [`problems`] snapshot and one
+//! [`refuse_new_problems`], so every step is judged against the finished
+//! document rather than against a half-applied one — and the corpus is
+//! verified twice per invocation instead of twice per field.
+//! [`body_core`] deliberately has none — in a terminal, editing a body *is*
+//! editing the file. Either way the core lives in the engine rather than in the
+//! server, so that the invariant ("a body write is verify-gated") has exactly
+//! one implementation for every consumer.
 
 use std::collections::HashSet;
 
@@ -74,6 +82,27 @@ pub fn field_core(
     value: Option<&str>,
     parse_errors: &[String],
 ) -> Result<()> {
+    let before = problems(prj, store, parse_errors)?;
+    field_write(prj, store, id, key, value)?;
+    refuse_new_problems(prj, store, &before, parse_errors)
+}
+
+/// The write half of [`field_core`], with the verify gate left to the caller.
+///
+/// `apply` brackets a whole composite batch with a single [`problems`] /
+/// [`refuse_new_problems`] pair, so it needs the write without a gate around
+/// it: a claim's `--field` is legal at the status the same invocation is moving
+/// *to*, and gating it on its own would judge it at the status being left. The
+/// refusals that are *not* verify findings — a nameless key, a key another path
+/// owns, removing a field that is not there — live here, so every caller makes
+/// them whether or not it brings its own gate.
+pub(crate) fn field_write(
+    prj: &Project,
+    store: &mut Store,
+    id: &str,
+    key: &str,
+    value: Option<&str>,
+) -> Result<()> {
     let key = key.trim();
     if key.is_empty() {
         return Err(usage("a field needs a name"));
@@ -84,7 +113,6 @@ pub fn field_core(
         )));
     }
     let dkey = store.dkey_of(id)?;
-    let before = problems(prj, store, parse_errors)?;
 
     let mut doc = store.doc(dkey)?;
     match value {
@@ -100,8 +128,7 @@ pub fn field_core(
     }
     store.put_doc(&prj.pcfg, Some(dkey), &doc)?;
     store.touch(dkey, &now_rfc3339())?;
-
-    refuse_new_problems(prj, store, &before, parse_errors)
+    Ok(())
 }
 
 /// The dedicated write path that owns `key`, if one does. `created` is
@@ -115,7 +142,7 @@ fn owned_elsewhere(key: &str) -> Option<&'static str> {
         "tags" => Some("use tag"),
         "updated" => Some("it is auto-maintained; every write refreshes it"),
         "history" => {
-            Some("it is auto-maintained lifecycle history written by new/set-status/import")
+            Some("it is auto-maintained lifecycle history written by new/set-status/apply/import")
         }
         k if crate::refs::RELATION_FIELDS.contains(&k) => {
             Some("relation maps are written by block/unblock and the reconcile pass")
@@ -126,7 +153,7 @@ fn owned_elsewhere(key: &str) -> Option<&'static str> {
 
 /// The shared gate: refuse (leaving the flush to never happen) if the store's
 /// verify findings grew relative to `before`.
-fn refuse_new_problems(
+pub(crate) fn refuse_new_problems(
     prj: &Project,
     store: &mut Store,
     before: &HashSet<String>,
@@ -146,10 +173,21 @@ fn refuse_new_problems(
 
 /// The corpus's verify findings as a set, for a before/after difference.
 ///
-/// Keyed by the problem strings themselves. These edits never move a file (they
-/// touch neither status nor layout), so the path-prefixed strings are stable
-/// enough to difference directly.
-fn problems(prj: &Project, store: &mut Store, parse_errors: &[String]) -> Result<HashSet<String>> {
+/// Keyed by the problem strings themselves, which is sound because the two
+/// snapshots describe the same paths. Most findings are prefixed by the
+/// document's id, but several are prefixed by its path instead (a missing or
+/// malformed id, an unrecognized prefix, a filename that does not match the id,
+/// a duplicate id, a retired id) — and the path a snapshot reports cannot move
+/// between the two: `Store::put_doc` re-derives it from the `Doc` the caller
+/// read *before* mutating it, and relocating a file to its canonical layout
+/// path happens later still, in the flush. That is what lets `apply` bracket a
+/// whole batch, status transition included: the transition changes where the
+/// document will eventually land, not the path either snapshot prints.
+pub(crate) fn problems(
+    prj: &Project,
+    store: &mut Store,
+    parse_errors: &[String],
+) -> Result<HashSet<String>> {
     let docs: Vec<_> = store.all_docs()?.into_iter().map(|(_, d)| d).collect();
     Ok(verify::collect_problems(prj, &docs, parse_errors.to_vec())
         .into_iter()

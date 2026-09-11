@@ -3298,8 +3298,8 @@ fn verify_rejects_malformed_timestamp_but_allows_absent() {
 fn sync_backfills_missing_timestamps_from_mtime() {
     let dir = project();
     // A document predating both the timestamps and the lifecycle map: sync
-    // cannot invent history (only new/set-status/import write it), so the one
-    // remaining problem afterwards is `missing history`.
+    // cannot invent history (only new/set-status/apply/import write it), so the
+    // one remaining problem afterwards is `missing history`.
     dir.child("opys/features/FEAT-0001.md")
         .write_str("---\nid: FEAT-0001\nstatus: planned\ntags: [a]\n---\n\n# F\n")
         .unwrap();
@@ -6878,6 +6878,672 @@ fn the_shipped_work_item_graph_closes_only_from_review() {
         .failure()
         .code(2)
         .stderr(predicate::str::contains("review, user-review"));
+}
+
+// ---------------------------------------------------------------------------
+// `opys apply` — the composite write / the atomic claim (TASK-0123)
+// ---------------------------------------------------------------------------
+
+/// A `task` type with everything a claim needs at once: a declared status
+/// graph, the ordinary declared field a project records the claimant in, a log
+/// section, and a `require_log_since_status` rule on `review` — so a claim into
+/// a guarded status is a real case here rather than a hypothetical.
+///
+/// Deliberately its own const rather than an addition to `WORK_ITEM_TYPES`:
+/// that fixture declares no `[transitions]`, and giving it a graph would
+/// retroactively constrain the several dozen tests built on it.
+const CLAIM_CFG: &str = "pad = 4\n\
+[types.task]\nprefix = \"TASK\"\n\
+statuses = [\"todo\", \"doing\", \"review\", \"done\"]\n\
+default_status = \"todo\"\n\
+terminal_statuses = [\"done\"]\n\
+[types.task.transitions]\n\
+todo = [\"doing\"]\n\
+doing = [\"review\", \"todo\"]\n\
+review = [\"done\", \"doing\"]\n\
+[types.task.fields.claimed_by]\ntype = \"string\"\n\
+[[types.task.sections]]\nheading = \"Tasks\"\nkind = \"checklist\"\nrequired = true\n\
+[[types.task.sections]]\nheading = \"Progress\"\nkind = \"log\"\nrequired = true\n\
+[[rules]]\n\
+when = { type = \"task\", status = \"review\" }\n\
+require_log_since_status = \"Progress\"\n";
+
+const CLAIM_DOC: &str = "opys/TASK-0001.md";
+
+/// A project under [`CLAIM_CFG`] holding one pickable task, TASK-0001.
+fn claim_project() -> TempDir {
+    let dir = project_with(CLAIM_CFG);
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Pick me"])
+        .assert()
+        .success();
+    dir
+}
+
+/// The composite lands all three writes at once, and the document says so: the
+/// status moved, the declared claimant field is set, and exactly one dated
+/// bullet was appended — with exactly one new history entry, which is what
+/// "one flush" looks like from the outside. (`src/commands/apply.rs` pins the
+/// flush plan itself: one write, no renames.)
+#[test]
+fn apply_lands_the_status_the_field_and_the_log_in_one_batch() {
+    let dir = claim_project();
+    opys(&dir)
+        .args([
+            "apply",
+            "TASK-0001",
+            "--status",
+            "doing",
+            "--field",
+            "claimed_by=agent-7",
+            "--log",
+            "claimed",
+        ])
+        .assert()
+        .success()
+        .stdout("TASK-0001 -> doing, claimed_by set, logged to '## Progress'\n");
+
+    let text = read(&dir, CLAIM_DOC);
+    assert!(text.contains("status: doing"), "{text}");
+    assert!(text.contains("claimed_by: agent-7"), "{text}");
+    assert!(
+        text.contains(&format!("## Progress\n- {PINNED_NOW} claimed\n")),
+        "{text}"
+    );
+    // Two history entries: the one `new` seeded, and this transition's.
+    assert_eq!(text.matches("\": ").count(), 2, "{text}");
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// Any one part failing abandons the whole invocation: the document is
+/// byte-identical afterwards and the exit code is 2. Four ways to fail — an
+/// unknown status, an undeclared edge, an unknown field, and a rule on the
+/// target status — because they are refused by four different guards and only
+/// the ordering of the batch makes all four all-or-nothing.
+#[test]
+fn apply_is_all_or_nothing_over_its_parts() {
+    let dir = claim_project();
+    let before = read(&dir, CLAIM_DOC);
+
+    let refusals: [(&[&str], &str); 3] = [
+        (
+            &["--status", "nope", "--field", "claimed_by=a", "--log", "x"],
+            "unknown status \"nope\" for type 'task'",
+        ),
+        (
+            &[
+                "--status",
+                "review",
+                "--field",
+                "claimed_by=a",
+                "--log",
+                "x",
+            ],
+            "cannot move TASK-0001 from todo to review: type 'task' declares no such transition \
+             (from todo: doing)",
+        ),
+        (
+            &["--status", "doing", "--field", "bogus=1", "--log", "x"],
+            "unknown frontmatter field 'bogus'",
+        ),
+    ];
+    for (args, message) in refusals {
+        let mut cmd = opys(&dir);
+        cmd.args(["apply", "TASK-0001"]).args(args);
+        cmd.assert()
+            .failure()
+            .code(2)
+            .stderr(predicate::str::contains(message));
+        assert_eq!(read(&dir, CLAIM_DOC), before, "after `apply {args:?}`");
+    }
+
+    // The fourth: a rule on the target status. `review` demands a log entry
+    // since the status last changed, and this batch offers none.
+    opys(&dir)
+        .args(["apply", "TASK-0001", "--status", "doing"])
+        .assert()
+        .success();
+    let at_doing = read(&dir, CLAIM_DOC);
+    opys(&dir)
+        .args([
+            "apply",
+            "TASK-0001",
+            "--status",
+            "review",
+            "--field",
+            "claimed_by=a",
+        ])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "'## Progress' has no log entry since the status last changed",
+        ));
+    assert_eq!(read(&dir, CLAIM_DOC), at_doing);
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// The rule the fixed order exists for: the entry `--log` writes is already in
+/// the body when the status step evaluates the rules, so a claim into a
+/// `require_log_since_status` status is legal in **one** command — where the
+/// bare transition is not.
+#[test]
+fn a_claim_into_a_log_guarded_status_is_one_command() {
+    let dir = claim_project();
+    opys(&dir)
+        .args(["apply", "TASK-0001", "--status", "doing"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args(["set-status", "TASK-0001", "review"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "'## Progress' has no log entry since the status last changed",
+        ));
+    opys(&dir)
+        .args([
+            "apply",
+            "TASK-0001",
+            "--status",
+            "review",
+            "--field",
+            "claimed_by=agent-7",
+            "--log",
+            "ready for review",
+        ])
+        .assert()
+        .success()
+        .stdout("TASK-0001 -> review, claimed_by set, logged to '## Progress'\n");
+    let text = read(&dir, CLAIM_DOC);
+    assert!(text.contains("status: review"), "{text}");
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// The guarantee, sequentially: the second claimant arrives after the first has
+/// committed, finds the document already in the working status, and is refused
+/// by the **transition guard** — not by the lock, which by then is free. It
+/// writes nothing, so the winner's claim stands.
+#[test]
+fn a_second_claim_is_refused_by_the_transition_guard() {
+    let dir = claim_project();
+    let claim = |who: &str| {
+        let mut cmd = opys(&dir);
+        cmd.args([
+            "apply",
+            "TASK-0001",
+            "--status",
+            "doing",
+            "--field",
+            &format!("claimed_by={who}"),
+            "--log",
+            "claimed",
+        ]);
+        cmd
+    };
+    claim("agent-7").assert().success();
+    let won = read(&dir, CLAIM_DOC);
+
+    claim("agent-9")
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "cannot move TASK-0001 from doing to doing: it is already doing, and a composite \
+             write asserts a transition — another writer got there first",
+        ))
+        .stderr(predicate::str::contains("inventory lock").not());
+    assert_eq!(read(&dir, CLAIM_DOC), won, "the loser wrote nothing");
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// And concurrently: two processes claim the same document at the same time.
+/// The flock serializes them — nothing more — and the state machine decides,
+/// so exactly one exits 0, the other exits 2 with the transition guard's words
+/// (never the lock's), the document names exactly one claimant with exactly one
+/// log entry, and the corpus still verifies.
+#[test]
+fn two_claims_race_and_exactly_one_wins() {
+    let dir = claim_project();
+    let root = dir.path().to_path_buf();
+    let handles: Vec<_> = ["agent-7", "agent-9"]
+        .into_iter()
+        .map(|who| {
+            let root = root.clone();
+            std::thread::spawn(move || {
+                let mut cmd = Command::cargo_bin("opys").unwrap();
+                cmd.arg("--root").arg(&root);
+                cmd.env("OPYS_NOW", PINNED_NOW);
+                // Generous on purpose: a short timeout on a loaded machine
+                // would refuse for the lock, which is the one answer this test
+                // exists to rule out.
+                cmd.env("OPYS_LOCK_TIMEOUT_MS", "5000");
+                cmd.args([
+                    "apply",
+                    "TASK-0001",
+                    "--status",
+                    "doing",
+                    "--field",
+                    &format!("claimed_by={who}"),
+                    "--log",
+                    &format!("claimed by {who}"),
+                ]);
+                (who, cmd.output().unwrap())
+            })
+        })
+        .collect();
+    let outcomes: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+    let (won, lost): (Vec<_>, Vec<_>) = outcomes.iter().partition(|(_, o)| o.status.success());
+    assert_eq!(won.len(), 1, "exactly one claimant may win: {outcomes:?}");
+    assert_eq!(lost.len(), 1, "{outcomes:?}");
+    let (loser, refusal) = lost[0];
+    assert_eq!(refusal.status.code(), Some(2), "{outcomes:?}");
+    let complaint = String::from_utf8_lossy(&refusal.stderr).into_owned();
+    assert!(
+        complaint.contains("a composite write asserts a transition"),
+        "the loser must lose to the state machine: {complaint}"
+    );
+    assert!(
+        !complaint.contains("inventory lock"),
+        "the lock only serializes; it must not be what refuses: {complaint}"
+    );
+
+    // The document carries the winner's claim and only the winner's: one field,
+    // one log entry, one new history entry.
+    let (winner, _) = won[0];
+    let text = read(&dir, CLAIM_DOC);
+    assert!(text.contains(&format!("claimed_by: {winner}")), "{text}");
+    assert!(!text.contains(loser), "the loser left a trace: {text}");
+    assert_eq!(text.matches("claimed_by:").count(), 1, "{text}");
+    assert_eq!(
+        text.matches(&format!("- {PINNED_NOW} ")).count(),
+        1,
+        "{text}"
+    );
+    assert_eq!(text.matches("\": ").count(), 2, "{text}");
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// The other half of that distinction: when the lock really is what stops a
+/// claim, the refusal says so — a different message, and still nothing written.
+#[test]
+fn a_claim_blocked_by_the_lock_says_so_instead() {
+    use fs4::fs_std::FileExt as _;
+    let dir = claim_project();
+    let before = read(&dir, CLAIM_DOC);
+    let base = dir.path().join("opys");
+    let holder = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(opys_backend_markdown_local::lock_path(&base).unwrap())
+        .unwrap();
+    assert!(holder.try_lock_exclusive().unwrap());
+
+    opys(&dir)
+        .env("OPYS_LOCK_TIMEOUT_MS", "150")
+        .args([
+            "apply",
+            "TASK-0001",
+            "--status",
+            "doing",
+            "--field",
+            "claimed_by=agent-7",
+            "--log",
+            "claimed",
+        ])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("inventory lock"))
+        .stderr(predicate::str::contains("asserts a transition").not());
+    assert_eq!(read(&dir, CLAIM_DOC), before);
+}
+
+/// Releasing is the same shape, which is the argument for a general composite
+/// over a `claim` verb: move back, clear the field, log it — one batch.
+#[test]
+fn apply_releases_a_claim_in_one_batch_too() {
+    let dir = claim_project();
+    opys(&dir)
+        .args([
+            "apply",
+            "TASK-0001",
+            "--status",
+            "doing",
+            "--field",
+            "claimed_by=agent-7",
+            "--log",
+            "claimed",
+        ])
+        .assert()
+        .success();
+    opys(&dir)
+        .args([
+            "apply",
+            "TASK-0001",
+            "--status",
+            "todo",
+            "--remove-field",
+            "claimed_by",
+            "--log",
+            "released",
+        ])
+        .assert()
+        .success()
+        .stdout("TASK-0001 -> todo, claimed_by removed, logged to '## Progress'\n");
+    let text = read(&dir, CLAIM_DOC);
+    assert!(text.contains("status: todo"), "{text}");
+    assert!(!text.contains("claimed_by"), "{text}");
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// [`CLAIM_CFG`] plus the rule that makes a claim enforceable at all: the
+/// working status *requires* the claimant field, so a document cannot sit in
+/// `doing` with nobody on it. Its own const because several tests above move
+/// TASK-0001 in and out of `doing` with no field at all.
+const GUARDED_CLAIM_CFG: &str = "pad = 4\n\
+[types.task]\nprefix = \"TASK\"\n\
+statuses = [\"todo\", \"doing\", \"review\", \"done\"]\n\
+default_status = \"todo\"\n\
+terminal_statuses = [\"done\"]\n\
+[types.task.transitions]\n\
+todo = [\"doing\"]\n\
+doing = [\"review\", \"todo\"]\n\
+review = [\"done\", \"doing\"]\n\
+[types.task.fields.claimed_by]\ntype = \"string\"\n\
+[[types.task.sections]]\nheading = \"Tasks\"\nkind = \"checklist\"\nrequired = true\n\
+[[types.task.sections]]\nheading = \"Progress\"\nkind = \"log\"\nrequired = true\n\
+[[rules]]\n\
+when = { type = \"task\", status = \"doing\" }\n\
+require_field = \"claimed_by\"\n";
+
+/// The release under the configuration that motivates `--remove-field` in the
+/// first place: the status being *left* requires the field being cleared. Both
+/// halves have to be one command — the claim, because the target status demands
+/// a field this very invocation writes, and the release, because the source
+/// status demands a field this very invocation clears. The second is why the
+/// verify gate brackets the *whole* batch: judged on its own, while the
+/// document still sat in `doing`, the removal would be a new verify problem and
+/// the documented release shape would be unreachable.
+#[test]
+fn a_claim_and_its_release_are_each_one_command_under_require_field() {
+    let dir = project_with(GUARDED_CLAIM_CFG);
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Pick me"])
+        .assert()
+        .success();
+
+    opys(&dir)
+        .args([
+            "apply",
+            "TASK-0001",
+            "--status",
+            "doing",
+            "--field",
+            "claimed_by=agent-7",
+            "--log",
+            "picked up",
+        ])
+        .assert()
+        .success()
+        .stdout("TASK-0001 -> doing, claimed_by set, logged to '## Progress'\n");
+    opys(&dir).arg("verify").assert().success();
+
+    opys(&dir)
+        .args([
+            "apply",
+            "TASK-0001",
+            "--status",
+            "todo",
+            "--remove-field",
+            "claimed_by",
+            "--log",
+            "handing back",
+        ])
+        .assert()
+        .success()
+        .stdout("TASK-0001 -> todo, claimed_by removed, logged to '## Progress'\n");
+    let text = read(&dir, CLAIM_DOC);
+    assert!(text.contains("status: todo"), "{text}");
+    assert!(!text.contains("claimed_by"), "{text}");
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// A removal the *target* status forbids is still refused, by name and by the
+/// same gate — bracketing the batch relaxes nothing about the status it lands
+/// in.
+#[test]
+fn a_removal_the_target_status_forbids_is_still_refused() {
+    let dir = project_with(GUARDED_CLAIM_CFG);
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Pick me"])
+        .assert()
+        .success();
+    let before = read(&dir, CLAIM_DOC);
+    opys(&dir)
+        .args([
+            "apply",
+            "TASK-0001",
+            "--status",
+            "doing",
+            "--field",
+            "claimed_by=agent-7",
+            "--remove-field",
+            "claimed_by",
+        ])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("field 'claimed_by' is required"));
+    assert_eq!(read(&dir, CLAIM_DOC), before);
+}
+
+/// [`GUARDED_CLAIM_CFG`] plus a value constraint scoped to the same working
+/// status: while a task is `doing`, whoever holds it must be an agent. That is
+/// what makes handing a document *on* a case the status being left would
+/// refuse.
+const HANDOFF_CLAIM_CFG: &str = "pad = 4\n\
+[types.task]\nprefix = \"TASK\"\n\
+statuses = [\"todo\", \"doing\", \"review\", \"done\"]\n\
+default_status = \"todo\"\n\
+terminal_statuses = [\"done\"]\n\
+[types.task.transitions]\n\
+todo = [\"doing\"]\n\
+doing = [\"review\", \"todo\"]\n\
+review = [\"done\", \"doing\"]\n\
+[types.task.fields.claimed_by]\ntype = \"string\"\n\
+[[types.task.sections]]\nheading = \"Tasks\"\nkind = \"checklist\"\nrequired = true\n\
+[[types.task.sections]]\nheading = \"Progress\"\nkind = \"log\"\nrequired = true\n\
+[[rules]]\n\
+when = { type = \"task\", status = \"doing\" }\n\
+require_field = \"claimed_by\"\n\
+[[rules]]\n\
+when = { type = \"task\", status = \"doing\" }\n\
+field_matches = { field = \"claimed_by\", pattern = \"^agent-\" }\n";
+
+/// Handing a document on — move it forward and rewrite the claimant field in
+/// one breath — is one command, even though the value being written is illegal
+/// at the status being *left*. The mirror image of the release above: the
+/// verify gate brackets the whole batch, so what has to hold is the document
+/// the batch finishes with. `set-status TASK-0001 review` followed by an
+/// ordinary field write performs exactly these two writes and is accepted, and
+/// the composite must never be stricter than the sequence it composes.
+#[test]
+fn apply_hands_a_document_on_with_a_value_only_the_target_allows() {
+    let dir = project_with(HANDOFF_CLAIM_CFG);
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Pick me"])
+        .assert()
+        .success();
+    opys(&dir)
+        .args([
+            "apply",
+            "TASK-0001",
+            "--status",
+            "doing",
+            "--field",
+            "claimed_by=agent-7",
+            "--log",
+            "picked up",
+        ])
+        .assert()
+        .success();
+
+    opys(&dir)
+        .args([
+            "apply",
+            "TASK-0001",
+            "--status",
+            "review",
+            "--field",
+            "claimed_by=reviewer-3",
+            "--log",
+            "handing on to review",
+        ])
+        .assert()
+        .success()
+        .stdout("TASK-0001 -> review, claimed_by set, logged to '## Progress'\n");
+    let text = read(&dir, CLAIM_DOC);
+    assert!(text.contains("status: review"), "{text}");
+    assert!(text.contains("claimed_by: reviewer-3"), "{text}");
+    opys(&dir).arg("verify").assert().success();
+}
+
+/// And the target status keeps its say over that same write: claiming with a
+/// value `doing` forbids is refused by the rule's own message, and nothing is
+/// written.
+#[test]
+fn apply_refuses_a_value_the_target_status_forbids() {
+    let dir = project_with(HANDOFF_CLAIM_CFG);
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Pick me"])
+        .assert()
+        .success();
+    let before = read(&dir, CLAIM_DOC);
+    opys(&dir)
+        .args([
+            "apply",
+            "TASK-0001",
+            "--status",
+            "doing",
+            "--field",
+            "claimed_by=reviewer-3",
+            "--log",
+            "picked up",
+        ])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "field 'claimed_by' must match /^agent-/",
+        ));
+    assert_eq!(read(&dir, CLAIM_DOC), before);
+}
+
+/// An invocation that names no action at all is a usage error rather than a
+/// silent no-op that still bumps `updated`; and `--log -` is refused rather
+/// than fighting the id list for stdin.
+#[test]
+fn apply_refuses_an_empty_batch_and_a_stdin_log() {
+    let dir = claim_project();
+    let before = read(&dir, CLAIM_DOC);
+    opys(&dir)
+        .args(["apply", "TASK-0001"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("apply needs something to do"));
+    opys(&dir)
+        .args(["apply", "TASK-0001", "--log", "-"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("--log does not read stdin"));
+    assert_eq!(read(&dir, CLAIM_DOC), before);
+}
+
+/// `--reason` is read only by the status step and `--section` only by the log
+/// step, so passing either without its step is refused rather than quietly
+/// dropped. The section case is the sharp one: with `--log` the same misspelling
+/// is caught by name, and swallowing it without `--log` would make the typo
+/// depend on which other flags happened to be present.
+#[test]
+fn apply_refuses_a_modifier_whose_step_is_absent() {
+    let dir = claim_project();
+    let before = read(&dir, CLAIM_DOC);
+    opys(&dir)
+        .args([
+            "apply",
+            "TASK-0001",
+            "--field",
+            "claimed_by=a",
+            "--reason",
+            "because",
+        ])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "--reason writes <status>_reason and needs --status",
+        ));
+    opys(&dir)
+        .args([
+            "apply",
+            "TASK-0001",
+            "--field",
+            "claimed_by=a",
+            "--section",
+            "Nope",
+        ])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "--section names the section --log appends to and needs --log",
+        ));
+    assert_eq!(read(&dir, CLAIM_DOC), before);
+}
+
+/// The id axis and the action axis compose: several ids take the same batch,
+/// and one refused id abandons the lot.
+#[test]
+fn apply_takes_an_id_list_and_abandons_the_batch_on_one_refusal() {
+    let dir = claim_project();
+    opys(&dir)
+        .args(["new", "--type", "task", "--title", "Second"])
+        .assert()
+        .success();
+    // TASK-0002 is moved out of the way, so the shared batch is legal for
+    // TASK-0001 and refused for TASK-0002.
+    opys(&dir)
+        .args(["set-status", "TASK-0002", "doing"])
+        .assert()
+        .success();
+    let before = (read(&dir, CLAIM_DOC), read(&dir, "opys/TASK-0002.md"));
+
+    opys(&dir)
+        .args([
+            "apply",
+            "TASK-0001,TASK-0002",
+            "--status",
+            "doing",
+            "--field",
+            "claimed_by=agent-7",
+        ])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "TASK-0002: cannot move TASK-0002 from doing to doing",
+        ))
+        .stderr(predicate::str::contains(
+            "abandoned the batch of 2 ids; nothing was written",
+        ));
+    assert_eq!(read(&dir, CLAIM_DOC), before.0, "the first id rolled back");
+    assert_eq!(read(&dir, "opys/TASK-0002.md"), before.1);
 }
 
 // ---------------------------------------------------------------------------

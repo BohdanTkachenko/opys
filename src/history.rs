@@ -6,11 +6,12 @@
 //! not strictly greater than the document's greatest existing key is bumped by
 //! one microsecond — two transitions inside one second can never collide.
 //! `new`/`import` seed the first entry from `created`, so `created` and the
-//! first key always denote the same instant; `set-status` appends. Nothing else
-//! writes here — `block`/`unblock` change no status, so they leave no entry. A
-//! status change on a document that predates the map [`seed`]s it first, at the
-//! status being left, so no write can leave `created` and the first key
-//! disagreeing.
+//! first key always denote the same instant; `set-status` appends, and so does
+//! `apply --status`, which is that same write inside a composite batch. Nothing
+//! else writes here — `block`/`unblock` change no status, so they leave no
+//! entry. A status change on a document that predates the map [`seed`]s it
+//! first, at the status being left, so no write can leave `created` and the
+//! first key disagreeing.
 //!
 //! Nothing hand-edits the map. `verify` reports a botched one (see
 //! `commands::verify::check_history`) but never repairs it: unlike the relation

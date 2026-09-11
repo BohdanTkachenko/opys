@@ -80,6 +80,7 @@ its ID prefix.
 | `set-status IDS… S [--reason R]` | guarded transition against the type's statuses, its declared `[transitions]` edges (when it declares any — the refusal names the legal targets), its `max_visits` budget for the target status (the refusal names the configured `then`) and its rules; a terminal status is reached only via `close`. `IDS` is an id list (see below) |
 | `tag IDS… --add a,b --remove c` | tag maintenance; `IDS` is an id list |
 | `log ID "TEXT"\|- [--section H]` | append a dated entry (`- <UTC ts> text`) to the type's `kind = "log"` section; `-` reads the entry from stdin (continuation lines indent two spaces). Takes **one** id — the second positional is the text. A missing-but-declared section is created; a type with none, or with two and no `--section`, exits 2 |
+| `apply IDS… [--status S] [--reason R] [--field k=v]… [--remove-field k]… [--log "TEXT"] [--section H]` | several writes as **one** all-or-nothing batch: `--field` writes, then the log entry, then the status transition, then `--remove-field` removals, flushed once or not at all. How an agent claims a document: `opys apply TASK-0007 --status in-progress --field claimed_by=agent-7 --log "picked up"`. Unlike `set-status`, `--status` asserts a *transition* — a document already at that status is refused — so two agents racing for the same one cannot both win, and the loser writes nothing. The fixed order is what lets one command satisfy a `require_log_since_status` rule on the status it is moving to; the verify gate is taken once around the whole batch, so every part is judged against the document the batch *finishes* with — which is what lets `--status todo --remove-field claimed_by` release a claim the working status `require_field`s, and `--status review --field claimed_by=reviewer-3` hand one on. `--log -` is not stdin here (`-` is the id list) |
 | `block IDS… --by BLOCKER` / `unblock IDS… --by BLOCKER` | record/remove a blocker link (`blocked_by`/`blocks`); the blocked side is an id list. Status is untouched: **blocked is derived** — a document is blocked while it holds a `blocked_by` entry that is not struck, still resolves, and whose target is not at a status its type lists in `releases_blocks`. Everything that blocks is a document |
 | `retire IDS… [--reason R]` | delete file(s), strike inbound references (warning when a struck link leaves a `requires_link` rule failing), log each ID (with its title) to `_retired.md` so it is never reallocated; `--reason` is echoed, not persisted (git records the why) |
 | `close IDS… [--force]` / `cleanup` | finish doc(s) whose type has a terminal status — and, where the type declares `[transitions]`, an edge into one from the document's current status (strike its refs everywhere and log the ID to `_retired.md`); strip struck refs (ledger-reserving any id whose last tombstone is stripped) |
@@ -91,10 +92,10 @@ its ID prefix.
 | `agent-rules --tool <editor>` | generate a rules-based editor's instruction file from the canonical rule |
 
 Every id-taking mutating command (`set-status`, `tag`, `retire`, `block`,
-`unblock`, `close`) takes an **id list**, three interchangeable ways: several
-ids (`set-status FEAT-0001 FEAT-0002 partial`), a comma-separated list (`FEAT-0001,FEAT-0002`),
-or `-` to read the list from stdin (comma/space/newline separation all
-accepted), which composes with `list`:
+`unblock`, `close`, `apply`) takes an **id list**, three interchangeable ways:
+several ids (`set-status FEAT-0001 FEAT-0002 partial`), a comma-separated list
+(`FEAT-0001,FEAT-0002`), or `-` to read the list from stdin
+(comma/space/newline separation all accepted), which composes with `list`:
 `opys list --type task --status review --format ids | opys close -`. A batch is
 **all-or-nothing** — ids are applied in order and the first failure aborts the
 whole invocation with exit 2, writing nothing, so a widened list that hits a bad
@@ -104,7 +105,9 @@ rather than reaching for `--force`, which drops that guard for every id. Filter
 on a status a live document can hold: a terminal status is reached only through
 `close` (which deletes the document), so `--status done` selects nothing, and an
 empty selection exits 2 (`expected at least one id`) without writing.
-`log` is the exception — one id, because its `-` is the entry text.
+`log` is the exception — one id, because its `-` is the entry text. `apply`
+batches on a second axis as well: several *actions* on one document, likewise
+all-or-nothing.
 
 ## Code references to IDs
 
@@ -175,9 +178,13 @@ resets and is greppable, deleted when you finish.
    `chore`). This scaffolds the type's required sections (`## Tasks` / `## Progress`,
    plus `## Reproduction` for a bug) and links the feature(s); the CLI rejects a
    link to a feature that doesn't exist, and auto-adds the reverse link.
-3. As you work, edit `## Tasks` (check items off) — a normal file edit — and
-   record what happened with `opys log ID "…"` (branch/commit/PR, a decision and
-   why, what you ruled out). A `## Progress` section is a `log`: the command
+3. Take the document before you work on it, and take it in **one** command:
+   `opys apply ID --status in-progress --field claimed_by=… --log "picked up"`
+   (where the project declares such a field). That is a claim — if another agent
+   got there first the whole invocation is refused, exit 2, writing nothing, so
+   two agents never work the same item. Then, as you work, edit `## Tasks`
+   (check items off) — a normal file edit — and record what happened with
+   `opys log ID "…"` (branch/commit/PR, a decision and why, what you ruled out). A `## Progress` section is a `log`: the command
    stamps each entry with the UTC time, and `verify` checks every bullet is
    dated and that they do not go backwards, so never append to it by hand. Use
    `opys log ID -` for a multi-line note. Don't hand-maintain the `references`

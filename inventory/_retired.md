@@ -24,6 +24,7 @@ retired:
   TASK-0116: 'engine: ttl, max_visits, the stuck predicate, `verify --fix`, exit 3'
   TASK-0117: 'engine: the gix branch reader, default-on, and the comrak trim'
   TASK-0122: 'engine: interleaved id sequences'
+  TASK-0123: 'engine: the atomic claim batch'
 ---
 
 # Retired ids
