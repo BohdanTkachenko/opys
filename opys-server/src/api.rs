@@ -52,6 +52,7 @@ use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use opys_engine::commands::now_rfc3339;
 use opys_engine::error::OpysError;
+use opys_engine::next::{PickQuery, PickResult, DEFAULT_LIMIT};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
@@ -276,6 +277,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/allowlist", post(allowlist))
         // axum 0.8 path captures are `{name}`; the 0.7 `:name` form panics.
         .route("/api/group/{key}/union", get(group_union))
+        // Project-scoped, not corpus-scoped, and deliberately so: pickability
+        // is evaluated on **main** (ADR-0102), so the caller names the project
+        // and the node picks its primary worktree rather than making the client
+        // guess which of a group's corpora is the truth. `{key}` is the same
+        // key `/api/projects` returns.
+        .route("/api/projects/{key}/next", get(pick))
         .route("/api/corpus/{cid}/docs", get(docs))
         .route("/api/corpus/{cid}/doc/{docid}", get(doc))
         .route("/api/corpus/{cid}/query", post(query))
@@ -1082,6 +1089,70 @@ async fn query(
     // SELECT-only is enforced by the engine's plan guard, which is the single
     // place that decision lives. Whatever it says goes back verbatim: it names
     // the statement kind it refused, which is more useful than a rewrite.
+    result.map(Json).map_err(ApiError::bad_request)
+}
+
+/// The `?status=&type=&n=` query of the pick endpoint.
+///
+/// `status` is required — unlike [`DocQuery`]'s optional filters, it is the
+/// question itself, and there is no sensible default for it. A missing one is a
+/// [`QueryRejection`] (400) before this is ever built.
+#[derive(Debug, Deserialize)]
+struct NextQuery {
+    status: String,
+    #[serde(rename = "type")]
+    type_name: Option<String>,
+    n: Option<usize>,
+}
+
+/// The pick oracle for one project, from its **primary** corpus.
+///
+/// `{key}` is a project-group key, the same string `/api/projects` emits and
+/// `/api/group/{key}/union` accepts. A group is a repository and its worktrees;
+/// `next` must answer from exactly one of them, and ADR-0102 says which — main
+/// is the truth for pickability, so this is the main worktree (falling back to
+/// the group's first corpus when discovery marked none, which happens only
+/// outside git).
+///
+/// The body is [`PickResult`], serialized from the very same engine type the
+/// CLI's `--json` prints; `opys-server/tests/api.rs` pins that they agree.
+///
+/// Named `pick` rather than `next` because [`axum::middleware::Next`] is in
+/// scope here and a handler of that name beside it would read as the same
+/// thing.
+async fn pick(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    query: Result<Query<NextQuery>, QueryRejection>,
+) -> Result<Json<PickResult>, ApiError> {
+    let Query(query) = query?;
+    if query.status.is_empty() {
+        return Err(ApiError::bad_request("next: ?status= is required"));
+    }
+    let manager = Arc::clone(&state.manager);
+    let wanted = key.clone();
+    // The manager lock, taken off the reactor, held only for the cid lookup.
+    let cid = tokio::task::spawn_blocking(move || {
+        let manager = lock(&manager);
+        let group = manager.groups().iter().find(|g| g.key == wanted)?;
+        let corpus = group
+            .corpora
+            .iter()
+            .find(|c| c.is_primary)
+            .or_else(|| group.corpora.first())?;
+        Some(corpus.cid.clone())
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("resolving the project failed: {e}")))?
+    .ok_or_else(|| ApiError::not_found(format!("no such project: {key}")))?;
+
+    let q = PickQuery {
+        status: query.status,
+        // `?type=` with no value is a cleared dropdown, not the empty type.
+        type_filter: query.type_name.filter(|s| !s.is_empty()),
+        limit: query.n.unwrap_or(DEFAULT_LIMIT),
+    };
+    let result = with_corpus(&state, &cid, move |client| client.next(q)).await?;
     result.map(Json).map_err(ApiError::bad_request)
 }
 

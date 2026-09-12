@@ -274,18 +274,32 @@ Layering, roughly outermost-in:
   since priority is opt-in per ADR-0095), `effective_priority` (the smallest
   number over a document and everything it transitively still blocks, walked
   with a visited set so a cycle terminates) and `compare`. The single reader of
-  `order_by`, so `list --sort`, `next` and the flow view cannot order the same
-  corpus three ways. Unprioritised sorts **last** — `Option`'s own `Ord` is the
+  `order_by`, and `Corpus::ranked` is the one grouped ranking, so `list
+  --sort`, `next` and the flow view cannot order the same corpus three ways. Unprioritised sorts **last** — `Option`'s own `Ord` is the
   other way round, so every optional key goes through one helper here. The web
   UI board is the deliberate exception: it orders a column by the raw
   `priority` field, because that is the number drag-to-reorder writes.
+- `src/next.rs` — the pick oracle (FEAT-0106 / ADR-0102): `pick(prj, docs,
+  PickQuery { status, type_filter, limit }, now) -> PickResult { items,
+  orphaned }` plus `explain`, and the serde types both the CLI's `--json` and
+  the node's `GET /api/projects/{key}/next` emit — one payload, so the two
+  surfaces cannot drift. Pickable is at the status, not orphaned, and not live-
+  blocked, in that precedence; **orphaned** is fewer than `requires_link.min`
+  targets still holding (`releases_blocks` covers `implemented` as well as
+  `wontfix`, so a work item under a shipped feature is *reported* with its
+  reason rather than dropped). The order is `order::Corpus::ranked`, the same
+  ranking `list --sort` calls. Pure and read-only: no sync, no flush, no git —
+  pickability is main's (ADR-0102) — and exit 0 for every answer, empty
+  included. Occupancy, `--exclude-occupied` and per-status caps are kobzar's.
 - `src/observe.rs` — the time-aware observations (ADR-0101): `override_str()`
   (the one reader of the `OPYS_NOW` override) and `now()` (the override parsed
   as an instant, which `commands::now_utc_micros`/`today` go through — while
   `now_rfc3339` returns `override_str()` verbatim, so an offset survives),
   `parse_duration`, the `stuck`/`overflow` predicates over a type's
-  `[ttl]`/`[max_visits]` and `observations` (the one function `verify`, `next`
-  and the node call, so the three cannot disagree). Read-only throughout: an
+  `[ttl]`/`[max_visits]` and `observations` (the corpus-wide pass, which only
+  `verify` calls — `next::item` composes the same two predicates per item, in
+  the same overflow-before-stuck order, so a change to one has to be made in the
+  other; nothing in the build notices). Read-only throughout: an
   observation names the target the type's config declares and nothing here
   performs the move (ADR-0101, "Pending move to kobzar" — acting on staleness
   needs to know whether the agent holding the document is still alive, which
@@ -530,6 +544,17 @@ than editing the block by hand.
   `opys/src/main.rs` *refuses* `--root`/`--no-sync` under `web` (exit 2, naming
   `--under`) rather than warning — ignoring them yields a confident scan of the
   home directory that looks exactly like a scan of the right tree.
+- `GET /api/projects/{key}/next` is the pick oracle (`opys_engine::next::pick`)
+  over one project. `{key}` is a project-group key from `/api/projects`, and the
+  answer comes from the group's **primary** corpus — main is the truth for
+  pickability (ADR-0102), so the node picks the main worktree rather than making
+  the client choose. It is the second project-keyed route, alongside
+  `/api/group/{key}/union` — both resolve the same key against
+  `manager.groups()`, and the two spellings (`/api/group/` vs `/api/projects/`)
+  are worth unifying one day; every read *per inventory* stays on
+  `/api/corpus/{cid}/…`. A bad `status`/`type` comes back through
+  the actor call's inner `Result` as a 400, the way user SQL does, because
+  `From<OpysError> for ApiError` is unconditionally a 500.
 - A prefix entry's `depth` counts **project directories**, one level shallower
   than the `opys.toml` the walk reaches: `discover::scan_projects` owns the `+1`
   and is pinned against `registry::Entry::covers` by a test. When those two

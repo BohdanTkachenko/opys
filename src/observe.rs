@@ -19,7 +19,8 @@
 //!
 //! This module is the **one** place the wall clock is read ([`now`], which
 //! honours `OPYS_NOW`) and the one place the two predicates live, so `verify`,
-//! `opys next` and the node's flow view can never disagree about who is stuck.
+//! [`opys next`](crate::next) and the node's flow view can never disagree about
+//! who is stuck.
 //!
 //! Nothing here writes. An observation names where the *type's config* intends
 //! a stale document to go (`ttl`'s `then`, `max_visits`'s `then`), and moving it
@@ -40,6 +41,7 @@
 
 use std::fmt;
 
+use serde::Serialize;
 use time::{Duration, OffsetDateTime};
 
 use crate::doc::Doc;
@@ -115,7 +117,13 @@ pub fn parse_duration(s: &str) -> Option<Duration> {
 }
 
 /// What was observed about a document.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serialized internally tagged (`"kind": "stuck"` beside the variant's own
+/// fields), because [`Observation`] flattens it: `opys next --json` and the
+/// node's endpoint hand a dispatcher one flat object per observation rather
+/// than a wrapper it has to unwrap.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Kind {
     /// The document has held `status` since `since` (a history key), longer than
     /// the type's `ttl` of `after` (the configured spelling, echoed verbatim so
@@ -139,9 +147,10 @@ pub enum Kind {
 /// config intends it to go (`None` for a `ttl` written as a bare duration —
 /// that one is reported and nothing more). opys never performs the move; the
 /// target is the project's declared intent, for a dispatcher to read.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Observation {
     pub id: String,
+    #[serde(flatten)]
     pub kind: Kind,
     pub target: Option<String>,
 }
@@ -256,8 +265,13 @@ pub fn visits(doc: &Doc, status: &str) -> usize {
 
 /// Every observation over `docs`, ordered by id number then id.
 ///
-/// The one entry point: `verify`, `opys next` and the node all call this, so the
-/// three cannot disagree. Documents whose id prefix belongs to no type are
+/// The corpus-wide pass, and `verify`'s only reader of it. `opys next` does
+/// **not** come through here: [`crate::next`] composes the same two predicates
+/// per item ([`overflow`] then [`stuck`], in `next::item`), because an item
+/// carries only its own observations and this function's whole-corpus sort would
+/// be the wrong one for a ranked list. The two agree by convention, not by
+/// construction — a new [`Kind`], or a different per-document order, has to be
+/// made in both places. Documents whose id prefix belongs to no type are
 /// skipped — `verify::collect_problems` already reports them, and a type is what
 /// carries the thresholds.
 ///

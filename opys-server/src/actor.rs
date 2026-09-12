@@ -23,6 +23,8 @@ use opys_engine::commands::{now_rfc3339, verify};
 use opys_engine::doc::Doc;
 use opys_engine::error::{OpysError, Result};
 use opys_engine::lifecycle;
+use opys_engine::next::{self, PickQuery, PickResult};
+use opys_engine::observe;
 use opys_engine::project::Project;
 use opys_engine::refs;
 use opys_engine::store::Store;
@@ -323,6 +325,12 @@ enum Request {
         Vec<String>,
         SyncSender<Result<std::result::Result<QueryResult, String>>>,
     ),
+    /// Same double `Result` as [`Request::Query`]: the inner `Err` is the
+    /// caller's bad `status`/`type` (a 400), the outer one is ours (a 500).
+    Next(
+        PickQuery,
+        SyncSender<Result<std::result::Result<PickResult, String>>>,
+    ),
     Verify(SyncSender<VerifyStatus>),
     Stats(SyncSender<CorpusStats>),
     /// Reload now and reply when done — the deterministic path for tests and
@@ -393,6 +401,13 @@ impl CorpusClient {
         params: &[String],
     ) -> Result<std::result::Result<QueryResult, String>> {
         self.ask(|reply| Request::Query(sql.to_string(), params.to_vec(), reply))?
+    }
+
+    /// The pick oracle over the warm store. The inner `Err` is the caller's
+    /// query problem (a 400 for the API); the outer one is ours — the actor is
+    /// gone, or the corpus never loaded.
+    pub fn next(&self, q: PickQuery) -> Result<std::result::Result<PickResult, String>> {
+        self.ask(|reply| Request::Next(q, reply))?
     }
 
     /// Cached verify problems and the time they were computed.
@@ -474,6 +489,12 @@ impl CorpusHandle {
         params: &[String],
     ) -> Result<std::result::Result<QueryResult, String>> {
         self.client.query(sql, params)
+    }
+
+    /// The pick oracle over the warm store. The inner `Err` is the caller's
+    /// query problem (a 4xx for the API); the outer one means the actor is gone.
+    pub fn next(&self, q: PickQuery) -> Result<std::result::Result<PickResult, String>> {
+        self.client.next(q)
     }
 
     /// Cached verify problems and the time they were computed.
@@ -584,6 +605,9 @@ impl Actor {
             Request::Query(sql, params, reply) => {
                 let _ = reply.send(self.run_query(&sql, &params));
             }
+            Request::Next(q, reply) => {
+                let _ = reply.send(self.run_next(&q));
+            }
             Request::Verify(reply) => {
                 let _ = reply.send(VerifyStatus {
                     ok: self.load_error.is_none()
@@ -661,6 +685,23 @@ impl Actor {
             .store
             .run_user_query(sql, params)
             .map(|(columns, rows)| QueryResult { columns, rows }))
+    }
+
+    /// Answer the pick oracle from the warm store.
+    ///
+    /// The documents are reconstructed per request, exactly as [`run_query`]
+    /// rebuilds the projections per request: [`next::pick`] needs whole
+    /// documents (relation maps and all) and the summaries the board is served
+    /// from carry no `blocks` map, so effective priority cannot come from them.
+    ///
+    /// [`run_query`]: Actor::run_query
+    fn run_next(&mut self, q: &PickQuery) -> Result<std::result::Result<PickResult, String>> {
+        let warm = self.warm()?;
+        if let Err(msg) = q.validate(&warm.prj.pcfg) {
+            return Ok(Err(msg));
+        }
+        let docs: Vec<Doc> = warm.store.all_docs()?.into_iter().map(|(_, d)| d).collect();
+        Ok(Ok(next::pick(&warm.prj, &docs, q, observe::now())))
     }
 
     /// Load afresh and swap the cache in. A failure leaves the previous warm

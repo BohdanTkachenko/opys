@@ -29,26 +29,9 @@ use crate::commands::{parse_key_values, print_lines};
 use crate::doc::Doc;
 use crate::error::Result;
 use crate::order;
-use crate::project_config::ProjectConfig;
 use crate::refs;
 use crate::store::{g_i64, g_str, IntoParam};
 use crate::Ctx;
-
-/// Which group a document sorts into under `--sort`: the position of its type
-/// among the configured ones, in the order `opys.toml` declares them
-/// ([`crate::project_config::TypeMap`] keeps that order through parsing).
-/// Documents whose id prefix matches no type form a final group, ordered like
-/// any other by the default chain.
-///
-/// Declaration order rather than type-*name* order: the config is the only
-/// place a project says which of its types it leads with, and alphabetising
-/// them would impose an order it never asked for.
-fn group_of(doc: &Doc, pcfg: &ProjectConfig) -> usize {
-    doc.id()
-        .and_then(|id| pcfg.type_name_for_id(id))
-        .and_then(|name| pcfg.types.index_of(name))
-        .unwrap_or(usize::MAX)
-}
 
 // One more parameter than clippy's ceiling, as `new::core` already is: the
 // alternative is an options struct whose every field is one flag of one
@@ -98,28 +81,15 @@ pub fn run(
             );
         }
         if let Some(corpus) = &ordered {
-            // Group and chain once per document, never inside the comparator:
-            // `chain_for` allocates, and a sort asks O(n log n) times.
-            let mut ranked: Vec<(usize, &Doc)> =
-                docs.iter().map(|d| (group_of(d, &prj.pcfg), d)).collect();
-            let mut chains: HashMap<usize, Vec<order::OrderKey>> = HashMap::new();
-            for (group, doc) in &ranked {
-                // Same group means same type, so either document's chain is the
-                // group's chain.
-                chains
-                    .entry(*group)
-                    .or_insert_with(|| corpus.chain_for(doc));
-            }
-            // Stable, so two documents no chain separates keep load order.
-            ranked.sort_by(|(ga, a), (gb, b)| {
-                ga.cmp(gb)
-                    .then_with(|| order::compare(a, b, &chains[ga], corpus))
-            });
+            // The one ranking (`order::Corpus::ranked`), shared with `opys
+            // next`: grouped by type in declaration order, each group by that
+            // type's chain, stable. Nothing about the order is decided here.
             sort_rank = Some(
-                ranked
+                corpus
+                    .ranked(&docs.iter().collect::<Vec<_>>())
                     .iter()
                     .enumerate()
-                    .filter_map(|(i, (_, d))| d.id().map(|id| (id.to_string(), i)))
+                    .filter_map(|(i, d)| d.id().map(|id| (id.to_string(), i)))
                     .collect(),
             );
         }

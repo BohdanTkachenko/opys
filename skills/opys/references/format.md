@@ -687,10 +687,194 @@ the order `opys.toml` declares them, so a config leads with whichever type it
 puts first — and orders each group by that type's chain; a document whose id
 prefix matches no declared type sorts into a final group. With `--type` there is
 one group, so it is simply the chain.
-Without the flag `list` is in load order, unchanged. The chain is what `opys
-next` and the flow view will pick with; today `list --sort` is its only
-consumer, and the web UI board orders a column by the raw `priority` field,
-because that is the number drag-to-reorder writes.
+Without the flag `list` is in load order, unchanged. The chain is also what
+[`opys next`](#the-pick-oracle-opys-next) picks with — the two read one ranking,
+so they cannot disagree — and the flow view will read it later; the web UI board
+orders a column by the raw `priority` field, because that is the number
+drag-to-reorder writes.
+
+### The pick oracle (`opys next`)
+
+`opys next --status <s> [--type <t>] [-n N] [--json] [--explain [ID]]` answers
+one deterministic question: **given a status, which documents are pickable, best
+first**. It is a read — it never syncs, never writes, and exits `0` for every
+answer, an empty one included. It decides nothing about *who* picks the work up:
+concurrency, occupancy, affinity and budgets are policy for whatever wraps it.
+
+A document is **pickable** when all three hold:
+
+- it is at the queried status (and of the queried type, when one is given);
+- its type's `requires_link` is still satisfied — see **orphaned** below;
+- nothing live blocks it (the derived predicate under **Blocked is derived**).
+
+A blocked document is left out silently: a blocker is a normal, temporary state
+of a healthy corpus, and it clears on its own. Pickability is evaluated on the
+corpus the command runs in, which is **main**: a blocker closed on a branch
+releases nothing until the merge lands, and `next` never opens git.
+
+**Orphaned.** A document whose type declares `requires_link = { to, min }` is
+orphaned when fewer than `min` of its `references` entries to that type still
+*hold* — resolve to a document whose status its own type does not list in
+`releases_blocks`. `requires_link` is a count rule, so one live target still
+satisfies `min = 1` however many released ones are named beside it. An orphan is
+**reported**, under its own `orphaned` key with the reason, rather than dropped:
+it will not become pickable on its own, and the reason says which target failed
+and how — released at a status its type declares, or resolving to no document at
+all. `orphaned` is a diagnostic and is never truncated by `-n`. A document that
+is both orphaned and blocked is reported once, as orphaned — the condition that
+will not clear by itself.
+
+Note what `releases_blocks` covers: it is where a type stops wanting work, and
+the shipped `feature` type lists `implemented` there as well as `wontfix` and
+`archived`. So a bug filed against a *shipped* feature is reported as orphaned
+too, not only one under an abandoned feature — which is exactly why orphans are
+listed with their reason instead of silently dropped. Re-link it, or reopen the
+parent.
+
+**Order** is the type's `order_by` chain over the whole corpus, grouped by type
+in declaration order — the same ranking `list --sort` uses, so the two can never
+put the same set in two orders. The default limit is **10**; `-n` truncates the
+listing only, and every item carries its 1-based `position` within the full
+pickable set, which `total` counts.
+
+Each item also carries the [time observations](#time-aware-observations-ttl-and-max_visits)
+its type configures, so a caller can see that the top item has been sitting
+untouched. Reported only — `next` moves nothing, and it never exits `3`; that
+code is `verify`'s.
+
+A `--type` no configured type declares is **refused**, exit 2; so is a status —
+measured against the named type's `statuses` when `--type` is given, and against
+every configured type otherwise, so `--status planned --type task` is refused
+where `planned` belongs to `feature` alone. An `--explain <ID>` naming no
+document is refused the same way, as `show` refuses one. An oracle that answers
+"nothing" to a typo cannot be told apart from an empty queue; an empty result for
+a status that *exists* is a perfectly good answer.
+
+`--explain` prints one line per listed document after the table, and
+`--explain <ID>` explains that one — the five ways out, in the precedence they
+are decided in (the type line can only appear under `--type`, since a document's
+type is its id prefix):
+
+```
+TASK-0002: listed 1 of 3 — effective priority 1 (its own 30, inherited), blocks 1 live document
+NOTE-0005: not listed — its type is note, not task
+TASK-0009: not listed — it is at doing, not todo
+TASK-0007: not listed — orphaned: FEAT-0006 is at wontfix, which releases what it blocks; 0/1 required feature links still hold
+TASK-0008: not listed — blocked by TASK-0004
+TASK-0003: not listed — pickable but ordered 2 of 3, behind the 1 listed (limit 1)
+```
+
+`--json` is the documented, stable payload — `schema: "opys.next/1"`, fields may
+be added within that number:
+
+```json
+{
+  "schema": "opys.next/1",
+  "status": "todo",
+  "type": "task",
+  "limit": 1,
+  "total": 2,
+  "items": [
+    {
+      "id": "TASK-0004",
+      "type": "task",
+      "title": "Do this first",
+      "status": "todo",
+      "path": "opys/TASK-0004.md",
+      "tags": [],
+      "priority": 5,
+      "effective_priority": 5,
+      "blocks": 0,
+      "position": 1,
+      "observations": []
+    }
+  ],
+  "orphaned": [
+    {
+      "id": "TASK-0003",
+      "type": "task",
+      "title": "Stranded",
+      "status": "todo",
+      "path": "opys/TASK-0003.md",
+      "reason": "FEAT-0001 is at wontfix, which releases what it blocks; 0/1 required feature links still hold"
+    }
+  ]
+}
+```
+
+`path` is relative to the project root. **Four fields are nullable**, and the
+example above — a `--type task` query over prioritised documents — happens to
+populate all of them: the top-level `type` is `null` unless `--type` was given;
+an item's `type` is `null` when its id prefix matches no configured type; and
+`priority` and `effective_priority` are `null` when the document declares no
+integer `priority` and nothing in its `blocks` closure does — the ordinary case,
+since priority is opt-in. A consumer that types those as required numbers or
+strings breaks on the first unprioritised document. Everything else is always
+present: `tags` and `observations` are arrays (empty, never absent), and
+`explain` is the one *omitted* key — it appears only under `--explain <ID>`. So
+the common default-invocation shape is:
+
+```json
+{
+  "schema": "opys.next/1",
+  "status": "todo",
+  "type": null,
+  "limit": 10,
+  "total": 1,
+  "items": [
+    {
+      "id": "TASK-0004",
+      "type": "task",
+      "title": "Do this first",
+      "status": "todo",
+      "path": "opys/TASK-0004.md",
+      "tags": [],
+      "priority": null,
+      "effective_priority": null,
+      "blocks": 0,
+      "position": 1,
+      "observations": []
+    }
+  ],
+  "orphaned": []
+}
+```
+
+An `observations` entry is one flat object — the kind's own fields sit beside a
+`"kind"` tag, with no wrapper to unwrap, and an overflow is listed before a stuck
+on the same document:
+
+```json
+      "observations": [
+        {
+          "id": "TASK-0006",
+          "kind": "overflow",
+          "status": "todo",
+          "visits": 2,
+          "limit": 2,
+          "target": "doing"
+        },
+        {
+          "id": "TASK-0006",
+          "kind": "stuck",
+          "status": "todo",
+          "since": "2026-01-02T03:04:05.000000Z",
+          "after": "10m",
+          "target": null
+        }
+      ]
+```
+
+With `--explain` and no ID the JSON is unchanged (the items already carry
+`priority`, `effective_priority`, `blocks`, `position` and `total`);
+`--explain <ID>` adds one top-level `explain` object tagged by `reason`
+(`listed`, `other-type`, `other-status`, `orphaned`, `blocked`, `behind`),
+carrying the same `message` the human output prints.
+
+The node serves the same payload from the same function at
+`GET /api/projects/{key}/next?status=&type=&n=`, where `{key}` is a project key
+from `/api/projects`. A project is a repository and its worktrees, and the answer
+comes from its **main** worktree, because main is the truth for pickability.
 
 ## Blockers
 

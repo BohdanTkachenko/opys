@@ -14,6 +14,7 @@ pub mod init;
 pub mod list;
 pub mod log;
 pub mod new;
+pub mod next;
 pub mod query;
 pub mod renumber;
 pub mod retire;

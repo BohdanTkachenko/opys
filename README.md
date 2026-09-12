@@ -142,6 +142,7 @@ without a `renumber`. Without a modulus, allocation is the dense sequence.
 | `new --type <T>` | allocate the next ID and write a skeleton document of type `T` (auto-syncs) |
 | `import --type <T>` | bulk-create documents of type `T` from a JSONL file (one ID block, one sync) |
 | `show` / `list` | retrieval (`--type`, `--tag`, `--status`, `--field`, `--blocked`/`--unblocked`, `--sort`, `--format table\|ids\|paths`) |
+| `next --status <s>` | the pick oracle: which documents at a status are pickable, best first — unblocked, with their type's `requires_link` still satisfied, ordered by the type's `order_by` chain. `--type`, `-n` (default 10), `--explain [ID]` for why a document is or is not listed, `--json` for the stable `opys.next/1` payload. A read: it exits `0` for every answer, an empty one included |
 | `set-status` | guarded transitions: the type's declared `[transitions]` edges (when it declares any), its `max_visits` budget for the target status (the refusal names the configured `then`), and its configured rules |
 | `tag` | add/remove tags (`--add a,b --remove c`) |
 | `log` | append a dated entry to a document's `kind = "log"` section (`opys log TASK-0042 "…"`, or `-` to read it from stdin) |

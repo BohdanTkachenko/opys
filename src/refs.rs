@@ -192,6 +192,15 @@ impl<'a> Corpus<'a> {
         self.status.contains_key(id)
     }
 
+    /// The status the corpus holds for `id`, when a document answers to it.
+    ///
+    /// The reading half of [`holds`](Corpus::holds): explaining *why* a target
+    /// released needs the status it released at, and re-deriving it from the
+    /// documents would be a second index of the one this already keeps.
+    pub fn status_of(&self, id: &str) -> Option<&'a str> {
+        self.status.get(id).copied()
+    }
+
     /// Whether `id` still holds whatever it blocks: it resolves to a live
     /// document whose status its type does not declare in `releases_blocks`.
     ///

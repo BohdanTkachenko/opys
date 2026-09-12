@@ -971,3 +971,172 @@ async fn verify_agrees_with_the_cli_exit_code() {
         "nothing was verified, so nothing may be reported as verified: {body:#}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The pick oracle endpoint: `GET /api/projects/{key}/next` (FEAT-0106)
+// ---------------------------------------------------------------------------
+
+/// The group key `/api/projects` publishes for the corpus this fixture serves
+/// first — the same string `/api/group/{key}/union` takes, and the one the pick
+/// endpoint is addressed by.
+async fn project_key(fx: &Fixture) -> String {
+    let (status, body) = fx.get("/api/projects").await;
+    assert_eq!(status, StatusCode::OK);
+    body.as_array()
+        .unwrap()
+        .iter()
+        .find(|p| {
+            p["corpora"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["cid"] == fx.cid.as_str())
+        })
+        .unwrap_or_else(|| panic!("no group holds {}: {body:#}", fx.cid))["key"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// What `opys_engine::next::pick` answers over the same corpus, as JSON.
+///
+/// Loaded through the real backend from the same root the node is serving, so
+/// this is the engine's own verdict rather than a transcription of it.
+fn engine_pick(root: &Path, q: &opys_engine::next::PickQuery) -> Value {
+    let prj = opys_engine::Project::open(&root.to_string_lossy()).unwrap();
+    let (mut store, _) = MarkdownLocal.load(&prj).unwrap();
+    let docs: Vec<opys_engine::doc::Doc> = store
+        .all_docs()
+        .unwrap()
+        .into_iter()
+        .map(|(_, d)| d)
+        .collect();
+    let out = opys_engine::next::pick(&prj, &docs, q, opys_engine::observe::now());
+    serde_json::to_value(out).unwrap()
+}
+
+/// The endpoint and the engine function answer the same bytes, because they are
+/// the same function and the same serde types: `opys/tests/cli.rs` pins the
+/// CLI's rendering of that payload, and this pins the node's, so neither
+/// surface can drift on its own.
+///
+/// It also pins what the payload *says* about this corpus: NOTE-0001 is
+/// pickable at `open`, and TASK-0002 is not pickable at `doing` because
+/// NOTE-0001 still blocks it — the derived-blocked rule, evaluated on the
+/// corpus the node serves (ADR-0102).
+#[tokio::test]
+async fn the_next_endpoint_answers_exactly_what_the_engine_does() {
+    let fx = Fixture::new();
+    let key = project_key(&fx).await;
+
+    let (status, body) = fx
+        .get(&format!("/api/projects/{key}/next?status=open"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body:#}");
+    assert_eq!(body["schema"], "opys.next/1", "{body:#}");
+    assert_eq!(body["items"][0]["id"], "NOTE-0001", "{body:#}");
+    assert_eq!(
+        body["items"][0]["path"], "inventory/NOTE-0001.md",
+        "{body:#}"
+    );
+    assert_eq!(body["limit"], 10, "the default limit: {body:#}");
+    assert_eq!(
+        body,
+        engine_pick(
+            &fx.root,
+            &opys_engine::next::PickQuery {
+                status: "open".to_string(),
+                type_filter: None,
+                limit: 10,
+            },
+        ),
+        "the endpoint must serialize the engine's answer verbatim"
+    );
+
+    // Blocked by a live NOTE-0001, so nothing is pickable at `doing`.
+    let (status, body) = fx
+        .get(&format!("/api/projects/{key}/next?status=doing"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body:#}");
+    assert_eq!(body["total"], 0, "{body:#}");
+    assert_eq!(body["items"].as_array().map(Vec::len), Some(0), "{body:#}");
+}
+
+/// `?type=` and `?n=` are the endpoint's spelling of `--type` and `-n`.
+#[tokio::test]
+async fn the_next_endpoint_takes_the_type_and_limit_filters() {
+    let fx = Fixture::new();
+    let key = project_key(&fx).await;
+
+    // `todo` is a status only `task` declares, and no task is at it.
+    let (status, body) = fx
+        .get(&format!("/api/projects/{key}/next?status=todo&type=task"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body:#}");
+    assert_eq!(body["type"], "task", "{body:#}");
+    assert_eq!(body["items"].as_array().map(Vec::len), Some(0), "{body:#}");
+    // An empty `?type=` is a cleared dropdown, not the empty type name.
+    let (status, body) = fx
+        .get(&format!("/api/projects/{key}/next?status=open&type="))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body:#}");
+    assert_eq!(body["type"], Value::Null, "{body:#}");
+    assert_eq!(body["items"][0]["id"], "NOTE-0001", "{body:#}");
+
+    let (status, body) = fx
+        .get(&format!("/api/projects/{key}/next?status=open&n=0"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body:#}");
+    assert_eq!(body["limit"], 0, "{body:#}");
+    assert_eq!(body["total"], 1, "the limit truncates, it does not filter");
+    assert_eq!(body["items"].as_array().map(Vec::len), Some(0), "{body:#}");
+}
+
+/// A caller's mistake is a 400, never the 500 an engine error would become: a
+/// bad `status` comes back through the actor's inner `Result`, the way user SQL
+/// does. A project nobody serves is a 404.
+#[tokio::test]
+async fn the_next_endpoint_classes_bad_input_as_bad_input() {
+    let fx = Fixture::new();
+    let key = project_key(&fx).await;
+
+    let (status, body) = fx.get(&format!("/api/projects/{key}/next")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body:#}");
+
+    let (status, body) = fx.get(&format!("/api/projects/{key}/next?status=")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body:#}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("status"),
+        "{body:#}"
+    );
+
+    let (status, body) = fx
+        .get(&format!("/api/projects/{key}/next?status=nonesuch"))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body:#}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("unknown status"),
+        "{body:#}"
+    );
+
+    let (status, body) = fx
+        .get(&format!("/api/projects/{key}/next?status=open&type=nope"))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body:#}");
+
+    let (status, body) = fx.get("/api/projects/nobody/next?status=open").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body:#}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no such project"),
+        "{body:#}"
+    );
+}
