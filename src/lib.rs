@@ -23,6 +23,10 @@ pub mod ids;
 pub mod lifecycle;
 pub mod links;
 pub mod mdprism;
+/// The pick oracle: which documents at a status are pickable, and in what
+/// order. Read-only, and the single answer both `opys next` and the node's
+/// `/api/projects/{key}/next` serialize.
+pub mod next;
 pub mod observe;
 pub mod order;
 pub mod project;
@@ -140,6 +144,21 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
                 sort,
                 format,
             )?;
+            Ok(0)
+        }
+        Command::Next {
+            status,
+            type_name,
+            limit,
+            json,
+            explain,
+        } => {
+            let q = next::PickQuery {
+                status,
+                type_filter: type_name,
+                limit,
+            };
+            commands::next::run(&ctx, &q, json, explain)?;
             Ok(0)
         }
         Command::SetStatus {

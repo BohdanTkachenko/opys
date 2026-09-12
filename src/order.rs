@@ -2,9 +2,11 @@
 //!
 //! A type's `[types.<name>] order_by` (ADR-0099 decision 4) names a chain of
 //! tiebreaks. Every consumer that has to put documents in an intentional order —
-//! `list --sort` today, `opys next` and the flow view later — reads it *only*
+//! `list --sort` and `opys next` today, the flow view later — reads it *only*
 //! through here, so the CLI and the node cannot end up with two orders that
-//! disagree about the same corpus.
+//! disagree about the same corpus. [`Corpus::ranked`] is that single ranking,
+//! group and chain together: both consumers call it rather than each assembling
+//! the same sort out of the parts.
 //!
 //! Three rules carry the module:
 //!
@@ -188,6 +190,48 @@ impl<'a> Corpus<'a> {
             .and_then(|id| self.edges.get(id))
             .map_or_else(|| refs::live_blocks(doc, &self.refs).len(), Vec::len)
     }
+
+    /// `docs` in intentional order: grouped by type, the types in the order
+    /// `opys.toml` declares them, each group by that type's [`chain`].
+    ///
+    /// **The** ranking. `list --sort` and [`crate::next`] both call it, which is
+    /// what makes "the pick oracle and the sorted listing cannot disagree" a
+    /// property of the code rather than of two implementations happening to
+    /// match. Since [`compare`] is total, ranking a subset gives the same
+    /// relative order as ranking the whole corpus and filtering afterwards.
+    ///
+    /// Stable, so two documents no chain separates keep the order they came in.
+    /// The group and the chain are resolved once per document and once per
+    /// group — `chain_for` allocates, and a sort asks O(n log n) times.
+    pub fn ranked<'d>(&self, docs: &[&'d Doc]) -> Vec<&'d Doc> {
+        let mut ranked: Vec<(usize, &'d Doc)> =
+            docs.iter().map(|d| (group_of(d, self.pcfg), *d)).collect();
+        let mut chains: HashMap<usize, Vec<OrderKey>> = HashMap::new();
+        for (group, doc) in &ranked {
+            // Same group means same type, so either document's chain is the
+            // group's chain.
+            chains.entry(*group).or_insert_with(|| self.chain_for(doc));
+        }
+        ranked
+            .sort_by(|(ga, a), (gb, b)| ga.cmp(gb).then_with(|| compare(a, b, &chains[ga], self)));
+        ranked.into_iter().map(|(_, d)| d).collect()
+    }
+}
+
+/// Which group a document ranks in: the position of its type among the
+/// configured ones, in the order `opys.toml` declares them
+/// ([`crate::project_config::TypeMap`] keeps that order through parsing).
+/// Documents whose id prefix matches no type form a final group, ordered like
+/// any other by the default chain.
+///
+/// Declaration order rather than type-*name* order: the config is the only
+/// place a project says which of its types it leads with, and alphabetising
+/// them would impose an order it never asked for.
+fn group_of(doc: &Doc, pcfg: &ProjectConfig) -> usize {
+    doc.id()
+        .and_then(|id| pcfg.type_name_for_id(id))
+        .and_then(|name| pcfg.types.index_of(name))
+        .unwrap_or(usize::MAX)
 }
 
 /// The smallest priority over `doc` and everything it transitively blocks, or
@@ -210,7 +254,7 @@ pub fn effective_priority(doc: &Doc, corpus: &Corpus<'_>) -> Option<i64> {
 /// When it is exhausted — a chain that is not total, e.g. `["priority"]` — the
 /// lowest item number breaks the tie, so the result is a total order for every
 /// chain and callers that pick a single winner ([`crate::commands::list`]'s
-/// `--sort`, `next` later) never depend on input order.
+/// `--sort`, [`crate::next`]) never depend on input order.
 pub fn compare(a: &Doc, b: &Doc, chain: &[OrderKey], corpus: &Corpus<'_>) -> Ordering {
     let mut out = Ordering::Equal;
     for key in chain {
@@ -231,8 +275,10 @@ pub fn compare(a: &Doc, b: &Doc, chain: &[OrderKey], corpus: &Corpus<'_>) -> Ord
     out.then_with(|| number(a).cmp(&number(b)))
 }
 
-/// The document's own `priority`, when it is an integer.
-fn own_priority(doc: &Doc) -> Option<i64> {
+/// The document's own `priority`, when it is an integer — the raw number,
+/// before any closure. [`effective_priority`] is what ordering uses; this is
+/// what explains the difference to a reader (`opys next --explain`).
+pub fn own_priority(doc: &Doc) -> Option<i64> {
     doc.frontmatter
         .get(PRIORITY_FIELD)
         .and_then(serde_norway::Value::as_i64)

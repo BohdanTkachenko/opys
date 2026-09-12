@@ -7933,3 +7933,827 @@ order_by = [\"created\"]\n",
         .code(2)
         .stderr(predicate::str::contains("order_by"));
 }
+
+// ---------------------------------------------------------------------------
+// The pick oracle: `opys next` (FEAT-0106 / ADR-0102)
+// ---------------------------------------------------------------------------
+
+/// A `feature` that releases what it blocks when it is shipped *or* abandoned,
+/// a `task` that must link one (and observes a `ttl` on `doing` and on `todo`,
+/// plus a `max_visits` budget on `todo`), and a `note` that requires nothing and
+/// declares no `priority` — three different answers to both pickability and
+/// ordering, declared in that order so grouping is visible. Every fixture below
+/// runs at [`PINNED_NOW`] with one history entry unless it says otherwise, so
+/// the time observations fire only where a test asks them to.
+const NEXT_CFG: &str = r#"pad = 4
+[types.feature]
+prefix = "FEAT"
+statuses = ["planned", "implemented", "wontfix"]
+default_status = "planned"
+releases_blocks = ["implemented", "wontfix"]
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "doing", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]
+requires_link = { to = "feature", min = 1 }
+[types.task.ttl]
+doing = "10m"
+todo = "10m"
+[types.task.max_visits]
+todo = { limit = 2, then = "doing" }
+[types.task.fields.priority]
+type = "int"
+[types.note]
+prefix = "NOTE"
+statuses = ["todo", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]
+"#;
+
+/// Write `<id>.md` at `status` with canonical frontmatter: `before` holds the
+/// keys that sort ahead of `history` (`blocked_by`, `blocks`), `after` those
+/// that sort behind it (`priority`, `references`). The frontmatter is already
+/// canonical, so a sync pass never reformats it, and the fixtures below write
+/// **both halves** of every relation, so `opys sync` is a no-op over them.
+fn next_doc(dir: &TempDir, id: &str, title: &str, status: &str, before: &str, after: &str) {
+    dir.child(format!("opys/{id}.md"))
+        .write_str(&format!(
+            "---\nid: {id}\nstatus: {status}\ncreated: \"{PINNED_NOW}\"\n\
+             updated: \"{PINNED_NOW}\"\n{before}{}{after}---\n\n# {title}\n",
+            hist(status)
+        ))
+        .unwrap();
+}
+
+/// One planned feature and three tasks under it — two prioritised, one holding
+/// up the urgent one — plus a note, for the grouping.
+///
+/// **Reconciled**, both halves of every relation, which matters here in a way it
+/// does not for the `list --sort` fixtures above: `next` drops a live-blocked
+/// document, so a `blocks` entry without its `blocked_by` inverse would pin an
+/// answer only an unsynced corpus produces. Written this way, the urgent task is
+/// held up by the one that blocks it — and still lifts that one to its own `1`,
+/// which is effective priority inherited from a document that is itself excluded.
+fn next_project() -> TempDir {
+    let dir = project_with(NEXT_CFG);
+    next_doc(
+        &dir,
+        "FEAT-0001",
+        "The feature",
+        "planned",
+        "",
+        "references:\n  TASK-0002: Holds up the urgent one\n  \
+         TASK-0003: Middling\n  TASK-0004: Urgent\n",
+    );
+    next_doc(
+        &dir,
+        "TASK-0002",
+        "Holds up the urgent one",
+        "todo",
+        "blocks:\n  TASK-0004: Urgent\n",
+        "priority: 30\nreferences:\n  FEAT-0001: The feature\n",
+    );
+    next_doc(
+        &dir,
+        "TASK-0003",
+        "Middling",
+        "todo",
+        "",
+        "priority: 20\nreferences:\n  FEAT-0001: The feature\n",
+    );
+    next_doc(
+        &dir,
+        "TASK-0004",
+        "Urgent",
+        "todo",
+        "blocked_by:\n  TASK-0002: Holds up the urgent one\n",
+        "priority: 1\nreferences:\n  FEAT-0001: The feature\n",
+    );
+    next_doc(&dir, "NOTE-0005", "A note", "todo", "", "");
+    dir
+}
+
+/// Everything unblocked at the status, grouped by type in declaration order and
+/// each group by its chain: the task holding up the urgent one inherits the `1`
+/// of the task it blocks — which is itself excluded, being blocked — and the
+/// note, a later-declared type, sorts after every task however it is ranked
+/// inside its own group.
+#[test]
+fn next_lists_pickable_documents_in_the_types_order() {
+    let dir = next_project();
+    opys(&dir)
+        .args(["--no-sync", "next", "--status", "todo"])
+        .assert()
+        .success()
+        .stdout(
+            "| # | ID | TYPE | STATUS | PRIORITY | BLOCKS | TITLE | NOTES |\n\
+             | --- | --- | --- | --- | --- | --- | --- | --- |\n\
+             | 1 | TASK-0002 | task | todo | 1 (own 30) | 1 | Holds up the urgent one |  |\n\
+             | 2 | TASK-0003 | task | todo | 20 | 0 | Middling |  |\n\
+             | 3 | NOTE-0005 | note | todo | - | 0 | A note |  |\n\n",
+        );
+    // The limit truncates the listing and nothing else.
+    opys(&dir)
+        .args(["--no-sync", "next", "--status", "todo", "-n", "2"])
+        .assert()
+        .success()
+        .stdout(
+            "| # | ID | TYPE | STATUS | PRIORITY | BLOCKS | TITLE | NOTES |\n\
+             | --- | --- | --- | --- | --- | --- | --- | --- |\n\
+             | 1 | TASK-0002 | task | todo | 1 (own 30) | 1 | Holds up the urgent one |  |\n\
+             | 2 | TASK-0003 | task | todo | 20 | 0 | Middling |  |\n\n",
+        );
+    // `--type` narrows to one group, without narrowing the corpus the ordering
+    // was computed over.
+    opys(&dir)
+        .args(["--no-sync", "next", "--status", "todo", "--type", "note"])
+        .assert()
+        .success()
+        .stdout(
+            "| # | ID | TYPE | STATUS | PRIORITY | BLOCKS | TITLE | NOTES |\n\
+             | --- | --- | --- | --- | --- | --- | --- | --- |\n\
+             | 1 | NOTE-0005 | note | todo | - | 0 | A note |  |\n\n",
+        );
+    // It is a read: run it *without* `--no-sync` — the flag the other cases pass
+    // to keep their bytes still — and the corpus comes back byte for byte, which
+    // is only checkable because this fixture is what a sync pass would write.
+    let before = corpus_bytes(&dir);
+    opys(&dir)
+        .args(["next", "--status", "todo"])
+        .assert()
+        .success();
+    assert_eq!(corpus_bytes(&dir), before, "`next` must not write");
+}
+
+/// Every document under the inventory, filename → text, for a "nothing was
+/// written" assertion.
+fn corpus_bytes(dir: &TempDir) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for entry in std::fs::read_dir(dir.path().join("opys")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "md") {
+            out.insert(
+                path.file_name().unwrap().to_string_lossy().into_owned(),
+                std::fs::read_to_string(&path).unwrap(),
+            );
+        }
+    }
+    out
+}
+
+/// The two orderings are one ordering: `next` and `list --sort` read the same
+/// ranking, so over the same set they cannot disagree. The set is what `next`
+/// considers pickable — `list --unblocked` is the same exclusion, and nothing
+/// here is orphaned — so the comparison is against `list --sort --unblocked`,
+/// not against every document at the status.
+#[test]
+fn next_orders_exactly_as_list_sort_does() {
+    let dir = next_project();
+    let sorted = opys(&dir)
+        .args([
+            "--no-sync",
+            "list",
+            "--status",
+            "todo",
+            "--sort",
+            "--unblocked",
+            "--format",
+            "ids",
+        ])
+        .assert()
+        .success();
+    let want: Vec<String> = String::from_utf8(sorted.get_output().stdout.clone())
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+
+    let picked = opys(&dir)
+        .args(["--no-sync", "next", "--status", "todo", "--explain"])
+        .assert()
+        .success();
+    let got: Vec<String> = String::from_utf8(picked.get_output().stdout.clone())
+        .unwrap()
+        .lines()
+        .filter_map(|l| l.split_once(": listed ").map(|(id, _)| id.to_string()))
+        .collect();
+
+    assert_eq!(got, want);
+    assert_eq!(
+        got.len(),
+        3,
+        "every unblocked todo document should be pickable here"
+    );
+}
+
+/// A live blocker excludes a document silently — a blocker is a normal state of
+/// a healthy corpus, not a finding — and it is listed the moment the blocker
+/// reaches a status its own type releases at. On **main**: nothing here reads a
+/// branch (ADR-0102).
+#[test]
+fn next_excludes_a_blocked_document_until_its_blocker_releases() {
+    let dir = project_with(NEXT_CFG);
+    next_doc(&dir, "FEAT-0001", "The feature", "planned", "", "");
+    next_doc(
+        &dir,
+        "FEAT-0002",
+        "The blocker",
+        "planned",
+        "blocks:\n  TASK-0003: Blocked one\n",
+        "",
+    );
+    next_doc(
+        &dir,
+        "TASK-0003",
+        "Blocked one",
+        "todo",
+        "blocked_by:\n  FEAT-0002: The blocker\n",
+        "references:\n  FEAT-0001: The feature\n",
+    );
+
+    opys(&dir)
+        .args(["--no-sync", "next", "--status", "todo"])
+        .assert()
+        .success()
+        .stdout("_(no rows)_\n\n");
+
+    opys(&dir)
+        .args(["--no-sync", "set-status", "FEAT-0002", "implemented"])
+        .assert()
+        .success();
+
+    opys(&dir)
+        .args(["--no-sync", "next", "--status", "todo"])
+        .assert()
+        .success()
+        .stdout(
+            "| # | ID | TYPE | STATUS | PRIORITY | BLOCKS | TITLE | NOTES |\n\
+             | --- | --- | --- | --- | --- | --- | --- | --- |\n\
+             | 1 | TASK-0003 | task | todo | - | 0 | Blocked one |  |\n\n",
+        );
+}
+
+/// A task whose only feature is `wontfix` will never become pickable on its
+/// own, so it is reported under `Orphaned` with the reason rather than dropped.
+/// The same rule catches a `references` entry that resolves to nothing.
+#[test]
+fn next_reports_a_task_under_a_released_feature_as_orphaned() {
+    let dir = project_with(NEXT_CFG);
+    next_doc(&dir, "FEAT-0001", "Abandoned", "wontfix", "", "");
+    next_doc(&dir, "FEAT-0002", "Alive", "planned", "", "");
+    next_doc(
+        &dir,
+        "TASK-0003",
+        "Stranded",
+        "todo",
+        "",
+        "references:\n  FEAT-0001: Abandoned\n",
+    );
+    next_doc(
+        &dir,
+        "TASK-0004",
+        "Fine",
+        "todo",
+        "",
+        "references:\n  FEAT-0001: Abandoned\n  FEAT-0002: Alive\n",
+    );
+
+    opys(&dir)
+        .args(["--no-sync", "next", "--status", "todo"])
+        .assert()
+        .success()
+        .stdout(
+            "| # | ID | TYPE | STATUS | PRIORITY | BLOCKS | TITLE | NOTES |\n\
+             | --- | --- | --- | --- | --- | --- | --- | --- |\n\
+             | 1 | TASK-0004 | task | todo | - | 0 | Fine |  |\n\
+             \n\
+             ## Orphaned\n\
+             \n\
+             | ID | TYPE | STATUS | TITLE | REASON |\n\
+             | --- | --- | --- | --- | --- |\n\
+             | TASK-0003 | task | todo | Stranded | FEAT-0001 is at wontfix, \
+             which releases what it blocks; 0/1 required feature links still hold |\n\n",
+        );
+}
+
+/// `--explain` says why each listed document was listed, and why a named one
+/// was not — the five ways out, in the precedence they are decided in.
+#[test]
+fn next_explains_a_listed_and_an_unlisted_document() {
+    let dir = next_project();
+    // Reconciled like the base fixture: the four documents added here put two
+    // more references on FEAT-0001 and give TASK-0004 the `blocks` inverse of
+    // TASK-0008's `blocked_by`, so `opys sync` still has nothing to do.
+    next_doc(
+        &dir,
+        "FEAT-0001",
+        "The feature",
+        "planned",
+        "",
+        "references:\n  TASK-0002: Holds up the urgent one\n  TASK-0003: Middling\n  \
+         TASK-0004: Urgent\n  TASK-0008: Waiting\n  TASK-0009: Elsewhere\n",
+    );
+    next_doc(
+        &dir,
+        "TASK-0004",
+        "Urgent",
+        "todo",
+        "blocked_by:\n  TASK-0002: Holds up the urgent one\nblocks:\n  TASK-0008: Waiting\n",
+        "priority: 1\nreferences:\n  FEAT-0001: The feature\n",
+    );
+    next_doc(
+        &dir,
+        "FEAT-0006",
+        "Abandoned",
+        "wontfix",
+        "",
+        "references:\n  TASK-0007: Stranded\n",
+    );
+    next_doc(
+        &dir,
+        "TASK-0007",
+        "Stranded",
+        "todo",
+        "",
+        "references:\n  FEAT-0006: Abandoned\n",
+    );
+    next_doc(
+        &dir,
+        "TASK-0008",
+        "Waiting",
+        "todo",
+        "blocked_by:\n  TASK-0004: Urgent\n",
+        "references:\n  FEAT-0001: The feature\n",
+    );
+    next_doc(
+        &dir,
+        "TASK-0009",
+        "Elsewhere",
+        "doing",
+        "",
+        "references:\n  FEAT-0001: The feature\n",
+    );
+
+    let explain = |id: &str| {
+        let out = opys(&dir)
+            .args([
+                "--no-sync",
+                "next",
+                "--status",
+                "todo",
+                "-n",
+                "1",
+                "--explain",
+                id,
+            ])
+            .assert()
+            .success();
+        String::from_utf8(out.get_output().stdout.clone())
+            .unwrap()
+            .lines()
+            .last()
+            .unwrap()
+            .to_string()
+    };
+
+    assert_eq!(
+        explain("TASK-0002"),
+        "TASK-0002: listed 1 of 3 — effective priority 1 (its own 30, inherited), \
+         blocks 1 live document"
+    );
+    assert_eq!(
+        explain("TASK-0003"),
+        "TASK-0003: not listed — pickable but ordered 2 of 3, behind the 1 listed (limit 1)"
+    );
+    assert_eq!(
+        explain("TASK-0007"),
+        "TASK-0007: not listed — orphaned: FEAT-0006 is at wontfix, which releases what it \
+         blocks; 0/1 required feature links still hold"
+    );
+    assert_eq!(
+        explain("TASK-0008"),
+        "TASK-0008: not listed — blocked by TASK-0004"
+    );
+    assert_eq!(
+        explain("TASK-0009"),
+        "TASK-0009: not listed — it is at doing, not todo"
+    );
+    // The other-type reason needs a `--type` to be wrong about: a document's
+    // type is its id prefix, so only the question can put it out of scope.
+    let typed = opys(&dir)
+        .args([
+            "--no-sync",
+            "next",
+            "--status",
+            "todo",
+            "--type",
+            "task",
+            "-n",
+            "1",
+            "--explain",
+            "NOTE-0005",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        String::from_utf8(typed.get_output().stdout.clone())
+            .unwrap()
+            .lines()
+            .last()
+            .unwrap(),
+        "NOTE-0005: not listed — its type is note, not task"
+    );
+    // An id no document answers to is a real failure, as it is for `show`.
+    opys(&dir)
+        .args([
+            "--no-sync",
+            "next",
+            "--status",
+            "todo",
+            "--explain",
+            "TASK-0404",
+        ])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("TASK-0404 not found"));
+}
+
+/// The documented payload, byte for byte: the `schema` key, the query echoed
+/// back, the full `total` beside the truncated `items`, root-relative paths, and
+/// the `orphaned` diagnostic the limit never touches.
+#[test]
+fn next_json_is_byte_stable() {
+    let dir = project_with(NEXT_CFG);
+    next_doc(&dir, "FEAT-0001", "Abandoned", "wontfix", "", "");
+    next_doc(&dir, "FEAT-0002", "Alive", "planned", "", "");
+    next_doc(
+        &dir,
+        "TASK-0003",
+        "Stranded",
+        "todo",
+        "",
+        "references:\n  FEAT-0001: Abandoned\n",
+    );
+    next_doc(
+        &dir,
+        "TASK-0004",
+        "Do this first",
+        "todo",
+        "",
+        "priority: 5\nreferences:\n  FEAT-0002: Alive\n",
+    );
+    next_doc(
+        &dir,
+        "TASK-0005",
+        "Then this",
+        "todo",
+        "",
+        "priority: 9\nreferences:\n  FEAT-0002: Alive\n",
+    );
+
+    opys(&dir)
+        .args([
+            "--no-sync", "next", "--status", "todo", "--type", "task", "-n", "1", "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            r#"{
+  "schema": "opys.next/1",
+  "status": "todo",
+  "type": "task",
+  "limit": 1,
+  "total": 2,
+  "items": [
+    {
+      "id": "TASK-0004",
+      "type": "task",
+      "title": "Do this first",
+      "status": "todo",
+      "path": "opys/TASK-0004.md",
+      "tags": [],
+      "priority": 5,
+      "effective_priority": 5,
+      "blocks": 0,
+      "position": 1,
+      "observations": []
+    }
+  ],
+  "orphaned": [
+    {
+      "id": "TASK-0003",
+      "type": "task",
+      "title": "Stranded",
+      "status": "todo",
+      "path": "opys/TASK-0003.md",
+      "reason": "FEAT-0001 is at wontfix, which releases what it blocks; 0/1 required feature links still hold"
+    }
+  ]
+}
+"#,
+        );
+}
+
+/// The nullable half of the payload, byte for byte, which the fully populated
+/// example above never shows: no `--type` echoes `"type": null` at top level,
+/// and a document with no `priority` — the ordinary case, priority being opt-in
+/// — carries `null` for both priority fields. This is the block format.md
+/// prints as the common default-invocation shape; a consumer that typed those
+/// as required numbers would break here.
+#[test]
+fn next_json_spells_the_nullable_fields_as_null() {
+    let dir = project_with(NEXT_CFG);
+    next_doc(
+        &dir,
+        "FEAT-0002",
+        "Alive",
+        "planned",
+        "",
+        "references:\n  TASK-0004: Do this first\n",
+    );
+    next_doc(
+        &dir,
+        "TASK-0004",
+        "Do this first",
+        "todo",
+        "",
+        "references:\n  FEAT-0002: Alive\n",
+    );
+
+    opys(&dir)
+        .args(["--no-sync", "next", "--status", "todo", "--json"])
+        .assert()
+        .success()
+        .stdout(
+            r#"{
+  "schema": "opys.next/1",
+  "status": "todo",
+  "type": null,
+  "limit": 10,
+  "total": 1,
+  "items": [
+    {
+      "id": "TASK-0004",
+      "type": "task",
+      "title": "Do this first",
+      "status": "todo",
+      "path": "opys/TASK-0004.md",
+      "tags": [],
+      "priority": null,
+      "effective_priority": null,
+      "blocks": 0,
+      "position": 1,
+      "observations": []
+    }
+  ],
+  "orphaned": []
+}
+"#,
+        );
+}
+
+/// The other half of the payload, byte for byte: an item's `observations` are
+/// **flat** objects (`kind` beside the kind's own fields, no wrapper), an
+/// overflow is listed before a stuck on the same document, and `orphaned` is a
+/// diagnostic that `-n 1` does not touch however many orphans there are.
+#[test]
+fn next_json_pins_observations_and_every_orphan() {
+    let dir = project_with(NEXT_CFG);
+    next_doc(&dir, "FEAT-0001", "Abandoned", "wontfix", "", "");
+    next_doc(&dir, "FEAT-0002", "Alive", "planned", "", "");
+    // Three orphans, two reasons — and `-n 1` below truncates none of them.
+    next_doc(
+        &dir,
+        "TASK-0003",
+        "Stranded",
+        "todo",
+        "",
+        "references:\n  FEAT-0001: Abandoned\n",
+    );
+    next_doc(
+        &dir,
+        "TASK-0004",
+        "Also stranded",
+        "todo",
+        "",
+        "references:\n  FEAT-0001: Abandoned\n",
+    );
+    next_doc(&dir, "TASK-0005", "Never linked", "todo", "", "");
+    // Back at `todo` for the second time, and sitting there past the type's
+    // 10m `ttl` at [`LATE_NOW`]: both observations at once, on the top item.
+    dir.child("opys/TASK-0006.md")
+        .write_str(
+            "---\nid: TASK-0006\nstatus: todo\ncreated: \"2026-01-02T03:00:00Z\"\n\
+             updated: \"2026-01-02T03:04:05Z\"\nhistory:\n\
+             \x20 \"2026-01-02T03:00:00.000000Z\": todo\n\
+             \x20 \"2026-01-02T03:02:00.000000Z\": doing\n\
+             \x20 \"2026-01-02T03:04:05.000000Z\": todo\n\
+             priority: 5\nreferences:\n  FEAT-0002: Alive\n---\n\n# Do this first\n",
+        )
+        .unwrap();
+    next_doc(
+        &dir,
+        "TASK-0007",
+        "Then this",
+        "todo",
+        "",
+        "priority: 9\nreferences:\n  FEAT-0002: Alive\n",
+    );
+
+    opys(&dir)
+        .env("OPYS_NOW", LATE_NOW)
+        .args([
+            "--no-sync", "next", "--status", "todo", "--type", "task", "-n", "1", "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            r#"{
+  "schema": "opys.next/1",
+  "status": "todo",
+  "type": "task",
+  "limit": 1,
+  "total": 2,
+  "items": [
+    {
+      "id": "TASK-0006",
+      "type": "task",
+      "title": "Do this first",
+      "status": "todo",
+      "path": "opys/TASK-0006.md",
+      "tags": [],
+      "priority": 5,
+      "effective_priority": 5,
+      "blocks": 0,
+      "position": 1,
+      "observations": [
+        {
+          "id": "TASK-0006",
+          "kind": "overflow",
+          "status": "todo",
+          "visits": 2,
+          "limit": 2,
+          "target": "doing"
+        },
+        {
+          "id": "TASK-0006",
+          "kind": "stuck",
+          "status": "todo",
+          "since": "2026-01-02T03:04:05.000000Z",
+          "after": "10m",
+          "target": null
+        }
+      ]
+    }
+  ],
+  "orphaned": [
+    {
+      "id": "TASK-0003",
+      "type": "task",
+      "title": "Stranded",
+      "status": "todo",
+      "path": "opys/TASK-0003.md",
+      "reason": "FEAT-0001 is at wontfix, which releases what it blocks; 0/1 required feature links still hold"
+    },
+    {
+      "id": "TASK-0004",
+      "type": "task",
+      "title": "Also stranded",
+      "status": "todo",
+      "path": "opys/TASK-0004.md",
+      "reason": "FEAT-0001 is at wontfix, which releases what it blocks; 0/1 required feature links still hold"
+    },
+    {
+      "id": "TASK-0005",
+      "type": "task",
+      "title": "Never linked",
+      "status": "todo",
+      "path": "opys/TASK-0005.md",
+      "reason": "it references no feature document; 0/1 required feature links still hold"
+    }
+  ]
+}
+"#,
+        );
+}
+
+/// `--explain <ID>` adds one key to the same payload, tagged by reason so a
+/// dispatcher branches on it rather than parsing the message.
+#[test]
+fn next_json_carries_the_explanation_when_one_is_asked_for() {
+    let dir = next_project();
+    opys(&dir)
+        .args([
+            "--no-sync",
+            "next",
+            "--status",
+            "todo",
+            "-n",
+            "1",
+            "--json",
+            "--explain",
+            "TASK-0003",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "  \"explain\": {\n\
+             \x20   \"id\": \"TASK-0003\",\n\
+             \x20   \"listed\": false,\n\
+             \x20   \"message\": \"TASK-0003: not listed — pickable but ordered 2 of 3, \
+             behind the 1 listed (limit 1)\",\n\
+             \x20   \"reason\": \"behind\",\n\
+             \x20   \"position\": 2,\n\
+             \x20   \"total\": 3\n\
+             \x20 }",
+        ));
+}
+
+/// An item carries its type's time observations, so a dispatcher can see that
+/// the top of the queue has been sitting untouched. Reported only — `next`
+/// still exits 0, and moves nothing.
+#[test]
+fn next_carries_a_stuck_observation_on_an_item() {
+    let dir = project_with(NEXT_CFG);
+    next_doc(&dir, "FEAT-0001", "The feature", "planned", "", "");
+    next_doc(
+        &dir,
+        "TASK-0002",
+        "Taken and abandoned",
+        "doing",
+        "",
+        "references:\n  FEAT-0001: The feature\n",
+    );
+
+    opys(&dir)
+        .env("OPYS_NOW", LATE_NOW)
+        .args(["--no-sync", "next", "--status", "doing"])
+        .assert()
+        .success()
+        .stdout(
+            "| # | ID | TYPE | STATUS | PRIORITY | BLOCKS | TITLE | NOTES |\n\
+             | --- | --- | --- | --- | --- | --- | --- | --- |\n\
+             | 1 | TASK-0002 | task | doing | - | 0 | Taken and abandoned | \
+             TASK-0002: stuck in doing since 2026-01-02T03:04:05.000000Z (ttl 10m) \
+             — no configured target |\n\n",
+        );
+    // Nothing has elapsed at the pinned clock, so the same item carries none.
+    opys(&dir)
+        .args(["--no-sync", "next", "--status", "doing"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("| Taken and abandoned |  |"));
+}
+
+/// A status with nothing at it is an answer, not a failure: exit 0, an empty
+/// `items`, and no observations-style exit code — that one is `verify`'s alone.
+#[test]
+fn next_on_an_empty_status_exits_zero_with_an_empty_list() {
+    let dir = next_project();
+    opys(&dir)
+        .args(["--no-sync", "next", "--status", "done"])
+        .assert()
+        .success()
+        .stdout("_(no rows)_\n\n");
+    opys(&dir)
+        .args(["--no-sync", "next", "--status", "done", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"items\": [],"))
+        .stdout(predicate::str::contains("\"total\": 0,"));
+}
+
+/// A misspelled status or type is refused rather than answered with nothing: an
+/// oracle that says "no work" to a typo is a dispatcher trap.
+#[test]
+fn next_refuses_a_status_or_type_the_config_does_not_declare() {
+    let dir = next_project();
+    opys(&dir)
+        .args(["--no-sync", "next", "--status", "to-do"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "unknown status \"to-do\" (no configured type declares it; \
+             known: doing, done, implemented, planned, todo, wontfix)",
+        ));
+    opys(&dir)
+        .args(["--no-sync", "next", "--status", "todo", "--type", "tasks"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "unknown type \"tasks\" (configured: feature, note, task)",
+        ));
+    // A status another type declares is still wrong for the named one.
+    opys(&dir)
+        .args(["--no-sync", "next", "--status", "planned", "--type", "task"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "unknown status \"planned\" for type 'task' (allowed: todo, doing, done)",
+        ));
+}

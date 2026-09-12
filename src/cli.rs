@@ -124,6 +124,38 @@ pub enum Command {
         format: ListFormat,
     },
 
+    /// The pick oracle: which documents at a status are pickable, in order.
+    ///
+    /// Pickable means at that status, with nothing live blocking it, and with
+    /// its type's `requires_link` still satisfied by targets that have not
+    /// released — a task under a `wontfix` (or shipped) feature is reported
+    /// under `Orphaned` with the reason instead of being dropped. The order is
+    /// the type's `order_by` chain, the same one `list --sort` uses.
+    /// Exits 0 for every answer, an empty one included; a status or type no
+    /// configured type declares, and an `--explain` id no document answers
+    /// to, are usage errors (exit 2).
+    Next {
+        /// The status to pick from. Required, and it must be one the named
+        /// `--type` declares — or, with no `--type`, one some configured type
+        /// does: a typo is refused rather than answered with nothing.
+        #[arg(long)]
+        status: String,
+        /// Only documents of this type.
+        #[arg(long = "type")]
+        type_name: Option<String>,
+        /// How many to list. `orphaned` is a diagnostic and is never truncated.
+        #[arg(short = 'n', long = "limit", default_value_t = crate::next::DEFAULT_LIMIT)]
+        limit: usize,
+        /// The documented, stable JSON payload (`schema: "opys.next/1"`).
+        #[arg(long)]
+        json: bool,
+        /// Why each listed document was listed — or, with an ID, why that one
+        /// was not: blocked, at another status, of another type, orphaned, or
+        /// ordered behind the ones that fitted.
+        #[arg(long, value_name = "ID", num_args = 0..=1)]
+        explain: Option<Option<String>>,
+    },
+
     /// List the distinct tags in the inventory, sorted, one per line.
     Tags {
         /// List distinct tag keys (the head before `:` / `=`) instead of full
