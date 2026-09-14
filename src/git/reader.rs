@@ -2,13 +2,16 @@
 //! object. Compiled only with the `git` feature; the module's data types and
 //! the main-only fallback live in its parent and are always compiled.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use gix::bstr::{BStr, ByteSlice};
 use gix::ObjectId;
 
-use super::{Changed, Occupancy, Occupant, Ref, NOT_A_REPOSITORY, NO_TRUTH_BRANCH};
+use super::{
+    Changed, Checkout, Occupancy, Occupant, Ref, RefState, Survey, Truth, NOT_A_REPOSITORY,
+    NO_TRUTH_BRANCH,
+};
 use crate::doc::Doc;
 use crate::project::Project;
 use crate::project_config::Git;
@@ -30,15 +33,62 @@ fn doc_id_of(basename: &str) -> Option<&str> {
 /// Open the repository the project lives in, or `None` when it lives in none.
 ///
 /// Discovery searches upward from the project root, so a project nested inside a
-/// repository is found. Every *discovery* failure is `None` — "no repository
-/// here" is the only thing it can mean, and ADR-0102 says that degrades rather
-/// than fails; a repository that is found but cannot be opened is a real error.
+/// repository is found. A discovery failure is `None` — "no repository here" —
+/// and ADR-0102 says that degrades rather than fails; a repository that is found
+/// but cannot be opened is a real error.
+///
+/// The two are told apart by [`unreadable_git_dir`] rather than by the variant
+/// discovery returned, because discovery cannot tell them apart either: its
+/// upward walk probes each candidate `.git` and treats *any* failure to read one
+/// — a permissions bit, an IO error — as "not a repository", so it walks past a
+/// repository that is plainly there and ends with `NoGitRepository`. Reporting
+/// that as "no repository" is the difference between a state that can clear on
+/// its own and a verdict that never changes: a long-lived caller stops watching
+/// on the second one (see [`super::Survey::retry`]).
 pub fn open(prj: &Project) -> anyhow::Result<Option<gix::Repository>> {
     match gix::discover(&prj.root) {
         Ok(repo) => Ok(Some(repo)),
-        Err(gix::discover::Error::Discover(_)) => Ok(None),
+        Err(gix::discover::Error::Discover(_)) => match unreadable_git_dir(&prj.root) {
+            Some(err) => Err(err),
+            None => Ok(None),
+        },
         Err(e) => Err(e.into()),
     }
+}
+
+/// The `.git` that is there and cannot be read, when discovery's "no repository
+/// here" is really "I could not look".
+///
+/// Walks the same ancestors discovery walks and probes each `.git` the way
+/// discovery does: the entry itself, and — for a directory — its `HEAD`. Only an
+/// IO error *other than* "not found" is reported, so the two ordinary answers
+/// are left exactly as they were: no `.git` at all, and a `.git` that reads fine
+/// but is not a repository (a stray directory, an unrecognised layout) both stay
+/// `None`. What is left is the state the caller has no other way to see — a
+/// permissions bit, a half-mounted filesystem, an IO error — and the caller
+/// treats it as worth trying again rather than as a verdict.
+fn unreadable_git_dir(root: &Path) -> Option<anyhow::Error> {
+    let start = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    for dir in start.ancestors() {
+        let dot_git = dir.join(".git");
+        let probe = match std::fs::symlink_metadata(&dot_git) {
+            Ok(md) if md.is_dir() => std::fs::metadata(dot_git.join("HEAD")).map(|_| ()),
+            // A `.git` *file* points elsewhere; reading it is the whole probe.
+            Ok(_) => std::fs::read(&dot_git).map(|_| ()),
+            Err(e) => Err(e),
+        };
+        match probe {
+            Ok(()) => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                return Some(anyhow::anyhow!(
+                    "{} could not be read: {e}",
+                    dot_git.display()
+                ))
+            }
+        }
+    }
+    None
 }
 
 /// The truth branch and its commit: `[git] main` when `refs/heads/<main>`
@@ -86,7 +136,12 @@ fn short_name(full: &str) -> String {
 #[derive(Default)]
 struct Candidate {
     refs: Vec<String>,
+    /// Checkout directory *names*, for the label.
     worktrees: Vec<String>,
+    /// The same checkouts as paths, for a caller asking whether this commit is
+    /// checked out anywhere. A worktree whose `gitdir` file cannot be read
+    /// contributes a name (its admin entry) but no path.
+    paths: Vec<PathBuf>,
 }
 
 /// Every ref that holds the inventory, deduplicated by commit.
@@ -134,11 +189,13 @@ pub fn refs(repo: &gix::Repository, cfg: &Git) -> anyhow::Result<Vec<Ref>> {
         let Some(id) = worktree_head(repo, wt.git_dir()) else {
             continue;
         };
-        found
-            .entry(id)
-            .or_default()
-            .worktrees
-            .push(worktree_label(&wt));
+        let base = wt.base().ok();
+        let base = base.as_deref().map(Path::to_path_buf);
+        let entry = found.entry(id).or_default();
+        entry.worktrees.push(worktree_label(&wt, base.as_deref()));
+        if let Some(base) = base {
+            entry.paths.push(base);
+        }
     }
 
     let mut out: Vec<Ref> = found
@@ -147,6 +204,7 @@ pub fn refs(repo: &gix::Repository, cfg: &Git) -> anyhow::Result<Vec<Ref>> {
         .map(|(oid, mut c)| {
             c.refs.sort();
             c.worktrees.sort();
+            c.paths.sort();
             let label = match c.refs.first() {
                 Some(name) => short_name(name),
                 None => c.worktrees.join(", "),
@@ -160,6 +218,7 @@ pub fn refs(repo: &gix::Repository, cfg: &Git) -> anyhow::Result<Vec<Ref>> {
                 name,
                 commit: oid.to_hex().to_string(),
                 label,
+                worktrees: c.paths,
             }
         })
         .collect();
@@ -167,31 +226,139 @@ pub fn refs(repo: &gix::Repository, cfg: &Git) -> anyhow::Result<Vec<Ref>> {
     Ok(out)
 }
 
-/// The commit a linked worktree's HEAD names. Both spellings are handled on
-/// purpose: plain git writes `ref: refs/heads/x`, a jj-colocated worktree writes
-/// a bare object id — and that detached case is the one the union view exists
-/// for, so reading only the symbolic form would drop exactly the worktrees that
-/// matter.
-fn worktree_head(repo: &gix::Repository, git_dir: &Path) -> Option<ObjectId> {
-    let text = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
+/// The branch and commit a checkout's `HEAD` file names. Both spellings are
+/// handled on purpose: plain git writes `ref: refs/heads/x`, a jj-colocated
+/// worktree writes a bare object id — and that detached case is the one the
+/// union view exists for, so reading only the symbolic form would drop exactly
+/// the worktrees that matter.
+///
+/// Read as a *file* rather than through `repo.head()` because the repository may
+/// have been discovered from any checkout: `head()` answers for that one, while
+/// every caller here wants a named checkout's own head.
+fn head_of(repo: &gix::Repository, git_dir: &Path) -> (Option<String>, Option<ObjectId>) {
+    let Ok(text) = std::fs::read_to_string(git_dir.join("HEAD")) else {
+        return (None, None);
+    };
     let text = text.trim();
     match text.strip_prefix("ref:") {
         Some(name) => {
-            let mut r = repo.try_find_reference(name.trim()).ok()??;
-            r.peel_to_id().ok().map(|id| id.detach())
+            let name = name.trim();
+            let commit = repo
+                .try_find_reference(name)
+                .ok()
+                .flatten()
+                .and_then(|mut r| r.peel_to_id().ok())
+                .map(|id| id.detach());
+            (Some(short_name(name)), commit)
         }
-        None => ObjectId::from_hex(text.as_bytes()).ok(),
+        None => (None, ObjectId::from_hex(text.as_bytes()).ok()),
+    }
+}
+
+/// The commit a linked worktree's HEAD names.
+fn worktree_head(repo: &gix::Repository, git_dir: &Path) -> Option<ObjectId> {
+    head_of(repo, git_dir).1
+}
+
+/// Every checkout of this repository: the main worktree plus each linked one,
+/// with the branch and commit its `HEAD` names.
+///
+/// The main worktree is included and `gix::Repository::worktrees` does not list
+/// it, so it is derived from the common git directory — which *is*
+/// `<main worktree>/.git` in the ordinary layout, and is the only place the main
+/// checkout can be found from a linked one. A bare repository has no main
+/// worktree, and contributes none.
+///
+/// A detached head is then given the branch it is parked on, by
+/// [`name_detached_heads`] — see there for why that is a branch and not a
+/// missing answer.
+fn checkouts(repo: &gix::Repository) -> Vec<Checkout> {
+    let mut out: Vec<Checkout> = Vec::new();
+    let common = repo.common_dir();
+    let main_root = if repo.git_dir() == common {
+        repo.workdir().map(Path::to_path_buf)
+    } else {
+        // Opened from a linked worktree: the main checkout is the parent of the
+        // shared `.git` directory, when that is what the common directory is.
+        (common.file_name() == Some(std::ffi::OsStr::new(".git")))
+            .then(|| common.parent().map(Path::to_path_buf))
+            .flatten()
+    };
+    if let Some(root) = main_root {
+        let (branch, commit) = head_of(repo, common);
+        out.push(Checkout {
+            root,
+            branch,
+            commit: commit.map(|id| id.to_hex().to_string()),
+        });
+    }
+    for wt in repo.worktrees().into_iter().flatten() {
+        let Some(root) = wt.base().ok().map(|b| b.to_path_buf()) else {
+            continue;
+        };
+        let (branch, commit) = head_of(repo, wt.git_dir());
+        out.push(Checkout {
+            root,
+            branch,
+            commit: commit.map(|id| id.to_hex().to_string()),
+        });
+    }
+    name_detached_heads(repo, &mut out);
+    out
+}
+
+/// Give every detached checkout the branch whose tip it is parked on.
+///
+/// A jj-colocated repository detaches *every* head, so without this the answer
+/// to "what is this checkout on" would be `None` for every worktree of the
+/// repositories this reader mostly runs against — and a caller showing it would
+/// have nothing to show. It is the same rule [`Ref::label`] uses one function
+/// up: a branch name wins over no name, because the commit is the branch's tip
+/// and the branch is what a human calls that work.
+///
+/// A branch another checkout holds *symbolically* is not offered: git refuses to
+/// check one branch out twice, so the detached checkout is not on it, and
+/// claiming so would put one name above two columns. Several branches at one
+/// commit are broken by the same rule as everywhere here — sorted, first wins —
+/// so the answer does not depend on ref iteration order.
+fn name_detached_heads(repo: &gix::Repository, checkouts: &mut [Checkout]) {
+    if checkouts.iter().all(|c| c.branch.is_some()) {
+        return;
+    }
+    let claimed: BTreeSet<&str> = checkouts
+        .iter()
+        .filter_map(|c| c.branch.as_deref())
+        .collect();
+    let mut at: BTreeMap<String, String> = BTreeMap::new();
+    if let Ok(platform) = repo.references() {
+        if let Ok(heads) = platform.prefixed("refs/heads/") {
+            for r in heads.flatten() {
+                let mut r = r;
+                let name = short_name(&r.name().as_bstr().to_string());
+                if claimed.contains(name.as_str()) {
+                    continue;
+                }
+                let Ok(id) = r.peel_to_id() else { continue };
+                let commit = id.detach().to_hex().to_string();
+                // Sorted, first wins: `prefixed` yields loose and packed refs in
+                // no guaranteed joint order, so pick rather than take.
+                let slot = at.entry(commit).or_insert_with(|| name.clone());
+                if name < *slot {
+                    *slot = name;
+                }
+            }
+        }
+    }
+    for c in checkouts.iter_mut().filter(|c| c.branch.is_none()) {
+        c.branch = c.commit.as_ref().and_then(|id| at.get(id)).cloned();
     }
 }
 
 /// A worktree's checkout directory name — what a human calls that worktree —
 /// falling back to its entry under `worktrees/` when the `gitdir` file cannot be
 /// read.
-fn worktree_label(wt: &gix::worktree::Proxy<'_>) -> String {
-    wt.base()
-        .ok()
-        .as_deref()
-        .and_then(Path::file_name)
+fn worktree_label(wt: &gix::worktree::Proxy<'_>, base: Option<&Path>) -> String {
+    base.and_then(Path::file_name)
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| wt.id().to_string())
 }
@@ -357,72 +524,151 @@ pub fn docs_changed_vs_main(
     })
 }
 
+/// One pass of the branch reader: every ref, its diff against main, the
+/// documents it occupies, and the git directory to watch.
+///
+/// `on_main` is main's corpus reduced to id → status, supplied by the caller:
+/// document I/O is the backend's job, and the engine's git reader deliberately
+/// owns no filesystem reads of the corpus. It is also what the callers already
+/// have in hand — re-reading it here would be a second, possibly disagreeing,
+/// opinion about the same files.
+///
+/// Nothing fails. A project that is not a repository, one with no truth branch,
+/// a ref listing that broke: each yields no refs plus exactly one notice. A
+/// single ref whose diff broke is *not* a notice — it stays in the result with
+/// its reason, because a caller drawing columns must draw that column and say it
+/// could not answer. See [`Survey`].
+pub fn survey(prj: &Project, on_main: &BTreeMap<String, String>) -> Survey {
+    survey_with(prj, |_, _| Some(on_main.clone()))
+}
+
+/// [`survey`] for a caller that cannot say what main *is* until it has been
+/// told which branch is truth and where the repository is checked out.
+///
+/// `on_main` is handed the [`Truth`] branch and every [`Checkout`], and returns
+/// the id → status map to measure the refs against — main's inventory. The
+/// order is not a nicety: occupancy means "a status main's copy does not have",
+/// and a caller serving several directories cannot know *which* of them holds
+/// main's copy until it has been told which branch is truth and what each
+/// checkout has. One that guessed — the leftmost worktree, say — would measure
+/// every branch against some third branch's working copy and call the result
+/// main.
+///
+/// Returning `None` means "I have no baseline": the survey stops there, with its
+/// [`Survey::git_dir`] and [`Survey::checkouts`] filled in and no refs, and the
+/// caller says why in its own words — the reasons it can have are its own, not
+/// git's. Nothing here fails either way.
+pub fn survey_with<F>(prj: &Project, on_main: F) -> Survey
+where
+    F: FnOnce(&Truth, &[Checkout]) -> Option<BTreeMap<String, String>>,
+{
+    let mut out = Survey::default();
+    let repo = match open(prj) {
+        Ok(Some(repo)) => repo,
+        Ok(None) => {
+            out.notices.push(NOT_A_REPOSITORY.to_string());
+            return out;
+        }
+        // Discovered and then not openable: a half-written `.git/config`, a
+        // permissions blip, an extension gix does not know. Unlike "no
+        // repository here", that can be gone by the next pass.
+        Err(e) => {
+            out.notices.push(format!("git: {e}"));
+            out.retry = true;
+            return out;
+        }
+    };
+    // Reported even when the read below gives up: a repository with no truth
+    // branch is still a repository, and a caller that watches it sees `main`
+    // appear rather than waiting for a restart.
+    out.git_dir = Some(repo.common_dir().to_path_buf());
+    out.checkouts = checkouts(&repo);
+    // Without a truth branch there is no baseline: every ref would diff against
+    // an empty tree and report the whole inventory as work in flight.
+    let Some((name, commit)) = truth_branch(&repo, &prj.pcfg.git) else {
+        out.notices.push(NO_TRUTH_BRANCH.to_string());
+        return out;
+    };
+    let truth = Truth {
+        short: short_name(&name),
+        name,
+        commit: commit.to_hex().to_string(),
+    };
+    let Some(on_main) = on_main(&truth, &out.checkouts) else {
+        return out;
+    };
+    let on_main = &on_main;
+    let found = match refs(&repo, &prj.pcfg.git) {
+        Ok(found) => found,
+        Err(e) => {
+            out.notices.push(format!("git: {e}"));
+            return out;
+        }
+    };
+    for r in found {
+        let changed = docs_changed_vs_main(&repo, prj, &r).map_err(|e| e.to_string());
+        let mut occupied = BTreeMap::new();
+        if let Ok(changed) = &changed {
+            for doc in &changed.docs {
+                let (Some(id), Some(status)) = (doc.id(), doc.status()) else {
+                    continue;
+                };
+                if on_main.get(id).map(String::as_str) == Some(status) {
+                    continue;
+                }
+                occupied.insert(
+                    id.to_string(),
+                    Occupant {
+                        label: r.label.clone(),
+                        status: status.to_string(),
+                        since: crate::history::entries(&doc.frontmatter)
+                            .last()
+                            .map(|(k, _)| k.clone()),
+                    },
+                );
+            }
+        }
+        out.refs.push(RefState {
+            reference: r,
+            changed,
+            occupied,
+        });
+    }
+    out
+}
+
 /// Which refs hold which documents at a status main's working copy does not.
+///
+/// [`survey`] folded down to the shape a one-shot caller wants: the per-ref
+/// failures that survey keeps beside their ref become notices here, because a
+/// command printing a list has no column to hang them on.
 ///
 /// `on_main` is main's loaded corpus, supplied by the caller: document I/O is
 /// the backend's job, and the engine's git reader deliberately owns no
-/// filesystem reads of the corpus. It is also what the callers already have in
-/// hand — re-reading it here would be a second, possibly disagreeing, opinion
-/// about the same files.
+/// filesystem reads of the corpus.
 ///
 /// Nothing fails: a project that is not a repository, an unreadable ref, a
 /// broken diff — each yields empty (or partial) occupancy plus a notice.
 pub fn occupancy(prj: &Project, on_main: &[Doc]) -> Occupancy {
-    let mut occ = Occupancy::default();
-    let repo = match open(prj) {
-        Ok(Some(repo)) => repo,
-        Ok(None) => {
-            occ.notices.push(NOT_A_REPOSITORY.to_string());
-            return occ;
-        }
-        Err(e) => {
-            occ.notices.push(format!("git: {e}"));
-            return occ;
-        }
-    };
-    // Without a truth branch there is no baseline: every ref would diff against
-    // an empty tree and report the whole inventory as work in flight.
-    if truth_branch(&repo, &prj.pcfg.git).is_none() {
-        occ.notices.push(NO_TRUTH_BRANCH.to_string());
-        return occ;
-    }
-    let statuses: BTreeMap<&str, &str> = on_main
+    let statuses: BTreeMap<String, String> = on_main
         .iter()
-        .filter_map(|d| Some((d.id()?, d.status()?)))
+        .filter_map(|d| Some((d.id()?.to_string(), d.status()?.to_string())))
         .collect();
-
-    let refs = match refs(&repo, &prj.pcfg.git) {
-        Ok(refs) => refs,
-        Err(e) => {
-            occ.notices.push(format!("git: {e}"));
-            return occ;
-        }
+    let surveyed = survey(prj, &statuses);
+    let mut occ = Occupancy {
+        by_doc: BTreeMap::new(),
+        notices: surveyed.notices,
     };
-    for r in &refs {
-        let changed = match docs_changed_vs_main(&repo, prj, r) {
-            Ok(changed) => changed,
-            Err(e) => {
-                occ.notices.push(format!("git: {}: {e}", r.label));
-                continue;
+    for state in surveyed.refs {
+        match state.changed {
+            Err(e) => occ
+                .notices
+                .push(format!("git: {}: {e}", state.reference.label)),
+            Ok(_) => {
+                for (id, occupant) in state.occupied {
+                    occ.by_doc.entry(id).or_default().push(occupant);
+                }
             }
-        };
-        for doc in &changed.docs {
-            let (Some(id), Some(status)) = (doc.id(), doc.status()) else {
-                continue;
-            };
-            if statuses.get(id) == Some(&status) {
-                continue;
-            }
-            occ.by_doc
-                .entry(id.to_string())
-                .or_default()
-                .push(Occupant {
-                    label: r.label.clone(),
-                    status: status.to_string(),
-                    since: crate::history::entries(&doc.frontmatter)
-                        .last()
-                        .map(|(k, _)| k.clone()),
-                });
         }
     }
     occ

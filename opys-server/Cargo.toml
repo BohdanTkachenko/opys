@@ -85,6 +85,16 @@ walkdir = "2"
 fs4 = "0.13"
 
 [dev-dependencies]
+# `tests/ref_reader.rs` builds its repositories with the engine's gix-only
+# fixture builder, which is not public API: it sits behind the engine's
+# non-default `test-fixtures` feature, which only a *dev*-dependency ever asks
+# for (this one, and `opys`'s for `opys/tests/cli.rs`), so the module reaches no
+# consumer and never ships in the binary or on docs.rs. The feature is a no-op without gix, and `default-features = false`
+# keeps this edge from re-enabling `git` under `--no-default-features` — which
+# is what makes that CI job an honest main-only build.
+opys-engine = { path = "..", version = "0.12.0", default-features = false, features = [
+    "test-fixtures",
+] }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

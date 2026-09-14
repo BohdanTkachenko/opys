@@ -60,6 +60,19 @@
     }
     return { kind: 'good', label: 'verify is clean' };
   }
+
+  /**
+   * How many columns this project's union view would have: its served corpora
+   * plus the refs nobody has checked out, as the node's ref reader counted them.
+   *
+   * Branches count because they are what the view is for. Gating the link on
+   * worktrees alone made it unreachable for the ordinary shape — one checkout,
+   * several branches — which is precisely where the comparison is interesting
+   * (ADR-0102).
+   */
+  function columnCount(group) {
+    return group.corpora.length + (group.branches ?? 0);
+  }
 </script>
 
 <aside class="sidebar" class:open>
@@ -164,17 +177,22 @@
                 </li>
               {/each}
             </ul>
-            {#if group.corpora.length > 1}
-              <!-- Offered only for a group with something to compare. One worktree
+            {#if columnCount(group) > 1}
+              <!-- Offered only for a group with something to compare. One column
                    makes a valid one-column union — the node builds it happily —
                    but a link promising a comparison that cannot exist is noise in
-                   the one place that has to stay scannable. -->
+                   the one place that has to stay scannable.
+
+                   Branches count towards it: a repository with one worktree and
+                   three branches has plenty to compare, and gating on worktrees
+                   alone made the whole view unreachable for exactly the shape it
+                   was built for (ADR-0102). -->
               <a
                 class="union"
                 class:active={group.key === activeKey}
                 href={href(unionPath(group.key))}
               >
-                <Icon name="compare" size={13} /> compare {group.corpora.length} worktrees
+                <Icon name="compare" size={13} /> compare {columnCount(group)} columns
               </a>
             {/if}
           </section>

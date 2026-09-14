@@ -75,10 +75,23 @@ pub enum Event {
         action: String,
         id: String,
     },
+    /// A project group's refs moved, so its branch columns and its occupancy
+    /// are new (ADR-0102). Keyed by the **group** key, not a cid: the branches
+    /// of a repository belong to the project, not to any one worktree of it.
+    ///
+    /// Sent only when the ref reader's answer actually changed. A client that
+    /// cannot attribute a frame to a corpus assumes it affects every view, so a
+    /// frame per periodic re-read would be a node-wide refetch every minute.
+    RefsChanged {
+        project: String,
+    },
 }
 
 /// One row of the board: everything a list view needs without opening a doc.
-#[derive(Debug, Clone, Serialize)]
+///
+/// `PartialEq` so the ref reader can tell whether a re-read changed anything
+/// before it broadcasts; see [`crate::refreader`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DocSummary {
     pub id: String,
     #[serde(rename = "type")]
@@ -795,7 +808,11 @@ fn rel_path(prj: &Project, doc: &Doc) -> String {
         .into_owned()
 }
 
-fn summary(prj: &Project, doc: &Doc, corpus: &refs::Corpus<'_>) -> Option<DocSummary> {
+/// One board row from a parsed document. `pub(crate)` because the ref reader
+/// summarises the documents it decoded out of git objects the same way, and a
+/// second spelling of this would let a branch column and a worktree column
+/// disagree about what `blocked` means.
+pub(crate) fn summary(prj: &Project, doc: &Doc, corpus: &refs::Corpus<'_>) -> Option<DocSummary> {
     let id = doc.id()?.to_string();
     let live_blockers: Vec<String> = refs::live_blockers(doc, corpus)
         .into_iter()

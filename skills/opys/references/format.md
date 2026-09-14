@@ -267,14 +267,23 @@ leaves behind.
 Refs are deduplicated **by commit** — one commit is one column — and labelled by
 the branch name when one points at that commit, else by the checkout directory
 names of the worktrees parked on it, sorted and joined. The truth branch is never
-a column of its own. Each ref is diffed against main under the inventory base,
+a column of its own. A **checkout** is named the same way: the branch its `HEAD`
+points at, or — for the detached head every jj-colocated workspace carries — the
+branch whose tip it is parked on, so a checkout is not nameless just because git
+would call it detached. Each ref is diffed against main under the inventory base,
 keyed by **filename** (which is the document's id, so the relocation a status
 change causes is not read as a delete plus an add), and only the blobs that
 differ are decoded, through the real parser.
 
 A project that is not a git repository — or one whose truth branch does not
 exist, or an `opys` built without the `git` feature — is main-only and says so
-with a single notice. Nothing fails.
+with a single notice. A repository that *is* there and cannot be opened (a
+half-written `.git/config`, an unreadable `.git` directory, an IO error) says so
+too, in its own words and naming what it could not read, and is marked as worth
+trying again rather than settled: it is a passing state, not a verdict. That
+second state is decided by probing the `.git` the search walked past, not by
+what the search reported, because the search cannot tell the two apart either —
+it treats a `.git` it cannot read as one that is not there. Nothing fails.
 
 That is the *reader*, which always has a main-only answer to give. `opys history
 <id>` has none: it reports the committed timeline and nothing else, so outside a

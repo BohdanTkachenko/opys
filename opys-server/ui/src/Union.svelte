@@ -11,10 +11,16 @@
   // Two things in the payload are easy to render into a lie, and most of the
   // care in this file is about them:
   //
-  //  1. **A blank cell has two meanings.** `status === null` is "this worktree
-  //     does not have this document"; `unknown` is "this worktree did not
+  //  1. **A blank cell has two meanings.** `status === null` is "this column
+  //     does not have this document"; `unknown` is "this column did not
   //     answer". They must not look alike — the first justifies "new on a
   //     branch", the second justifies nothing at all.
+  //  1b. **A column has two kinds.** A `worktree` column is a served corpus and
+  //     every cell links to its document. A `branch` column is a ref nobody has
+  //     checked out, read straight out of git objects: it addresses no corpus,
+  //     so a cell that linked the same way would be a 404. And a *notice* is not
+  //     a column error — `view.notices` says the reader could not look at
+  //     branches at all, `column.error` says one branch could not be read.
   //  2. **A filter is applied per corpus *before* the merge.** So a filtered
   //     union answers "where does this match", not "where does this exist", and
   //     filtering by status hides one side of every status drift. That is said
@@ -23,7 +29,7 @@
 
   import { api } from './lib/api.js';
   import { corpora } from './lib/corpora.svelte.js';
-  import { affects, events } from './lib/events.svelte.js';
+  import { affects, affectsProject, events } from './lib/events.svelte.js';
   import { shortDate, statusTone } from './lib/format.js';
   import { createResource } from './lib/resource.svelte.js';
   import { docPath, go, href, unionPath } from './lib/router.svelte.js';
@@ -55,6 +61,12 @@
       // change under us. Before the first answer there is no list, so anything
       // counts.
       const cids = (table.data?.columns ?? []).map((column) => column.cid);
+      // `refs-changed` is scoped to the project, not to a corpus: it is what
+      // says a branch column moved, and no cid would ever match it.
+      if (affectsProject(batch, wanted)) {
+        table.run(() => api.union(wanted, asked), { quiet: true });
+        return;
+      }
       if (cids.length > 0 && !cids.some((cid) => affects(batch, cid))) return;
       table.run(() => api.union(wanted, asked), { quiet: true });
     });
@@ -69,6 +81,15 @@
   );
 
   const silent = $derived((view?.columns ?? []).filter((column) => 'error' in column));
+  const worktrees = $derived(
+    (view?.columns ?? []).filter((column) => column.kind !== 'branch').length,
+  );
+  const branches = $derived(
+    (view?.columns ?? []).filter((column) => column.kind === 'branch').length,
+  );
+  const occupied = $derived(
+    (view?.rows ?? []).filter((row) => (row.occupants ?? []).length > 0).length,
+  );
 
   const drifted = $derived((view?.rows ?? []).filter((row) => row.differs).length);
   const collisions = $derived((view?.rows ?? []).filter((row) => row.collision).length);
@@ -100,6 +121,12 @@
   function statusText(cell) {
     return cell.status === '' ? '(no status)' : cell.status;
   }
+
+  /** What an occupancy chip says on hover: the ref, its status, and since when. */
+  function occupantTitle(occupant) {
+    const since = occupant.since ? ` since ${shortDate(occupant.since)}` : '';
+    return `${occupant.label} holds it at ${occupant.status}${since}`;
+  }
 </script>
 
 <header class="head topbar">
@@ -107,8 +134,9 @@
     <h1>{group ? group.name : key}</h1>
     {#if view}
       <span class="small muted">
-        {view.columns.length}
-        {view.columns.length === 1 ? 'worktree' : 'worktrees'} ·
+        {worktrees}
+        {worktrees === 1 ? 'worktree' : 'worktrees'}
+        {#if branches > 0}· {branches} {branches === 1 ? 'branch' : 'branches'}{/if} ·
         {view.rows.length}
         {view.rows.length === 1 ? 'document' : 'documents'}
         {#if table.loading}· refreshing…{/if}
@@ -190,13 +218,28 @@
     </div>
   {/if}
 
+  {#if view.notices.length > 0}
+    <!-- Whole-reader states, not column failures: there are no branch columns to
+         show and this says why. Rendered as an ordinary notice rather than as a
+         fault, because "this project is not a git repository" is a perfectly
+         healthy thing for a project to be. -->
+    <div class="notice">
+      <p>No branch columns are being shown.</p>
+      <ul class="small">
+        {#each view.notices as notice (notice)}
+          <li>{notice}</li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
+
   {#if silent.length > 0}
     <div class="notice bad">
       <p>
         {silent.length}
-        {silent.length === 1 ? 'worktree' : 'worktrees'} did not answer, so
-        {silent.length === 1 ? 'its column says' : 'their columns say'} nothing at
-        all — not that the documents are missing there.
+        {silent.length === 1 ? 'column' : 'columns'} did not answer, so
+        {silent.length === 1 ? 'it says' : 'they say'} nothing at all — not that
+        the documents are missing there.
       </p>
       <ul class="small">
         {#each silent as column (column.cid)}
@@ -229,8 +272,11 @@
       {#if drifted > 0}
         <span class="mark drift">{drifted} drifted</span>
       {/if}
+      {#if occupied > 0}
+        <span class="mark occupies">{occupied} in flight</span>
+      {/if}
       {#if collisions === 0 && drifted === 0}
-        No drift and no id collisions among the worktrees that answered.
+        No drift and no id collisions among the columns that answered.
       {/if}
     </p>
 
@@ -243,9 +289,15 @@
               <!-- `error` is omitted from the JSON when absent, so this is a
                    presence test; `column.error === null` is false for every
                    column, healthy or not. -->
-              <th class:silent={'error' in column} title={column.error ?? column.cid}>
+              <th
+                class:silent={'error' in column}
+                class:branch={column.kind === 'branch'}
+                title={column.error ?? (column.commit ? `commit ${column.commit}` : column.cid)}
+              >
                 {column.label}
-                {#if 'error' in column}<span class="small">did not answer</span>{/if}
+                {#if 'error' in column}<span class="small">did not answer</span>
+                {:else if column.kind === 'branch'}<span class="small">branch, no checkout</span>
+                {/if}
               </th>
             {/each}
           </tr>
@@ -263,42 +315,65 @@
                     </span>
                   {/if}
                   {#if row.differs}
-                    <span class="mark drift" title="the worktrees that have it disagree">
+                    <span class="mark drift" title="the columns that have it disagree">
                       drifted
                     </span>
                   {/if}
                   {#if row.only_in.length > 0}
-                    <span class="mark only" title="the worktrees that have it">
+                    <span class="mark only" title="the columns that have it">
                       only in {row.only_in.map((cid) => labels.get(cid) ?? cid).join(', ')}
                     </span>
                   {/if}
+                  {#each row.occupants ?? [] as occupant}
+                    <!-- Occupancy, not a cell: a ref holding this document at a
+                         status main's copy does not. It is the claim an
+                         orchestrator acts on, and it is drawn on the item
+                         because that is where it is read. -->
+                    <span class="mark occupies" title={occupantTitle(occupant)}>
+                      {occupant.label} · {occupant.status}
+                    </span>
+                  {/each}
                 </span>
               </th>
 
-              {#each row.cells as cell (cell.cid)}
+              {#each row.cells as cell, index (cell.cid)}
                 {#if cell.unknown}
                   <!-- The column errored. Nothing is claimed about this document
                        here, and the striping says so: an empty-looking cell that
-                       meant "absent" would turn one broken worktree into a
+                       meant "absent" would turn one broken column into a
                        branch that deleted the inventory. -->
-                  <td class="cell unknown" title="this worktree did not answer">
+                  <td class="cell unknown" title="this column did not answer">
                     <span class="small">no answer</span>
                   </td>
                 {:else if cell.status === null}
-                  <td class="cell absent" title="this worktree does not have this document">
+                  <td class="cell absent" title="this column does not have this document">
                     <span class="small">not here</span>
                   </td>
                 {:else}
                   {@const tone = statusTone(cell.status)}
+                  {@const branch = view.columns[index]?.kind === 'branch'}
                   <td class="cell">
-                    <a
-                      class="chip status"
-                      style:--tone={tone}
-                      class:neutral={tone === null}
-                      href={href(docPath(cell.cid, row.id))}
-                    >
-                      {statusText(cell)}
-                    </a>
+                    {#if branch}
+                      <!-- A branch column addresses no corpus, so there is no
+                           document route to link to. The chip is the answer;
+                           open the document on a worktree that has it. -->
+                      <span
+                        class="chip status"
+                        style:--tone={tone}
+                        class:neutral={tone === null}
+                      >
+                        {statusText(cell)}
+                      </span>
+                    {:else}
+                      <a
+                        class="chip status"
+                        style:--tone={tone}
+                        class:neutral={tone === null}
+                        href={href(docPath(cell.cid, row.id))}
+                      >
+                        {statusText(cell)}
+                      </a>
+                    {/if}
                     {#if cell.title && cell.title !== row.title}
                       <!-- A title that disagrees with the row's is half of what
                            `differs` is reporting, and it appears nowhere else. -->
@@ -322,10 +397,18 @@
       <div><dt><span class="swatch collision"></span> id collision</dt>
         <dd>two different ids claim the same number; they will collide when the
           branches meet — <code>opys renumber</code> is the repair</dd></div>
+      <div><dt><span class="swatch occupies"></span> in flight</dt>
+        <dd>a ref holds this document at a status main's copy does not, and since
+          when — branches are progress, main is truth</dd></div>
       <div><dt><span class="swatch absent"></span> not here</dt>
-        <dd>this worktree answered, and does not have the document</dd></div>
+        <dd>this column answered, and does not have the document</dd></div>
       <div><dt><span class="swatch unknown"></span> no answer</dt>
-        <dd>this worktree could not be asked; nothing is known either way</dd></div>
+        <dd>this column could not be asked; nothing is known either way</dd></div>
+      <div><dt>branch, no checkout</dt>
+        <dd>a column read out of git objects, for a ref no worktree has checked
+          out. Its cells do not link: there is no directory to open them in, and
+          a document the branch did not change reads as main's <em>working
+          copy</em> — so an uncommitted edit on main shows through here</dd></div>
     </dl>
   {/if}
 {/if}
@@ -420,6 +503,19 @@
     color: var(--bad);
   }
 
+  /* A branch column is a different kind of thing from a worktree column, and the
+     heading is the only place that can say so before a reader clicks a cell that
+     does not link. */
+  thead th.branch {
+    border-bottom: 2px solid var(--accent);
+  }
+
+  thead th.branch span {
+    display: block;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+
   thead th.silent span {
     display: block;
     text-transform: none;
@@ -466,6 +562,12 @@
   .mark.drift {
     border-color: var(--warn);
     color: var(--warn);
+  }
+
+  /* Occupancy is neither drift nor a fault: it is work happening elsewhere. */
+  .mark.occupies {
+    border-color: var(--accent);
+    color: var(--accent);
   }
 
   .mark.collision {
@@ -557,6 +659,11 @@
   .swatch.collision {
     background: var(--bad);
     border-color: var(--bad);
+  }
+
+  .swatch.occupies {
+    background: transparent;
+    border-color: var(--accent);
   }
 
   .swatch.absent {
