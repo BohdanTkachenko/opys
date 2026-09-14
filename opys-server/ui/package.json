@@ -3,12 +3,13 @@
   "private": true,
   "type": "module",
   "version": "0.0.0",
-  "description": "The opys node's embedded web UI. Built by `ui-build`; the output in dist/ is committed and embedded into opys-server.",
+  "description": "The opys node's embedded web UI. Built by `ui-build`; the output in dist/ is gitignored (ADR-0086) and embedded into opys-server by its build.rs.",
   "license": "Apache-2.0",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test 'src/**/*.test.js'"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "7.3.0",

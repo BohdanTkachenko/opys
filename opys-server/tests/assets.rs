@@ -168,7 +168,10 @@ async fn the_asset_route_cannot_escape_the_bundle() {
 /// small. Raise it deliberately, with the reason, when a view genuinely needs
 /// the room. Raised to 192 kB for the omnibox (FEAT-0098: the finder, its
 /// fuzzy scorer) and the board's keyboard cursor (FEAT-0097), which took the
-/// bundle from ~152 kB to ~165 kB.
+/// bundle from ~152 kB to ~165 kB. The flow view (FEAT-0109: the layered
+/// layout, the measured SVG edges and their styles) took it to ~183 kB, which
+/// still fits — the ceiling is deliberately *not* being raised to make room,
+/// so the next view has to justify itself.
 #[test]
 fn the_bundle_stays_small() {
     const CEILING: usize = 192 * 1024;

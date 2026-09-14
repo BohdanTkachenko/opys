@@ -171,6 +171,18 @@ export const api = {
   union: (key, filters) => get(`/api/group/${seg(key)}/union${qs(filters)}`),
 
   /**
+   * One project's lifecycle graph (view 6): the statuses, the edges the
+   * `transitions` maps declare, and `opys next`'s answer on each node. Answered
+   * from the project's main worktree, so `?n=` is the per-node item cap and
+   * there is nothing else to filter by.
+   *
+   * The path says `/api/projects/`, not `/api/group/`, like the pick endpoint
+   * and unlike `union`: the two spellings are the same key, and the split is a
+   * wart the node's docs already record.
+   */
+  flow: (key, params) => get(`/api/projects/${seg(key)}/flow${qs(params)}`),
+
+  /**
    * The allowlist as the setup screen needs it: whether the file exists at all
    * (`configured` — false is what triggers onboarding), the scan mode, the
    * resolved scan root, `$HOME`, and the current entries.

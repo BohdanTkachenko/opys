@@ -1140,3 +1140,185 @@ async fn the_next_endpoint_classes_bad_input_as_bad_input() {
         "{body:#}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The flow graph endpoint: `GET /api/projects/{key}/flow` (FEAT-0109)
+// ---------------------------------------------------------------------------
+
+/// The node payload for one status, or a panic naming what was there instead.
+fn flow_node<'a>(body: &'a Value, status: &str) -> &'a Value {
+    body["nodes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no nodes: {body:#}"))
+        .iter()
+        .find(|n| n["status"] == status)
+        .unwrap_or_else(|| panic!("no {status} node: {body:#}"))
+}
+
+/// The graph is the config's, not the corpus's: every declared status is a
+/// node, the edges are the union of the `transitions` maps, and the type that
+/// declares no map contributes its statuses and no edges at all.
+#[tokio::test]
+async fn the_flow_endpoint_draws_the_graph_the_config_declares() {
+    let fx = Fixture::new();
+    let key = project_key(&fx).await;
+
+    let (status, body) = fx.get(&format!("/api/projects/{key}/flow")).await;
+    assert_eq!(status, StatusCode::OK, "{body:#}");
+    assert_eq!(body["cid"], fx.cid.as_str(), "{body:#}");
+    assert_eq!(body["limit"], 5, "the default per-node cap: {body:#}");
+
+    // Declaration order, which is the order everything ranked in this tool uses
+    // — never the alphabetical one a `BTreeMap` walk would give (idea, note, task).
+    let types: Vec<&str> = body["types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(types, vec!["note", "task", "idea"], "{body:#}");
+
+    let statuses: Vec<&str> = body["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["status"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        statuses,
+        vec!["open", "closed", "todo", "doing", "done", "draft", "live"],
+        "{body:#}"
+    );
+
+    let edges: Vec<(&str, &str)> = body["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| (e["from"].as_str().unwrap(), e["to"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        edges,
+        vec![
+            ("todo", "doing"),
+            ("doing", "todo"),
+            ("doing", "done"),
+            ("draft", "live"),
+            ("live", "draft"),
+        ],
+        "`note` declares no transitions, so it contributes no edges: {body:#}"
+    );
+
+    assert!(flow_node(&body, "open")["initial"].as_bool().unwrap());
+    assert!(flow_node(&body, "todo")["initial"].as_bool().unwrap());
+    assert!(flow_node(&body, "draft")["initial"].as_bool().unwrap());
+    assert!(!flow_node(&body, "doing")["initial"].as_bool().unwrap());
+    // A terminal node is always empty — `close` deletes the file — so it has to
+    // be marked, or it reads as a stage nobody ever reached.
+    assert!(flow_node(&body, "done")["terminal"].as_bool().unwrap());
+    assert!(flow_node(&body, "closed")["terminal"].as_bool().unwrap());
+    assert!(!flow_node(&body, "live")["terminal"].as_bool().unwrap());
+    assert!(flow_node(&body, "open")["declared"].as_bool().unwrap());
+}
+
+/// The composition guarantee, over the wire: a node lists exactly what the
+/// `next` endpoint lists for the same status, item for item.
+///
+/// Both halves come from the same `next::pick`, and this is what says so at the
+/// API boundary — that the two endpoints agree on every node of a real served
+/// project, including the empty and the blocked ones. The *ordering* half of
+/// the guarantee is not visible here: this fixture's types have disjoint status
+/// sets and one document each, so no node holds two items. The merged node with
+/// several documents of two types is pinned by
+/// `flow::tests::a_merged_node_lists_exactly_what_next_lists_in_the_same_order`.
+#[tokio::test]
+async fn a_flow_node_lists_exactly_what_next_lists() {
+    let fx = Fixture::new();
+    let key = project_key(&fx).await;
+
+    let (status, flow) = fx.get(&format!("/api/projects/{key}/flow")).await;
+    assert_eq!(status, StatusCode::OK, "{flow:#}");
+    let limit = flow["limit"].as_u64().unwrap();
+
+    for node in flow["nodes"].as_array().unwrap() {
+        let status_name = node["status"].as_str().unwrap();
+        let (code, picked) = fx
+            .get(&format!(
+                "/api/projects/{key}/next?status={status_name}&n={limit}"
+            ))
+            .await;
+        assert_eq!(code, StatusCode::OK, "{picked:#}");
+        assert_eq!(
+            node["items"], picked["items"],
+            "the {status_name} node and `next` disagree: {node:#} vs {picked:#}"
+        );
+        assert_eq!(node["pickable"], picked["total"], "{node:#}");
+        assert_eq!(node["orphaned"], picked["orphaned"], "{node:#}");
+    }
+}
+
+/// A blocked document is counted and named, never listed: it is not pickable,
+/// and a node offering it would be offering work nobody can take. TASK-0002 is
+/// `doing` with a live NOTE-0001 blocking it.
+#[tokio::test]
+async fn a_blocked_document_is_counted_not_listed() {
+    let fx = Fixture::new();
+    let key = project_key(&fx).await;
+
+    let (status, body) = fx.get(&format!("/api/projects/{key}/flow")).await;
+    assert_eq!(status, StatusCode::OK, "{body:#}");
+
+    let doing = flow_node(&body, "doing");
+    assert_eq!(doing["total"], 1, "{doing:#}");
+    assert_eq!(doing["pickable"], 0, "{doing:#}");
+    assert_eq!(
+        doing["items"].as_array().map(Vec::len),
+        Some(0),
+        "{doing:#}"
+    );
+    assert_eq!(doing["blocked"], json!(["TASK-0002"]), "{doing:#}");
+
+    // And the identity that keeps the three buckets honest, on every node.
+    for node in body["nodes"].as_array().unwrap() {
+        let parts = node["pickable"].as_u64().unwrap()
+            + node["blocked"].as_array().unwrap().len() as u64
+            + node["orphaned"].as_array().unwrap().len() as u64;
+        assert_eq!(node["total"].as_u64().unwrap(), parts, "{node:#}");
+    }
+}
+
+/// `?n=` is the per-node cap, and it truncates the list without touching the
+/// count behind it — which is what lets a node say "and N more".
+#[tokio::test]
+async fn the_flow_endpoint_takes_a_per_node_limit() {
+    let fx = Fixture::new();
+    let key = project_key(&fx).await;
+
+    let (status, body) = fx.get(&format!("/api/projects/{key}/flow?n=0")).await;
+    assert_eq!(status, StatusCode::OK, "{body:#}");
+    assert_eq!(body["limit"], 0, "{body:#}");
+    let open = flow_node(&body, "open");
+    assert_eq!(
+        open["pickable"], 1,
+        "the limit truncates, it does not filter"
+    );
+    assert_eq!(open["items"].as_array().map(Vec::len), Some(0), "{open:#}");
+
+    let (status, body) = fx.get(&format!("/api/projects/{key}/flow?n=nope")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body:#}");
+}
+
+/// A project nobody serves is a 404, worded exactly as the pick endpoint words
+/// it — the two share one resolver, and this is what pins that they still do.
+#[tokio::test]
+async fn the_flow_endpoint_404s_for_a_project_nobody_serves() {
+    let fx = Fixture::new();
+    let (status, body) = fx.get("/api/projects/nobody/flow").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body:#}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no such project"),
+        "{body:#}"
+    );
+}

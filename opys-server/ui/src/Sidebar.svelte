@@ -20,9 +20,14 @@
   import { corpora } from './lib/corpora.svelte.js';
   import { events } from './lib/events.svelte.js';
   import { corpusLabel, shortTime } from './lib/format.js';
-  import { boardPath, href, unionPath } from './lib/router.svelte.js';
+  import { boardPath, flowPath, href, unionPath } from './lib/router.svelte.js';
 
-  let { activeCid = null, activeKey = null } = $props();
+  /**
+   * `activeView` as well as `activeKey`: the union and the lifecycle graph are
+   * both routed by a group key, so the key alone cannot say which of a
+   * group's two links is the current one — and both would light up.
+   */
+  let { activeCid = null, activeKey = null, activeView = null } = $props();
 
   /** The narrow-screen list, opened by the toggle and closed by navigating. */
   let open = $state(false);
@@ -33,6 +38,7 @@
     // list that led there.
     void activeCid;
     void activeKey;
+    void activeView;
     open = false;
   });
 
@@ -188,13 +194,23 @@
                    alone made the whole view unreachable for exactly the shape it
                    was built for (ADR-0102). -->
               <a
-                class="union"
-                class:active={group.key === activeKey}
+                class="grouplink"
+                class:active={group.key === activeKey && activeView === 'union'}
                 href={href(unionPath(group.key))}
               >
                 <Icon name="compare" size={13} /> compare {columnCount(group)} columns
               </a>
             {/if}
+            <!-- Ungated, unlike the union link above: a project with one
+                 worktree has nothing to compare, but it always has a lifecycle,
+                 and the graph is the same picture whatever git is doing. -->
+            <a
+              class="grouplink"
+              class:active={group.key === activeKey && activeView === 'flow'}
+              href={href(flowPath(group.key))}
+            >
+              <Icon name="flow" size={13} /> lifecycle
+            </a>
           </section>
         {/each}
       </nav>
@@ -381,7 +397,7 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .union {
+  .grouplink {
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
@@ -393,11 +409,11 @@
     text-decoration: none;
   }
 
-  .union:hover {
+  .grouplink:hover {
     color: var(--accent);
   }
 
-  .union.active {
+  .grouplink.active {
     background: var(--raised);
     color: var(--fg);
     box-shadow: inset 2px 0 0 var(--accent);

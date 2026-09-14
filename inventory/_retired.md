@@ -25,6 +25,7 @@ retired:
   TASK-0117: 'engine: the gix branch reader, default-on, and the comrak trim'
   TASK-0118: 'engine: `opys next` and the pick function'
   TASK-0119: 'opys-server: ref reader, occupancy in the union, `next` endpoint, autofix'
+  TASK-0120: 'opys-server: the flow graph view'
   TASK-0122: 'engine: interleaved id sequences'
   TASK-0123: 'engine: the atomic claim batch'
 ---

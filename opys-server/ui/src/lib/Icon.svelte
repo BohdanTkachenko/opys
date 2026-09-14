@@ -15,6 +15,8 @@
     // Two columns side by side. The earlier pair of opposed arrows turned to
     // a smudge at the 13px the sidebar draws it.
     compare: 'M4 5h6.5v14H4zM13.5 5H20v14h-6.5z',
+    // Two stages and the move between them: the lifecycle graph.
+    flow: 'M3 9h6v6H3zM15 9h6v6h-6zM9.5 12h5m-2-2 2 2-2 2',
     menu: 'M4 7h16M4 12h16M4 17h16',
     flag: 'M5 21V4h11l-1.5 3.5L16 11H5',
     tag: 'm12 3 8 8-9 9-8-8V4h8Zm-4 4h.01',

@@ -1,12 +1,13 @@
 //! The ordering chain: which of two documents comes first, and why.
 //!
 //! A type's `[types.<name>] order_by` (ADR-0099 decision 4) names a chain of
-//! tiebreaks. Every consumer that has to put documents in an intentional order —
-//! `list --sort` and `opys next` today, the flow view later — reads it *only*
-//! through here, so the CLI and the node cannot end up with two orders that
-//! disagree about the same corpus. [`Corpus::ranked`] is that single ranking,
-//! group and chain together: both consumers call it rather than each assembling
-//! the same sort out of the parts.
+//! tiebreaks. Every consumer that has to put documents in an intentional
+//! order — `list --sort`, `opys next`, and the node's flow view, which lists
+//! each status node's documents through `next::pick` — reads it *only* through
+//! here, so the CLI and the node cannot end up with two orders that disagree
+//! about the same corpus. [`Corpus::ranked`] is that single ranking, group and
+//! chain together: both consumers call it rather than each assembling the same
+//! sort out of the parts.
 //!
 //! Three rules carry the module:
 //!

@@ -29,6 +29,11 @@ jobs:
           cache-dependency-path: opys-server/ui/package-lock.json
       - name: Build the web UI bundle
         run: scripts/ui-build.sh
+      # The UI's pure modules (the flow view's layered layout) under Node's
+      # built-in runner. No framework and no devDependency: adding one would
+      # change package-lock.json and with it the npmDepsHash flake.nix pins.
+      - name: Test the web UI's pure modules
+        run: npm --prefix opys-server/ui test
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
