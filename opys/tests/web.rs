@@ -161,17 +161,73 @@ fn web_help_lists_the_documented_subcommands() {
 }
 
 /// clap propagates the inventory globals into `web`, where they mean nothing.
-/// An invocation that relies on them is refused, not quietly obeyed.
+/// An invocation that relies on them is refused, not quietly obeyed — in every
+/// position, and whatever the value. The refusal used to compare `--root`
+/// against its default (`.`) rather than asking whether it was *written*, so
+/// `opys web list --root .` sailed through with exit 0 while the README
+/// promised a refusal.
 #[test]
 fn the_inherited_inventory_globals_are_refused() {
     let fx = Fx::new();
-    run(fx.opys().args(["--root", "/tmp", "web", "list"]))
-        .failed_with("`--root` and `--no-sync` are inventory flags; `web` takes neither");
-    run(fx.opys().args(["web", "list", "--no-sync"])).failed_with("`web` takes neither");
+    for args in [
+        vec!["--root", "/tmp", "web", "list"],
+        vec!["web", "--root", "/tmp", "list"],
+        vec!["web", "list", "--root", "/tmp"],
+        // The default value, spelled out: written is written.
+        vec!["--root", ".", "web", "list"],
+        vec!["web", "--root", ".", "list"],
+        vec!["web", "list", "--root", "."],
+    ] {
+        run(fx.opys().args(&args))
+            .failed_with("`--root` and `--no-sync` are inventory flags; `web` takes neither");
+    }
+    for args in [
+        vec!["--no-sync", "web", "list"],
+        vec!["web", "--no-sync", "list"],
+        vec!["web", "list", "--no-sync"],
+    ] {
+        run(fx.opys().args(&args)).failed_with("`web` takes neither");
+    }
 
     // …and a plain `web` invocation says nothing.
     let r = run(fx.opys().args(["web", "list"]));
     assert!(r.err.is_empty(), "unexpected stderr:\n{}", r.err);
+}
+
+/// The other half of that promise: help and behaviour have to agree. Every
+/// `web` subcommand used to list `--root <ROOT>` and `--no-sync` under Options
+/// — flags the binary answers with exit 2 — because clap propagates a global
+/// into the whole tree. `web` re-declares both ids, hidden, which blocks the
+/// propagation; the flags still *parse* (so the refusal above can name
+/// `--under`) but no help text offers them.
+#[test]
+fn web_help_does_not_advertise_the_inventory_globals() {
+    let fx = Fx::new();
+    for args in [
+        vec!["web", "--help"],
+        vec!["web", "start", "--help"],
+        vec!["web", "add", "--help"],
+        vec!["web", "remove", "--help"],
+        vec!["web", "list", "--help"],
+        vec!["web", "scan", "--help"],
+        vec!["web", "install", "--help"],
+        vec!["web", "uninstall", "--help"],
+    ] {
+        let r = run(fx.opys().args(&args));
+        for line in r.out.lines() {
+            let opt = line.trim_start();
+            assert!(
+                !opt.starts_with("--root") && !opt.starts_with("--no-sync"),
+                "`opys {}` advertises an inventory flag it refuses:\n{}",
+                args.join(" "),
+                r.out,
+            );
+        }
+    }
+    // The root command still offers them, of course.
+    let r = run(fx.opys().arg("--help"));
+    assert!(r.out.contains("--root"), "{}", r.out);
+    assert!(r.out.contains("--no-sync"), "{}", r.out);
 }
 
 /// `--root` is the spelling the spec, the ADR and muscle memory all reach for,

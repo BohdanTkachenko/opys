@@ -16,32 +16,34 @@ exists; otherwise ignore it.
   then open the 2–5 relevant files. There is no generated index.
 - **Writes go through the `opys` CLI** so invariants hold and parallel agents
   don't collide: `opys new --type <T>`, `set-status`, `tag`, `log`, `apply`,
-  `retire`, `block`, `close`. Body prose, `## Test plan`, and `## Tasks` edits are normal
-  file edits. A **`log` section is not** — a `## Progress` is the usual one:
+  `retire`, `block`, `close`. Body prose, `## Test plan` and `## Tasks` edits are
+  normal file edits. A **`log` section is not** — `## Progress` is the usual one:
   its entries are dated, so append them with `opys log <id> "…"` (or `-` to read
-  a multi-line entry from stdin), which stamps each one with the UTC time.
-  `verify` reports an undated bullet and one whose stamp goes backwards, so a
-  hand-written line turns the corpus red. Frontmatter is not a hand edit
-  either: the relation maps and `history` (the lifecycle
-  map recording every status change) are auto-maintained, so do not hand-edit
-  them. opys reconciles the relation maps on every write — a hand-added link is
-  kept, but its title is refreshed and the reverse side added, so editing them
-  by hand buys nothing; a `history` map opys cannot read fails `verify` and is
-  never repaired automatically — `set-status` refuses to run on that
-  document until a human repairs the map. There is no blocked *status*:
-  `block` records a relation, and a document is blocked while something
-  live still blocks it (`opys list --blocked`), so everything that blocks
-  is itself a document.
-  A type may also declare a **status graph** (`[types.<name>.transitions]`):
-  where it does, a document moves only along a declared edge, and `set-status`
-  refuses anything else and names the statuses it will accept — take the answer
-  from the refusal rather than guessing a route. `close` reads the same graph: it
-  needs a declared edge from where the document stands into a terminal status, so
-  a work item is moved along (to `review`, under the shipped config) before it is
-  closed. A type may also cap how often a document may enter a status
-  (`max_visits`); that refusal names the status the config escalates to instead,
-  and it is always a legal move from where the document stands.
-  **A claim is one command.** Taking a document — moving it into the working
+  a multi-line entry from stdin), which stamps each with the UTC time. `verify`
+  reports an undated bullet and one whose stamp goes backwards, so a hand-written
+  line turns the corpus red. Frontmatter is not a hand edit either: the relation
+  maps are reconciled on every write, and `history` (the lifecycle map recording
+  every status change) is appended to by the lifecycle commands, so editing
+  either by hand buys nothing — and a `history` map opys cannot read fails
+  `verify`, is never repaired automatically, and stops `set-status` on that
+  document until a human fixes it. There is no blocked *status*: `block` records
+  a relation, and a document is blocked while something live still blocks it
+  (`opys list --blocked`), so everything that blocks is itself a document.
+- **Move along declared edges, and log a checkpoint before handing off.** Where
+  a type declares a status graph (`[types.<name>.transitions]`) a document moves
+  only along a declared edge; the refusal names the statuses it will accept, so
+  take the route from it rather than guessing. `close` reads the same graph — it
+  needs a declared edge from where the document stands into a terminal status,
+  so a work item is moved along (to `review`, under the shipped config) before
+  it is closed — and a type may cap how often a document may enter a status
+  (`max_visits`), that refusal naming the escalation the config declares. A type
+  may also require a **fresh log entry before a transition**
+  (`require_log_since_status`): under the shipped config the move into `review`
+  is refused until `## Progress` holds an entry stamped since the status last
+  changed. Log the checkpoint first, or fold it into the same command —
+  `opys apply <id> --status review --log "…"` appends the entry before it
+  evaluates the rule that demands one.
+- **A claim is one command.** Taking a document — moving it into the working
   status, recording who took it in the field the project declares for that, and
   logging that you took it — is a single `opys apply <id> --status … --field
   … --log "…"`, applied as one all-or-nothing batch. Never spell it as three
@@ -49,26 +51,23 @@ exists; otherwise ignore it.
   it first the whole invocation is refused (exit 2) and writes nothing, which is
   what stops two agents working the same item. Releasing and handing on are the
   same shape.
-  Run `opys verify` before finishing. Exit 1 is content problems and must be
+- **Run `opys verify` before finishing.** Exit 1 is content problems and must be
   fixed; exit **3** means the corpus is clean and only *time* observations
   remain (a document past its type's `ttl`, or at its `max_visits` limit).
   `verify` never moves those documents — report what is stuck, naming each
   document and the target its type's config declares.
-- **Always say what an id is.** `PREFIX-NNNN` is a lookup key, not a name:
-  a reader who sees `ADR-0082` learns nothing at all. Every time you write an id
-  in prose — in a document body, a commit message, or a reply to a person —
-  give its title with it: `ADR-0082 — The web UI may manage the allowlist within
-  $HOME`. Look it up with `opys show <id>` if you do not have it; never guess a
-  title, and never leave a bare id standing in for one. Bare is correct only
-  where the id *is* the payload and a title would be noise: inside a command
-  (`opys close TASK-0042`), a filename, a frontmatter key, or a table that
-  already has a title column.
-- **IDs in code.** When a `PREFIX-NNNN` id is cited in code (comments, tests,
-  strings), `opys show <id> --refs` lists those mentions. If two branches
-  allocated the same number, `opys renumber` reconciles them — it rewrites
-  documents and warns (with `sed` suggestions) about any code references to fix.
-  A project with `[ids] modulus` set avoids the collision up front: each
-  allocator draws only its slot's numbers (`OPYS_ID_SLOT`, else `user@host`).
+- **Always say what an id is.** `PREFIX-NNNN` is a lookup key, not a name: a
+  reader who sees `ADR-0082` learns nothing. Every time you write an id in prose
+  — a document body, a commit message, a reply to a person — give its title with
+  it: `ADR-0082 — The web UI may manage the allowlist within $HOME`. Look it up
+  with `opys show <id>`; never guess a title. Bare is correct only where the id
+  *is* the payload: inside a command (`opys close TASK-0042`), a filename, a
+  frontmatter key, or a table that already has a title column.
+- **IDs in code.** `opys show <id> --refs` lists code mentions of an id. If two
+  branches allocated the same number, `opys renumber` reconciles them (with
+  `sed` suggestions for code references); a project with `[ids] modulus` set
+  avoids the collision up front, each allocator drawing only its slot's numbers
+  (`OPYS_ID_SLOT`, else `user@host`).
 - **Never** put test results, dates, or completion claims in documents, or
   implementation logs in a permanent feature (those belong in a task/bug/chore).
 - Full guide: the `opys` skill — `SKILL.md`, `references/format.md`. Install the

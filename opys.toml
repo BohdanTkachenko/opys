@@ -266,10 +266,10 @@ when = { type = "chore", status = "review" }
 require_log_since_status = "Progress"
 
 # ---------------------------------- stats ------------------------------------
-# `opys stats` renders these sections (and the TUI stats screen shows the same
-# text). Each stat is a single SQL query over an in-memory relational view of the
-# corpus; its result set is rendered as a markdown table headed by `name`. The
-# tables (all rebuilt on every run, read-only):
+# `opys stats` renders these sections. Each stat is a single SQL query over an
+# in-memory relational view of the corpus; its result set is rendered as a
+# markdown table headed by `name`. The tables (all rebuilt on every run,
+# read-only):
 #   docs(id, num, type, status, title, created, updated)
 #   tags(doc_id, tag, key, value)    -- one row per tag; value NULL for a plain tag
 #   sections(doc_id, heading, kind, items, unchecked)   -- countable sections only

@@ -13,7 +13,8 @@ use crate::store::{g_i64, IntoParam, Store};
 use crate::{refs, Ctx};
 
 /// Close `id`: delete its file and strike every reference to it. Does not flush/
-/// print/sync — the shared core for the CLI wrapper and the TUI. Striking other
+/// print/sync — the shared core for the CLI wrapper and the node's `close`
+/// action. Striking other
 /// docs' relation maps is housekeeping, so it does not bump their `updated`.
 pub fn core(prj: &Project, store: &mut Store, id: &str, force: bool) -> Result<()> {
     let tname = prj

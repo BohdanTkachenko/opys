@@ -4225,6 +4225,65 @@ fn the_config_examples_in_format_md_pass_config_validate() {
     }
 }
 
+/// format.md's "A complete feature file" is the one document a reader copies
+/// wholesale, and it is normative: it must verify under the config format.md
+/// itself documents. It once did not — its `## Manual verification` still used
+/// the pre-`structured` flat-bullet shape (`- Title` / `  - Setup:` /
+/// `  - Steps:`) while the shipped `kind = "structured"` schema, printed two
+/// pages later in the same file, demands `### Setup` / `### Procedure` /
+/// `### Expectations`. Three verify problems, in the file that defines the
+/// format. Run the example through `verify` so a future schema change cannot
+/// leave it behind again.
+#[test]
+fn the_complete_feature_file_in_format_md_verifies() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let md = std::fs::read_to_string(repo.join("skills/opys/references/format.md")).unwrap();
+    let heading = "## A complete feature file";
+    let from = md
+        .find(heading)
+        .unwrap_or_else(|| panic!("format.md no longer has the heading `{heading}`"));
+    let open = from
+        + md[from..]
+            .find("````markdown\n")
+            .unwrap_or_else(|| panic!("no markdown block under `{heading}`"))
+        + "````markdown\n".len();
+    let close = open
+        + md[open..]
+            .find("\n````")
+            .expect("unterminated markdown block");
+    let doc = &md[open..=close];
+
+    let dir = TempDir::new().unwrap();
+    opys(&dir).arg("init").assert().success();
+    // The one completion a reader makes: the example carries a custom field, so
+    // the type has to declare it. Everything else it relies on is the default.
+    let cfg = dir.path().join("opys.toml");
+    let mut toml = std::fs::read_to_string(&cfg).unwrap();
+    toml.push_str("\n[types.feature.fields.ptyxis_ref]\ntype = \"string\"\n");
+    std::fs::write(&cfg, toml).unwrap();
+    // …and the project it describes: the checked test-plan items name tests,
+    // and the shipped `Test plan` check resolves them against `src`/`tests`.
+    std::fs::create_dir_all(dir.path().join("tests")).unwrap();
+    std::fs::write(
+        dir.path().join("tests/tab.rs"),
+        "fn osc_title_updates() {}\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("tests/e2e.rs"), "fn tab_title_osc() {}\n").unwrap();
+    std::fs::write(dir.path().join("opys/FEAT-0421.md"), doc).unwrap();
+
+    let out = opys(&dir).arg("verify").output().unwrap();
+    assert!(
+        out.status.success(),
+        "format.md's complete feature file does not verify:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
 /// Rust ignores SIGPIPE, so an unguarded `println!` panics (exit 101, backtrace
 /// on stderr) as soon as the reader of a pipe goes away — and `opys list
 /// --format ids` is the documented producer of exactly such a pipe

@@ -122,12 +122,13 @@ comes from:
 
 Which commands read it: the slot is resolved and validated **before the
 inventory is loaded**, and only by the commands that can allocate — `new`,
-`import`, `renumber`, `query --write` (whether or not the statement inserts),
-and the node's `new` action. So a bad `OPYS_ID_SLOT` fails fast, without taking
-the inventory lock or making a concurrent writer wait. Reads (`show`, `list`,
-plain `query`, `verify`) and the non-allocating writes (`set-status`, `tag`,
-`block`, `close`, `retire`, `cleanup`, `sync`) never look at the variable at
-all.
+`import`, `renumber`, and the node's `new` action. (`config validate` resolves
+it as well, but only to print the line above; it allocates nothing.) So a bad
+`OPYS_ID_SLOT` fails fast, without taking the inventory lock or making a
+concurrent writer wait. Reads (`show`, `list`, `next`, `query`, `stats`,
+`verify`) and the non-allocating writes (`set-status`, `apply`, `tag`, `log`,
+`block`, `unblock`, `close`, `retire`, `cleanup`, `sync`) never look at the
+variable at all.
 
 Two allocators sharing a slot are a misconfiguration; they collide exactly as
 they would without a modulus, and `opys renumber` repairs it exactly as today.
@@ -135,8 +136,8 @@ they would without a modulus, and `opys renumber` repairs it exactly as today.
 invariants interleaving preserves, so a corpus merged from several slots passes
 as is. `import` reserves its batch as one block that steps by `M` (its summary
 says so: `imported 3 feature document(s): FEAT-0005..FEAT-0013 step 4` — the
-range is not dense); `query --write INSERT` and `renumber` allocate through
-the same slot.
+range is not dense), and `renumber` draws each replacement id through the same
+slot.
 
 Consequences to plan for: one allocator's consecutive ids are `M` apart
 (`M - 1` unused numbers lie between them), so choose `pad` for the sequence,
@@ -442,13 +443,15 @@ description, edge cases, and divergence notes where warranted.
 - [ ] Invalid UTF-8 in title payload — uncovered
 
 ## Manual verification
-- Title legible at fractional scaling — *manual: cannot assert rendering quality*
-  - Setup: external monitor at 150% scaling, default profile
-  - Steps:
-    1. Open a tab
-    2. `printf '\033]2;Ünïcödé tîtle\007'`
-    3. Switch to another tab and back
-  - Expect: crisp glyphs, no blur or clipping, in active and inactive states
+### Setup
+- external monitor at 150% scaling, default profile
+### Procedure
+1. Open a tab
+2. `printf '\033]2;Ünïcödé tîtle\007'`
+3. Switch to another tab and back
+### Expectations
+- the tab shows `Ünïcödé tîtle`, crisp and unclipped, active and inactive
+- fractional scaling introduces no blur (a human call — no test asserts it)
 ````
 
 ## Frontmatter
@@ -480,14 +483,14 @@ key written in the wrong slot is moved to its canonical one by the next write.
 | Field | Required | Rules |
 |---|---|---|
 | `id` | yes | `FEAT-NNNN`; must match filename; unique forever |
-| `status` | yes | `planned` \| `partial` \| `implemented` \| `wontfix` (+ configured extras) |
+| `status` | yes | one of the type's declared `statuses` — for the shipped `feature` type, `planned` \| `partial` \| `implemented` \| `wontfix` \| `archived` |
 | `tags` | yes | non-empty list, open vocabulary; each tag is lowercase kebab-case, optionally a `key:value` pair (`area:parsing`, repeatable — same key may appear with several values) or a `key=value` pair (`priority=high`, single-valued — each `key=` at most once per document) |
 | `created` | no | RFC3339 datetime (e.g. `2026-06-16T14:30:00Z`); set once at creation; auto-maintained |
 | `updated` | no | RFC3339 datetime; refreshed on every user-initiated write; auto-maintained |
 | `references` | no | ID→title map of linked work items (and features); auto-maintained |
 | `blocked_by` / `blocks` | no | ID→title maps of the blocker relation; auto-maintained (see Blockers) |
 | `history` | yes | the lifecycle map: RFC3339 **UTC** timestamp (six fractional digits, `Z`) → status, one quoted entry per line, sorted by key; auto-maintained — nothing hand-edits it (see The lifecycle map) |
-| `wontfix_reason` | iff wontfix | one-line ADR for the scope exception |
+| `<status>_reason` | per rule | one-line ADR for a status that demands one — the shipped config requires `wontfix_reason` at `wontfix` and `archived_reason` at `archived`, each through an ordinary `require_field` rule |
 | `spec` | no | pointer to long-form shared material (a plain string field) |
 | custom | per config | validated against `[fields.*]` declarations |
 
@@ -887,6 +890,10 @@ The node serves the same payload from the same function at
 `GET /api/projects/{key}/next?status=&type=&n=`, where `{key}` is a project key
 from `/api/projects`. A project is a repository and its worktrees, and the answer
 comes from its **main** worktree, because main is the truth for pickability.
+Its sibling `GET /api/projects/{key}/flow?n=` draws the whole lifecycle — one
+node per distinct status, edges from the union of every type's `transitions`,
+and each node's top `n` documents (default 5) taken from this same function, so
+the drawing and the oracle cannot disagree.
 
 ## Blockers
 
@@ -945,6 +952,18 @@ and the node's board badge and document view read the same function.
 - `implemented` — complete; requires ≥1 checked test-plan item.
 - `wontfix` — deliberate exception, reason required; stays in the inventory so
   the decision is recorded and not re-litigated.
+- `archived` — removed from the product, reason required. "Removed" is a status
+  and never a deletion: the record stays, and the shipped `status_dirs` moves
+  the file under `_archived/`.
+
+Where a document **starts** is not a choice: `new` has no `--status`, so a
+document takes its type's `default_status` and the graph below is always
+entered at a known point (which is also why a document's first `history` entry
+always agrees with its `created`). `import` is the one seam that seeds a
+document anywhere in the lifecycle, and `verify` knows it — see
+[Bulk creation and migration](#bulk-creation-and-migration). A **terminal**
+status is the mirror image: it is reached only through `close`, which deletes
+the document.
 
 Status changes go through `set-status` — or through
 [`apply --status`](#composite-writes-opys-apply), which performs the same write
@@ -995,7 +1014,11 @@ Four places enforce the graph:
 - **`set-status`** refuses a move the type does not declare, exit 2, naming
   where the document stands and where it may go (`cannot move TASK-0007 from
   todo to review: type 'task' declares no such transition (from todo:
-  in-progress)`). Setting a document to the status it already holds is *not* an
+  in-progress)`). What it names is what *that* command can reach, so a terminal
+  target is left out of the list and pointed at its own command instead — from
+  `review`, under the graph above, the refusal ends
+  ``(from review: in-progress, user-review; `opys close` reaches done)``.
+  Setting a document to the status it already holds is *not* an
   edge: it stays the legal no-op it has always been, and appends an entry —
   unless the type's `max_visits` budget for that status is spent, since an entry
   is a visit (see [Time-aware observations](#time-aware-observations-ttl-and-max_visits)).
@@ -1093,8 +1116,15 @@ One consequence worth stating: once a document has spent its `max_visits`
 budget it cannot re-enter that status even along a declared edge. `then` is
 where a person (or a different agent) takes over.
 
-`block`/`unblock`'s auto-set does not go through `set-status`, so — exactly as
-with the graph — it is not subject to the visit budget.
+A visit is a `history` entry, and in ordinary use only `set-status` and `apply
+--status` append one to a document that already exists — plus the one-time
+`opys history --seed` migration (see [The lifecycle
+map](#the-lifecycle-map-history)), whose reconstructed entries count as visits
+like any other, so seeding a map from git can leave a document at or over a
+budget no `set-status` ever spent. So a relation write is never a visit:
+`block` and `unblock` change no status and write no entry (see
+[Blocked is derived](#blocked-is-derived)), and a document they touch neither
+spends its budget nor escapes one it has already spent.
 
 ### opys observes, it does not act
 

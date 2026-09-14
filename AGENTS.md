@@ -10,7 +10,9 @@ frontmatter (a stable `PREFIX-NNNN` id, status, tags, relation maps) plus a
 markdown body. All writes go through the CLI so invariants hold at write time and
 parallel agents don't collide; reads are plain `grep` + targeted file reads.
 `verify` is the CI gate. The inventory base dir defaults to `opys/`. It is
-deliberately *not* a task board — no sprints, assignees, or priorities.
+deliberately *not* a task board — no sprints or assignees; priority exists
+only as an opt-in declared int field that a type's `order_by` chain leads with,
+so `list --sort`, `next` and the node's flow view all rank by it (ADR-0095).
 
 Everything is driven by **one config, `opys.toml`** (parsed into `ProjectConfig`,
 `src/project_config.rs`), which lives at the **project root** — `Project::open`
@@ -30,7 +32,7 @@ conditional `[[rules]]` (`when {type?, status?}` + one assertion). **A document'
 type is its id prefix.** There is no hardcoded type set: the default config ships
 a permanent `feature` type plus ephemeral `task`/`bug`/`chore` types (deleted on
 `close`), but a project can add `epic`, `adr`, `risk`, … and the whole tool
-(create, verify, index) works for them. The engine that runs the rules is
+(create, verify, query) works for them. The engine that runs the rules is
 `src/rules.rs` (`rules::evaluate`).
 
 The tool ships alongside the tool-agnostic `opys` skill in `skills/opys/`. The
@@ -63,6 +65,7 @@ cargo test --all
 cargo clippy --workspace --all-targets --all-features -- -D warnings   # + the `history` alias
 cargo test --all --all-features
 cargo package --list -p opys-server --allow-dirty       # the bundle is in the tarball
+scripts/sync-versions.sh --check            # the packaging manifests agree on the version
 cargo build --workspace --all-targets       # also built on MSRV 1.88 — don't use newer std APIs
 ```
 
@@ -557,7 +560,14 @@ than editing the block by hand.
   `--root` propagates into every subcommand, so that name is taken tree-wide.
   `opys/src/main.rs` *refuses* `--root`/`--no-sync` under `web` (exit 2, naming
   `--under`) rather than warning — ignoring them yields a confident scan of the
-  home directory that looks exactly like a scan of the right tree.
+  home directory that looks exactly like a scan of the right tree. Two details
+  make that promise hold. The `Web` variant **re-declares both ids**, hidden:
+  clap skips propagating a global whose id the subcommand already defines, so no
+  `opys web … --help` advertises a flag the binary then rejects (it did, and
+  help disagreeing with behaviour is the first thing a reader hits). And the
+  refusal asks whether the flag was *written* (`ArgMatches::value_source`), not
+  whether its value differs from the default — comparing against `.` let
+  `opys web list --root .` through with exit 0.
 - `GET /api/projects/{key}/next` is the pick oracle (`opys_engine::next::pick`)
   over one project. `{key}` is a project-group key from `/api/projects`, and the
   answer comes from the group's **primary** corpus — main is the truth for
@@ -664,3 +674,25 @@ There are deliberately no committed per-editor copies — `opys agent-rules --to
 which is embedded in the binary via `templates::AGENT_RULE` (`include_str!`) and
 also referenced by the Gemini/opencode manifests and read by the pi extension.
 Edit the rule in one place; everything else derives from it.
+
+## Feature inventory (dogfooding)
+
+This repo tracks its own features with opys: the inventory lives under
+`inventory/` (configured in `opys.toml` at the root; `opys/` was taken by the
+binary crate). To find documents: `rg` by tag/status or `opys list`, then read
+only the relevant files. To create or change documents, use the CLI (`new
+--type`, `set-status`, `tag`, `log`, `apply`, `retire`, `block`, `close`); body
+prose edits are normal file edits, but a `## Progress` entry goes through `opys
+log` (it is a `log` section, so its bullets must be dated) — run `opys verify`
+before finishing. Known code-review
+findings are filed as `bug`/`chore` docs linked to their feature.
+
+This repository allocates ids densely today — there is no `[ids]` table in its
+`opys.toml`; `[ids] modulus` (ADR-0103) is the switch to flip when the inventory
+goes multi-branch.
+
+Product and architecture decisions are `adr` docs (`new --type adr`;
+Context/Decision/Consequences sections, statuses proposed → accepted →
+superseded). Consult the accepted ADRs before changing anything they settled,
+and file a new ADR (or supersede one) when a direction changes rather than
+editing an accepted decision in place.

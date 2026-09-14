@@ -315,9 +315,11 @@ pub fn maybe_sync(ctx: &Ctx, prj: &Project) {
     }
 }
 
-/// Like [`maybe_sync`] but returns the result instead of printing — for callers
-/// (e.g. the TUI) that must not write to stdout/stderr and want to surface a
-/// sync failure themselves. Returns the number of documents synced (0 when
+/// Like [`maybe_sync`] but returns the result instead of printing, for an
+/// embedder that must not write to stdout/stderr and wants to report a sync
+/// failure itself. Nothing in this workspace calls it: the CLI prints, and the
+/// node's write actions drive [`sync::run`] through their own `auto_sync`. It
+/// is kept as engine API. Returns the number of documents synced (0 when
 /// `--no-sync`).
 pub fn sync_quiet(ctx: &Ctx, prj: &Project) -> Result<usize> {
     if ctx.no_sync {

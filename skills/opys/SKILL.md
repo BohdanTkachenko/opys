@@ -1,6 +1,6 @@
 ---
 name: opys
-description: Set up and operate a file-based inventory of typed markdown documents ("file-based JIRA") — one markdown file per document with YAML frontmatter, stable IDs, tags, and configurable types/statuses/fields/sections/rules in one opys.toml, with test plans and a verify gate for CI. The default config ships a permanent feature type plus ephemeral task/bug/chore types (deleted on close); projects can add their own (epic, adr, risk, …). Use this skill whenever the user wants to track implemented features, requirements coverage, feature parity with another product, a traceability matrix between features and tests, in-flight implementation work, or asks how to share a large list between themselves and LLM agents. Also use it when working inside a project that already has a opys.toml — for creating documents (opys new --type), changing status, updating test plans, closing work, running verify, or viewing the index and stats.
+description: Set up and operate a file-based inventory of typed markdown documents ("file-based JIRA") — one markdown file per document with YAML frontmatter, stable IDs, tags, and configurable types/statuses/fields/sections/rules in one opys.toml, with test plans and a verify gate for CI. The default config ships a permanent feature type plus ephemeral task/bug/chore types (deleted on close); projects can add their own (epic, adr, risk, …). Use this skill whenever the user wants to track implemented features, requirements coverage, feature parity with another product, a traceability matrix between features and tests, in-flight implementation work, or asks how to share a large list between themselves and LLM agents. Also use it when working inside a project that already has a opys.toml — for creating documents (opys new --type), changing status, updating test plans, closing work, running verify, or viewing stats.
 ---
 
 # opys — typed-document inventory
@@ -87,9 +87,10 @@ its ID prefix.
 | `close IDS… [--force]` / `cleanup` | finish doc(s) whose type has a terminal status — and, where the type declares `[transitions]`, an edge into one from the document's current status (strike its refs everywhere and log the ID to `_retired.md`); strip struck refs (ledger-reserving any id whose last tombstone is stripped) |
 | `verify` | full integrity check — wire into CI, and it never writes. Exit `0` clean, `1` content problems, `2` a real failure, `3` only *observations* (a doc past its type's `ttl`, or at its `max_visits` limit — neither is a content problem). Gate CI on `1`. An observation line ends with the **configured target** the type's `then` names — where the *project* intends the document to go. opys reports it and moves nothing: acting on staleness needs to know whether the agent holding the document is still alive, so the `set-status` is yours (or your orchestrator's) to run |
 | `sync` | reconcile references, linkify prose, relocate docs to their layout path |
+| `history ID [--seed]` | the document's status timeline across commits, read out of git in-process (gix, never a spawned `git`). `--seed` writes the `history` lifecycle map from that timeline, for a one-time migration of an inventory that predates the map; it refuses to overwrite one that exists. Outside a git repository — or in a binary built without the `git` feature — the command says so and exits 2 rather than reporting an empty timeline |
 | `renumber [--base REF]` | resolve cross-branch ID collisions: keep IDs already present at the git merge-base with main/master, renumber the branch-added duplicates, retiring the old numbers. Warns about any code references to a renumbered ID with a `sed` fix per file |
 | `stats` | render configured `[[stats]]` sections (default: status counts, coverage, tags; each a SQL query over the corpus, shown as a table) |
-| `query "SELECT …"` | run a **read-only** SQL query over the inventory (tables: `docs`, `tags`, `relations`, `history`, `fields`, `sections`, `blocks`, `retired`; `-` reads the SQL from stdin) — for slices `list` can't express (joins, aggregates). `blocks(doc_id, seq, heading, text)` decomposes each body into its `##` sections (query into bodies). Every statement must be a SELECT and nothing is ever written: bulk edits pipe `list --format ids` into a mutating command instead. `--stdin` binds stdin to `$1` for escape-free multi-line values |
+| `query "SELECT …"` | run a **read-only** SQL query over the inventory (tables: `docs`, `tags`, `relations`, `history`, `fm_fields`, `retired`, and the derived `fields`, `sections`, `blocks`; `-` reads the SQL from stdin) — for slices `list` can't express (joins, aggregates). `blocks(doc_id, seq, heading, text)` decomposes each body into its `##` sections (query into bodies). Every statement must be a SELECT and nothing is ever written: bulk edits pipe `list --format ids` into a mutating command instead. `--stdin` binds stdin to `$1` for escape-free multi-line values |
 | `agent-rules --tool <editor>` | generate a rules-based editor's instruction file from the canonical rule |
 
 Every id-taking mutating command (`set-status`, `tag`, `retire`, `block`,
@@ -188,19 +189,26 @@ resets and is greppable, deleted when you finish.
    `opys log ID "…"` (branch/commit/PR, a decision and why, what you ruled out). A `## Progress` section is a `log`: the command
    stamps each entry with the UTC time, and `verify` checks every bullet is
    dated and that they do not go backwards, so never append to it by hand. Use
-   `opys log ID -` for a multi-line note. Don't hand-maintain the `references`
+   `opys log ID -` for a multi-line note. Log as you go rather than only at the
+   end: the handoff in step 5 is refused until `## Progress` holds an entry
+   stamped since the status last changed. Don't hand-maintain the `references`
    map or linkify prose; `opys` does both on each write.
 4. Fold anything durable back into the **feature**, not the work item: check the
    covered test-plan items and add refs, `opys set-status … implemented`, write
    spec prose. The feature is what survives.
-5. `opys close ID` — deletes the file and strikes its reference through in the
-   feature as a tombstone. Do this only after step 4. Where the type declares a
-   status graph (the shipped work items do), `close` needs an edge from where the
-   document stands into a terminal status, so walk the document there first —
-   under the shipped graph a work item created at `todo` takes two hops,
-   `opys set-status ID in-progress` then `opys set-status ID review`. Every
-   refusal names the statuses it will accept, so take the route from it rather
-   than guessing.
+5. Walk the document to a status `close` can reach, then `opys close ID` — which
+   deletes the file and strikes its reference through in the feature as a
+   tombstone. Do this only after step 4. Where the type declares a status graph
+   (the shipped work items do), `close` needs an edge from where the document
+   stands into a terminal status, so under the shipped graph a work item created
+   at `todo` takes two hops: `opys set-status ID in-progress`, then the
+   checkpoint and the handoff **together** —
+   `opys apply ID --status review --log "what landed, what is left"`. The second
+   hop is refused without that entry (`'## Progress' has no log entry since the
+   status last changed`): the shipped config guards the move into `review` with
+   `require_log_since_status`, and `apply` appends the entry before it evaluates
+   the rule, so one command satisfies it. Every refusal names the statuses it
+   will accept, so take the route from it rather than guessing.
 6. `opys verify`.
 
 ## Workflow: authoring features (interview style)
