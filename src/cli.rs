@@ -176,8 +176,11 @@ pub enum Command {
         /// written.
         #[arg(required = true)]
         ids: Vec<String>,
+        /// The status to move to. It must be one the type declares, and — where
+        /// the type declares `[transitions]` — the edge must be declared too. A
+        /// terminal status is refused: `close` is the only way into one.
         status: String,
-        /// Required when moving to wontfix.
+        /// Sets `<status>_reason` — only where the type declares that field.
         #[arg(long)]
         reason: Option<String>,
     },
@@ -344,10 +347,12 @@ pub enum Command {
     /// Tables: docs(id, num, type, status, title, created, updated, body,
     /// path), tags(doc_id, seq, tag, key, value), relations(doc_id, field,
     /// seq, ref_id, ref_num, raw_value, title, struck),
-    /// history(doc_id, seq, ts, status), fields(doc_id, key,
-    /// value), sections(doc_id, heading, kind, items, unchecked),
-    /// blocks(doc_id, seq, heading, text),
-    /// retired(id, num, title).
+    /// history(doc_id, seq, ts, status),
+    /// fm_fields(dkey, doc_id, key, value_yaml, value, kind),
+    /// retired(id, num, title), and the derived projections
+    /// fields(doc_id, key, value),
+    /// sections(doc_id, heading, kind, items, unchecked),
+    /// blocks(doc_id, seq, heading, text).
     Query {
         /// The SQL to run (`-` reads it from stdin). Must be a SELECT.
         sql: String,

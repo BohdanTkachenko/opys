@@ -85,11 +85,12 @@ fn report(
 /// spellings parse to the identical string (see [`crate::history::unquoted_keys`]).
 ///
 /// Deliberately outside [`collect_problems`]: that gate also runs over documents
-/// that exist only in memory (`query --write`'s post-write corpus, the node's
-/// warm store), where the medium's text is *not* the text being judged — and
-/// opys's own writer always emits the quoted form, so a check against stale
-/// bytes could only produce a false verdict. Callers that do read the durable
-/// corpus (`verify`, the node's per-corpus problem list) add this on top.
+/// that exist only in memory (the "no worse than before" gate in
+/// [`crate::commands::edit`], which judges the *mutated* store), where the
+/// medium's text is *not* the text being judged — and opys's own writer always
+/// emits the quoted form, so a check against stale bytes could only produce a
+/// false verdict. Callers that do read the durable corpus (`verify`, the node's
+/// per-corpus problem list) add this on top.
 pub fn spelling_problems(docs: &[Doc], backend: &dyn crate::backend::Backend) -> Vec<String> {
     let mut errors = Vec::new();
     for d in docs {

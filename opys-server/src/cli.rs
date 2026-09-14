@@ -104,10 +104,11 @@ pub enum WebCommand {
         /// Directory to search under. Defaults to your home directory.
         ///
         /// Spelled `--under`, not `--root`, and it has to be: `opys` declares a
-        /// *global* `--root` (the inventory root), and clap propagates a global
-        /// through the whole command tree — id and long name both — so a second
-        /// `--root` anywhere beneath it is either a duplicate long option or a
-        /// value of the wrong type arriving at the wrong level.
+        /// *global* `--root` (the inventory root), which takes that id and long
+        /// name tree-wide. `opys web` claims both of them back — hidden, and
+        /// only so it can refuse them — so a second, real `--root` here would
+        /// be a duplicate long option or a value of the wrong type arriving at
+        /// the wrong level.
         #[arg(long, value_name = "PATH")]
         under: Option<PathBuf>,
 

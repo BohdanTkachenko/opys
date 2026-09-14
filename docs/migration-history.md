@@ -1,8 +1,24 @@
-> Two one-time upgrade procedures for an inventory that predates a reserved,
-> auto-maintained field. Part 1 seeds the `history` lifecycle map; part 2 dates
-> the bullets of every `kind = "log"` section. Both are procedures an agent
-> runs by hand — neither is derivable from the corpus, so `opys sync` cannot do
-> either.
+> **The upgrade document.** Three one-time procedures for an inventory written
+> before a reserved field or a derived predicate existed. Each is a pass an
+> agent runs by hand: none of the three is derivable from the corpus, so `opys
+> sync` cannot do any of them for you.
+
+| Procedure | What `verify` says | The `opys.toml` change it needs |
+| --- | --- | --- |
+| [1. Seeding `history`](#seeding-history-on-an-existing-inventory) | `missing history` | none — `history` is reserved on every type |
+| [2. Dating log bullets](#dating-an-existing-inventorys-log-sections) | `undated log entry` | the section must be declared `kind = "log"` |
+| [3. Retiring the `blocked` status](#retiring-the-blocked-status) | `invalid status 'blocked'` | drop the status, its fields and its rule; add `releases_blocks` |
+
+There is one ordering constraint: run **1 before 3**. Seeding writes one entry
+per status the git timeline carries, `blocked` among them, so a seed after
+procedure 3 puts back the `blocked` entries step 3 of that procedure removed and
+leaves the corpus red — if you must seed afterwards, re-run procedure 3's step 3
+over the seeded maps. Procedure 2 is independent of both. Two smaller
+changes need no pass at all, only knowing about them: `opys verify` gained exit
+code **3** for time observations (CI that gates on any nonzero code starts
+failing on a corpus with no content problems — gate on `1`), and `new` lost
+`--status`, so a document now starts at its type's `default_status` and `import`
+is the one seam that seeds it elsewhere.
 
 # Seeding `history` on an existing inventory
 
@@ -17,6 +33,11 @@ reports one problem per document:
 ```
 FEAT-0001: missing history (the lifecycle map is written by new/set-status/apply/import; …)
 ```
+
+**Config change: none.** `history` is reserved on every type — no type declares
+it and nothing has to be added to `opys.toml`, which is exactly why the problem
+appears the moment the binary is upgraded rather than the moment you next edit
+the config.
 
 This is a **one-time procedure**, and only half of it is a tool: `opys history
 --seed` (§2) reconstructs the map where git has the timeline, and an agent fills
@@ -205,6 +226,31 @@ Undated bullets are **reported, not rejected**: nothing refuses to write, and
 the documents stay usable. But `opys verify` exits 1, so an inventory wired into
 CI goes red on the upgrade — run this before or with it.
 
+**Config change: declare the section as a log.** Only sections a type declares
+`kind = "log"` are dated or checked, so the pass has a prerequisite — and a
+project that has been keeping a hand-written `## Progress` has to opt in to it:
+
+```toml
+[[types.task.sections]]
+heading = "Progress"
+kind = "log"
+required = true
+```
+
+Optionally, the rule that makes a checkpoint a *precondition* of a handoff. The
+shipped default now carries it for `task`, `bug` and `chore`, which is a
+behaviour change — the move into `review` starts being refused until the
+document has a fresh entry — so a migrating project adopts it deliberately:
+
+```toml
+[[rules]]
+when = { type = "task", status = "review" }
+require_log_since_status = "Progress"
+```
+
+Land the config change and the document pass together, or the pass has nothing
+to check itself against.
+
 ## 1. Find the documents
 
 ```sh
@@ -268,10 +314,11 @@ for a multi-line entry — and the stamps take care of themselves.
 
 # Retiring the `blocked` status
 
-A second one-time procedure, for an inventory written before blocked became
-derived ([ADR-0099](../inventory/ADR-0099.md) decision 3). It is unrelated to the
-history seeding above except in shape: a text pass an agent runs once, not a
-tool.
+The third one-time procedure, for an inventory written before blocked became
+derived ([ADR-0099](../inventory/ADR-0099.md) decision 3). Same shape as the two
+above — a text pass an agent runs once, not a tool — and the one that has to come
+last: step 3 below rewrites `blocked` out of the `history` map, and seeding
+(procedure 1) would write it straight back in.
 
 Blocked used to be a *status*. `opys block` auto-set it, remembered the status it
 came from in `blocked_from`, and a free-text `blocked_reason` counted as blocked
@@ -285,8 +332,22 @@ TASK-0112: invalid status 'blocked'
 TASK-0112: unknown frontmatter field 'blocked_from' (declare it in type 'task' [fields.blocked_from])
 ```
 
-The config change and the document pass have to land together. Per document at
-`status: blocked`:
+**Config change**, per type that declared the status — and it has to land with
+the document pass below, or one of the two turns the corpus red on its own:
+
+- drop `"blocked"` from the type's `statuses` (and from `status_dirs`,
+  `ttl`, `max_visits` and any `transitions` map that names it);
+- drop the `blocked_reason` and `blocked_from` `[fields.*]` declarations, unless
+  the project keeps `blocked_reason` as an ordinary field of its own;
+- drop the `require_any` rule that guarded the status (the one demanding a
+  reason or a blocker link) — there is no status left for it to guard;
+- add `releases_blocks` to every **permanent** type, listing the statuses at
+  which one of its documents stops blocking what it blocks
+  (`["implemented", "wontfix", "archived"]` for the shipped `feature`). An
+  ephemeral type does not need it — `close` deletes the document and strikes
+  every entry pointing at it — but a permanent one without it blocks forever.
+
+Then, per document at `status: blocked`:
 
 1. `status: blocked` becomes the value of its `blocked_from` line — the status it
    was auto-set away from — or the type's `default_status` when it has none.

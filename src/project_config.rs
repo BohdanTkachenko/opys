@@ -473,7 +473,7 @@ pub struct When {
     pub tag: Option<String>,
 }
 
-/// One term of a `require_any` (exactly one of the three is set).
+/// One term of a `require_any` (exactly one of the four is set).
 #[derive(Debug, Clone, Deserialize)]
 pub struct AnyTerm {
     #[serde(default)]

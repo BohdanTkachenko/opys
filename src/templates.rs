@@ -199,14 +199,11 @@ user-review = ["done", "in-progress"]
 # `in-progress` names `user-review` as well because a spent budget refuses the
 # *entry* into `review`: the escape the refusal advertises has to be reachable
 # from wherever the document stands.
-# The example drops `blocked` on purpose. `block`/`unblock` set that status
-# *without* consulting the graph, so a type that declares both a `blocked`
-# status and a transitions map records history pairs `verify` then rejects —
-# do not pair the two until that auto-set is gone (format.md, "The status
-# graph"). Nor is `blocked` a useful `then`: the rule guarding that status
-# wants a reason or a blocker link, so whoever acts on the observation has to
-# pass `set-status --reason` (or add the blocker first) — not a move an
-# unattended dispatcher can make from the target name alone.
+# The example has no `blocked` status because there is no such thing any more:
+# blocked is *derived* from a live `blocked_by` entry, so it is a relation and
+# never a status a document sits at (format.md, "Blocked is derived"). It is
+# not a useful `then` either — a target is a status a document can be moved to,
+# and nothing can move a document into being blocked except blocking it.
 
 [[types.task.sections]]
 heading = "Tasks"
@@ -309,10 +306,10 @@ when = { type = "chore", status = "review" }
 require_log_since_status = "Progress"
 
 # ---------------------------------- stats ------------------------------------
-# `opys stats` renders these sections (and the TUI stats screen shows the same
-# text). Each stat is a single SQL query over an in-memory relational view of the
-# corpus; its result set is rendered as a markdown table headed by `name`. The
-# tables (all rebuilt on every run, read-only):
+# `opys stats` renders these sections. Each stat is a single SQL query over an
+# in-memory relational view of the corpus; its result set is rendered as a
+# markdown table headed by `name`. The tables (all rebuilt on every run,
+# read-only):
 #   docs(id, num, type, status, title, created, updated)
 #   tags(doc_id, tag, key, value)    -- one row per tag; value NULL for a plain tag
 #   sections(doc_id, heading, kind, items, unchecked)   -- countable sections only
@@ -379,11 +376,11 @@ mod tests {
     /// tables below it. Uncomment it, apply it, and it must validate — a config
     /// example that `config validate` rejects is worse than no example.
     ///
-    /// It must also keep clear of `blocked`. `block`/`unblock` set that status
-    /// without consulting the graph (format.md, "The status graph"), so a type
-    /// with both a `blocked` status and a `transitions` map records history
-    /// pairs `verify` then rejects — a red CI on the user's first `block`,
-    /// which no config check can see coming.
+    /// It must also keep clear of `blocked`, which is not a status at all:
+    /// blocked is derived from a live `blocked_by` entry (format.md, "Blocked
+    /// is derived"). A sketch declaring it would put a status in the graph that
+    /// nothing can ever move a document into, and no config check would say
+    /// so — `config validate` only sees a status like any other.
     #[test]
     fn the_commented_task_sketch_applies_and_validates() {
         // The sketch is the run of `#   `-indented lines after the "add them
@@ -405,7 +402,8 @@ mod tests {
             .to_string();
         assert!(
             !sketch.contains("blocked"),
-            "the sketch must not pair a `blocked` status with a transitions map: {sketch}"
+            "the sketch must not declare a `blocked` status — blocked is derived from a \
+             live `blocked_by` entry, never a status a document sits at: {sketch}"
         );
 
         // Apply it: swap the `task` type's statuses line for the sketch's, drop
