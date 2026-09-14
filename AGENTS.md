@@ -56,6 +56,7 @@ The CI that gates merges (`.github/workflows/ci.yml`) runs exactly:
 
 ```sh
 ui-build                                    # opys-server/ui/dist is generated, not committed
+npm --prefix opys-server/ui test            # the UI's pure modules, under `node --test`
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings   # warnings are errors
 cargo test --all
@@ -561,21 +562,47 @@ than editing the block by hand.
   over one project. `{key}` is a project-group key from `/api/projects`, and the
   answer comes from the group's **primary** corpus — main is the truth for
   pickability (ADR-0102), so the node picks the main worktree rather than making
-  the client choose. It is the second project-keyed route, alongside
-  `/api/group/{key}/union` — both resolve the same key against
-  `manager.groups()`, and the two spellings (`/api/group/` vs `/api/projects/`)
-  are worth unifying one day; every read *per inventory* stays on
-  `/api/corpus/{cid}/…`. A bad `status`/`type` comes back through
+  the client choose. It is one of three project-keyed routes, alongside
+  `/api/projects/{key}/flow` and `/api/group/{key}/union` — all three resolve the
+  same key against `manager.groups()` (the first two through one
+  `api::primary_cid`, so they cannot disagree about which worktree is the truth
+  or about the wording of the 404), and the two spellings (`/api/group/` vs
+  `/api/projects/`) are worth unifying one day; every read *per inventory* stays
+  on `/api/corpus/{cid}/…`. A bad `status`/`type` comes back through
   the actor call's inner `Result` as a 400, the way user SQL does, because
   `From<OpysError> for ApiError` is unconditionally a 500.
 - A prefix entry's `depth` counts **project directories**, one level shallower
   than the `opys.toml` the walk reaches: `discover::scan_projects` owns the `+1`
   and is pinned against `registry::Entry::covers` by a test. When those two
   disagree, `add` refuses to allowlist projects the node never serves.
+- `GET /api/projects/{key}/flow` is one project's **lifecycle graph**
+  (`opys-server/src/flow.rs`, FEAT-0109): the declared types, a node per distinct
+  status name merged across them, the edges the `transitions` maps declare, and
+  on each node `next::pick`'s answer for that status. `flow::flow` is pure over
+  the documents it is handed, like `union::union`, and reads `transitions` only
+  through `lifecycle::allowed_targets` — a type with no map contributes nodes and
+  no edges. It walks `pcfg.types.names()` (declaration order); `&pcfg.types` is
+  alphabetical and would reorder the picture. `?n=` is the per-node item cap
+  (`flow::DEFAULT_NODE_LIMIT`, 5 — smaller than `next::DEFAULT_LIMIT` because a
+  node is a card, not a list). Every node satisfies
+  `total == pickable + blocked.len() + orphaned.len()`, computed with
+  `next::select`'s own precedence (id-less skipped, orphaned before blocked);
+  that identity is the pin against this builder drifting from the oracle, and
+  `opys-server/tests/api.rs` also asserts each node's items equal
+  `/next?status=…` byte for byte.
 - The dashboard (`opys-server/ui/`, embedded by `assets.rs`) is a sidebar of
-  projects/corpora — each with a verify dot — over four views: board, document,
-  query console, and the union of one project's worktrees *and* its
-  uncheckedout branches. Its writes are the same typed actions;
+  projects/corpora — each with a verify dot — over five views: board, document,
+  query console, the union of one project's worktrees *and* its
+  uncheckedout branches, and the flow graph of one project's lifecycle. The flow
+  view's layered layout is `ui/src/lib/flow.js` — pure ESM, no Svelte, no DOM,
+  tested by `flow.test.js` under `node --test` (`npm --prefix opys-server/ui
+  test`, run by the CI workflow; the devShell has no aggregate check that
+  includes it, so run it by hand after touching the layout). It marks the edges it
+  had to turn around to draw left to right, so "a node is never left of its
+  source" holds for every edge that is not a back edge; the renderer measures
+  the drawn cards to place the SVG connectors, because node cards differ wildly
+  in height. The union and flow links are both keyed by a group, so `Sidebar`
+  takes `activeView` as well as `activeKey` or both would light up. Its writes are the same typed actions;
   there is no create-document view, so `opys new` stays a CLI job. The document
   view's log entry box reads `DocView::log_sections`, so the client never has to
   work out which sections are logs. A union cell links to its document only for a

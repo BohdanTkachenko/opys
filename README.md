@@ -450,6 +450,30 @@ on main. Three blanks mean three
   shows the drift and nothing else: nothing here merges anything, because git is
   the merger, and a branch cell does not link anywhere because a branch is not a
   directory to open a file in.
+- **the flow view** — the same project drawn as the lifecycle its config
+  declares: a node per distinct status, merged by name across types (`task`,
+  `bug` and `chore` share one `todo`), and an edge wherever some type's
+  `transitions` map declares the move. A type that declares no transitions
+  contributes its statuses and *no* edges — any status may follow any other,
+  which is not the same thing as every edge. The layout is a small layered one:
+  the statuses documents start at sit in the first column, each target one
+  column past its deepest source, the cycles a left-to-right drawing has to
+  break come back as dashed returns, and disconnected components — the shipped
+  config draws two, for work items and features; this repository's own
+  inventory adds an `adr` type and so draws three — stack with a gap.
+  Each node lists the top few documents standing on it, in `opys next` order and
+  from the same function, so the view and `opys next --status <status>` cannot
+  disagree; the rest are counted. An item's number is the one that ordered it —
+  the effective priority, with the document's own beside it when it inherited a
+  smaller one from something it blocks, exactly as the `PRIORITY` column of
+  `opys next` reads. Blocked documents are counted and named on hover rather
+  than listed, because they are not pickable, and stranded ones — the links
+  their type requires no longer hold — are counted separately with the reason.
+  A status no type declares gets a node too, marked `undeclared` (the blank one
+  reads `(no status)`): `opys verify` reports it, and hiding the node here would
+  hide the document with it. Clicking an item opens the document. It is answered
+  from the project's **main** worktree, because that is where pickability is
+  decided.
 
 **Ctrl+P** (⌘P on a Mac) or `/` opens the omnibox from any view: a fuzzy
 finder over the corpus's tickets — or every served corpus, from the home page

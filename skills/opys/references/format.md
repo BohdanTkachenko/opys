@@ -698,9 +698,12 @@ prefix matches no declared type sorts into a final group. With `--type` there is
 one group, so it is simply the chain.
 Without the flag `list` is in load order, unchanged. The chain is also what
 [`opys next`](#the-pick-oracle-opys-next) picks with — the two read one ranking,
-so they cannot disagree — and the flow view will read it later; the web UI board
-orders a column by the raw `priority` field, because that is the number
-drag-to-reorder writes.
+so they cannot disagree — and it is what the web UI's flow view lists each
+status node with, through `next` itself, so the number it shows on an item is
+the **effective** priority that ordered it, with the document's own beside it
+when the two differ. The web UI board is the one place that orders a column by
+the raw `priority` field instead, because that is the number drag-to-reorder
+writes.
 
 ### The pick oracle (`opys next`)
 

@@ -32,6 +32,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use crate::discover::Corpus;
+use crate::flow::{self, FlowView};
 
 /// Quiet period a filesystem burst must clear before it becomes one reload.
 /// `opys sync` rewriting forty files is one event, not forty.
@@ -344,6 +345,11 @@ enum Request {
         PickQuery,
         SyncSender<Result<std::result::Result<PickResult, String>>>,
     ),
+    /// The lifecycle graph, with the per-node item cap. A single `Result`,
+    /// unlike [`Request::Next`]: the only thing the caller supplies is a
+    /// number, and every status in the answer comes from the config itself, so
+    /// there is no user vocabulary left to refuse.
+    Flow(usize, SyncSender<Result<FlowView>>),
     Verify(SyncSender<VerifyStatus>),
     Stats(SyncSender<CorpusStats>),
     /// Reload now and reply when done — the deterministic path for tests and
@@ -421,6 +427,12 @@ impl CorpusClient {
     /// gone, or the corpus never loaded.
     pub fn next(&self, q: PickQuery) -> Result<std::result::Result<PickResult, String>> {
         self.ask(|reply| Request::Next(q, reply))?
+    }
+
+    /// The lifecycle graph over the warm store, with `limit` items per node.
+    /// Fails only if the actor is gone or the corpus never loaded.
+    pub fn flow(&self, limit: usize) -> Result<FlowView> {
+        self.ask(|reply| Request::Flow(limit, reply))?
     }
 
     /// Cached verify problems and the time they were computed.
@@ -508,6 +520,12 @@ impl CorpusHandle {
     /// query problem (a 4xx for the API); the outer one means the actor is gone.
     pub fn next(&self, q: PickQuery) -> Result<std::result::Result<PickResult, String>> {
         self.client.next(q)
+    }
+
+    /// The lifecycle graph over the warm store. The `Err` means the actor is
+    /// gone or the corpus never loaded.
+    pub fn flow(&self, limit: usize) -> Result<FlowView> {
+        self.client.flow(limit)
     }
 
     /// Cached verify problems and the time they were computed.
@@ -621,6 +639,9 @@ impl Actor {
             Request::Next(q, reply) => {
                 let _ = reply.send(self.run_next(&q));
             }
+            Request::Flow(limit, reply) => {
+                let _ = reply.send(self.run_flow(limit));
+            }
             Request::Verify(reply) => {
                 let _ = reply.send(VerifyStatus {
                     ok: self.load_error.is_none()
@@ -715,6 +736,21 @@ impl Actor {
         }
         let docs: Vec<Doc> = warm.store.all_docs()?.into_iter().map(|(_, d)| d).collect();
         Ok(Ok(next::pick(&warm.prj, &docs, q, observe::now())))
+    }
+
+    /// Answer the flow graph from the warm store.
+    ///
+    /// The documents are reconstructed **once** and every node is computed from
+    /// that one set — the alternative, one `/next` request per status, would
+    /// reconstruct the whole corpus a dozen times over and still could not
+    /// answer the blocked count, which is not part of a [`PickResult`].
+    ///
+    /// The cid is cloned before [`Actor::warm`] borrows `self` mutably.
+    fn run_flow(&mut self, limit: usize) -> Result<FlowView> {
+        let cid = self.corpus.cid.clone();
+        let warm = self.warm()?;
+        let docs: Vec<Doc> = warm.store.all_docs()?.into_iter().map(|(_, d)| d).collect();
+        Ok(flow::flow(&warm.prj, &docs, &cid, limit))
     }
 
     /// Load afresh and swap the cache in. A failure leaves the previous warm

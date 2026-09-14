@@ -62,6 +62,7 @@ use crate::actor::{
     VerifyStatus,
 };
 use crate::discover::Corpus;
+use crate::flow::{FlowView, DEFAULT_NODE_LIMIT};
 use crate::manager::Manager;
 use crate::registry;
 use crate::union::{contested_numbers, union, Branches, CorpusDocs, UnionView};
@@ -283,6 +284,9 @@ pub fn router(state: AppState) -> Router {
         // guess which of a group's corpora is the truth. `{key}` is the same
         // key `/api/projects` returns.
         .route("/api/projects/{key}/next", get(pick))
+        // The lifecycle graph of one project, answered from the same primary
+        // corpus and for the same reason (FEAT-0109).
+        .route("/api/projects/{key}/flow", get(flow))
         .route("/api/corpus/{cid}/docs", get(docs))
         .route("/api/corpus/{cid}/doc/{docid}", get(doc))
         .route("/api/corpus/{cid}/query", post(query))
@@ -1209,10 +1213,30 @@ async fn pick(
     if query.status.is_empty() {
         return Err(ApiError::bad_request("next: ?status= is required"));
     }
+    let cid = primary_cid(&state, &key).await?;
+
+    let q = PickQuery {
+        status: query.status,
+        // `?type=` with no value is a cleared dropdown, not the empty type.
+        type_filter: query.type_name.filter(|s| !s.is_empty()),
+        limit: query.n.unwrap_or(DEFAULT_LIMIT),
+    };
+    let result = with_corpus(&state, &cid, move |client| client.next(q)).await?;
+    result.map(Json).map_err(ApiError::bad_request)
+}
+
+/// The corpus a project-keyed route answers from: the group's **primary**
+/// worktree, falling back to its first corpus when discovery marked none (which
+/// happens only outside git).
+///
+/// Shared by the two routes under `/api/projects/{key}/…` so they cannot come
+/// to disagree about which worktree is the truth — or about the wording of the
+/// 404, which `opys-server/tests/api.rs` asserts on.
+async fn primary_cid(state: &AppState, key: &str) -> Result<String, ApiError> {
     let manager = Arc::clone(&state.manager);
-    let wanted = key.clone();
+    let wanted = key.to_string();
     // The manager lock, taken off the reactor, held only for the cid lookup.
-    let cid = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         let manager = lock(&manager);
         let group = manager.groups().iter().find(|g| g.key == wanted)?;
         let corpus = group
@@ -1224,16 +1248,41 @@ async fn pick(
     })
     .await
     .map_err(|e| ApiError::internal(format!("resolving the project failed: {e}")))?
-    .ok_or_else(|| ApiError::not_found(format!("no such project: {key}")))?;
+    .ok_or_else(|| ApiError::not_found(format!("no such project: {key}")))
+}
 
-    let q = PickQuery {
-        status: query.status,
-        // `?type=` with no value is a cleared dropdown, not the empty type.
-        type_filter: query.type_name.filter(|s| !s.is_empty()),
-        limit: query.n.unwrap_or(DEFAULT_LIMIT),
-    };
-    let result = with_corpus(&state, &cid, move |client| client.next(q)).await?;
-    result.map(Json).map_err(ApiError::bad_request)
+/// The `?n=` query of the flow endpoint: how many items each node lists.
+#[derive(Debug, Deserialize)]
+struct FlowQuery {
+    n: Option<usize>,
+}
+
+/// The lifecycle graph of one project, from its **primary** corpus.
+///
+/// `{key}` is a project-group key, as for [`pick`], and for the same reason: the
+/// nodes carry `next::pick`'s answer per status, and pickability is evaluated on
+/// main (ADR-0102).
+///
+/// One call answers the whole view — the statuses, the edges the `transitions`
+/// maps declare, and the documents on each node — because the alternative is a
+/// request per status over a corpus the node would reconstruct each time, and
+/// because the blocked count a node greys out is not part of a `PickResult` at
+/// all.
+///
+/// Nothing here can be bad input but a malformed `?n=`, which the
+/// [`QueryRejection`] turns into a 400: every status in the answer comes from
+/// the project's own config.
+async fn flow(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    query: Result<Query<FlowQuery>, QueryRejection>,
+) -> Result<Json<FlowView>, ApiError> {
+    let Query(query) = query?;
+    let cid = primary_cid(&state, &key).await?;
+    let limit = query.n.unwrap_or(DEFAULT_NODE_LIMIT);
+    Ok(Json(
+        with_corpus(&state, &cid, move |client| client.flow(limit)).await?,
+    ))
 }
 
 /// The corpus's cached verify problems.

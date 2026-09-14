@@ -9,6 +9,7 @@
 
   import Board from './Board.svelte';
   import Doc from './Doc.svelte';
+  import Flow from './Flow.svelte';
   import Omni from './Omni.svelte';
   import Query from './Query.svelte';
   import Setup from './Setup.svelte';
@@ -55,7 +56,10 @@
 <svelte:window {onkeydown} />
 
 <div class="shell">
-  <Sidebar activeCid={route.cid ?? null} activeKey={route.key ?? null} />
+  <!-- `activeView` as well as `activeKey`: the union and the lifecycle graph
+       are both keyed by the same group, so the sidebar cannot tell which of
+       its two group links is the current one from the key alone. -->
+  <Sidebar activeCid={route.cid ?? null} activeKey={route.key ?? null} activeView={route.view} />
 
   <main>
     {#if notice.message}
@@ -98,6 +102,13 @@
     {:else if route.view === 'union'}
       {#key route.key}
         <Union key={route.key} filters={route.query} />
+      {/key}
+    {:else if route.view === 'flow'}
+      <!-- Keyed like the union, and for the same reason: the resource keeps its
+           last answer while the next is in flight, so an unkeyed graph would
+           draw one project's statuses under another's name. -->
+      {#key route.key}
+        <Flow key={route.key} />
       {/key}
     {:else if route.view === 'setup'}
       <Setup />

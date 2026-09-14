@@ -14,6 +14,7 @@ pub mod api;
 pub mod assets;
 pub mod cli;
 pub mod discover;
+pub mod flow;
 pub mod manager;
 pub mod refreader;
 pub mod registry;

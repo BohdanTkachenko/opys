@@ -291,3 +291,61 @@ export function splitCsv(input) {
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
 }
+
+/**
+ * The priority chip for an item the node ranked: the number that *ordered* it,
+ * plus the qualifier that explains the number when it is not the document's
+ * own.
+ *
+ * This is `src/commands/next.rs::priority_cell` in the browser, and it exists
+ * for the same reason: `opys next` ranks by **effective** priority — the
+ * smallest number over the document and everything it still blocks (ADR-0099
+ * decision 4), so a task at 30 holding up one at 1 sorts as 1 — and showing the
+ * document's own number instead would print a column that contradicts the order
+ * beside it. Note the three cases are exactly the CLI's:
+ *
+ *   - both, equal, or no effective number at all → `30`
+ *   - inherited from something it blocks → `1`, qualified `own 30`
+ *   - no own number, a number through the closure → `1`, qualified `inherited`
+ *
+ * The board deliberately does *not* use this: a column there is ordered by the
+ * raw `priority` field, because that is the number drag-to-reorder writes.
+ *
+ * @param {number|null|undefined} own the document's own `priority`
+ * @param {number|null|undefined} effective `effective_priority`
+ * @returns {{rank: number, note: string|null, title: string}|null} `null` when
+ *   the item has no priority at all — and so no chip to draw.
+ */
+export function priorityChip(own, effective) {
+  const ownRank = asRank(own);
+  const effRank = asRank(effective);
+  if (ownRank === null && effRank === null) return null;
+  // `effective_priority` is the min over a closure that includes the document
+  // itself, so it is never absent when `priority` is present. The `?? ownRank`
+  // is for an older node that sends only the one field.
+  const rank = effRank ?? ownRank;
+  if (effRank !== null && ownRank === null) {
+    return {
+      rank,
+      note: 'inherited',
+      title:
+        `effective priority ${rank}, inherited from something this ` +
+        `document blocks — lower is higher`,
+    };
+  }
+  if (effRank !== null && ownRank !== null && effRank !== ownRank) {
+    return {
+      rank,
+      note: `own ${ownRank}`,
+      title:
+        `effective priority ${rank}, inherited from something this ` +
+        `document blocks; its own is ${ownRank} — lower is higher`,
+    };
+  }
+  return { rank, note: null, title: `priority ${rank} — lower is higher` };
+}
+
+/** A finite number, or `null` for anything else the payload might carry. */
+function asRank(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
