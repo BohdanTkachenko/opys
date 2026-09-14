@@ -28,12 +28,30 @@ const MAX_RETRY_MS = 10_000;
  * Whether a batch could have changed what `cid` shows.
  *
  * `reconnected` always counts (we do not know what was missed), and so does any
- * frame without a `cid` — a frame the client does not recognise is assumed to
- * matter rather than assumed not to.
+ * frame that is scoped to nothing — a frame the client does not recognise is
+ * assumed to matter rather than assumed not to.
+ *
+ * A frame carrying a `project` is the one exception, because it is scoped to
+ * something this function cannot check: `refs-changed` says a repository's
+ * branches moved, which changes the union view of one project and no board, no
+ * document and no query anywhere. Treating it as unscoped would have every open
+ * tab refetch every view each time a branch is written.
  */
 export function affects(batch, cid) {
   if (batch.reconnected) return true;
-  return batch.events.some((event) => event.cid === undefined || event.cid === cid);
+  return batch.events.some(
+    (event) => (event.cid === undefined && event.project === undefined) || event.cid === cid,
+  );
+}
+
+/**
+ * Whether a batch could have changed what the project keyed `key` shows — the
+ * companion to {@link affects} for the views that are scoped to a project group
+ * rather than to one corpus.
+ */
+export function affectsProject(batch, key) {
+  if (batch.reconnected) return true;
+  return batch.events.some((event) => event.project === key);
 }
 
 function createEvents() {

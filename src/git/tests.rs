@@ -5,8 +5,10 @@
 use std::path::Path;
 
 use super::fixture::{commit_key, Fixture};
+use std::collections::BTreeMap;
+
 use super::{
-    docs_changed_vs_main, occupancy, open, reader, refs, Occupant, NOT_A_REPOSITORY,
+    docs_changed_vs_main, occupancy, open, reader, refs, survey, Occupant, NOT_A_REPOSITORY,
     NO_TRUTH_BRANCH,
 };
 use crate::doc::Doc;
@@ -113,6 +115,10 @@ fn a_detached_worktree_head_on_a_branch_commit_is_one_column_named_for_the_branc
     assert_eq!(found.len(), 1, "one commit is one column: {found:?}");
     assert_eq!(found[0].label, "feat-x");
     assert_eq!(found[0].name, "refs/heads/feat-x");
+    // The label says "feat-x" either way, so the checkout is carried separately:
+    // this is how a caller tells a branch somebody is sitting on from one nobody
+    // has checked out.
+    assert_eq!(found[0].worktrees, [tmp.path().join("checkout-x")]);
     // And it is counted once, not twice.
     let occ = occupancy(&prj, &on_main(&prj));
     assert_eq!(occ.by_doc["FEAT-0001"].len(), 1);
@@ -341,4 +347,277 @@ fn nothing_in_the_reader_spawns_a_process() {
         checked >= 4,
         "expected the whole module, read {checked} files"
     );
+}
+
+/// The id → status map [`survey`] takes, from the documents on main.
+fn statuses(docs: &[Doc]) -> BTreeMap<String, String> {
+    docs.iter()
+        .filter_map(|d| Some((d.id()?.to_string(), d.status()?.to_string())))
+        .collect()
+}
+
+#[test]
+fn a_survey_reports_each_ref_with_its_diff_its_occupancy_and_where_to_watch() {
+    let tmp = tempfile::tempdir().unwrap();
+    two_docs_and_a_branch(tmp.path(), "refs/heads/feat-x");
+    let prj = project(tmp.path());
+
+    let surveyed = survey(&prj, &statuses(&on_main(&prj)));
+
+    assert!(surveyed.notices.is_empty(), "{:?}", surveyed.notices);
+    assert_eq!(surveyed.refs.len(), 1, "{:?}", surveyed.refs);
+    let state = &surveyed.refs[0];
+    assert_eq!(state.reference.label, "feat-x");
+    assert!(
+        state.reference.worktrees.is_empty(),
+        "no checkout: {:?}",
+        state.reference.worktrees
+    );
+    // The diff and the occupancy come off one walk, and they say different
+    // things: `changed` is what the branch holds, `occupied` the subset whose
+    // status main disagrees with.
+    let changed = state.changed.as_ref().expect("the diff succeeded");
+    assert_eq!(changed.docs.len(), 1);
+    assert!(changed.deleted.is_empty());
+    assert_eq!(
+        state.occupied["FEAT-0001"],
+        Occupant {
+            label: "feat-x".into(),
+            status: "partial".into(),
+            since: Some(commit_key(1)),
+        }
+    );
+    // Where to watch for the next change — the common git directory.
+    assert_eq!(
+        surveyed.git_dir.as_deref().and_then(Path::file_name),
+        Some(std::ffi::OsStr::new(".git"))
+    );
+}
+
+#[test]
+fn a_survey_of_a_non_repository_has_nothing_to_watch_and_says_why() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("opys.toml"), CONFIG).unwrap();
+    std::fs::create_dir_all(tmp.path().join("opys")).unwrap();
+    let prj = project(tmp.path());
+
+    let surveyed = survey(&prj, &BTreeMap::new());
+
+    assert!(surveyed.refs.is_empty());
+    assert_eq!(surveyed.notices, [NOT_A_REPOSITORY]);
+    // No watcher is worth starting: this answer cannot change without a rescan.
+    assert!(surveyed.git_dir.is_none());
+}
+
+#[test]
+fn a_repository_with_no_truth_branch_is_still_worth_watching() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut fx = Fixture::init(tmp.path());
+    fx.write("opys.toml", CONFIG);
+    fx.write("opys/FEAT-0001.md", doc_text("FEAT-0001", &["planned"]));
+    fx.commit_to("refs/heads/feat-x", &[], "Alice", "seed the inventory");
+    let prj = project(tmp.path());
+
+    let surveyed = survey(&prj, &BTreeMap::new());
+
+    assert_eq!(surveyed.notices, [NO_TRUTH_BRANCH]);
+    assert!(surveyed.refs.is_empty(), "nothing to compare against");
+    // `main` may yet be created, and the watcher is what notices.
+    assert!(surveyed.git_dir.is_some());
+}
+
+/// The three states a survey can be in about its repository, and why only two
+/// of them are final: a repository that was found and would not open is a
+/// half-written `.git/config` as often as anything else, and a caller that
+/// treated it like "there is no repository here" would stop looking forever.
+#[test]
+fn a_repository_that_will_not_open_is_a_retry_not_a_verdict() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("opys.toml"), CONFIG).unwrap();
+    std::fs::create_dir_all(tmp.path().join("opys")).unwrap();
+    let git_dir = tmp.path().join(".git");
+    std::fs::create_dir_all(git_dir.join("objects")).unwrap();
+    std::fs::create_dir_all(git_dir.join("refs")).unwrap();
+    std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    // Mid-save: the section header has no closing bracket.
+    std::fs::write(git_dir.join("config"), "[core\n\tbare\n").unwrap();
+
+    let surveyed = survey(&project(tmp.path()), &BTreeMap::new());
+
+    assert!(surveyed.git_dir.is_none(), "nothing could be read");
+    assert!(surveyed.retry, "{:?}", surveyed.notices);
+    assert_eq!(surveyed.notices.len(), 1, "{:?}", surveyed.notices);
+    assert!(
+        surveyed.notices[0].starts_with("git: "),
+        "{:?}",
+        surveyed.notices
+    );
+
+    // Whereas a directory in no repository at all is settled, and says so.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("opys.toml"), CONFIG).unwrap();
+    std::fs::create_dir_all(tmp.path().join("opys")).unwrap();
+    let surveyed = survey(&project(tmp.path()), &BTreeMap::new());
+    assert_eq!(surveyed.notices, [NOT_A_REPOSITORY]);
+    assert!(!surveyed.retry, "there is nothing to try again");
+}
+
+/// EACCES on the git directory is discovery's blind spot: its upward walk probes
+/// each candidate `.git` and reads *any* failure as "not a repository", so it
+/// walks past one that is plainly there and ends with `NoGitRepository`. Taking
+/// that at face value reported a broken repository in the exact words a
+/// repository-less directory gets — and, for a long-lived caller, ended the
+/// thread that would have noticed the permission coming back.
+#[cfg(unix)]
+#[test]
+fn a_git_directory_that_cannot_be_read_is_a_retry_not_a_missing_repository() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    two_docs_and_a_branch(&root, "refs/heads/feat-x");
+    let prj = project(&root);
+    let git_dir = root.join(".git");
+    assert!(
+        survey(&prj, &BTreeMap::new()).git_dir.is_some(),
+        "it reads before the permission bit is taken away"
+    );
+
+    let before = std::fs::metadata(&git_dir).unwrap().permissions();
+    std::fs::set_permissions(&git_dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::metadata(git_dir.join("HEAD")).is_ok() {
+        // Running as root, where a mode of 000 stops nothing at all.
+        std::fs::set_permissions(&git_dir, before).unwrap();
+        return;
+    }
+    let surveyed = survey(&prj, &BTreeMap::new());
+    // Restored before the assertions, so a failure still leaves a removable
+    // temporary directory behind.
+    std::fs::set_permissions(&git_dir, before).unwrap();
+
+    assert!(
+        surveyed.retry,
+        "the permission can come back: {:?}",
+        surveyed.notices
+    );
+    assert_eq!(surveyed.notices.len(), 1, "{:?}", surveyed.notices);
+    assert_ne!(
+        surveyed.notices[0], NOT_A_REPOSITORY,
+        "a broken repository and an absent one must not read alike"
+    );
+    assert!(
+        surveyed.notices[0].contains("could not be read"),
+        "and it says what could not be read: {:?}",
+        surveyed.notices
+    );
+
+    // And it recovers on the next pass, with nothing restarted.
+    let surveyed = survey(&prj, &BTreeMap::new());
+    assert!(surveyed.git_dir.is_some(), "{:?}", surveyed.notices);
+    assert!(!surveyed.retry);
+    assert!(surveyed.notices.is_empty(), "{:?}", surveyed.notices);
+}
+
+/// Which directory holds main's copy is a question only the survey can answer,
+/// so it hands the caller every checkout — including the main worktree, which
+/// gix's own worktree list leaves out.
+#[test]
+fn a_survey_reports_every_checkout_and_which_of_them_is_on_main() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (fx, tip) = two_docs_and_a_branch(&root, "refs/heads/feat-x");
+    let checkout = root.join("checkout-x");
+    fx.worktree_detached("wt", &checkout, tip);
+    let prj = project(&root);
+
+    let surveyed = survey(&prj, &statuses(&on_main(&prj)));
+
+    let mut got: Vec<(&Path, Option<&str>)> = surveyed
+        .checkouts
+        .iter()
+        .map(|c| (c.root.as_path(), c.branch.as_deref()))
+        .collect();
+    got.sort();
+    assert_eq!(
+        got,
+        [
+            (root.as_path(), Some("main")),
+            (checkout.as_path(), Some("feat-x")),
+        ],
+        "the main worktree, which `gix` does not list, and the detached one — \
+         named for the branch it is parked on"
+    );
+
+    // And the caller's question, answered off those: `is_on` matches the main
+    // worktree by name and the detached checkout by neither.
+    let truth = surveyed
+        .checkouts
+        .iter()
+        .find(|c| c.root == root)
+        .expect("the main worktree");
+    assert_eq!(
+        truth.commit.as_deref(),
+        Some(
+            fx.tip("refs/heads/main")
+                .expect("main")
+                .to_string()
+                .as_str()
+        )
+    );
+}
+
+/// A detached head parked on main's commit is a checkout of main: that is every
+/// workspace of a jj-colocated repository, and refusing to recognise it would
+/// leave such a project with no baseline at all.
+#[test]
+fn a_detached_head_on_mains_commit_is_a_checkout_of_main() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (fx, _) = two_docs_and_a_branch(&root, "refs/heads/feat-x");
+    let main = fx.tip("refs/heads/main").expect("main exists");
+    fx.detach_head(main);
+    let prj = project(&root);
+
+    let mut seen: Option<(super::Truth, Vec<super::Checkout>)> = None;
+    let surveyed = super::survey_with(&prj, |truth, checkouts| {
+        seen = Some((truth.clone(), checkouts.to_vec()));
+        Some(statuses(&on_main(&prj)))
+    });
+    let (truth, checkouts) = seen.expect("the callback was handed the baseline");
+
+    assert_eq!(truth.name, "refs/heads/main");
+    assert_eq!(truth.short, "main");
+    assert_eq!(truth.commit, main.to_string());
+    let here = checkouts
+        .iter()
+        .find(|c| c.root == root)
+        .expect("the main worktree");
+    assert_eq!(
+        here.branch.as_deref(),
+        Some("main"),
+        "jj detaches every head, and the branch it is parked on is still the answer"
+    );
+    assert!(here.is_on(&truth), "and it is still sitting on main");
+    assert_eq!(surveyed.refs.len(), 1, "the branch is still read");
+}
+
+/// A caller with no baseline stops the survey rather than comparing against
+/// nothing — which would report every branch as holding the whole inventory.
+#[test]
+fn a_survey_with_no_baseline_reads_no_refs_and_still_says_where_to_watch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    two_docs_and_a_branch(&root, "refs/heads/feat-x");
+    let prj = project(&root);
+
+    let surveyed = super::survey_with(&prj, |_, _| None);
+
+    assert!(surveyed.refs.is_empty(), "nothing was compared");
+    assert!(
+        surveyed.notices.is_empty(),
+        "the reason is the caller's to give: {:?}",
+        surveyed.notices
+    );
+    assert!(surveyed.git_dir.is_some(), "still worth watching");
+    assert!(!surveyed.checkouts.is_empty(), "and still worth reporting");
 }

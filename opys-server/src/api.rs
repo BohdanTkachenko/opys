@@ -64,7 +64,7 @@ use crate::actor::{
 use crate::discover::Corpus;
 use crate::manager::Manager;
 use crate::registry;
-use crate::union::{contested_numbers, union, CorpusDocs, UnionView};
+use crate::union::{contested_numbers, union, Branches, CorpusDocs, UnionView};
 
 /// How often the server pings an idle WebSocket client.
 const PING_EVERY: Duration = Duration::from_secs(30);
@@ -777,12 +777,36 @@ async fn allowlist(
     setup(State(state)).await
 }
 
+/// Replace a corpus's discovery-time branch with the one its group's ref reader
+/// last resolved, when the reader has an answer for it.
+///
+/// Discovery reads the branch once, when it expands the allowlist, and the
+/// manager rebuilds a group only on a rescan — so between rescans a checkout
+/// that moved keeps the name it was found on, in the sidebar and in the union's
+/// column headings. The ref reader re-resolves every checkout on every pass
+/// (and broadcasts when the answer moves), so its answer is the fresh one.
+///
+/// A corpus the reader has no entry for is left alone: no repository, or a pass
+/// that could not open one, is not evidence that the branch changed.
+fn freshen_branch(corpus: &mut Corpus, branches: &Branches) {
+    if let Some(branch) = branches.branch_of.get(&corpus.root) {
+        corpus.branch = branch.clone();
+    }
+}
+
 /// One project (a repository and its worktrees) as the UI presents it.
 #[derive(Serialize)]
 struct ProjectOut {
     key: String,
     name: String,
     corpora: Vec<CorpusOut>,
+    /// How many branch columns the union view would add — refs with no checkout,
+    /// as the group's ref reader last counted them (ADR-0102).
+    ///
+    /// Here so a client can decide whether a comparison exists to offer. A
+    /// repository with one worktree and three branches has plenty to compare and
+    /// would otherwise look, from this payload alone, like a lone directory.
+    branches: usize,
 }
 
 /// One inventory, with the cached numbers for it.
@@ -810,16 +834,32 @@ struct CorpusOut {
 /// The allowlisted projects, each with its corpora and their cached counts.
 async fn projects(State(state): State<AppState>) -> Result<Json<Vec<ProjectOut>>, ApiError> {
     let manager = Arc::clone(&state.manager);
-    // One lock, taken off the reactor, held for two cheap clones.
-    let (groups, clients) = tokio::task::spawn_blocking(move || {
+    // One lock, taken off the reactor, held for three cheap clones: the group
+    // list, a branch count per group, and a client per corpus. The count is a
+    // read through the `Arc` the ref reader published — never a copy of the
+    // columns, which carry main's whole inventory apiece.
+    let (groups, branches, clients) = tokio::task::spawn_blocking(move || {
         let manager = lock(&manager);
-        let groups = manager.groups().to_vec();
+        let mut groups = manager.groups().to_vec();
+        let branches: BTreeMap<String, usize> = groups
+            .iter_mut()
+            .map(|g| {
+                let read = manager.branches_for(&g.key);
+                // The branch each corpus is *now* on, not the one discovery
+                // recorded when it first walked the allowlist; see
+                // `Branches::branch_of`.
+                for corpus in &mut g.corpora {
+                    freshen_branch(corpus, &read);
+                }
+                (g.key.clone(), read.columns.len())
+            })
+            .collect();
         let clients: Vec<CorpusClient> = manager
             .cids()
             .iter()
             .filter_map(|cid| manager.get(cid).map(CorpusHandle::client))
             .collect();
-        (groups, clients)
+        (groups, branches, clients)
     })
     .await
     .map_err(|e| ApiError::internal(format!("listing projects failed: {e}")))?;
@@ -828,6 +868,7 @@ async fn projects(State(state): State<AppState>) -> Result<Json<Vec<ProjectOut>>
     let out = groups
         .into_iter()
         .map(|group| ProjectOut {
+            branches: branches.get(&group.key).copied().unwrap_or_default(),
             key: group.key,
             name: group.name,
             corpora: group
@@ -968,6 +1009,14 @@ async fn docs(
 /// show, and refusing the whole group because of it would hide the other
 /// columns. The failure is handed to the merge as such, so the column carries
 /// the reason and no row claims the branch deleted anything.
+///
+/// The columns for refs **nobody has checked out** come from the group's ref
+/// reader ([`crate::refreader`]), which read them in the background off a git
+/// watcher. Taking them from its published snapshot rather than reading git here
+/// is what keeps this handler free of a tree walk: the answer depends on the
+/// refs, not on the request, so it is computed once per ref change and cloned
+/// per request. The request's filter is applied to those columns exactly as it
+/// is to a worktree's.
 async fn group_union(
     State(state): State<AppState>,
     Path(key): Path<String>,
@@ -980,24 +1029,32 @@ async fn group_union(
     // One lock, taken off the reactor, held for the group's clone and a client
     // per member. `None` means no such group; an inner `None` means that member
     // stopped between the group being listed and its client being taken.
-    let members = tokio::task::spawn_blocking(move || {
+    let (members, branches) = tokio::task::spawn_blocking(move || {
         let manager = lock(&manager);
         let group = manager.groups().iter().find(|g| g.key == wanted)?;
+        // The reader's last snapshot, shared rather than copied, taken under the
+        // same lock. It is never computed here: the reader owns the git walk.
+        let branches = manager.branches_for(&wanted);
         let members: Vec<(Corpus, Option<CorpusClient>)> = group
             .corpora
             .iter()
-            .map(|c| (c.clone(), manager.get(&c.cid).map(CorpusHandle::client)))
+            .map(|c| {
+                let client = manager.get(&c.cid).map(CorpusHandle::client);
+                let mut c = c.clone();
+                freshen_branch(&mut c, &branches);
+                (c, client)
+            })
             .collect();
-        Some(members)
+        Some((members, branches))
     })
     .await
     .map_err(|e| ApiError::internal(format!("building the union view failed: {e}")))?
     .ok_or_else(|| ApiError::not_found(format!("no such project group: {key}")))?;
 
     // Unfiltered, because the collision warning is derived from every id the
-    // corpora hold; the request's filter is applied to the rows below.
+    // corpora and the branches hold; the request's filter is applied below.
     let gathered = gather_docs(members, DocFilter::default()).await;
-    let contested = contested_numbers(&gathered);
+    let contested = contested_numbers(&gathered, &branches);
     let rows: Vec<CorpusDocs> = gathered
         .into_iter()
         .map(|(corpus, docs)| {
@@ -1007,7 +1064,30 @@ async fn group_union(
             (corpus, docs)
         })
         .collect();
-    Ok(Json(union(&rows, &contested)))
+    // The one place the snapshot is copied, and only the parts the filter
+    // reshapes: the reader's `Arc` is shared with every other reader of it.
+    let branches = Branches {
+        columns: branches
+            .columns
+            .iter()
+            // Same rule as a corpus column, for the same reason: a branch that
+            // could not be read keeps its error rather than becoming empty.
+            .map(|(column, docs)| {
+                let docs = match docs {
+                    Ok(docs) => Ok(docs.iter().filter(|d| filter.matches(d)).cloned().collect()),
+                    Err(e) => Err(e.clone()),
+                };
+                (column.clone(), docs)
+            })
+            .collect(),
+        occupancy: branches.occupancy.clone(),
+        notices: branches.notices.clone(),
+        read_at: branches.read_at.clone(),
+        // Already applied to the columns above, by `freshen_branch`; carried so
+        // the reshaped value still says what the reader read.
+        branch_of: branches.branch_of.clone(),
+    };
+    Ok(Json(union(&rows, &branches, &contested)))
 }
 
 /// Every member's summaries — those matching `filter` — gathered in parallel
@@ -1401,6 +1481,50 @@ async fn pump(mut socket: WebSocket, mut events: broadcast::Receiver<Event>, con
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A corpus's branch is discovery's answer from whenever it last walked the
+    /// allowlist; the ref reader's is from its last pass. The union's heading
+    /// and the sidebar must show the second, or a checkout that moved reads
+    /// `main (primary)` above the reader's own "no served worktree is on
+    /// `main`".
+    #[test]
+    fn a_corpus_shows_the_branch_the_ref_reader_last_resolved() {
+        let corpus = |dir: &str, branch: Option<&str>| Corpus {
+            cid: format!("cid-{dir}"),
+            root: PathBuf::from(format!("/tmp/{dir}")),
+            base: PathBuf::from(format!("/tmp/{dir}/inventory")),
+            group: "g".into(),
+            branch: branch.map(str::to_string),
+            is_primary: true,
+            error: None,
+        };
+        let branches = Branches {
+            branch_of: [
+                (PathBuf::from("/tmp/moved"), Some("topic".to_string())),
+                (PathBuf::from("/tmp/detached"), None),
+            ]
+            .into_iter()
+            .collect(),
+            ..Branches::default()
+        };
+
+        let mut moved = corpus("moved", Some("main"));
+        freshen_branch(&mut moved, &branches);
+        assert_eq!(moved.branch.as_deref(), Some("topic"), "the fresh answer");
+
+        // The reader looked and found no branch: that overwrites too, or the
+        // heading keeps a name nothing is on.
+        let mut detached = corpus("detached", Some("main"));
+        freshen_branch(&mut detached, &branches);
+        assert_eq!(detached.branch, None);
+
+        // But a corpus the reader has no entry for is left alone: no
+        // repository, or a pass that could not open one, is not evidence that
+        // anything moved.
+        let mut unknown = corpus("unknown", Some("main"));
+        freshen_branch(&mut unknown, &branches);
+        assert_eq!(unknown.branch.as_deref(), Some("main"));
+    }
 
     #[test]
     fn empty_query_values_mean_no_filter() {

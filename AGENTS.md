@@ -232,7 +232,10 @@ Layering, roughly outermost-in:
   `seed`/`append`/`record` writers. Distinct from `src/git/`, which reconstructs
   a timeline *from git*, and from `commands::history`, the command over it.
 - `src/git/` — the in-process git reader (ADR-0102, feature `git`, on by
-  default): `open` (a non-repository is `None`, never an error), `truth_branch`
+  default): `open` (a non-repository is `None`, never an error; a `.git` that is
+  there and cannot be *read* is an error, told apart by probing the directory
+  discovery walked past, since discovery reports an unreadable `.git` and an
+  absent one identically), `truth_branch`
   (`[git] main`, falling back to `master`), `refs` (branch tips selected by the
   `[git] branches` globs plus every linked worktree head from
   `<git-dir>/worktrees/*/HEAD`, deduplicated by commit, labelled by branch else
@@ -240,7 +243,17 @@ Layering, roughly outermost-in:
   keyed by the id-named **basename** so a relocation is not a delete plus an add,
   decoding only the blobs that differ), `occupancy` (which refs hold a document
   at a status main's on-disk copy does not — the caller supplies main's loaded
-  docs, because corpus I/O is the backend's job), and `timeline` (what `opys
+  docs, because corpus I/O is the backend's job), `survey` (all of that in one
+  pass, plus the git directory to watch, every `Checkout` of the repository —
+  the main worktree included, which gix does not list — and a `retry` flag that
+  tells a discovered-but-unopenable repository apart from "no repository here":
+  the per-ref diff *and* its occupancy off
+  one walk, with a whole-reader failure as a notice and a single unreadable ref
+  kept beside its reason — `occupancy` is a fold of it, and the node's
+  `refreader` is its other caller, so the CLI and the dashboard cannot
+  disagree; `survey_with` is the same pass for a caller that cannot say what
+  main *is* until it has been handed the `Truth` branch and the checkouts),
+  and `timeline` (what `opys
   history <id>` prints and `--seed` writes). `fixture` builds test repositories
   through gix's write API, so the reader's own tests and the binary's `history`
   tests never spawn `git` — pinned by
@@ -252,7 +265,8 @@ Layering, roughly outermost-in:
   in `nativeCheckInputs`. `fixture` is `#[doc(hidden)]` and
   gated `any(test, feature = "test-fixtures")`, so it compiles only into the
   engine's own tests and into whoever asks for that non-default feature (only
-  `opys`'s *dev*-dependency does, for `opys/tests/cli.rs`) — never into the
+  the *dev*-dependencies of `opys`, for `opys/tests/cli.rs`, and of
+  `opys-server`, for `opys-server/tests/ref_reader.rs`, do) — never into the
   published crate's API. The feature does not imply `git`, so that edge cannot
   smuggle gix into a `--no-default-features` build. The data types and a
   main-only fallback are compiled unconditionally, so a `--no-default-features`
@@ -560,10 +574,41 @@ than editing the block by hand.
   disagree, `add` refuses to allowlist projects the node never serves.
 - The dashboard (`opys-server/ui/`, embedded by `assets.rs`) is a sidebar of
   projects/corpora — each with a verify dot — over four views: board, document,
-  query console, and the worktree union. Its writes are the same typed actions;
+  query console, and the union of one project's worktrees *and* its
+  uncheckedout branches. Its writes are the same typed actions;
   there is no create-document view, so `opys new` stays a CLI job. The document
   view's log entry box reads `DocView::log_sections`, so the client never has to
-  work out which sections are logs.
+  work out which sections are logs. A union cell links to its document only for a
+  `worktree` column: a `branch` column addresses no corpus, so the client reads
+  `Column.kind` rather than linking every cell.
+- One **ref reader** per project group (`opys-server/src/refreader.rs`, ADR-0102
+  decision 5): a thread calling `git::survey` on start, on a debounced change
+  under the git directory (`refs/`, `packed-refs`, `worktrees/*/HEAD`; 250 ms,
+  the corpus actor's `DEBOUNCE`) and every 60 s as a backstop, publishing
+  `Event::RefsChanged { project }` — only when the answer actually changed, or
+  the backstop would refetch every open tab every minute. Unlike a corpus actor
+  it answers reads from an `Arc<Mutex<Arc<Branches>>>` the manager holds, not over
+  its channel, so a request never queues behind a git walk. It writes nothing
+  (ADR-0051), a project that is no repository publishes its one notice and the
+  thread returns (a repository that is *there* and will not open keeps its
+  thread — nothing would restart it), and a ref a served corpus has checked out
+  gets no column — the checkout is already one, matched by the **commit** its
+  checkout sits on, because a `Ref` is labelled by only the first of however
+  many branch names point at it. A branch column is main's summaries with that
+  ref's diff applied (`docs_changed_vs_main` returns only the diff; feeding the
+  merge that alone would say the branch deleted the inventory). "Main" is the
+  served corpus sitting on the **truth branch**, chosen per pass from
+  `survey_with`'s `Truth` and `Checkout`s — not the group's primary, which is
+  git's main worktree on whatever branch it happens to sit; with no served
+  checkout of main the reader publishes a notice and no branch columns rather
+  than a column mixing two branches. It also publishes `Branches::branch_of` —
+  the branch each served corpus's checkout is on, this pass — because discovery
+  reads that once and the manager rebuilds a group only on a rescan, so the
+  sidebar and the union's column headings otherwise kept the name a checkout was
+  found on while the reader's notice named a different one; `api::freshen_branch`
+  is where it is applied. The backstop is
+  the staleness bound on the one thing the watcher cannot see: occupancy also
+  moves when main's *working copy* does, and that is not under `.git`.
 
 `opys/tests/web.rs` covers the surface end to end. `opys/tests/cli.rs` is the
 byte-identity pin for every pre-existing command and must keep passing untouched.

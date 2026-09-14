@@ -243,16 +243,7 @@ impl Fixture {
     }
 
     async fn get(&self, uri: &str) -> (StatusCode, Value) {
-        let response = api::router(self.state.clone())
-            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        let status = response.status();
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        (
-            status,
-            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-        )
+        get(&self.state, uri).await
     }
 
     async fn union(&self, query: &str) -> Value {
@@ -262,6 +253,20 @@ impl Fixture {
         assert_eq!(status, StatusCode::OK, "{body:#}");
         body
     }
+}
+
+/// One GET against a served node, as JSON.
+async fn get(state: &AppState, uri: &str) -> (StatusCode, Value) {
+    let response = api::router(state.clone())
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 fn ids(view: &Value) -> Vec<&str> {
@@ -499,4 +504,172 @@ async fn an_unknown_group_is_a_json_404() {
         body["error"].as_str().is_some_and(|e| e.contains("nope")),
         "{body:#}"
     );
+}
+
+/// The other kind of column, over the whole HTTP path: a branch nobody has
+/// checked out (ADR-0102).
+///
+/// The fixture above cannot show it — its only two refs are `main`, which is the
+/// truth branch and never a column, and `feature/x`, which the second worktree
+/// has checked out and the ref reader therefore drops. So every assertion up to
+/// here is about worktree columns, and the two things this shape adds — the
+/// per-request filter over branch cells, and the `branches` count the sidebar
+/// gates the union link on — would ship with nothing holding them.
+///
+/// The repository is built with gix, so nothing here spawns `git`; discovery
+/// still asks git for the worktree list, and this test does not care what it
+/// answers, because the reader resolves the checkouts itself.
+#[cfg(feature = "git")]
+mod branch_columns {
+    use super::*;
+    use opys_engine::git::fixture::Fixture;
+    use std::time::{Duration, Instant};
+
+    /// One checkout on `main`, plus a branch nobody has checked out that moves
+    /// `TASK-0002` on and writes a `TASK-0003` of its own. The working copy is
+    /// left spelling main, which is what a checkout of main actually looks like.
+    fn repo_with_a_branch(tmp: &Path) -> PathBuf {
+        let root = tmp.join("branchy");
+        let inventory = root.join("inventory");
+        std::fs::create_dir_all(&inventory).unwrap();
+        let mut fx = Fixture::init(&root);
+        std::fs::write(root.join("opys.toml"), CONFIG).unwrap();
+        write_doc(&inventory, "NOTE-0001", "open", "Shared note", "");
+        write_doc(&inventory, "TASK-0002", "doing", "Do the thing", "");
+        let main = fx.commit("Alice", "seed the inventory");
+
+        write_doc(&inventory, "TASK-0002", "done", "Do the thing", "");
+        write_doc(&inventory, "TASK-0003", "todo", "Branch work", "");
+        fx.commit_to("refs/heads/feature/x", &[main], "Bob", "finish the thing");
+
+        // Back to main's spelling: the branch exists only as git objects.
+        write_doc(&inventory, "TASK-0002", "doing", "Do the thing", "");
+        std::fs::remove_file(inventory.join("TASK-0003.md")).unwrap();
+        std::fs::canonicalize(&root).unwrap()
+    }
+
+    /// Poll `/api/projects` until the group reports the branch column its ref
+    /// reader found, and return the group key. The reader publishes off its own
+    /// thread, so this is the request-side wait for its first pass.
+    async fn branch_column_appears(state: &AppState, root: &Path) -> String {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let (status, body) = get(state, "/api/projects").await;
+            assert_eq!(status, StatusCode::OK, "{body:#}");
+            let project = body
+                .as_array()
+                .expect("projects")
+                .iter()
+                .find(|p| {
+                    p["corpora"]
+                        .as_array()
+                        .expect("corpora")
+                        .iter()
+                        .any(|c| c["root"] == root.display().to_string())
+                })
+                .unwrap_or_else(|| panic!("no project for {}: {body:#}", root.display()))
+                .clone();
+            if project["branches"] == 1 {
+                return project["key"].as_str().expect("a key").to_string();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the sidebar never learned there is a branch to compare: {project:#}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_branch_with_no_checkout_is_a_column_the_route_serves_and_filters() {
+        let dir = tempfile::tempdir().unwrap();
+        let tmp = std::fs::canonicalize(dir.path()).unwrap();
+        let root = repo_with_a_branch(&tmp);
+
+        let config = tmp.join("config/server.toml");
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(
+            &config,
+            format!("[[project]]\npath = {:?}\n", root.display().to_string()),
+        )
+        .unwrap();
+        let (events, _keep) = broadcast::channel(32);
+        let mut manager = Manager::new(config, events.clone(), backend);
+        manager.rescan().unwrap();
+        let state = AppState::new(Arc::new(Mutex::new(manager)), events);
+
+        // `/api/projects` counts it, which is what the sidebar gates the union
+        // link on: one checkout and one branch is a comparison, and the shape
+        // this whole view exists for.
+        let key = branch_column_appears(&state, &root).await;
+
+        let (status, view) = get(&state, &format!("/api/group/{key}/union")).await;
+        assert_eq!(status, StatusCode::OK, "{view:#}");
+        let columns = view["columns"].as_array().expect("columns");
+        assert_eq!(columns.len(), 2, "{view:#}");
+        assert_eq!(columns[0]["kind"], "worktree");
+        assert!(
+            columns[0].get("commit").is_none(),
+            "a worktree is files, not a revision"
+        );
+        assert_eq!(columns[1]["kind"], "branch");
+        assert_eq!(columns[1]["label"], "feature/x");
+        let branch_cid = columns[1]["cid"]
+            .as_str()
+            .expect("a branch key")
+            .to_string();
+        assert!(
+            columns[1]["commit"].as_str().is_some_and(|c| c.len() == 40),
+            "and a branch is the commit it was read at: {view:#}"
+        );
+
+        // The branch column is main's inventory with the branch's diff over it,
+        // so a document it left alone is not reported as deleted.
+        assert_eq!(ids(&view), ["NOTE-0001", "TASK-0002", "TASK-0003"]);
+        assert_eq!(row(&view, "NOTE-0001")["only_in"], serde_json::json!([]));
+        let drifted = row(&view, "TASK-0002");
+        assert_eq!(drifted["cells"][0]["status"], "doing");
+        assert_eq!(drifted["cells"][1]["status"], "done");
+        assert_eq!(drifted["differs"], true, "{drifted:#}");
+        // And what is in flight on it, which only the branch reader can say.
+        assert_eq!(drifted["occupants"][0]["label"], "feature/x", "{drifted:#}");
+        assert_eq!(drifted["occupants"][0]["status"], "done");
+        assert_eq!(
+            row(&view, "TASK-0003")["only_in"],
+            serde_json::json!([branch_cid.as_str()]),
+            "written on the branch and nowhere else"
+        );
+
+        // The request's filter applies to a branch column exactly as it does to
+        // a worktree's — both directions, because a filter applied to one side
+        // only looks right from whichever side you check first.
+        let (_, view) = get(&state, &format!("/api/group/{key}/union?status=done")).await;
+        assert_eq!(ids(&view), ["TASK-0002"], "{view:#}");
+        let only = row(&view, "TASK-0002");
+        assert_eq!(only["cells"][0]["status"], Value::Null, "{only:#}");
+        assert_eq!(only["cells"][1]["status"], "done");
+        assert_eq!(
+            only["only_in"],
+            serde_json::json!([branch_cid.as_str()]),
+            "`doing` in the worktree was filtered out there, not merged in"
+        );
+
+        let (_, view) = get(&state, &format!("/api/group/{key}/union?status=doing")).await;
+        assert_eq!(ids(&view), ["TASK-0002"], "{view:#}");
+        let only = row(&view, "TASK-0002");
+        assert_eq!(only["cells"][0]["status"], "doing");
+        assert_eq!(
+            only["cells"][1]["status"],
+            Value::Null,
+            "the branch holds it at `done`, so the filter drops it there: {only:#}"
+        );
+        assert_eq!(
+            only["cells"][1]["unknown"], false,
+            "filtered out is not unread"
+        );
+
+        let (_, view) = get(&state, &format!("/api/group/{key}/union?type=note")).await;
+        assert_eq!(ids(&view), ["NOTE-0001"], "{view:#}");
+        assert_eq!(row(&view, "NOTE-0001")["cells"][1]["status"], "open");
+    }
 }

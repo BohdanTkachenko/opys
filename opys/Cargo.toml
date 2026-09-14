@@ -44,9 +44,9 @@ clap = { version = "4", features = ["derive", "env"] }
 [dev-dependencies]
 # `opys/tests/cli.rs` builds its git fixtures with the engine's gix-only
 # repository builder, which is not public API: it sits behind the engine's
-# non-default `test-fixtures` feature, and only this *dev*-dependency asks for
-# it, so the module reaches no consumer and never ships in the binary or on
-# docs.rs. The feature is a no-op without gix, and `default-features = false`
+# non-default `test-fixtures` feature, which only a *dev*-dependency ever asks
+# for (this one, and `opys-server`'s for its ref-reader tests), so the module
+# reaches no consumer and never ships in the binary or on docs.rs. The feature is a no-op without gix, and `default-features = false`
 # keeps this edge from re-enabling `git` under `--no-default-features`.
 opys-engine = { path = "..", version = "0.12.0", default-features = false, features = [
     "test-fixtures",

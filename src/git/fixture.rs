@@ -8,9 +8,9 @@
 //! and fail there. Every repository built here is isolated from user and system
 //! config, names its branches explicitly, and stamps deterministic commit times.
 //!
-//! It lives in the library (rather than beside one test file) because both the
-//! engine's own tests and the binary's integration tests build the same
-//! repositories. It is no part of the public contract: the declaration in
+//! It lives in the library (rather than beside one test file) because the
+//! engine's own tests, the binary's integration tests and the node's ref-reader
+//! tests all build the same repositories. It is no part of the public contract: the declaration in
 //! [`super`] carries `#[doc(hidden)]` and compiles only into the engine's own
 //! test target or under the non-default `test-fixtures` feature, which nothing
 //! but a dev-dependency turns on — so a release build, the published crate and
@@ -148,6 +148,25 @@ impl Fixture {
                 "fixture",
             )
             .expect("write a fixture ref");
+    }
+
+    /// Point the **main** worktree's `HEAD` at a ref, as checking out a branch
+    /// does. [`Fixture::commit`] still commits to `refs/heads/main`, so this is
+    /// how a fixture whose main worktree sits somewhere other than the truth
+    /// branch is built.
+    pub fn set_head(&self, full_ref: &str) {
+        std::fs::write(
+            self.repo.common_dir().join("HEAD"),
+            format!("ref: {full_ref}\n"),
+        )
+        .expect("write the main HEAD");
+    }
+
+    /// Detach the **main** worktree's `HEAD` onto a commit — what a
+    /// jj-colocated checkout leaves behind in every workspace it manages.
+    pub fn detach_head(&self, oid: ObjectId) {
+        std::fs::write(self.repo.common_dir().join("HEAD"), format!("{oid}\n"))
+            .expect("write the main HEAD");
     }
 
     /// A linked worktree with a **detached** head — the jj-colocated shape.

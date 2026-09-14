@@ -166,11 +166,15 @@ delete plus an add, and only the revisions that differ are decoded, through the
 real parser. That same engine-side reader also answers which branches and
 worktree heads hold the inventory and where they disagree with main, which is
 what `[git]` in `opys.toml` configures (the truth branch, and which refs count:
-local heads by default, remote-tracking refs opt-in). Nothing surfaces those
-branch columns yet — the dashboard's union view still shows one column per
-checked-out worktree. That reader degrades rather than failing: a project that
+local heads by default, remote-tracking refs opt-in). The dashboard's union view
+surfaces exactly that: a column per branch nobody has checked out, beside the
+columns for the worktrees, and a mark on each row saying which refs hold it at a
+status main's copy does not. That reader degrades rather than failing: a project that
 is not a repository, or a binary built without the `git` cargo feature
-(`--no-default-features`), is main-only and says so. The `history` *command* is
+(`--no-default-features`), is main-only and says so — and a repository that *is*
+there and cannot be read (a permission bit, a half-written `.git/config`) says
+that instead, in different words, because it can clear on its own and the other
+two cannot. The `history` *command* is
 the exception — its whole subject is the committed timeline, so rather than
 print an empty one it says why and exits 2, naming the missing feature or the
 missing repository.
@@ -423,9 +427,29 @@ state (clean, *N* problems, or not read yet). Pick one and you get:
   refused here too, with the same message. Creating documents stays a CLI job.
 - **the query console** — the same SQL over the corpus that `opys query` runs,
   read-only;
-- **the union view** — every worktree of one project side by side, so you can
-  see where two branches disagree about a document. It shows the drift and
-  nothing else: nothing here merges anything, because git is the merger.
+- **the union view** — every worktree of one project side by side, *plus a
+  column for every branch nobody has checked out*, so you can see where two
+  branches disagree about a document even when only one of them is on disk. The
+  branch columns are read straight out of git objects by a background reader (one
+  per project: a watcher on the git directory, a 250 ms debounce and a minute's
+  backstop), so they cost the request nothing and refresh themselves when a ref
+  moves. Each row also carries what is *in flight* on it — which refs hold it at
+  a status main's copy does not, and since when. Both are measured against the
+  worktree that has **main** checked out: a branch column shows that worktree's
+  documents with the branch's own changes over the top, so an uncommitted edit
+  there shows through on the rows the branch did not touch, and a project none of
+  whose served worktrees is on main gets a notice instead of branch columns
+  rather than a comparison against some third branch. A worktree column's heading
+is the branch that checkout is on *now*, refreshed by the same reader on the
+same event — so it cannot go on spelling `main` above a notice saying nothing is
+on main. Three blanks mean three
+  different things and are drawn differently: a column that does not have the
+  document, a column that could not be read (with the reason on its heading), and
+  — when there are no branch columns at all — one notice above the table saying
+  why, because "this project is not a repository" is not "a branch broke". It
+  shows the drift and nothing else: nothing here merges anything, because git is
+  the merger, and a branch cell does not link anywhere because a branch is not a
+  directory to open a file in.
 
 **Ctrl+P** (⌘P on a Mac) or `/` opens the omnibox from any view: a fuzzy
 finder over the corpus's tickets — or every served corpus, from the home page
