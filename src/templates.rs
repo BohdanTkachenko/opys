@@ -174,25 +174,22 @@ user-review = ["done", "in-progress"]
 
 # Time-aware observations (ADR-0101). `ttl` is how long a document may sit in a
 # status, `max_visits` how often it may enter one; `verify` reports both apart
-# from content problems and exits 3 when they are all it found. It never acts on
-# them: uncommenting these two lines asks to be told, nothing more.
+# from content problems and exits 3 when they are all it found. Uncommenting
+# these two lines observes only — a bare duration has no fix:
 # [types.task.ttl]
 # in-progress = "2d"                 # one or more <n><unit>: s/m/h/d/w/y
 #
-# The `{ after, then }` spelling records *where* the project intends the document
-# to go. opys reports that target and never performs the move — acting on
-# staleness needs to know whether the agent holding it is still alive, which only
-# a dispatcher knows — but `config validate` insists the move is a possible one:
-# the target has to be a status a document can also come back from. That needs
-# statuses this default config does not ship — add them first, e.g.:
+# A *fixable* entry names where `verify --fix` sends the document, so the target
+# has to be a status a document can also come back from. That needs statuses
+# this default config does not ship — add them first, e.g.:
 #   statuses = ["todo", "in-progress", "review", "stuck", "user-review", "done"]
 #   [types.task.ttl]
 #   in-progress = { after = "2d", then = "stuck" }
 #   [types.task.max_visits]
 #   review = { limit = 3, then = "user-review" }    # the coder/reviewer loop
-#   [types.task.transitions]           # replaces the map above: the intended
-#   todo = ["in-progress"]             # move, the way back and the escape must
-#   in-progress = ["review", "stuck", "user-review"]   # all exist, or `config
+#   [types.task.transitions]           # replaces the map above: the fix edge,
+#   todo = ["in-progress"]             # the way back and the escape must all
+#   in-progress = ["review", "stuck", "user-review"]   # exist, or `config
 #   stuck = ["in-progress"]            # validate` says so.  <- recovery edge
 #   review = ["in-progress", "user-review", "done"]
 #   user-review = ["review", "in-progress"]
@@ -385,7 +382,7 @@ mod tests {
     fn the_commented_task_sketch_applies_and_validates() {
         // The sketch is the run of `#   `-indented lines after the "add them
         // first" line; the deeper indent is what separates it from the prose.
-        let marker = "add them first, e.g.:\n";
+        let marker = "# this default config does not ship — add them first, e.g.:\n";
         let start = super::DEFAULT_OPYS_CONFIG
             .find(marker)
             .expect("the task sketch's lead-in line")
