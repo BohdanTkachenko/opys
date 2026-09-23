@@ -180,13 +180,9 @@ pub fn core_with(
     // the message names the `then` the config chose for exactly this moment.
     // Unlike the graph check this does *not* skip the equal case — a no-op
     // `set-status` appends an entry, and an entry is a visit. There is no
-    // bypass, and no caller has one: this is the only path that *appends a
-    // visit* to a document that already exists. `new` and `import` seed exactly
-    // one entry as they create it, and `history --seed` reconstructs a past that
-    // already happened (refusing any document that carries entries at all). So
-    // the count an opys transition can carry a document to is `limit` and no
-    // further (which is what makes [`crate::observe::overflow`]'s `>= limit`
-    // reading reachable rather than a dead letter).
+    // bypass: `verify --fix` runs its moves through here like anything else, so
+    // the count a document can reach is `limit` and nothing opys writes can
+    // carry it past (see [`crate::observe::apply_fixes`]).
     if let Some(mv) = t.max_visits.get(status) {
         let n = crate::observe::visits(&doc, status);
         if mv.limit >= 1 && n >= mv.limit {

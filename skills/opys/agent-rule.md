@@ -53,9 +53,9 @@ exists; otherwise ignore it.
   same shape.
 - **Run `opys verify` before finishing.** Exit 1 is content problems and must be
   fixed; exit **3** means the corpus is clean and only *time* observations
-  remain (a document past its type's `ttl`, or at its `max_visits` limit).
-  `verify` never moves those documents — report what is stuck, naming each
-  document and the target its type's config declares.
+  remain (a document past its type's `ttl`, or at its `max_visits` limit) — run
+  `opys verify --fix` to perform the transitions the config declares for them,
+  or tell the user what is stuck.
 - **Always say what an id is.** `PREFIX-NNNN` is a lookup key, not a name: a
   reader who sees `ADR-0082` learns nothing. Every time you write an id in prose
   — a document body, a commit message, a reply to a person — give its title with

@@ -101,7 +101,7 @@ mkdir -p src && printf 'fn title_survives_a_profile_switch() {}\n' > src/lib.rs
 printf '\n## Test plan\n- [x] survives a profile switch — `lib::title_survives_a_profile_switch`\n' >> opys/FEAT-0001.md
 opys set-status FEAT-0001 implemented
 opys verify                                 # integrity check; exit 1 on problems, 3 on
-                                            # time observations (reported, never acted on)
+                                            # time observations (`--fix` performs those)
 opys stats                                  # configurable [[stats]] sections (default: status/coverage/tags)
 opys tags                                   # distinct tags (--keys for just keys)
 
@@ -145,7 +145,8 @@ opys list --type task --status review --format ids | opys close -
 ```
 
 Mutating commands (`new`, `set-status`, `tag`, `log`, `apply`, `retire`,
-`block`, `close`, `cleanup`) reconcile cross-references, linkify prose, and relocate
+`block`, `close`, `cleanup`, and `verify --fix` on a run that fixed
+something) reconcile cross-references, linkify prose, and relocate
 documents to their canonical layout path (e.g. an archived doc moves into
 `_archived/`) automatically; pass `--no-sync` to skip, or run `opys sync` after
 editing files by hand.
@@ -173,7 +174,7 @@ without a `renumber`. Without a modulus, allocation is the dense sequence.
 | `retire` | delete document(s); each ID is logged and never reused |
 | `block` / `unblock` | record a directional blocker between documents; blocked is derived from the live entries, never stored |
 | `close` / `cleanup` | finish document(s) of a type with a terminal status (and, where a status graph is declared, an edge into one from where the document stands); strip struck refs |
-| `verify` | full integrity check — wire into CI, and it never writes. Exit `0` clean, `1` content problems, `2` a real failure, `3` [time observations](#time-aware-verify-stuck-and-overflowed-documents) only |
+| `verify [--fix]` | full integrity check — wire into CI. Exit `0` clean, `1` content problems, `2` a real failure, `3` [time observations](#time-aware-verify-stuck-and-overflowed-documents) only; `--fix` performs the fixable ones and exits on what remains |
 | `sync` | reconcile references, linkify prose, relocate docs to their layout path (for hand edits) |
 | `renumber [--base REF]` | reconcile ids two branches allocated twice: keep the ones already at the merge-base, renumber the branch-added duplicates, retire the old numbers, and warn (with a `sed` fix per file) about code still citing them |
 | `history <id>` | the document's status timeline across commits, read out of git in-process (gix, never a spawned `git`), following the file across relocations |
@@ -403,29 +404,39 @@ type declares, so add it there too.)
 ```console
 $ opys verify
 verify: 2 observation(s)
-  TASK-0001: stuck in in-progress since 2026-06-16T14:30:00.000001Z (ttl 2d) — configured target: stuck
-  TASK-0002: 3 visits to review reaches its limit of 3 — configured target: user-review
+  TASK-0001: stuck in in-progress since 2026-06-16T14:30:00.000001Z (ttl 2d) — `--fix` moves it to stuck
+  TASK-0002: 3 visits to review reaches its limit of 3 — `--fix` moves it to user-review
 $ echo $?
 3
 ```
 
-**opys reports; it does not act.** The `then` in the config is where the
-*project* intends a stale document to go, and `verify` prints it — but nothing
-in opys performs that move, and no flag makes it. Deciding a document is really
-abandoned means knowing whether the agent holding it is still alive, and only
-whatever dispatched that agent knows that; a tracker whose truth is files and
-git does not start writes off its own clock. Read the block, then run the
-`set-status` yourself or let your orchestrator do it.
+`verify --fix` performs those transitions itself — an ordinary `set-status`
+each, history and relocation included — and exits on what remains:
+
+```console
+$ opys verify --fix
+fixed TASK-0001: in-progress -> stuck (stuck)
+fixed TASK-0002: review -> user-review (max_visits)
+verify: OK (2 documents)
+$ echo $?
+0
+```
+
+Both moves are deterministic — an elapsed `ttl` and a spent `max_visits` budget
+are computed from the document's own `history` and a clock — which is why opys
+performs them itself and needs no orchestrator to be a complete loop tracker.
+It is deliberately conservative: at most one fix per document per run, a refusal
+(a `then` whose rules the document cannot satisfy) is reported as a problem
+rather than aborting the pass, a run that fixed nothing writes nothing at all,
+and it stands down entirely while `opys config validate` has anything to say —
+a fix is a move along the graph that check guards.
 
 Where the type also declares `[transitions]`, `config validate` insists the
-graph holds the edges those intended moves need: `key -> then` for the move
-itself, `then -> key` so a document moved there under a running agent is one
-`set-status` from where it was, and — for `max_visits` — an edge to `then` from
-every status that may enter the budgeted one, because the guard refuses the
-*entry* and the escape it names has to be legal from wherever the document
-stands. Checking them at config time is the point: a `then` nothing could ever
-move the document to is caught when it is written, not on the day the threshold
-trips.
+graph holds the edges those moves need: `key -> then` for the fix itself,
+`then -> key` so a document flipped under a running agent is one `set-status`
+from where it was, and — for `max_visits` — an edge to `then` from every status
+that may enter the budgeted one, because the guard refuses the *entry* and the
+escape it names has to be legal from wherever the document stands.
 
 **Exit codes:** `0` clean, `1` content problems, `2` a real failure (bad flags,
 IO, a missing config), `3` observations and nothing else. Gate CI on **`1`**:

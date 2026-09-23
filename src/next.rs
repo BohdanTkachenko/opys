@@ -149,7 +149,8 @@ pub struct Item {
     pub position: usize,
     /// This document's [time observations](crate::observe), when its type
     /// configures any: a top item that has been sitting untouched is exactly
-    /// what a dispatcher needs to see. Reported, never acted on.
+    /// what a dispatcher needs to see. Reported here; `verify --fix` is what
+    /// acts on them.
     pub observations: Vec<Observation>,
 }
 
@@ -820,7 +821,7 @@ default_status = "open"
         assert_eq!(
             out.items[0].observations[0].to_string(),
             "TASK-0002: stuck in doing since 2026-01-02T03:04:05.000000Z (ttl 10m) \
-             — configured target: stuck"
+             — `--fix` moves it to stuck"
         );
         // …and nothing is stuck at the instant it entered the status.
         let out = pick(&prj, &docs, &q("doing"), now());
