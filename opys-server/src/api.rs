@@ -289,6 +289,10 @@ pub fn router(state: AppState) -> Router {
         // other view is a fragment the server never sees.
         .route("/", get(ui_index))
         .route("/ui/{*path}", get(ui_asset))
+        // The installable-app files (FEAT-0127). One segment only, and the
+        // handler serves nothing outside `assets::ROOT_FILES`, so every other
+        // root path still gets the JSON 404 below.
+        .route("/{file}", get(ui_root_file))
         // Routing-level failures answer in the same shape as everything else;
         // axum's own would be an empty body with no content type.
         .fallback(no_route)
@@ -475,6 +479,23 @@ async fn ui_asset(Path(path): Path<String>) -> Response {
         )
         .into_response(),
         None => ApiError::not_found(format!("no such asset: /ui/{path}")).into_response(),
+    }
+}
+
+/// One of the root-level bundle files — the manifest, its icons, the service
+/// worker — for `GET /{file}`. Anything not on [`crate::assets::ROOT_FILES`]
+/// is the same 404 an unrouted path gets, so this route widens nothing.
+async fn ui_root_file(Path(file): Path<String>, uri: Uri) -> Response {
+    if !crate::assets::ROOT_FILES.contains(&file.as_str()) {
+        return no_route(uri).await.into_response();
+    }
+    match crate::assets::get(&file) {
+        Some(asset) => serve(asset),
+        None if !crate::assets::embedded() => ApiError::not_implemented(
+            "this opys-server was built without the `web-ui` feature, so it serves no web UI",
+        )
+        .into_response(),
+        None => ApiError::internal(format!("the embedded web UI has no {file}")).into_response(),
     }
 }
 

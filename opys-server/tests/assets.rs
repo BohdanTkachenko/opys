@@ -87,7 +87,7 @@ async fn every_bundled_asset_comes_back_intact() {
     let state = state(&dir);
 
     let mut served = 0;
-    for asset in assets::all().filter(|a| a.path != assets::INDEX) {
+    for asset in assets::all().filter(|a| a.path.starts_with("ui/")) {
         let (status, content_type, cache_control, body) =
             get(&state, &format!("/{}", asset.path)).await;
         assert_eq!(status, StatusCode::OK, "GET /{}", asset.path);
@@ -118,7 +118,7 @@ async fn the_shell_and_its_assets_agree() {
         (".css", "text/css; charset=utf-8"),
     ] {
         let referenced = assets::all()
-            .find(|a| a.path.ends_with(marker))
+            .find(|a| a.path.starts_with("ui/") && a.path.ends_with(marker))
             .unwrap_or_else(|| panic!("the bundle has no {marker}"));
         assert!(
             html.contains(&format!("./{}", referenced.path)),
@@ -129,6 +129,66 @@ async fn the_shell_and_its_assets_agree() {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(content_type.as_deref(), Some(expected));
         assert!(!body.is_empty());
+    }
+}
+
+/// The installable-app files (FEAT-0127) come back from the root, revalidated
+/// (they carry no content hash), under the types a browser insists on: a
+/// worker served as anything but JavaScript is refused, and so is a manifest
+/// that is not JSON.
+#[tokio::test]
+async fn the_app_manifest_and_worker_are_served_from_the_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state(&dir);
+
+    for name in assets::ROOT_FILES {
+        let (status, _, cache_control, body) = get(&state, &format!("/{name}")).await;
+        assert_eq!(status, StatusCode::OK, "GET /{name}");
+        assert_eq!(cache_control.as_deref(), Some("no-cache"), "/{name}");
+        assert!(!body.is_empty(), "/{name} is empty");
+    }
+
+    let (_, content_type, _, body) = get(&state, "/sw.js").await;
+    assert_eq!(
+        content_type.as_deref(),
+        Some("text/javascript; charset=utf-8")
+    );
+    let worker = String::from_utf8(body.to_vec()).unwrap();
+    assert!(
+        worker.contains("'/api/'"),
+        "the worker must leave the API alone: {worker}"
+    );
+
+    let (_, content_type, _, body) = get(&state, "/manifest.webmanifest").await;
+    assert_eq!(content_type.as_deref(), Some("application/manifest+json"));
+    let manifest: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(manifest["start_url"], "./");
+    assert_eq!(manifest["display"], "standalone");
+    // Every icon the manifest names is one the node serves.
+    for icon in manifest["icons"].as_array().unwrap() {
+        let src = icon["src"].as_str().unwrap();
+        assert!(assets::ROOT_FILES.contains(&src), "{src} is not served");
+    }
+
+    let (_, _, _, shell) = get(&state, "/").await;
+    let html = String::from_utf8(shell.to_vec()).unwrap();
+    assert!(html.contains("href=\"./manifest.webmanifest\""), "{html}");
+}
+
+/// The root route serves the listed files and nothing else: the shell under
+/// its file name, a source file, anything not on the list is the JSON 404.
+#[tokio::test]
+async fn the_root_route_serves_only_the_listed_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state(&dir);
+    for path in ["/index.html", "/Cargo.toml", "/nope.js", "/api"] {
+        let (status, content_type, _, _) = get(&state, path).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "GET {path}");
+        assert_eq!(
+            content_type.as_deref(),
+            Some("application/json"),
+            "GET {path}"
+        );
     }
 }
 
@@ -168,10 +228,12 @@ async fn the_asset_route_cannot_escape_the_bundle() {
 /// small. Raise it deliberately, with the reason, when a view genuinely needs
 /// the room. Raised to 192 kB for the omnibox (FEAT-0098: the finder, its
 /// fuzzy scorer) and the board's keyboard cursor (FEAT-0097), which took the
-/// bundle from ~152 kB to ~165 kB.
+/// bundle from ~152 kB to ~165 kB. Raised to 208 kB for the installable app
+/// (FEAT-0127): three PNG icons, the manifest and the service worker, ~25 kB,
+/// of which the 512px maskable icon is half — the size Android asks for.
 #[test]
 fn the_bundle_stays_small() {
-    const CEILING: usize = 192 * 1024;
+    const CEILING: usize = 208 * 1024;
     let total: usize = assets::all().map(|a| a.bytes.len()).sum();
     assert!(
         total <= CEILING,

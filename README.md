@@ -325,7 +325,14 @@ state (clean, *N* problems, or not read yet). Pick one and you get:
 **Ctrl+P** (⌘P on a Mac) or `/` opens the omnibox from any view: a fuzzy
 finder over the corpus's tickets — or every served corpus, from the home page
 — that opens a ticket on Enter or, from a board, applies the text as its
-filter.
+filter. `[` folds the sidebar into a rail and back, for a narrow window.
+
+The dashboard is an installable web app: your browser's *Install* (or *Add to
+Home Screen*) puts opys in its own window with its own icon. Installed, it still
+opens while the node is down — onto a page that says so and reconnects when the
+node returns; documents are never served from a cache. Browsers allow this only
+in a secure context, which the default loopback address is; over plain HTTP on
+another address the dashboard works as before but cannot be installed.
 
 Everything updates live: the node watches each inventory and pushes events over
 a WebSocket, so an edit you make in your editor — or a write from `opys` in
