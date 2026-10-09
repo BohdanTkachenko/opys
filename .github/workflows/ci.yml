@@ -34,6 +34,11 @@ jobs:
       # change package-lock.json and with it the npmDepsHash flake.nix pins.
       - name: Test the web UI's pure modules
         run: npm --prefix opys-server/ui test
+      # The block editor the UI links (packages/blockdown): its segmenter,
+      # splicing and diff are pure JS, tested with node's own runner — no
+      # dependencies to install.
+      - name: Test svelte-blockdown
+        run: npm test --prefix packages/blockdown
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy

@@ -1,0 +1,29 @@
+{
+  "name": "svelte-blockdown",
+  "version": "0.1.0",
+  "description": "A block-level markdown editor for Svelte 5: rendered until you double-click, source-faithful byte for byte.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "keywords": ["svelte", "markdown", "editor", "wysiwyg", "live-preview"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BohdanTkachenko/opys.git",
+    "directory": "packages/blockdown"
+  },
+  "svelte": "./src/index.js",
+  "exports": {
+    ".": {
+      "svelte": "./src/index.js",
+      "default": "./src/index.js"
+    },
+    "./blocks": "./src/blocks.js"
+  },
+  "files": ["src", "README.md", "LICENSE"],
+  "sideEffects": false,
+  "peerDependencies": {
+    "svelte": "^5.0.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

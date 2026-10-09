@@ -650,6 +650,12 @@ than editing the block by hand.
   the staleness bound on the one thing the watcher cannot see: occupancy also
   moves when main's *working copy* does, and that is not under `.git`.
 
+- The document body is edited with `svelte-blockdown` (`packages/blockdown/`,
+  ADR-0128): a reusable Svelte package — it must never import from opys — that
+  the UI links with `file:`. Blocks are rendered by the node's pure
+  `POST /api/render`. Its pure-JS tests run with `npm test --prefix
+  packages/blockdown`, and CI runs them.
+
 `opys/tests/web.rs` covers the surface end to end. `opys/tests/cli.rs` is the
 byte-identity pin for every pre-existing command and must keep passing untouched.
 
