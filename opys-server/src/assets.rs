@@ -34,6 +34,25 @@ pub struct Asset {
 /// The document every route that is not the API serves: the SPA shell.
 pub const INDEX: &str = "index.html";
 
+/// The files served at the root rather than under `/ui/` — the web app
+/// manifest, its icons and the service worker (FEAT-0127). Vite copies them
+/// from `ui/public/` verbatim, so they carry no content hash and are
+/// revalidated like the shell.
+///
+/// A fixed list, not "whatever sits at the top of the bundle": the service
+/// worker must live at the root, because a worker's scope is capped at its own
+/// directory and this one controls `/`, and every other root path belongs to
+/// the node's JSON 404. Adding a file to `ui/public/` without naming it here is
+/// caught by `assets::every_root_file_is_listed`.
+pub const ROOT_FILES: &[&str] = &[
+    "manifest.webmanifest",
+    "sw.js",
+    "icon.svg",
+    "icon-192.png",
+    "icon-maskable-512.png",
+    "apple-touch-icon.png",
+];
+
 /// A never-cache directive, for anything whose URL does not change with its
 /// content. `no-cache` still allows storage — it requires revalidation, which is
 /// a conditional request, not a re-download.
@@ -169,7 +188,10 @@ mod tests {
     #[test]
     fn the_shell_is_revalidated_and_hashed_assets_are_not() {
         assert_eq!(index().unwrap().cache_control, REVALIDATE);
-        for asset in all().filter(|a| a.path != INDEX) {
+        for name in ROOT_FILES {
+            assert_eq!(get(name).unwrap().cache_control, REVALIDATE, "{name}");
+        }
+        for asset in all().filter(|a| a.path.starts_with("ui/")) {
             assert_eq!(
                 asset.cache_control, FOREVER,
                 "{} should be content-hashed — check assetFileNames in ui/vite.config.js",
@@ -200,6 +222,23 @@ mod tests {
         assert!(is_fingerprinted("ui/style-_a1B2c3D.css"));
         // Still not a hash: eight characters that are not the whole tail.
         assert!(!is_fingerprinted("ui/index-DNH-r1KB-extra.js"));
+    }
+
+    /// Every top-level file of the bundle is either the shell or on the root
+    /// list. One that is neither would be embedded and never served.
+    #[cfg(feature = "web-ui")]
+    #[test]
+    fn every_root_file_is_listed() {
+        for asset in all().filter(|a| !a.path.contains('/')) {
+            assert!(
+                asset.path == INDEX || ROOT_FILES.contains(&asset.path),
+                "{} is in ui/public but not in ROOT_FILES",
+                asset.path,
+            );
+        }
+        for name in ROOT_FILES {
+            assert!(get(name).is_some(), "{name} is listed but not bundled");
+        }
     }
 
     #[test]

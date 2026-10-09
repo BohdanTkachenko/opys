@@ -44,6 +44,8 @@
             ./opys-server/ui/svelte.config.js
             ./opys-server/ui/vite.config.js
             ./opys-server/ui/src
+            # The installable-app files (FEAT-0127), copied to dist/ verbatim.
+            ./opys-server/ui/public
           ];
         };
 

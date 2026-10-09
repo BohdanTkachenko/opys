@@ -136,6 +136,7 @@ fn content_type(url: &str) -> &'static str {
         "js" | "mjs" => "text/javascript; charset=utf-8",
         "css" => "text/css; charset=utf-8",
         "json" | "map" => "application/json; charset=utf-8",
+        "webmanifest" => "application/manifest+json",
         "svg" => "image/svg+xml",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
