@@ -608,7 +608,7 @@
     {/if}
 
     <span class="keys mono muted" aria-hidden="true">
-      <kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>↵</kbd> open · <kbd>PgUp</kbd><kbd>PgDn</kbd> project
+      <kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>↵</kbd> open · <kbd>PgUp</kbd><kbd>PgDn</kbd> project · <kbd>[</kbd> sidebar
     </span>
   </div>
 
