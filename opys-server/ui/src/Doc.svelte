@@ -5,7 +5,8 @@
   // Everything about the document is edited where it is shown. The frontmatter
   // panel is one card of facts, each editable in place — status is a menu,
   // tags and blockers grow from an inline box on their own row, custom fields
-  // open on click — and the body is click-to-edit prose. There is no separate
+  // open on click — and the body is prose that a double-click turns into its
+  // source, saved when the editor is left. There is no separate
   // action bar: a control that lives apart from the fact it changes has to
   // explain which fact that is, and the explanation is the first thing a
   // reader has to scroll past to reach the document.
@@ -260,21 +261,20 @@
   }
 
   /**
-   * Enter editing from a click in the rendered prose — the body is editable by
-   * default, Obsidian-style: the click swaps rendering for source and drops
-   * the caret at the section that was clicked.
+   * Enter editing from a double-click in the rendered prose: the rendering
+   * swaps for source with the caret at the section that was clicked. A double
+   * click, not a single one, so reading — selecting, following a link,
+   * clicking to focus the window — never opens the editor by accident.
    *
-   * Deliberately inert when the click was really something else: a link
-   * (navigation wins), a selection being finished (copying is not editing), or
-   * a modified click.
+   * Inert on a link and on a modified double-click. The word the double-click
+   * selected is dropped: it was the gesture, not a selection to copy.
    */
   async function editFromClick(event) {
     if (editing || pending) return;
     if (event.defaultPrevented || event.button !== 0) return;
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     if (event.target.closest?.('a')) return;
-    const selection = window.getSelection?.();
-    if (selection && !selection.isCollapsed) return;
+    window.getSelection?.()?.removeAllRanges();
     const heading = nearestHeading(event.target, event.currentTarget);
     startEdit();
     await tick();
@@ -322,15 +322,41 @@
     );
   }
 
+  // There is no Save and no Cancel: leaving the editor commits it. A change
+  // made is a change kept, if `verify` agrees — the same rule a hand edit and
+  // a commit live by. ⌘↵ and Escape are the keyboard ways out.
   function editorKeys(event) {
     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
       event.preventDefault();
-      saveBody();
-    } else if (event.key === 'Escape' && draft === seed) {
-      // Escape discards only an untouched draft; once there are changes in
-      // the box, the explicit Cancel is the only way to lose them.
-      editing = false;
+      srcEl?.blur();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      srcEl?.blur();
     }
+  }
+
+  /** The draft the node last refused, so leaving again does not resend it. */
+  let refused = null;
+
+  /**
+   * Leaving the editor: an untouched draft just closes; a changed one is
+   * saved, and the editor closes when the node accepts it. A refused draft
+   * stays open with its text and the node's reason below the panel, and is
+   * not re-sent until it changes.
+   *
+   * Ignored when the whole window lost focus (switching apps, devtools): that
+   * is not the reader leaving the editor, and saving on alt-tab would commit
+   * half a sentence.
+   */
+  async function editorBlur() {
+    if (!editing || pending) return;
+    if (!document.hasFocus()) return;
+    if (draft === seed) {
+      editing = false;
+      return;
+    }
+    if (draft === refused) return;
+    await saveBody();
   }
 
   // Frontmatter fields, editable in place (the `set-field`/`remove-field`
@@ -412,7 +438,12 @@
     );
     // On refusal the editor stays open with the draft intact — the node's
     // message (shown below the panel) says which rule the edit broke.
-    if (outcome) editing = false;
+    if (outcome) {
+      editing = false;
+      refused = null;
+    } else {
+      refused = draft;
+    }
   }
 
   /**
@@ -894,16 +925,14 @@
       <button class="btn small" disabled={Boolean(pending)} onclick={editFromButton}>
         <Icon name="doc" size={13} /> Edit
       </button>
-      <span class="small muted">or click anywhere in the text</span>
+      <span class="small muted">or double-click the text</span>
     {:else}
-      <button class="btn primary small" disabled={Boolean(pending)} onclick={saveBody}>
-        Save
-      </button>
-      <button class="btn small" disabled={Boolean(pending)} onclick={() => (editing = false)}>
-        Cancel
-      </button>
       <span class="small muted">
-        markdown source · <kbd>⌘↵</kbd> saves — only if <code>verify</code> stays clean
+        {#if pending}
+          <span class="spinner"></span> saving…
+        {:else}
+          markdown source · click outside to save — kept only if <code>verify</code> stays clean
+        {/if}
       </span>
     {/if}
   </div>
@@ -916,6 +945,7 @@
       bind:this={srcEl}
       bind:value={draft}
       onkeydown={editorKeys}
+      onblur={editorBlur}
       rows={Math.min(40, Math.max(12, draft.split('\n').length + 2))}
       spellcheck="false"
       autocapitalize="off"
@@ -923,10 +953,10 @@
       aria-label="The document's markdown body"
     ></textarea>
   {:else}
-    <!-- The click opens the editor; the Edit button above is the keyboard path
-         to the same place, so the article itself stays a plain region. -->
-    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-    <article class="body page" use:markdownLinks onclick={editFromClick}>
+    <!-- A double-click opens the editor; the Edit button above is the keyboard
+         path to the same place, so the article itself stays a plain region. -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <article class="body page" use:markdownLinks ondblclick={editFromClick}>
       {@html d.body_html}
     </article>
   {/if}
@@ -1168,9 +1198,6 @@
     font-size: 1.06rem;
     line-height: 1.68;
     padding-bottom: 2rem;
-    /* The prose is click-to-edit, and the I-beam is the honest cursor for
-       "this text can be typed into". Links inside still show the pointer. */
-    cursor: text;
   }
 
   .body :global(h1:first-child) {
