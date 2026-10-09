@@ -35,9 +35,16 @@
         # Only what `vite build` reads. dist/ is deliberately absent — this
         # derivation is what creates it — and node_modules must never enter the
         # store, or every `npm ci` in a developer checkout would rehash this.
+        #
+        # Rooted at the repository, not at ui/, because the UI links the block
+        # editor from packages/blockdown (`file:../../packages/blockdown`):
+        # the link must resolve inside the sandbox. `sourceRoot` then builds
+        # from ui/ as before.
         src = pkgs.lib.fileset.toSource {
-          root = ./opys-server/ui;
+          root = ./.;
           fileset = pkgs.lib.fileset.unions [
+            ./packages/blockdown/package.json
+            ./packages/blockdown/src
             ./opys-server/ui/package.json
             ./opys-server/ui/package-lock.json
             ./opys-server/ui/index.html
@@ -48,6 +55,7 @@
             ./opys-server/ui/public
           ];
         };
+        sourceRoot = "source/opys-server/ui";
 
         npmDepsHash = "sha256-bpdX2bMIRP7UedeDVty81/wTBR6824tYaGRMIKIv6rw=";
 

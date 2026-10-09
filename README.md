@@ -311,9 +311,10 @@ state (clean, *N* problems, or not read yet). Pick one and you get:
   between columns and cards, Enter opens, Home/End jump within a column,
   PageUp/PageDown switch projects;
 - **a document** — its frontmatter and rendered body, both edited in place:
-  status, tags, blockers and custom fields on the panel, the markdown body by
-  double-clicking it (clicking outside saves; there is no cancel), and close
-  behind a confirmation. Every write is a typed
+  status, tags, blockers and custom fields on the panel, the markdown body one
+  block at a time — double-click a paragraph or list item to edit its
+  markdown in place, tick checkboxes directly, click outside to save (there
+  is no cancel) — and close behind a confirmation. Every write is a typed
   action taking the same write path as the equivalent `opys` command, so a
   write the CLI would refuse — a status change whose rule is unmet, say — is
   refused here too, with the same message. Creating documents stays a CLI job.

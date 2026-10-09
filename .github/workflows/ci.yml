@@ -29,6 +29,11 @@ jobs:
           cache-dependency-path: opys-server/ui/package-lock.json
       - name: Build the web UI bundle
         run: scripts/ui-build.sh
+      # The block editor the UI links (packages/blockdown): its segmenter,
+      # splicing and diff are pure JS, tested with node's own runner — no
+      # dependencies to install.
+      - name: Test svelte-blockdown
+        run: npm test --prefix packages/blockdown
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy

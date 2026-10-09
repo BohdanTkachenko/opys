@@ -24,7 +24,7 @@
   // close *to*. A UI that derived either from `opys.toml` would be a second
   // interpretation of the config, wrong the first time a type was edited.
 
-  import { tick } from 'svelte';
+  import { Blockdown } from 'svelte-blockdown';
   import Icon from './lib/Icon.svelte';
   import { api } from './lib/api.js';
   import { affects, events } from './lib/events.svelte.js';
@@ -237,126 +237,23 @@
     return outcome;
   }
 
-  // Edit-in-place (the `edit-body` action): the rendered body swaps for its
-  // markdown source. The draft seeds from the payload when editing starts and
-  // is otherwise untouched by refreshes — a live reload must not eat an edit
-  // in progress.
-  let editing = $state(false);
-  let draft = $state('');
-  /** The body as editing began — the "untouched" reference for Escape. */
-  let seed = '';
-  /** The source textarea, for focus and caret placement on entry. */
-  let srcEl = $state(null);
+  // The body is edited in place by the block editor (svelte-blockdown): it
+  // shows the document rendered, a double-click turns one block into its
+  // markdown, and leaving the document saves it through the `edit-body`
+  // action — kept only if verify stays clean. Blocks are previewed by the
+  // node's own renderer, so a block looks the same mid-edit as after.
+  /** The editor, for the Edit button's keyboard path in. */
+  let editor = $state(null);
 
-  function startEdit() {
-    seed = d?.body ?? '';
-    draft = seed;
-    editing = true;
+  async function renderBlocks(markdown) {
+    const { html } = await api.render(markdown);
+    return html;
   }
 
-  async function editFromButton() {
-    startEdit();
-    await tick();
-    placeCaret(null);
-  }
-
-  /**
-   * Enter editing from a double-click in the rendered prose: the rendering
-   * swaps for source with the caret at the section that was clicked. A double
-   * click, not a single one, so reading — selecting, following a link,
-   * clicking to focus the window — never opens the editor by accident.
-   *
-   * Inert on a link and on a modified double-click. The word the double-click
-   * selected is dropped: it was the gesture, not a selection to copy.
-   */
-  async function editFromClick(event) {
-    if (editing || pending) return;
-    if (event.defaultPrevented || event.button !== 0) return;
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    if (event.target.closest?.('a')) return;
-    window.getSelection?.()?.removeAllRanges();
-    const heading = nearestHeading(event.target, event.currentTarget);
-    startEdit();
-    await tick();
-    placeCaret(heading);
-  }
-
-  /**
-   * The heading governing the clicked spot: the clicked heading itself, or the
-   * nearest one above the clicked block. Headings survive rendering almost
-   * verbatim (`## Title` → `<h2>Title</h2>`), which is what makes them usable
-   * for mapping a click in the HTML back to a line of the source.
-   */
-  function nearestHeading(target, article) {
-    const el = target instanceof Element ? target : target?.parentElement;
-    const own = el?.closest?.('h1,h2,h3,h4,h5,h6');
-    if (own) return own;
-    let block = el;
-    while (block && block.parentElement !== article) block = block.parentElement;
-    for (let sib = block; sib; sib = sib.previousElementSibling) {
-      if (/^H[1-6]$/.test(sib.tagName)) return sib;
-    }
-    return null;
-  }
-
-  /** Focus the editor with the caret on `heading`'s source line (top if unknown). */
-  function placeCaret(heading) {
-    if (!srcEl) return;
-    let at = 0;
-    const text = heading?.textContent?.trim();
-    if (text) {
-      // A heading with inline markup (`code`, links) renders to different text
-      // than its source line, so fall through: heading-line match, then the
-      // bare text anywhere, then the top of the document.
-      const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const line = draft.match(new RegExp(`^#{1,6}[ \\t]+${escaped}[ \\t]*$`, 'm'));
-      at = line?.index ?? Math.max(0, draft.indexOf(text));
-    }
-    srcEl.focus();
-    srcEl.setSelectionRange(at, at);
-    // A textarea does not scroll to a programmatically placed caret on its
-    // own; proportional is close enough to land the right screenful.
-    srcEl.scrollTop = Math.max(
-      0,
-      (at / Math.max(1, draft.length)) * srcEl.scrollHeight - srcEl.clientHeight / 3,
-    );
-  }
-
-  // There is no Save and no Cancel: leaving the editor commits it. A change
-  // made is a change kept, if `verify` agrees — the same rule a hand edit and
-  // a commit live by. ⌘↵ and Escape are the keyboard ways out.
-  function editorKeys(event) {
-    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-      event.preventDefault();
-      srcEl?.blur();
-    } else if (event.key === 'Escape') {
-      event.preventDefault();
-      srcEl?.blur();
-    }
-  }
-
-  /** The draft the node last refused, so leaving again does not resend it. */
-  let refused = null;
-
-  /**
-   * Leaving the editor: an untouched draft just closes; a changed one is
-   * saved, and the editor closes when the node accepts it. A refused draft
-   * stays open with its text and the node's reason below the panel, and is
-   * not re-sent until it changes.
-   *
-   * Ignored when the whole window lost focus (switching apps, devtools): that
-   * is not the reader leaving the editor, and saving on alt-tab would commit
-   * half a sentence.
-   */
-  async function editorBlur() {
-    if (!editing || pending) return;
-    if (!document.hasFocus()) return;
-    if (draft === seed) {
-      editing = false;
-      return;
-    }
-    if (draft === refused) return;
-    await saveBody();
+  /** Persist the body. `false` tells the editor the node refused it. */
+  async function saveBody(body) {
+    const outcome = await perform({ action: 'edit-body', id: d.id, body }, 'saving the body');
+    return Boolean(outcome);
   }
 
   // Frontmatter fields, editable in place (the `set-field`/`remove-field`
@@ -429,21 +326,6 @@
   function focusOnMount(node) {
     node.focus();
     node.select?.();
-  }
-
-  async function saveBody() {
-    const outcome = await perform(
-      { action: 'edit-body', id: d.id, body: draft },
-      'saving the body',
-    );
-    // On refusal the editor stays open with the draft intact — the node's
-    // message (shown below the panel) says which rule the edit broke.
-    if (outcome) {
-      editing = false;
-      refused = null;
-    } else {
-      refused = draft;
-    }
   }
 
   /**
@@ -921,45 +803,21 @@
        markdown and nothing else. The heading is hidden below: it is the same
        title already in the header, extracted from this very line. -->
   <div class="page bodybar">
-    {#if !editing}
-      <button class="btn small" disabled={Boolean(pending)} onclick={editFromButton}>
-        <Icon name="doc" size={13} /> Edit
-      </button>
-      <span class="small muted">or double-click the text</span>
-    {:else}
-      <span class="small muted">
-        {#if pending}
-          <span class="spinner"></span> saving…
-        {:else}
-          markdown source · click outside to save — kept only if <code>verify</code> stays clean
-        {/if}
-      </span>
-    {/if}
+    <button class="btn small" disabled={Boolean(pending)} onclick={() => editor?.startEditing()}>
+      <Icon name="doc" size={13} /> Edit
+    </button>
+    <span class="small muted">
+      {#if pending}
+        <span class="spinner"></span> saving…
+      {:else}
+        or double-click any block · saved when you click away, if <code>verify</code> stays clean
+      {/if}
+    </span>
   </div>
 
-  {#if editing}
-    <!-- Obsidian's source mode, not a rich editor: the file is markdown and
-         the person editing it knows that. -->
-    <textarea
-      class="page srcedit"
-      bind:this={srcEl}
-      bind:value={draft}
-      onkeydown={editorKeys}
-      onblur={editorBlur}
-      rows={Math.min(40, Math.max(12, draft.split('\n').length + 2))}
-      spellcheck="false"
-      autocapitalize="off"
-      autocorrect="off"
-      aria-label="The document's markdown body"
-    ></textarea>
-  {:else}
-    <!-- A double-click opens the editor; the Edit button above is the keyboard
-         path to the same place, so the article itself stays a plain region. -->
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <article class="body page" use:markdownLinks ondblclick={editFromClick}>
-      {@html d.body_html}
-    </article>
-  {/if}
+  <article class="body page" use:markdownLinks>
+    <Blockdown value={d.body} render={renderBlocks} onsave={saveBody} bind:this={editor} />
+  </article>
 {/if}
 </div>
 
@@ -978,17 +836,6 @@
        `.page`'s centering — the bar sat at the viewport's left edge while the
        text it belongs to was centered. */
     margin-block: 0.25rem 0.5rem;
-  }
-
-  .srcedit {
-    display: block;
-    width: 100%;
-    font-family: var(--font-mono);
-    font-size: 0.9rem;
-    line-height: 1.55;
-    resize: vertical;
-    white-space: pre-wrap;
-    padding: 0.8rem 0.9rem;
   }
 
   .tbside {
@@ -1200,9 +1047,20 @@
     padding-bottom: 2rem;
   }
 
-  .body :global(h1:first-child) {
+  .body :global(.bd-block:first-child > h1:first-child) {
     /* The document's own title, already in the header above. */
     display: none;
+  }
+
+  /* The block editor's hooks: its source box in the UI's mono face, the open
+     block outlined in the accent, a whisper of hover on blocks. */
+  .body {
+    --bd-source-font: var(--font-mono);
+    --bd-source-bg: var(--raised);
+    --bd-source-border: var(--border);
+    --bd-accent: var(--accent);
+    --bd-hover: color-mix(in srgb, var(--raised) 60%, transparent);
+    --bd-muted: var(--muted);
   }
 
   /* Section headings wear their markdown: a muted `##` marker in front. The
@@ -1307,9 +1165,9 @@
   }
 
   .body :global(input[type='checkbox']) {
-    /* Checklists are part of the document's content, not a control here: a
-       write goes through an action, never through the rendered body. */
-    pointer-events: none;
+    /* A click ticks the item in the source and saves it — through the same
+       verify-gated `edit-body` action as any other body edit. */
+    cursor: pointer;
     accent-color: var(--good);
   }
 </style>

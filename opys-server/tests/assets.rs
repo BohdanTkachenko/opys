@@ -231,9 +231,11 @@ async fn the_asset_route_cannot_escape_the_bundle() {
 /// bundle from ~152 kB to ~165 kB. Raised to 208 kB for the installable app
 /// (FEAT-0127): three PNG icons, the manifest and the service worker, ~25 kB,
 /// of which the 512px maskable icon is half — the size Android asks for.
+/// Raised to 224 kB for the block editor (svelte-blockdown, ~10 kB), which
+/// replaced the source textarea — the alternative, CodeMirror, was ~300 kB.
 #[test]
 fn the_bundle_stays_small() {
-    const CEILING: usize = 208 * 1024;
+    const CEILING: usize = 224 * 1024;
     let total: usize = assets::all().map(|a| a.bytes.len()).sum();
     assert!(
         total <= CEILING,

@@ -788,3 +788,40 @@ async fn verify_agrees_with_the_cli_exit_code() {
         "nothing was verified, so nothing may be reported as verified: {body:#}"
     );
 }
+
+/// The editor's block previews: each block rendered on its own, with the same
+/// options as a document body — tables and task lists on, raw HTML escaped.
+#[tokio::test]
+async fn render_turns_blocks_into_the_bodys_html() {
+    let fx = Fixture::new();
+    let (status, body) = fx
+        .post(
+            "/api/render",
+            json!({ "markdown": ["- [x] done", "| a |\n|---|\n| 1 |", "<script>x</script>"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let html: Vec<&str> = body["html"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h.as_str().unwrap())
+        .collect();
+    assert_eq!(html.len(), 3);
+    assert!(
+        html[0].contains("type=\"checkbox\"") && html[0].contains("checked"),
+        "{}",
+        html[0]
+    );
+    assert!(html[1].contains("<table>"), "{}", html[1]);
+    assert!(
+        !html[2].contains("<script>"),
+        "raw HTML must stay escaped: {}",
+        html[2]
+    );
+
+    let (status, _) = fx
+        .post("/api/render", json!({ "markdown": "not a list" }))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}

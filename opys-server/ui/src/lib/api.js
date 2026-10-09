@@ -167,6 +167,9 @@ export const api = {
    */
   action: (cid, body) => post(`/api/corpus/${seg(cid)}/action`, body),
 
+  /** Markdown blocks to HTML, rendered exactly as document bodies are. */
+  render: (markdown) => post('/api/render', { markdown }),
+
   /** The merged view across one project group's corpora (views 5). */
   union: (key, filters) => get(`/api/group/${seg(key)}/union${qs(filters)}`),
 

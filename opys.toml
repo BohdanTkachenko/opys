@@ -62,8 +62,9 @@ kind = "checklist"                   # structure: checkbox items
 [[types.feature.sections.checks]]
 pattern = '`(?P<ref>[^`]*::(?P<name>[^`]+))`'
 # The workspace grew a fourth crate; a test plan that cites a real test in it
-# must be able to resolve, or the check would push authors back to prose.
-roots = ["src", "opys/tests", "opys-server/src", "opys-server/tests"]
+# must be able to resolve, or the check would push authors back to prose. The
+# block editor package's node tests count too (`blocks.test.js::<test name>`).
+roots = ["src", "opys/tests", "opys-server/src", "opys-server/tests", "packages/blockdown/test"]
 must_match = '${name}'               # ${group} = the regex-escaped capture
 scope = "checked"                    # "all" (every line) | "checked" (checked items)
 message = "test reference `${ref}` not found"

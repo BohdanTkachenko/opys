@@ -17,6 +17,10 @@ export default defineConfig({
   // history-API route is ever added — do not mix the two.
   base: './',
   plugins: [svelte()],
+  // svelte-blockdown is linked from packages/blockdown, outside this tree, so
+  // its `import 'svelte'` would otherwise resolve to no node_modules at all —
+  // or, worse, to a second copy. One Svelte runtime, this one.
+  resolve: { dedupe: ['svelte'] },
   build: {
     outDir: 'dist',
     emptyOutDir: true,

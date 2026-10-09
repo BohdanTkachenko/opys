@@ -742,7 +742,7 @@ fn view(prj: &Project, doc: &Doc) -> DocView {
         blocked_by: relation(doc, refs::BLOCKED_BY),
         blocks: relation(doc, refs::BLOCKS),
         fields,
-        body_html: comrak::markdown_to_html(&doc.body, &markdown_options()),
+        body_html: render_markdown(&doc.body),
         body: doc.body.clone(),
         id,
     }
@@ -758,13 +758,20 @@ fn view(prj: &Project, doc: &Doc) -> DocView {
 /// `render.unsafe_` stays off, and must: bodies are user content and the client
 /// injects this string with `{@html}`. Raw HTML and `javascript:` hrefs are
 /// filtered by that switch, which none of these extensions touches.
-fn markdown_options() -> comrak::Options<'static> {
+pub(crate) fn markdown_options() -> comrak::Options<'static> {
     let mut options = comrak::Options::default();
     options.extension.table = true;
     options.extension.tasklist = true;
     options.extension.strikethrough = true;
     options.extension.autolink = true;
     options
+}
+
+/// Markdown to HTML exactly as a document body is rendered, for the editor's
+/// per-block previews (`POST /api/render`). One renderer for both, so a block
+/// looks the same in the editor as in the document it came from.
+pub fn render_markdown(markdown: &str) -> String {
+    comrak::markdown_to_html(markdown, &markdown_options())
 }
 
 /// One relation map as id → title. An absent map is an empty one: a caller

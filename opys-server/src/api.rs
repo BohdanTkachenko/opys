@@ -268,6 +268,9 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/projects", get(projects))
+        // Markdown in, HTML out: the document editor's block previews. Pure —
+        // it reads no corpus and no file, so it needs no cid.
+        .route("/api/render", post(render))
         // Allowlist management from the browser (ADR-0082). Every path these
         // accept goes through `registry::vet_ui_path` first; none of them can
         // reach outside `$HOME` or into a hidden directory.
@@ -1077,6 +1080,45 @@ async fn doc(
         .await?
         .map(Json)
         .ok_or_else(|| ApiError::not_found(format!("no such document: {docid}")))
+}
+
+/// Markdown blocks to render, in order.
+#[derive(Debug, Deserialize)]
+struct RenderBody {
+    markdown: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct Rendered {
+    html: Vec<String>,
+}
+
+/// The most the editor ever sends at once: every block of a large document.
+/// Bounds are the cost of a pure endpoint, which anything on the allowed
+/// origin can call: no unbounded render on the reactor.
+const RENDER_MAX_BLOCKS: usize = 5_000;
+const RENDER_MAX_BYTES: usize = 2 * 1024 * 1024;
+
+/// Render markdown blocks with the node's own options (`actor::render_markdown`),
+/// so the editor's preview of a block is the document view's rendering of it.
+async fn render(body: Result<Json<RenderBody>, JsonRejection>) -> Result<Json<Rendered>, ApiError> {
+    let Json(body) = body?;
+    let bytes: usize = body.markdown.iter().map(String::len).sum();
+    if body.markdown.len() > RENDER_MAX_BLOCKS || bytes > RENDER_MAX_BYTES {
+        return Err(ApiError::bad_request(format!(
+            "too much to render: {} blocks, {bytes} bytes (at most {RENDER_MAX_BLOCKS} and {RENDER_MAX_BYTES})",
+            body.markdown.len()
+        )));
+    }
+    let html = tokio::task::spawn_blocking(move || {
+        body.markdown
+            .iter()
+            .map(|md| crate::actor::render_markdown(md))
+            .collect()
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("render task failed: {e}")))?;
+    Ok(Json(Rendered { html }))
 }
 
 /// A user SQL query. `params` fills the statement's `$n` placeholders.

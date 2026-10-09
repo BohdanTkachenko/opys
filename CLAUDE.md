@@ -335,6 +335,12 @@ than editing the block by hand.
   query console, and the worktree union. Its writes are the same typed actions;
   there is no create-document view, so `opys new` stays a CLI job.
 
+- The document body is edited with `svelte-blockdown` (`packages/blockdown/`,
+  ADR-0128): a reusable Svelte package — it must never import from opys — that
+  the UI links with `file:`. Blocks are rendered by the node's pure
+  `POST /api/render`. Its pure-JS tests run with `npm test --prefix
+  packages/blockdown`, and CI runs them.
+
 `opys/tests/web.rs` covers the surface end to end. `opys/tests/cli.rs` is the
 byte-identity pin for every pre-existing command and must keep passing untouched.
 
