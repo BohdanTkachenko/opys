@@ -73,9 +73,38 @@ function search(params) {
   return rendered.length > 0 ? `?${rendered}` : '';
 }
 
-/** The board for a corpus, optionally with its filter state. */
+// The filters each corpus's board last showed, so a link back to the board —
+// from a document, the query console, the sidebar — returns to the board the
+// reader left rather than an unfiltered one. Per tab (sessionStorage), so a
+// reload of a document page keeps them and a second tab starts its own.
+const FILTERS_KEY = 'opys:board:filters';
+
+function readRemembered() {
+  try {
+    return JSON.parse(sessionStorage.getItem(FILTERS_KEY) ?? '{}') ?? {};
+  } catch {
+    return {};
+  }
+}
+
+const remembered = readRemembered();
+
+/** Record the filters a corpus's board is showing. The board calls this. */
+export function rememberFilters(cid, filters) {
+  remembered[cid] = { ...filters };
+  try {
+    sessionStorage.setItem(FILTERS_KEY, JSON.stringify(remembered));
+  } catch {
+    // Private browsing: remembered for this page's life only.
+  }
+}
+
+/**
+ * The board for a corpus. With `filters` the link carries exactly those (`{}`
+ * for none); without, it carries whatever the board last showed.
+ */
 export function boardPath(cid, filters) {
-  return `/corpus/${seg(cid)}${search(filters)}`;
+  return `/corpus/${seg(cid)}${search(filters ?? remembered[cid])}`;
 }
 
 /** One document. */

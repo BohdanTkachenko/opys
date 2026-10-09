@@ -30,7 +30,7 @@
   } from './lib/format.js';
   import { MOD, omni } from './lib/omni.svelte.js';
   import { createResource } from './lib/resource.svelte.js';
-  import { boardPath, docPath, go, href, queryPath } from './lib/router.svelte.js';
+  import { boardPath, docPath, go, href, queryPath, rememberFilters } from './lib/router.svelte.js';
 
   let { cid, filters = {} } = $props();
 
@@ -467,8 +467,12 @@
   }
 
   function clearFilters() {
-    go(boardPath(cid));
+    go(boardPath(cid, {}));
   }
+
+  // Every way back to this board (a document's "← board", the sidebar) links
+  // to these, so leaving to read a card does not cost the filter.
+  $effect(() => rememberFilters(cid, filters));
 </script>
 
 <svelte:window onkeydown={onwindowkeydown} />
