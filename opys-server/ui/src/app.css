@@ -623,6 +623,10 @@ a.chip:hover {
   min-height: 100vh;
 }
 
+.shell.folded {
+  grid-template-columns: 2.6rem minmax(0, 1fr);
+}
+
 .shell > main {
   min-width: 0;
   /* The horizontal gutter scales with the viewport (a 5K monitor deserves more
@@ -664,7 +668,9 @@ a.chip:hover {
 }
 
 @media (max-width: 46rem) {
-  .shell {
+  /* The fold is a wide-screen preference; the bar ignores it. */
+  .shell,
+  .shell.folded {
     grid-template-columns: minmax(0, 1fr);
   }
 

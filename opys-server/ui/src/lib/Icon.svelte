@@ -28,6 +28,8 @@
     zap: 'M13 2 4 14h6l-1 8 9-12h-6z',
     lock: 'M7 11V8a5 5 0 0 1 10 0v3M6 11h12v9H6z',
     home: 'm3 11 9-8 9 8M6 10v10h12V10',
+    // A panel with its left rail ruled off: the sidebar fold toggle.
+    sidebar: 'M4 5h16v14H4zM9.5 5v14',
   };
 
   let { name, size = 15 } = $props();

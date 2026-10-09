@@ -15,9 +15,14 @@
   // wordmark, live dot, a projects toggle — that opens into the list on
   // demand. A phone that gave a third of every screen to a corpus list would
   // put the first card of every board below the fold.
+  //
+  // On a wide screen it folds the other way: into a rail (`sidebar.collapsed`,
+  // toggled by the button or `[`), which keeps the wordmark, the live dot and
+  // the way back out, and gives the rest of the width to the view.
 
   import Icon from './lib/Icon.svelte';
   import { corpora } from './lib/corpora.svelte.js';
+  import { sidebar } from './lib/sidebar.svelte.js';
   import { events } from './lib/events.svelte.js';
   import { corpusLabel, shortTime } from './lib/format.js';
   import { boardPath, href, unionPath } from './lib/router.svelte.js';
@@ -62,7 +67,7 @@
   }
 </script>
 
-<aside class="sidebar" class:open>
+<aside class="sidebar" class:open class:collapsed={sidebar.collapsed}>
   <header>
     <a class="wordmark mono" href="#/">
       <span class="prompt" aria-hidden="true">❯</span><span class="grad-text">opys</span><span
@@ -78,14 +83,27 @@
         : 'The event stream is down. This page is retrying, and will refresh itself when it reconnects.'}
     >
       <span class="dot" class:good={events.live}></span>
-      {#if events.status === 'open'}
-        live
-      {:else if events.status === 'connecting'}
-        connecting…
-      {:else}
-        reconnecting…
-      {/if}
+      <span class="label">
+        {#if events.status === 'open'}
+          live
+        {:else if events.status === 'connecting'}
+          connecting…
+        {:else}
+          reconnecting…
+        {/if}
+      </span>
     </span>
+    <!-- Wide screens only (hidden by CSS on the bar): fold into a rail. -->
+    <button
+      class="fold"
+      type="button"
+      aria-expanded={!sidebar.collapsed}
+      aria-controls="projects"
+      title={sidebar.collapsed ? 'show the project list  [' : 'hide the project list  ['}
+      onclick={() => sidebar.toggle()}
+    >
+      <Icon name="sidebar" size={15} />
+    </button>
     <!-- Narrow screens only (hidden by CSS elsewhere): the list behind it. -->
     <button
       class="menu"
@@ -404,6 +422,43 @@
     font-size: 0.9em;
   }
 
+  .fold {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2rem 0.3rem;
+    color: var(--muted);
+    cursor: pointer;
+  }
+
+  .fold:hover {
+    color: var(--accent);
+  }
+
+  /* The rail: the header stands on end — wordmark, live dot, unfold button —
+     and the list and footer fold away. The live label goes too; the dot
+     keeps its colour and its title says the rest. */
+  .sidebar.collapsed {
+    padding: 0.95rem 0.35rem;
+    align-items: center;
+  }
+
+  .sidebar.collapsed header {
+    flex-direction: column;
+    gap: 0.8rem;
+  }
+
+  .sidebar.collapsed .list,
+  .sidebar.collapsed footer,
+  .sidebar.collapsed .wordmark .grad-text,
+  .sidebar.collapsed .wordmark .cursor,
+  .sidebar.collapsed .live .label {
+    display: none;
+  }
+
+  .sidebar.collapsed .wordmark .prompt {
+    margin-right: 0;
+  }
+
   /* The bar. Everything but the header folds away until the toggle opens it;
      the footer (version, last load) is desktop furniture and stays hidden.
      Last in the sheet on purpose: these override rules of equal specificity
@@ -427,6 +482,27 @@
     .sidebar.open .list {
       display: block;
       padding-bottom: 0.4rem;
+    }
+
+    /* The bar has its own toggle; the rail is a wide-screen thing, so a
+       folded preference from a wider window must not empty the bar. */
+    .fold {
+      display: none;
+    }
+
+    .sidebar.collapsed {
+      padding: 0.5rem 0.8rem;
+      align-items: stretch;
+    }
+
+    .sidebar.collapsed header {
+      flex-direction: row;
+    }
+
+    .sidebar.collapsed .wordmark .grad-text,
+    .sidebar.collapsed .wordmark .cursor,
+    .sidebar.collapsed .live .label {
+      display: revert;
     }
 
     .menu {
