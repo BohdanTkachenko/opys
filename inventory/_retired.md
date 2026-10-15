@@ -15,6 +15,8 @@ retired:
   TASK-0073: 'opys-server: worktree union view'
   TASK-0074: 'opys-server: embedded web UI'
   TASK-0075: 'opys-server: systemd install, docs, and M1 closeout'
+  BUG-0079: The node walks the filesystem before it binds its socket
+  BUG-0085: The generated systemd unit has no PATH, so worktree discovery silently dies
   TASK-0110: 'engine: the history map and UTC sub-second timestamps'
   TASK-0111: 'engine: per-type transitions and the set-status guard'
   TASK-0112: 'engine: blocked is derived; remove the blocked status machinery'

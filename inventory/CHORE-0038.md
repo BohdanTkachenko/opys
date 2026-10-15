@@ -2,7 +2,7 @@
 id: CHORE-0038
 status: todo
 created: "2026-07-06T05:14:48Z"
-updated: "2026-07-06T05:14:48Z"
+updated: "2026-10-15T10:39:11-04:00"
 history:
   "2026-07-06T05:14:48.000000Z": todo
 references:
@@ -19,3 +19,4 @@ references:
 
 ## Progress
 - 2026-07-06T05:14:48Z Filed from the pre-announcement review: the 0.12.0 bump was made manually outside release-plz's release-pr flow, so the pending release would tag v0.12.0 with no notes.
+- 2026-10-15T14:39:11Z The opys-core deprecation items rest on a wrong premise: opys-core on crates.io is not this project's. It belongs to harmoniya-net/opys (owner DeityLamb, published since 2026-05, 0.8.0 on 2026-10-14) and has no 0.9–0.11 versions, so there is nothing of ours there to deprecate. Separately, opys-server has never been published, which is what breaks release-plz on main.
