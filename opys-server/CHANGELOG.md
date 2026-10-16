@@ -11,26 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- lifecycle, pick oracle, branch reader, flow view and block editor
-- *(ui)* keyboard-first board and the omnibox
-- *(ui)* the terminal-modern redesign
-- *(server)* manage the allowlist from the browser (FEAT-0083, ADR-0082)
-- *(cli)* the `opys web` surface, systemd install, and M1 closeout (TASK-0075)
-- *(server)* embedded Svelte web UI and its build pipeline (TASK-0074)
-- *(server)* worktree union view (TASK-0073)
-- *(server)* write actions through the engine command cores (TASK-0072)
-- *(server)* read API, WebSocket events, and the main loop (TASK-0071)
-- *(server)* corpus actor with warm store and watcher (TASK-0070)
-- *(server)* allowlist registry and bounded project discovery (TASK-0069)
-- *(server)* scaffold opys-server — the always-on node (TASK-0067)
+- First release of the always-on node behind `opys web`: it serves the
+  allowlisted projects through a read API with WebSocket events, and writes
+  through the engine's own command cores.
+- The embedded web UI: a keyboard-driven board, the document view with
+  in-place block editing, the query console, the union of a project's
+  worktrees and branches, the lifecycle flow graph, and an omnibox. It installs
+  as a web app.
+- Allowlist management from the browser, and a systemd user unit
+  (`opys web install`).
+- `GET /api/projects/{key}/next` and `/flow`.
 
 ### Fixed
 
-- *(server)* bind before scanning, and stop losing worktrees to a missing git
-- land PR #17 at the repo root and untrack the committed worktree
-
-### Other
-
-- *(ui)* ship the web UI bundle in the crate tarball, not in git
-- move the commercial roadmap out, and sweep what referenced it
-- *(inventory)* ADR-0076/0077 — Apache node, allowlist over scan
+- The node binds its socket before scanning, and finds worktrees even when the
+  service's `PATH` has no `git`.
