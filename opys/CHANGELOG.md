@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0](https://github.com/BohdanTkachenko/opys/compare/v0.12.0...v0.13.0) - 2026-10-16
+
+### Added
+
+- lifecycle, pick oracle, branch reader, flow view and block editor
+- *(cli)* the `opys web` surface, systemd install, and M1 closeout (TASK-0075)
+- *(core)* advisory inventory lock + id-allocation seam; retire the TUI
+
+### Fixed
+
+- *(server)* bind before scanning, and stop losing worktrees to a missing git
+- land PR #17 at the repo root and untrack the committed worktree
+- *(lock)* move the inventory lock out of the repo
+- harden the retired ledger, retire, and query --write (four bugs)
+- repair linkify, history, import, and renumber (four bugs)
+- close five verify/serialization bugs (frontmatter, reason, unblock, agent-rules)
+- *(nix,publish)* repair the flake build and restore crate READMEs
+
+### Other
+
+- *(ui)* ship the web UI bundle in the crate tarball, not in git
+- release v0.12.0
+
 ## [0.12.0](https://github.com/BohdanTkachenko/opys/compare/v0.11.0...v0.12.0) - 2026-07-06
 
 ### Fixed
