@@ -1,0 +1,258 @@
+---
+name: opys
+description: Set up and operate a file-based inventory of typed markdown documents ("file-based JIRA") — one markdown file per document with YAML frontmatter, stable IDs, tags, and configurable types/statuses/fields/sections/rules in one opys.toml, with test plans and a verify gate for CI. The default config ships a permanent feature type plus ephemeral task/bug/chore types (deleted on close); projects can add their own (epic, adr, risk, …). Use this skill whenever the user wants to track implemented features, requirements coverage, feature parity with another product, a traceability matrix between features and tests, in-flight implementation work, or asks how to share a large list between themselves and LLM agents. Also use it when working inside a project that already has a opys.toml — for creating documents (opys new --type), changing status, updating test plans, closing work, running verify, or viewing stats.
+---
+
+# opys — typed-document inventory
+
+A version-controlled inventory of typed markdown documents — what a product does
+(permanent `feature` documents and their test coverage) and the in-flight work
+changing it (ephemeral `task`/`bug`/`chore` documents) — one markdown file per
+item, managed by the `opys` CLI, verified in CI. Document types are configured in
+`opys.toml`; projects add their own. Deliberately not a task board (no
+sprints or assignees; a `priority` int field is opt-in config, lower = higher,
+and `list --sort` orders by the type's `order_by` chain over it).
+
+Read `references/format.md` before authoring or editing documents or the
+`opys.toml` config — it is the normative file-format spec and design rationale.
+This file covers operation.
+
+> **Feature vs work item.** A *feature* is a permanent record of what the
+> product does — spec, test plan, manual verification — and is never deleted
+> (retired IDs are logged, not reused). A *work item* is a throwaway record of
+> one in-flight change — tasks, a progress log, branch/PR links — that links to
+> the feature(s) it touches and is **deleted on completion**. Put durable
+> knowledge in features; put "what I'm doing right now" in work items. If
+> unsure, ask: *does this stay true after the change ships?* Yes → feature;
+> no → work item.
+
+## Core principles (derive answers from these)
+
+1. One file per feature; metadata (frontmatter) and spec prose live together.
+2. Taxonomy never lives in filesystem layout — classification is multi-valued
+   `tags`; all groupings are live queries (`opys list`).
+3. Stable IDs are the contract. Tests, commits, and specs reference
+   `FEAT-NNNN` (and `TASK-`/`BUG-`/`CHORE-NNNN` for work items). IDs are never
+   reused or renumbered, even after deletion. An id is a *key*, though, not a
+   name — so whenever one appears in prose it is written with its title (see
+   [Naming documents in prose](#naming-documents-in-prose)). Ids come from one
+   global sequence; a project that allocates on several branches at once sets
+   `[ids] modulus = M` so each allocator draws only its own slot's numbers
+   (`OPYS_ID_SLOT`, else a stable hash of `user@host`) and branches never
+   collide — an orchestrator sets a distinct slot per agent it spawns (see
+   [Id allocation](references/format.md#id-allocation)).
+4. Intent is stored; derived state is generated. Test pass/fail, dates, and
+   completion claims never go into feature files.
+5. Writes go through the CLI (prevents parallel-agent collisions, enforces
+   invariants at write time); reads are grep + targeted file reads.
+6. Lazy growth: frontmatter + a title is a complete feature file. Prose, test
+   plans, and manual procedures are added only where earned.
+
+## The CLI
+
+`opys` is a single self-contained Rust binary (no runtime dependencies).
+Install it with `cargo install opys`, or build from source with `cargo build
+--release` and drop the binary on `PATH`. Run it from the project root, or pass
+`--root <dir>`. Because it is a published crate, project CI can install it in
+one step.
+
+`opys.toml` lives at the **project root** (opys finds it by searching upward from
+the cwd, like git/Cargo). It declares a `base` directory (default `opys/`,
+relative to the root) holding the document files, flat at `opys/` by default (the
+path is rendered from a configurable `[layout]` template). Mutating commands
+auto-sync — reconcile, linkify, and relocate docs to their layout path (pass
+`--no-sync` to skip).
+
+The document **types** are configured in `opys.toml` (`opys config init` writes
+the opinionated default; `opys config validate` checks it). The default ships a
+permanent `feature` type plus ephemeral `task`/`bug`/`chore` types
+(`TASK-`/`BUG-`/`CHORE-NNNN`, deleted on `close`); add a `[types.<name>]` block
+for your own (prefix, statuses, fields, sections, rules). A document's type is
+its ID prefix.
+
+| Command | Purpose |
+|---|---|
+| `init` | bootstrap `opys.toml` + `opys/`, print CLAUDE.md snippet |
+| `config init` / `config validate` | generate / check the universal `opys.toml` |
+| `new --type T --title … [--tags a,b] [--features F1,F2] [--reason R] [--field k=v]` | create a doc of type `T` with the next ID, at the type's initial status — there is no `--status`, `import` is the seam that seeds elsewhere (`--type` defaults to `feature`; auto-syncs) |
+| `import --type T FILE.jsonl` | bulk-create docs of type `T` from JSONL (one ID block, one sync, transactional) |
+| `show ID [--refs]` / `list [--type T] [--tag T] [--status S] [--field k=v]… [--blocked\|--unblocked] [--sort] [--format table\|ids\|paths]` | retrieval; `--field` filters by any custom field (repeatable, ANDed); `--blocked`/`--unblocked` filter on the derived blocked predicate (see `block` below); `--sort` orders by the type's `order_by` chain — effective priority (transitive over live `blocks`, unprioritised last), then blocks count, then id — grouped by type, in config declaration order; `show --refs` appends code mentions of the id (per `[file_refs]`) |
+| `next --status S [--type T] [-n N] [--json] [--explain [ID]]` | the pick oracle: the documents at `S` that are pickable — nothing live blocking them, their type's `requires_link` still satisfied by targets that have not released — ordered by the type's `order_by` chain, the same ranking `list --sort` uses. A task under a `wontfix` (or shipped) feature is reported under `orphaned` with the reason, not dropped. `--explain` says why each one was listed, and `--explain ID` why a named one was not (blocked / other status / other type / orphaned / behind the limit). `--json` is a stable payload (`schema: "opys.next/1"`) carrying each item's priority, effective priority, blocks count, position and time observations. A read: exit 0 for every answer, an empty one included — but a `--type` no type declares, a status the named type does not declare (or, with no `--type`, that no type declares), and an `--explain` id nothing answers to are usage errors (exit 2) |
+| `set-status IDS… S [--reason R]` | guarded transition against the type's statuses, its declared `[transitions]` edges (when it declares any — the refusal names the legal targets), its `max_visits` budget for the target status (the refusal names the configured `then`) and its rules; a terminal status is reached only via `close`. `IDS` is an id list (see below) |
+| `tag IDS… --add a,b --remove c` | tag maintenance; `IDS` is an id list |
+| `log ID "TEXT"\|- [--section H]` | append a dated entry (`- <UTC ts> text`) to the type's `kind = "log"` section; `-` reads the entry from stdin (continuation lines indent two spaces). Takes **one** id — the second positional is the text. A missing-but-declared section is created; a type with none, or with two and no `--section`, exits 2 |
+| `apply IDS… [--status S] [--reason R] [--field k=v]… [--remove-field k]… [--log "TEXT"] [--section H]` | several writes as **one** all-or-nothing batch: `--field` writes, then the log entry, then the status transition, then `--remove-field` removals, flushed once or not at all. How an agent claims a document: `opys apply TASK-0007 --status in-progress --field claimed_by=agent-7 --log "picked up"`. Unlike `set-status`, `--status` asserts a *transition* — a document already at that status is refused — so two agents racing for the same one cannot both win, and the loser writes nothing. The fixed order is what lets one command satisfy a `require_log_since_status` rule on the status it is moving to; the verify gate is taken once around the whole batch, so every part is judged against the document the batch *finishes* with — which is what lets `--status todo --remove-field claimed_by` release a claim the working status `require_field`s, and `--status review --field claimed_by=reviewer-3` hand one on. `--log -` is not stdin here (`-` is the id list) |
+| `block IDS… --by BLOCKER` / `unblock IDS… --by BLOCKER` | record/remove a blocker link (`blocked_by`/`blocks`); the blocked side is an id list. Status is untouched: **blocked is derived** — a document is blocked while it holds a `blocked_by` entry that is not struck, still resolves, and whose target is not at a status its type lists in `releases_blocks`. Everything that blocks is a document |
+| `retire IDS… [--reason R]` | delete file(s), strike inbound references (warning when a struck link leaves a `requires_link` rule failing), log each ID (with its title) to `_retired.md` so it is never reallocated; `--reason` is echoed, not persisted (git records the why) |
+| `close IDS… [--force]` / `cleanup` | finish doc(s) whose type has a terminal status — and, where the type declares `[transitions]`, an edge into one from the document's current status (strike its refs everywhere and log the ID to `_retired.md`); strip struck refs (ledger-reserving any id whose last tombstone is stripped) |
+| `verify [--fix]` | full integrity check — wire into CI. Exit `0` clean, `1` content problems, `2` a real failure, `3` only *observations* (a doc past its type's `ttl`, or at its `max_visits` limit — neither is a content problem). Gate CI on `1`. `--fix` performs the fixable observations (an ordinary transition each, history and relocation included; one `fixed <id>: <from> -> <to> (<kind>)` line per fix on stdout) and exits on what remains — at most one fix per document, nothing written when nothing was fixed, and no fixing at all while `config validate` has problems |
+| `sync` | reconcile references, linkify prose, relocate docs to their layout path |
+| `history ID [--seed]` | the document's status timeline across commits, read out of git in-process (gix, never a spawned `git`). `--seed` writes the `history` lifecycle map from that timeline, for a one-time migration of an inventory that predates the map; it refuses to overwrite one that exists. Outside a git repository — or in a binary built without the `git` feature — the command says so and exits 2 rather than reporting an empty timeline |
+| `renumber [--base REF]` | resolve cross-branch ID collisions: keep IDs already present at the git merge-base with main/master, renumber the branch-added duplicates, retiring the old numbers. Warns about any code references to a renumbered ID with a `sed` fix per file |
+| `stats` | render configured `[[stats]]` sections (default: status counts, coverage, tags; each a SQL query over the corpus, shown as a table) |
+| `query "SELECT …"` | run a **read-only** SQL query over the inventory (tables: `docs`, `tags`, `relations`, `history`, `fm_fields`, `retired`, and the derived `fields`, `sections`, `blocks`; `-` reads the SQL from stdin) — for slices `list` can't express (joins, aggregates). `blocks(doc_id, seq, heading, text)` decomposes each body into its `##` sections (query into bodies). Every statement must be a SELECT and nothing is ever written: bulk edits pipe `list --format ids` into a mutating command instead. `--stdin` binds stdin to `$1` for escape-free multi-line values |
+| `agent-rules --tool <editor>` | generate a rules-based editor's instruction file from the canonical rule |
+
+Every id-taking mutating command (`set-status`, `tag`, `retire`, `block`,
+`unblock`, `close`, `apply`) takes an **id list**, three interchangeable ways:
+several ids (`set-status FEAT-0001 FEAT-0002 partial`), a comma-separated list
+(`FEAT-0001,FEAT-0002`), or `-` to read the list from stdin
+(comma/space/newline separation all accepted), which composes with `list`:
+`opys list --type task --status review --format ids | opys close -`. A batch is
+**all-or-nothing** — ids are applied in order and the first failure aborts the
+whole invocation with exit 2, writing nothing, so a widened list that hits a bad
+id cannot land half a change. That includes a rule refusal: one document with an
+unchecked required checklist item stops the whole `close`, so narrow the list
+rather than reaching for `--force`, which drops that guard for every id. Filter
+on a status a live document can hold: a terminal status is reached only through
+`close` (which deletes the document), so `--status done` selects nothing, and an
+empty selection exits 2 (`expected at least one id`) without writing.
+`log` is the exception — one id, because its `-` is the entry text. `apply`
+batches on a second axis as well: several *actions* on one document, likewise
+all-or-nothing.
+
+## Code references to IDs
+
+IDs are the contract, so they're cited in code — comments, string literals,
+test names. The optional `[file_refs]` config in `opys.toml` declares the textual
+forms an ID may take (`FEAT-0001`, `FEAT1`, `feat_1`, …; each a `template` over
+`{id}`/`{prefix}`/`{prefix_lower}`/`{num}`/`{padded}`, with an optional `word`
+boundary toggle) and the `roots` to scan. Then:
+
+- `opys show ID --refs` lists every code mention of that ID (`path:line: text`) —
+  useful before retiring or renumbering.
+- `opys renumber` (used to reconcile IDs after two branches allocated the same
+  number) only rewrites *documents*; if a renumbered ID is still cited in code it
+  warns and prints a `sed -i 's/\bOLD\b/NEW/g' <file>` suggestion per file, so you
+  or the user can fix references selectively rather than blindly.
+
+See `references/format.md` (`[file_refs]`) for the full placeholder/validation
+rules.
+
+## Workflow: bootstrapping a project
+
+1. Run `opys init`, then edit `opys.toml`: declare your document
+   `[types.<name>]` (prefix, statuses, `[fields.*]`, `[[sections]]`, and
+   `[[rules]]`). Unknown frontmatter fields fail verify until declared on the
+   type — this keeps the schema honest. To validate that a section's references
+   point at something real (e.g. a test plan's `mod::name` refs, or a
+   `` `file` — `symbol` `` code-pointer line), attach a
+   `[[types.<name>.sections.checks]]` — a `pattern` parsing each line into named
+   groups plus a `file` and/or `must_match` resolving them against `roots`. The
+   default config ships one on the feature `Test plan`. `opys config validate`
+   checks the config is well-formed.
+2. Add the printed snippet to the project's CLAUDE.md.
+3. Add `opys verify` (and optionally a `sync` freshness diff) to CI.
+4. If migrating an existing feature list: at small scale, convert each entry
+   with `new` (status `planned`, best-effort tags). At scale (hundreds+), do
+   **not** loop `new` — emit a JSONL file and run `opys import` once, or write
+   canonical `FEAT-NNNN.md` files directly then `opys sync` + `opys
+   verify` (see "Bulk creation and migration" in `references/format.md`). Then
+   review in batches per tag using `opys list`; archive the source
+   document. Do not write spec prose during migration unless the source
+   contains real behavioral detail.
+5. If upgrading an inventory that predates the `history` lifecycle map (verify
+   says `missing history`): `opys history --seed <id>` writes it from the
+   document's git timeline, one id per invocation, and refuses to overwrite an
+   existing map. See `docs/migration-history.md` for the procedure and the
+   fallback for documents git cannot answer for.
+
+## Workflow: implementing a feature (for coding agents)
+
+1. Locate the feature (`opys list` / `rg` by tag or status), read its file fully.
+2. Implement. Add tests.
+3. In the test plan, check the covered items and append backticked test
+   references in the shape the section's check expects — by default
+   `module::test_name` (or `path/to/file::test_name`). A case may be covered by
+   several tests (list several refs), and one test may cover several cases. If the
+   enumeration of cases looks incomplete versus the spec prose, raise it — do not
+   silently implement only the listed cases.
+4. `opys set-status ID implemented` (the CLI rejects this if no checked
+   test item exists), then `opys verify`.
+
+## Workflow: doing a piece of work (for coding agents)
+
+A work item is your scratchpad for one change — a file, so it survives context
+resets and is greppable, deleted when you finish.
+
+1. Identify the feature(s) you will change; read their files.
+2. `opys new --type bug --title "…" --features FEAT-0001` (or `--type task`/
+   `chore`). This scaffolds the type's required sections (`## Tasks` / `## Progress`,
+   plus `## Reproduction` for a bug) and links the feature(s); the CLI rejects a
+   link to a feature that doesn't exist, and auto-adds the reverse link.
+3. Take the document before you work on it, and take it in **one** command:
+   `opys apply ID --status in-progress --field claimed_by=… --log "picked up"`
+   (where the project declares such a field). That is a claim — if another agent
+   got there first the whole invocation is refused, exit 2, writing nothing, so
+   two agents never work the same item. Then, as you work, edit `## Tasks`
+   (check items off) — a normal file edit — and record what happened with
+   `opys log ID "…"` (branch/commit/PR, a decision and why, what you ruled out). A `## Progress` section is a `log`: the command
+   stamps each entry with the UTC time, and `verify` checks every bullet is
+   dated and that they do not go backwards, so never append to it by hand. Use
+   `opys log ID -` for a multi-line note. Log as you go rather than only at the
+   end: the handoff in step 5 is refused until `## Progress` holds an entry
+   stamped since the status last changed. Don't hand-maintain the `references`
+   map or linkify prose; `opys` does both on each write.
+4. Fold anything durable back into the **feature**, not the work item: check the
+   covered test-plan items and add refs, `opys set-status … implemented`, write
+   spec prose. The feature is what survives.
+5. Walk the document to a status `close` can reach, then `opys close ID` — which
+   deletes the file and strikes its reference through in the feature as a
+   tombstone. Do this only after step 4. Where the type declares a status graph
+   (the shipped work items do), `close` needs an edge from where the document
+   stands into a terminal status, so under the shipped graph a work item created
+   at `todo` takes two hops: `opys set-status ID in-progress`, then the
+   checkpoint and the handoff **together** —
+   `opys apply ID --status review --log "what landed, what is left"`. The second
+   hop is refused without that entry (`'## Progress' has no log entry since the
+   status last changed`): the shipped config guards the move into `review` with
+   `require_log_since_status`, and `apply` appends the entry before it evaluates
+   the rule, so one command satisfies it. Every refusal names the statuses it
+   will accept, so take the route from it rather than guessing.
+6. `opys verify`.
+
+## Workflow: authoring features (interview style)
+
+When drafting a feature file with a user, ask for edge cases — they become
+test-plan items. Then ask which behaviors warrant a human eye on a real build,
+and fill in the `structured` "Manual verification" section while the details are
+fresh (the default config ships a Setup / Procedure / Expectations shape).
+Manual verification is *not* reserved for the unautomatable: it may re-check
+behavior that automated tests also cover (a friendlier, end-to-end sanity pass).
+The shape is whatever the type's `structure` (an `mdprism` schema) declares —
+`verify` validates the section against it.
+
+## Naming documents in prose
+
+`ADR-0035` identifies a document. It does not describe one. A reader meeting a
+bare id has to go look it up before your sentence means anything, and an agent
+writing bare ids produces text that is precise and unreadable at the same time.
+
+So: **an id in prose always carries its title.**
+
+    ADR-0035 — The web UI may manage the allowlist within $HOME
+    [ADR-0035 — The web UI may manage the allowlist within $HOME](ADR-0035.md)
+
+The second form is what `opys sync` writes into document bodies; `linkify`
+maintains it, and `reconcile` keeps the titles fresh as they change. Match it in
+prose you write by hand, and use the plain `id — title` form outside markdown
+(commit messages, terminal output, a reply to a person).
+
+This holds everywhere prose is addressed to a reader: document bodies, commit
+messages, pull requests, review comments, and chat. `opys show <id>` gives the
+title in one line — look it up rather than guessing, because a *wrong* title is
+worse than a bare id: it reads as authoritative and sends the reader to the
+wrong document.
+
+Leave an id bare only where a title would be noise or an error:
+
+- inside a command — `opys close TASK-0042`, `opys show BUG-0079 --refs`
+- a filename, a path, or a frontmatter key
+- a table or list that already carries titles in a neighbouring column
+- a code reference (`// FEAT-0001`), where `[file_refs]` matches on the id alone
+
+## Retrieval discipline
+
+Never bulk-read `opys/`. The path is: `rg` by tag/status or
+`opys list [--type T]` → read the 2–5 relevant files. There is no generated index
+— slice the inventory live with `opys list`, not pre-generated files.

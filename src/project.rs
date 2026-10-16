@@ -1,0 +1,113 @@
+//! The project: `opys.toml` at the project root (found by searching upward),
+//! plus the inventory base it points at (default `opys/`, holding the
+//! document files and `_retired.txt`).
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+
+use regex::Regex;
+
+use crate::doc::Doc;
+use crate::error::{usage, OpysError, Result};
+use crate::project_config::ProjectConfig;
+
+/// The directory to start the `opys.toml` search from: `root` made absolute
+/// (default `.` → the current working directory).
+pub fn start_dir(root: &str) -> Result<PathBuf> {
+    let p = Path::new(root);
+    if p.is_absolute() {
+        Ok(p.to_path_buf())
+    } else {
+        Ok(std::env::current_dir().map_err(OpysError::from)?.join(p))
+    }
+}
+
+/// Walk up from `start` (inclusive) to the filesystem root, returning the first
+/// directory that contains an `opys.toml` — the project root.
+pub fn find_root(start: &Path) -> Option<PathBuf> {
+    let mut cur = start.to_path_buf();
+    loop {
+        if cur.join("opys.toml").is_file() {
+            return Some(cur);
+        }
+        if !cur.pop() {
+            return None;
+        }
+    }
+}
+
+pub struct Project {
+    pub root: PathBuf,
+    pub base: PathBuf,
+    /// The universal engine config (`<root>/opys.toml`), the sole source of
+    /// truth for document types, statuses, fields, sections, and rules.
+    pub pcfg: ProjectConfig,
+}
+
+impl Project {
+    /// Open the project by searching upward from `root` (default the cwd) for
+    /// `opys.toml`. The directory holding it is the project root; the inventory
+    /// base is `<root>/<config.base>` (default `opys`).
+    pub fn open(root: &str) -> Result<Project> {
+        let start = start_dir(root)?;
+        let root = find_root(&start).ok_or_else(|| {
+            usage(format!(
+                "no opys.toml found in {} or any parent directory — run `opys init`",
+                start.display()
+            ))
+        })?;
+        let pcfg = ProjectConfig::load(&root.join("opys.toml"))?;
+        let base = pcfg.resolve_base(&root)?;
+        Ok(Project { base, root, pcfg })
+    }
+
+    /// The canonical on-disk path for a document with the given id and status,
+    /// per the configured `layout` (see [`ProjectConfig::doc_relpath`]).
+    pub fn doc_path(&self, id: &str, status: &str) -> PathBuf {
+        self.base.join(self.pcfg.doc_relpath(id, status))
+    }
+
+    /// IDs that have been retired and may never be reused. Errs when the ledger
+    /// file exists but cannot be read — never silently empty (see
+    /// [`crate::retired::read`]).
+    pub fn retired_ids(&self) -> Result<HashSet<String>> {
+        Ok(crate::retired::read(&self.base)?
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect())
+    }
+
+    /// Find a document by ID, or a not-found error.
+    pub fn find<'a>(&self, docs: &'a [Doc], id: &str) -> Result<&'a Doc> {
+        docs.iter()
+            .find(|d| d.id() == Some(id))
+            .ok_or_else(|| OpysError::NotFound { id: id.to_string() })
+    }
+}
+
+/// `^PREFIX-\d{pad,}$` — the verify-time id format (pad-or-more digits).
+pub fn id_format_re(prefix: &str, pad: usize) -> Regex {
+    Regex::new(&format!(r"^{}-\d{{{pad},}}$", regex::escape(prefix))).unwrap()
+}
+
+pub static KEBAB_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[a-z0-9]+(-[a-z0-9]+)*$").unwrap());
+
+/// Parse a `key=value` custom-field assignment, coercing the value through
+/// YAML (so `n=3` is an int, `t=[a, b]` a list, `s=foo` a string).
+pub fn parse_field(arg: &str) -> Result<(String, serde_norway::Value)> {
+    let (k, v) = arg
+        .split_once('=')
+        .ok_or_else(|| usage(format!("--field expects key=value, got {arg:?}")))?;
+    Ok((k.trim().to_string(), parse_field_value(v)))
+}
+
+/// The one convention for reading field text into a frontmatter value: a YAML
+/// scalar if it parses as one (`3`, `true`, `[a, b]`), a bare string otherwise.
+/// `--field key=value` and the node's `set-field` action both come through
+/// here, so quoting (`"3"`) is always the way to force a string.
+pub fn parse_field_value(v: &str) -> serde_norway::Value {
+    serde_norway::from_str(v.trim())
+        .unwrap_or_else(|_| serde_norway::Value::String(v.trim().to_string()))
+}

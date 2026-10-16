@@ -1,0 +1,23 @@
+//! The always-on opys node (FEAT-0029).
+//!
+//! A long-lived process that serves an allowlist of local projects over a typed
+//! HTTP/WebSocket API and an embedded web UI. The node is a *view* over files
+//! and git, never a second write authority (ADR-0027), and it serves only what
+//! the user allowlisted (ADR-0031).
+//!
+//! This is the library half; `src/main.rs` is the `opys-server` binary, and the
+//! `opys` CLI links this crate for its `web` subcommand.
+
+pub mod action;
+pub mod actor;
+pub mod api;
+pub mod assets;
+pub mod cli;
+pub mod discover;
+pub mod flow;
+pub mod manager;
+pub mod refreader;
+pub mod registry;
+pub mod serve;
+pub mod systemd;
+pub mod union;

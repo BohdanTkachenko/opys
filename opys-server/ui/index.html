@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0a0e15" media="(prefers-color-scheme: dark)" />
+    <!-- The same SVG the app manifest names (ui/public/icon.svg), so the tab
+         and the installed app share one source. The node serves it at the
+         root; no /favicon.ico is ever asked for, because this link wins. -->
+    <link rel="icon" type="image/svg+xml" href="./icon.svg" />
+    <!-- Installable (FEAT-0064): the manifest, the touch icon, and the worker
+         registered in main.js. All served by the node itself, at the root. -->
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+    <title>opys</title>
+    <!-- Paint the theme's background before the bundle arrives, so a dark-mode
+         load never flashes white. Duplicates two token values from app.css on
+         purpose: this must run before any stylesheet is fetched. -->
+    <style>
+      html {
+        background: #f6f7f9;
+      }
+      @media (prefers-color-scheme: dark) {
+        html {
+          background: #0a0e15;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

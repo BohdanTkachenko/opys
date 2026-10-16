@@ -1,0 +1,261 @@
+//! opys — a file-based inventory of typed markdown documents: one markdown file
+//! per document, with YAML frontmatter, stable IDs, tags, configurable types,
+//! test plans, and a `verify` gate for CI.
+//!
+//! The binary is a thin wrapper around [`run`]. The modules are public so the
+//! crate can be used as a library.
+
+pub mod backend;
+pub mod body;
+pub mod cli;
+pub mod commands;
+pub mod config;
+pub mod doc;
+pub mod error;
+pub mod file_refs;
+pub mod frontmatter;
+/// Reading the inventory out of git — the branch/worktree reader, the history
+/// command's timeline, and the migration seed. Not [`history`], which is the
+/// lifecycle map kept *in* frontmatter.
+pub mod git;
+pub mod history;
+pub mod ids;
+pub mod lifecycle;
+pub mod links;
+pub mod mdprism;
+/// The pick oracle: which documents at a status are pickable, and in what
+/// order. Read-only, and the single answer both `opys next` and the node's
+/// `/api/projects/{key}/next` serialize.
+pub mod next;
+pub mod observe;
+pub mod order;
+pub mod project;
+pub mod project_config;
+pub mod refs;
+pub mod retired;
+pub mod rules;
+pub mod store;
+pub mod templates;
+
+pub use error::{OpysError, Result};
+pub use frontmatter::Frontmatter;
+pub use project::Project;
+
+use cli::{Cli, Command};
+
+/// Shared invocation context: where the inventory lives, global flags, and the
+/// storage backend the commands load/flush through.
+pub struct Ctx {
+    pub root: String,
+    pub no_sync: bool,
+    pub backend: Box<dyn backend::Backend>,
+}
+
+impl Ctx {
+    pub fn open(&self) -> Result<Project> {
+        Project::open(&self.root)
+    }
+
+    /// Load the corpus into a working store via the injected backend.
+    pub fn load(&self, prj: &Project) -> Result<(store::Store, Vec<String>)> {
+        self.backend.load(prj)
+    }
+
+    /// Flush the store's changes via the injected backend.
+    pub fn flush(&self, prj: &Project, store: store::Store) -> Result<()> {
+        self.backend.flush(prj, store)
+    }
+
+    /// The id source for `prj`: the dense sequence, or — under `[ids]
+    /// modulus` — this allocator's interleaved slot (see [`ids::resolve`]).
+    /// Resolve it before [`Ctx::load`], so a bad `OPYS_ID_SLOT` fails without
+    /// taking the inventory lock.
+    pub fn id_source(&self, prj: &Project) -> Result<Box<dyn ids::IdSource>> {
+        ids::resolve(&prj.pcfg)
+    }
+}
+
+/// Execute a parsed CLI invocation, returning the process exit code.
+///
+/// `verify` returns `1` when it finds problems (the CI-gate contract) and `3`
+/// when all it found are [observations](observe) — a document past its `ttl` or
+/// at its `max_visits` limit, neither of which is a content problem; all other
+/// commands return `0` on success and surface failures as [`OpysError`], which
+/// the binary maps to exit code `2`.
+pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
+    let ctx = Ctx {
+        root: cli.root,
+        no_sync: cli.no_sync,
+        backend,
+    };
+    match cli.command {
+        Command::Init => {
+            commands::init::run(&ctx)?;
+            Ok(0)
+        }
+        Command::New {
+            type_name,
+            title,
+            tags,
+            features,
+            reason,
+            field,
+        } => {
+            commands::new::run(
+                &ctx,
+                &type_name,
+                &title,
+                &tags,
+                &features,
+                reason.as_deref(),
+                &field,
+            )?;
+            Ok(0)
+        }
+        Command::Import { type_name, file } => {
+            commands::import::run(&ctx, &type_name, &file)?;
+            Ok(0)
+        }
+        Command::Show { id, refs } => {
+            commands::show::run(&ctx, &id, refs)?;
+            Ok(0)
+        }
+        Command::List {
+            type_name,
+            tag,
+            status,
+            field,
+            blocked,
+            unblocked,
+            sort,
+            format,
+        } => {
+            // One tri-state rather than two bools: clap has already refused the
+            // pair, and the pair would push `run` past the argument count
+            // clippy allows.
+            let blocked = blocked.then_some(true).or(unblocked.then_some(false));
+            commands::list::run(
+                &ctx,
+                type_name.as_deref(),
+                tag.as_deref(),
+                status.as_deref(),
+                &field,
+                blocked,
+                sort,
+                format,
+            )?;
+            Ok(0)
+        }
+        Command::Next {
+            status,
+            type_name,
+            limit,
+            json,
+            explain,
+        } => {
+            let q = next::PickQuery {
+                status,
+                type_filter: type_name,
+                limit,
+            };
+            commands::next::run(&ctx, &q, json, explain)?;
+            Ok(0)
+        }
+        Command::SetStatus {
+            ids,
+            status,
+            reason,
+        } => {
+            commands::set_status::run(&ctx, &ids, &status, reason.as_deref())?;
+            Ok(0)
+        }
+        Command::Tag { ids, add, remove } => {
+            commands::tag::run(&ctx, &ids, add.as_deref(), remove.as_deref())?;
+            Ok(0)
+        }
+        Command::Log { id, text, section } => {
+            commands::log::run(&ctx, &id, &text, section.as_deref())?;
+            Ok(0)
+        }
+        Command::Apply {
+            ids,
+            status,
+            reason,
+            field,
+            remove_field,
+            log,
+            section,
+        } => {
+            let set_fields = commands::parse_key_values(&field)?;
+            commands::apply::run(
+                &ctx,
+                &ids,
+                &commands::apply::Apply {
+                    status: status.as_deref(),
+                    reason: reason.as_deref(),
+                    set_fields: &set_fields,
+                    remove_fields: &remove_field,
+                    log: log.as_deref(),
+                    section: section.as_deref(),
+                },
+            )?;
+            Ok(0)
+        }
+        Command::Retire { ids, reason } => {
+            commands::retire::run(&ctx, &ids, reason.as_deref())?;
+            Ok(0)
+        }
+        Command::Block { ids, by } => {
+            commands::block::block(&ctx, &ids, &by)?;
+            Ok(0)
+        }
+        Command::Unblock { ids, by } => {
+            commands::block::unblock(&ctx, &ids, &by)?;
+            Ok(0)
+        }
+        Command::Verify { fix } => commands::verify::run(&ctx, fix),
+        Command::Sync => {
+            commands::sync::run_command(&ctx)?;
+            Ok(0)
+        }
+        Command::Tags { keys } => {
+            commands::tags::run(&ctx, keys)?;
+            Ok(0)
+        }
+        Command::Stats { plain } => {
+            commands::stats::run(&ctx, plain)?;
+            Ok(0)
+        }
+        Command::Query { sql, plain, stdin } => {
+            commands::query::run(&ctx, &sql, plain, stdin)?;
+            Ok(0)
+        }
+        Command::History { id, seed } => {
+            commands::history::run(&ctx, &id, seed)?;
+            Ok(0)
+        }
+        Command::Close { ids, force } => {
+            commands::close::run(&ctx, &ids, force)?;
+            Ok(0)
+        }
+        Command::Renumber { base } => {
+            commands::renumber::run(&ctx, base.as_deref())?;
+            Ok(0)
+        }
+        Command::Cleanup => {
+            commands::cleanup::run(&ctx)?;
+            Ok(0)
+        }
+        Command::Config(cmd) => match cmd {
+            cli::ConfigCommand::Init => {
+                commands::config::init(&ctx)?;
+                Ok(0)
+            }
+            cli::ConfigCommand::Validate => commands::config::validate(&ctx),
+        },
+        Command::AgentRules { tool, stdout } => {
+            commands::agent_rules::run(&ctx, tool, stdout)?;
+            Ok(0)
+        }
+    }
+}
