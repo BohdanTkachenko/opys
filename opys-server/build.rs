@@ -1,4 +1,4 @@
-//! Embed the web UI bundle (`ui/dist`) into the crate (ADR-0086).
+//! Embed the web UI bundle (`ui/dist`) into the crate (ADR-0037).
 //!
 //! **This build script never runs Node and never touches the network**, and it
 //! must stay that way: `cargo install opys`, docs.rs and the nix sandbox all
@@ -96,7 +96,7 @@ fn fail(detail: &str) {
     println!("cargo::error=the opys-server web UI bundle is not built: {detail}");
     println!(
         "cargo::error=build it with `ui-build` in the devShell (or `npm ci && npm run build` \
-         in opys-server/ui) — the bundle is generated, not committed (ADR-0086)"
+         in opys-server/ui) — the bundle is generated, not committed (ADR-0037)"
     );
     println!(
         "cargo::error=or, to build without a Node toolchain, disable the `web-ui` feature: \
@@ -136,6 +136,7 @@ fn content_type(url: &str) -> &'static str {
         "js" | "mjs" => "text/javascript; charset=utf-8",
         "css" => "text/css; charset=utf-8",
         "json" | "map" => "application/json; charset=utf-8",
+        "webmanifest" => "application/manifest+json",
         "svg" => "image/svg+xml",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",

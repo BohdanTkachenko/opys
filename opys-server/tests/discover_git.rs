@@ -3,7 +3,7 @@
 //! The pure grouping logic is unit-tested in `discover.rs`; this covers the part
 //! that only git can answer — that a project's worktrees collapse into one
 //! group, with the right primary and branches, and that approving the main
-//! worktree implicitly approves its siblings (ADR-0077).
+//! worktree implicitly approves its siblings (ADR-0031).
 //!
 //! Skips cleanly, with a message, when git is not installed.
 

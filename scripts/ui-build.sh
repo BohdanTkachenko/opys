@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the node's embedded web UI bundle (ADR-0086).
+# Build the node's embedded web UI bundle (ADR-0037).
 #
 # opys-server/ui/dist is a generated artifact that is NOT committed. build.rs
 # embeds it with include_bytes!, because `cargo install opys` and docs.rs build
@@ -100,7 +100,7 @@ if ! npm run build; then
 fi
 
 # ---------------------------------------------------------------------------
-# Zero external requests (ADR-0086, carried over from ADR-0078 unchanged).
+# Zero external requests (ADR-0037, carried over from ADR-0032 unchanged).
 # The node must work with the machine
 # offline, so nothing in the bundle may reach the network: no CDN script, no
 # webfont, no remote image, no source map pointing at the internet.

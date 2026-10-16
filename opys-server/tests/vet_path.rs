@@ -1,4 +1,4 @@
-//! The browser-facing path rules (ADR-0082, FEAT-0083).
+//! The browser-facing path rules (ADR-0035, FEAT-0036).
 //!
 //! This is the entire security boundary for UI-driven allowlisting, so it is
 //! tested as one: every rule, and every way each rule has of being wrong.

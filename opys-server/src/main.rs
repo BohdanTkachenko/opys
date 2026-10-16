@@ -1,9 +1,9 @@
-//! `opys-server` — the always-on opys node (FEAT-0058).
+//! `opys-server` — the always-on opys node (FEAT-0029).
 //!
 //! A long-lived process that serves the projects the user has allowlisted: one
 //! warm store per corpus, the typed opys API, and the event stream. It takes no
 //! project paths on the command line — the allowlist file is the only way in
-//! (ADR-0077), so approving a project and running the node are separate acts.
+//! (ADR-0031), so approving a project and running the node are separate acts.
 //!
 //! This binary is argument plumbing only. Every subcommand it offers is the
 //! `web` surface from [`opys_server::cli`], the same one the `opys` CLI mounts,
@@ -11,7 +11,7 @@
 //! `ExecStart=<exe> web start …` line the systemd installer writes is valid
 //! whichever of the two binaries wrote it.
 //!
-//! Apache-2.0 like the rest of the workspace, permanently (ADR-0080).
+//! Apache-2.0 like the rest of the workspace, permanently (ADR-0033).
 
 use clap::{Parser, Subcommand};
 use opys_server::cli::{dispatch, InstallArgs, StartArgs, WebCommand};
@@ -96,7 +96,7 @@ mod tests {
         );
     }
 
-    /// ADR-0077: the node serves the allowlist, so there are no project
+    /// ADR-0031: the node serves the allowlist, so there are no project
     /// arguments to give it — only where to listen and which allowlist to read.
     #[test]
     fn run_takes_no_roots_only_bind_and_config() {

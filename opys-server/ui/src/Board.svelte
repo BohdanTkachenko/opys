@@ -30,11 +30,11 @@
   } from './lib/format.js';
   import { MOD, omni } from './lib/omni.svelte.js';
   import { createResource } from './lib/resource.svelte.js';
-  import { boardPath, docPath, go, href, queryPath } from './lib/router.svelte.js';
+  import { boardPath, docPath, go, href, queryPath, rememberFilters } from './lib/router.svelte.js';
 
   let { cid, filters = {} } = $props();
 
-  // Keyboard (FEAT-0097). The cursor is real focus on a card: arrow keys move
+  // Keyboard (FEAT-0048). The cursor is real focus on a card: arrow keys move
   // it between columns and cards, Home/End to a column's ends, PageUp/PageDown
   // to the previous/next project, and Enter is the link's own. Focus rather
   // than a selection this component keeps for itself, so Tab, screen readers
@@ -264,7 +264,7 @@
   });
 
   /**
-   * Column order: priority first (lower = higher, ADR-0095 — the top card is
+   * Column order: priority first (lower = higher, ADR-0046 — the top card is
    * the one to take next), unprioritised last, ids as the stable tiebreak.
    */
   function byPriority(a, b) {
@@ -467,8 +467,12 @@
   }
 
   function clearFilters() {
-    go(boardPath(cid));
+    go(boardPath(cid, {}));
   }
+
+  // Every way back to this board (a document's "← board", the sidebar) links
+  // to these, so leaving to read a card does not cost the filter.
+  $effect(() => rememberFilters(cid, filters));
 </script>
 
 <svelte:window onkeydown={onwindowkeydown} />
@@ -608,7 +612,7 @@
     {/if}
 
     <span class="keys mono muted" aria-hidden="true">
-      <kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>↵</kbd> open · <kbd>PgUp</kbd><kbd>PgDn</kbd> project
+      <kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>↵</kbd> open · <kbd>PgUp</kbd><kbd>PgDn</kbd> project · <kbd>[</kbd> sidebar
     </span>
   </div>
 
@@ -710,7 +714,7 @@
                   <span class="idrow">
                     <span class="id mono small">{doc.id}</span>
                     {#if doc.priority !== null && doc.priority !== undefined}
-                      <!-- The rank that put the card here (ADR-0095): lower is
+                      <!-- The rank that put the card here (ADR-0046): lower is
                            higher, so the number reads with its neighbours,
                            not on its own. -->
                       <span
@@ -720,13 +724,16 @@
                         <Icon name="flag" size={9} />{doc.priority}
                       </span>
                     {/if}
-                    {#if doc.blocked_by > 0}
+                    <!-- Blocked is derived server-side from the live blockers
+                         (ADR-0050): not struck, still there, and not at a status
+                         their type releases at. Naming them beats a bare count. -->
+                    {#if doc.blocked}
                       <span
                         class="badge blocked mono"
-                        title={`blocked by ${doc.blocked_by} live ${doc.blocked_by === 1 ? 'document' : 'documents'}`}
+                        title={`blocked by ${doc.live_blockers.join(', ')}`}
                       >
                         <Icon name="lock" size={10} />
-                        {doc.blocked_by}
+                        {doc.live_blockers.length}
                       </span>
                     {/if}
                     {#if doc.blocks > 0}

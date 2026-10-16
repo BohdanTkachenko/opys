@@ -10,10 +10,10 @@ readme = "README.md"
 keywords = ["opys", "server", "inventory", "api", "daemon"]
 categories = ["development-tools", "web-programming::http-server"]
 # Published like the rest of the workspace: `opys` depends on this crate for
-# `opys web` (ADR-0077), and a published crate cannot depend on an unpublished
+# `opys web` (ADR-0031), and a published crate cannot depend on an unpublished
 # one. Release order falls out of the dependency graph.
 
-# ui/dist is a build product that is NOT committed (ADR-0086). It reaches
+# ui/dist is a build product that is NOT committed (ADR-0037). It reaches
 # crates.io consumers *here*: `include` overrides .gitignore when cargo packages
 # the crate, so the release job builds the bundle and `cargo publish` ships it.
 # That is what keeps `cargo install opys` and docs.rs — neither of which can run
@@ -37,14 +37,19 @@ include = [
 ]
 
 [features]
-default = ["web-ui"]
+default = ["web-ui", "git"]
+# Forwards the engine's in-process git reader. Declared here (rather than
+# inherited through the dependency edge) because cargo applies
+# `--no-default-features` per package: a standalone `cargo install opys-server`
+# would otherwise have no way to ask for it, and would silently serve main-only.
+git = ["opys-engine/git"]
 # Embeds the built bundle. On by default, so `cargo install opys`, docs.rs and
 # the Nix package all ship a node with its UI. A contributor who does not want a
 # Node toolchain builds with `--no-default-features`: the node still serves its
 # API, and the UI routes answer a 501 that says exactly why.
 web-ui = []
 
-# A library as well as a binary: ADR-0077 makes `opys web` a subcommand of the
+# A library as well as a binary: ADR-0031 makes `opys web` a subcommand of the
 # CLI, which means the CLI links this crate. The binary stays for `opys-server`
 # on its own and for the systemd unit.
 [lib]
@@ -56,7 +61,10 @@ name = "opys-server"
 path = "src/main.rs"
 
 [dependencies]
-opys-engine = { path = "..", version = "0.12.0" }
+# `default-features = false` + the forwarding `git` feature above, for the
+# reason the feature block gives: without it the engine keeps its own defaults
+# no matter what was asked of this crate.
+opys-engine = { path = "..", version = "0.12.0", default-features = false }
 opys-backend-markdown-local = { path = "../opys-backend-markdown-local", version = "0.12.0" }
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
@@ -64,7 +72,10 @@ notify = "8"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-comrak = "0.52"
+# Trimmed the same way as the engine's (see the root Cargo.toml): cargo
+# unifies features across the workspace, so both edges must drop the defaults
+# or neither does.
+comrak = { version = "0.52", default-features = false }
 # The allowlist registry is TOML; discovery walks the filesystem. Same versions
 # as the engine uses, so neither widens the dependency tree.
 toml = "0.8"
@@ -74,6 +85,16 @@ walkdir = "2"
 fs4 = "0.13"
 
 [dev-dependencies]
+# `tests/ref_reader.rs` builds its repositories with the engine's gix-only
+# fixture builder, which is not public API: it sits behind the engine's
+# non-default `test-fixtures` feature, which only a *dev*-dependency ever asks
+# for (this one, and `opys`'s for `opys/tests/cli.rs`), so the module reaches no
+# consumer and never ships in the binary or on docs.rs. The feature is a no-op without gix, and `default-features = false`
+# keeps this edge from re-enabling `git` under `--no-default-features` — which
+# is what makes that CI job an honest main-only build.
+opys-engine = { path = "..", version = "0.12.0", default-features = false, features = [
+    "test-fixtures",
+] }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

@@ -1,4 +1,4 @@
-//! One actor thread per corpus, owning a warm [`Store`] (TASK-0070).
+//! One actor thread per corpus, owning a warm [`Store`].
 //!
 //! All store access is single-threaded by construction: the store is created
 //! inside the actor thread and never moves across threads, so nothing here
@@ -22,6 +22,9 @@ use opys_engine::backend::Backend;
 use opys_engine::commands::{now_rfc3339, verify};
 use opys_engine::doc::Doc;
 use opys_engine::error::{OpysError, Result};
+use opys_engine::lifecycle;
+use opys_engine::next::{self, PickQuery, PickResult};
+use opys_engine::observe;
 use opys_engine::project::Project;
 use opys_engine::refs;
 use opys_engine::store::Store;
@@ -29,12 +32,13 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use crate::discover::Corpus;
+use crate::flow::{self, FlowView};
 
 /// Quiet period a filesystem burst must clear before it becomes one reload.
 /// `opys sync` rewriting forty files is one event, not forty.
 pub const DEBOUNCE: Duration = Duration::from_millis(250);
 
-/// What happened, for the WebSocket fan-out in TASK-0071.
+/// What happened, for the WebSocket fan-out.
 ///
 /// Payloads are counts, not documents: subscribers refetch what they need over
 /// the API. A broadcast channel clones its message per receiver and buffers for
@@ -42,7 +46,7 @@ pub const DEBOUNCE: Duration = Duration::from_millis(250);
 /// proportional to viewers times corpus size for data most of them already have.
 ///
 /// On the wire this is `{"event": "corpus-reloaded", …}` — the discriminant is
-/// kebab-case because that is the vocabulary TASK-0071 and TASK-0072 write
+/// kebab-case because that is the vocabulary the event stream and the write path write
 /// against. Field names stay snake_case, matching every other JSON payload the
 /// API emits (`verify_problems`, `is_primary`, `body_html`).
 #[derive(Debug, Clone, Serialize)]
@@ -60,7 +64,7 @@ pub enum Event {
     CorpusRemoved {
         cid: String,
     },
-    /// A write completed through the API (TASK-0072). `action` is the request's
+    /// A write completed through the API. `action` is the request's
     /// own wire name (`set-status`, `close`), and `id` the document it touched.
     ///
     /// This is the acknowledgement, not the refresh: the write also trips the
@@ -72,10 +76,23 @@ pub enum Event {
         action: String,
         id: String,
     },
+    /// A project group's refs moved, so its branch columns and its occupancy
+    /// are new (ADR-0053). Keyed by the **group** key, not a cid: the branches
+    /// of a repository belong to the project, not to any one worktree of it.
+    ///
+    /// Sent only when the ref reader's answer actually changed. A client that
+    /// cannot attribute a frame to a corpus assumes it affects every view, so a
+    /// frame per periodic re-read would be a node-wide refetch every minute.
+    RefsChanged {
+        project: String,
+    },
 }
 
 /// One row of the board: everything a list view needs without opening a doc.
-#[derive(Debug, Clone, Serialize)]
+///
+/// `PartialEq` so the ref reader can tell whether a re-read changed anything
+/// before it broadcasts; see [`crate::refreader`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DocSummary {
     pub id: String,
     #[serde(rename = "type")]
@@ -86,13 +103,21 @@ pub struct DocSummary {
     /// Relative to the project root.
     pub path: String,
     pub updated: Option<String>,
-    /// How many *live* documents block this one — struck tombstones are closed
-    /// blockers and do not count. Counts, not maps: the board renders a badge,
-    /// and the full relation is one click away on the document view.
-    pub blocked_by: usize,
+    /// Whether anything live still blocks this document (ADR-0050 decision 3):
+    /// a `blocked_by` entry that is not struck, that resolves, and whose
+    /// target's status its type does not release at. Computed by the same
+    /// [`refs::is_blocked`] behind `opys list --blocked`, so the board badge and
+    /// the CLI cannot drift.
+    pub blocked: bool,
+    /// The ids of exactly those live blockers, for the badge's count and its
+    /// tooltip. Ids rather than a count *and* a map, because a count that
+    /// disagreed with the list would be the very drift this replaced: the full
+    /// relation, titles and tombstones included, is one click away on the
+    /// document view.
+    pub live_blockers: Vec<String>,
     /// The mirror: how many live documents this one is blocking.
     pub blocks: usize,
-    /// The `priority` frontmatter field, when it is an integer (ADR-0095:
+    /// The `priority` frontmatter field, when it is an integer (ADR-0046:
     /// priority is an opt-in declared field, lower = higher). Lifted here
     /// because the board orders a column by it; anything non-integer is `None`,
     /// which sorts last exactly like an absent priority.
@@ -112,22 +137,52 @@ pub struct DocView {
     #[serde(rename = "type")]
     pub type_name: String,
     pub status: String,
-    /// Every status `set-status` will accept for this document's type: the
-    /// type's declared statuses minus its terminal ones, which are reachable
-    /// only through `close`.
+    /// This document's type's whole status *vocabulary*, minus its terminal
+    /// statuses, which are reachable only through `close`.
     ///
     /// Here rather than in the client so nothing outside this crate has to read
     /// `opys.toml` — a UI that knew the status vocabulary would be a second
     /// interpretation of the config, drifting the moment a type is edited.
     /// Empty when the id's prefix matches no configured type, which is the same
     /// answer `type_name` gives.
+    ///
+    /// It answers "what statuses exist here", not "where may this document go":
+    /// once the type declares a status graph that is
+    /// [`DocView::allowed_targets`]'s question, and this field is the fallback
+    /// for a type that declares none.
     pub allowed_statuses: Vec<String>,
-    /// Whether `close` is even possible: a type with no terminal status has
-    /// nothing to close *to*, and the engine refuses. Without this the UI's
+    /// Where *this* document may go next: the edges its type declares out of its
+    /// current status (ADR-0050 decision 1), minus terminal ones, or `null` when
+    /// the type declares no graph at all and every status is reachable.
+    ///
+    /// Computed by the same engine helper `set-status`'s guard reads
+    /// ([`lifecycle::allowed_targets`]), so a menu built from it cannot offer a
+    /// move the node would then refuse. Terminal statuses are filtered out for
+    /// the same reason `allowed_statuses` filters them: an edge into one says
+    /// the document may be *closed* from here, and `close` — gated separately by
+    /// [`DocView::closable`] — is the only door. A dead-end status therefore
+    /// yields `[]`, which is the honest answer, not a missing one.
+    pub allowed_targets: Option<Vec<String>>,
+    /// Whether `close` would be accepted *from where this document stands*: its
+    /// type has a terminal status at all, and — when the type declares a status
+    /// graph — the current status has an edge into one. Without this the UI's
     /// close button would 422 on, say, an ADR no matter what the user did —
     /// [`DocView::allowed_statuses`] cannot express it, because a terminal
     /// status is precisely what it leaves out.
     pub closable: bool,
+    /// Whether the type has a terminal status *at all* — the other half of
+    /// [`DocView::closable`], which on its own conflates two refusals a reader
+    /// must not be told apart wrongly: "never, for this type" and "not from
+    /// here yet".
+    ///
+    /// A client cannot derive it from the fields above.
+    /// [`DocView::allowed_targets`] is non-null whenever the type declares a
+    /// *graph*, which says nothing about terminal statuses — the shipped
+    /// `feature` type is exactly that shape (a graph, `terminal_statuses = []`),
+    /// and so are this repo's own `feature` and `adr`. Only the node can tell
+    /// the two apart, the way `close` does: empty `terminal_statuses` first,
+    /// then the graph.
+    pub has_terminal_status: bool,
     pub title: String,
     pub path: String,
     pub tags: Vec<String>,
@@ -138,6 +193,27 @@ pub struct DocView {
     pub references: BTreeMap<String, String>,
     /// What blocks this document, id → title.
     pub blocked_by: BTreeMap<String, String>,
+    /// Which of those entries still *hold* (ADR-0050 decision 3) — the rest are
+    /// struck tombstones, dangling ids, or targets whose type releases at the
+    /// status they have reached.
+    ///
+    /// The map above cannot answer it: whether an entry is live depends on the
+    /// rest of the corpus and on the blocker type's `releases_blocks`, so a
+    /// client deriving it would be a second interpretation of `opys.toml` —
+    /// exactly what [`DocView::allowed_statuses`] exists to avoid.
+    pub live_blockers: Vec<String>,
+    /// Which non-struck `blocked_by` entries point at an id no document answers
+    /// to — `verify`'s "does not resolve to a known document".
+    ///
+    /// A subset of the entries missing from `live_blockers`, and the reason that
+    /// list alone cannot explain itself: an entry drops out either because its
+    /// target released or because there is no target, and a view that renders
+    /// both as "released" tells the reader a status transition happened to a
+    /// document that does not exist.
+    pub dangling_blockers: Vec<String>,
+    /// Whether anything in `live_blockers` remains — the whole of what "blocked"
+    /// means. There is no blocked status and no blocked flag on disk.
+    pub blocked: bool,
     /// What this document blocks, id → title.
     pub blocks: BTreeMap<String, String>,
     /// Every frontmatter key, as JSON.
@@ -149,6 +225,16 @@ pub struct DocView {
     /// be a second interpretation of the config. Empty when the id's prefix
     /// matches no configured type.
     pub declared_fields: Vec<FieldView>,
+    /// The headings of this type's `kind = "log"` sections, in declaration
+    /// order — what the document view's entry box writes to, and which
+    /// `--section` name it sends when there is more than one.
+    ///
+    /// Same reasoning as [`DocView::allowed_statuses`]: a client that worked
+    /// out which sections are logs would be a second reading of `opys.toml`,
+    /// drifting the moment a type is edited. Empty when the id's prefix matches
+    /// no configured type, or when the type declares no log section — which is
+    /// also how the UI knows not to offer the box at all.
+    pub log_sections: Vec<String>,
     /// The markdown body, verbatim.
     pub body: String,
     /// The body rendered. Raw HTML in the source stays escaped — comrak's
@@ -253,6 +339,17 @@ enum Request {
         Vec<String>,
         SyncSender<Result<std::result::Result<QueryResult, String>>>,
     ),
+    /// Same double `Result` as [`Request::Query`]: the inner `Err` is the
+    /// caller's bad `status`/`type` (a 400), the outer one is ours (a 500).
+    Next(
+        PickQuery,
+        SyncSender<Result<std::result::Result<PickResult, String>>>,
+    ),
+    /// The lifecycle graph, with the per-node item cap. A single `Result`,
+    /// unlike [`Request::Next`]: the only thing the caller supplies is a
+    /// number, and every status in the answer comes from the config itself, so
+    /// there is no user vocabulary left to refuse.
+    Flow(usize, SyncSender<Result<FlowView>>),
     Verify(SyncSender<VerifyStatus>),
     Stats(SyncSender<CorpusStats>),
     /// Reload now and reply when done — the deterministic path for tests and
@@ -323,6 +420,19 @@ impl CorpusClient {
         params: &[String],
     ) -> Result<std::result::Result<QueryResult, String>> {
         self.ask(|reply| Request::Query(sql.to_string(), params.to_vec(), reply))?
+    }
+
+    /// The pick oracle over the warm store. The inner `Err` is the caller's
+    /// query problem (a 400 for the API); the outer one is ours — the actor is
+    /// gone, or the corpus never loaded.
+    pub fn next(&self, q: PickQuery) -> Result<std::result::Result<PickResult, String>> {
+        self.ask(|reply| Request::Next(q, reply))?
+    }
+
+    /// The lifecycle graph over the warm store, with `limit` items per node.
+    /// Fails only if the actor is gone or the corpus never loaded.
+    pub fn flow(&self, limit: usize) -> Result<FlowView> {
+        self.ask(|reply| Request::Flow(limit, reply))?
     }
 
     /// Cached verify problems and the time they were computed.
@@ -404,6 +514,18 @@ impl CorpusHandle {
         params: &[String],
     ) -> Result<std::result::Result<QueryResult, String>> {
         self.client.query(sql, params)
+    }
+
+    /// The pick oracle over the warm store. The inner `Err` is the caller's
+    /// query problem (a 4xx for the API); the outer one means the actor is gone.
+    pub fn next(&self, q: PickQuery) -> Result<std::result::Result<PickResult, String>> {
+        self.client.next(q)
+    }
+
+    /// The lifecycle graph over the warm store. The `Err` means the actor is
+    /// gone or the corpus never loaded.
+    pub fn flow(&self, limit: usize) -> Result<FlowView> {
+        self.client.flow(limit)
     }
 
     /// Cached verify problems and the time they were computed.
@@ -514,6 +636,12 @@ impl Actor {
             Request::Query(sql, params, reply) => {
                 let _ = reply.send(self.run_query(&sql, &params));
             }
+            Request::Next(q, reply) => {
+                let _ = reply.send(self.run_next(&q));
+            }
+            Request::Flow(limit, reply) => {
+                let _ = reply.send(self.run_flow(limit));
+            }
             Request::Verify(reply) => {
                 let _ = reply.send(VerifyStatus {
                     ok: self.load_error.is_none()
@@ -565,7 +693,15 @@ impl Actor {
             return Ok(None);
         };
         let doc = warm.store.doc(dkey)?;
-        Ok(Some(view(&warm.prj, &doc)))
+        // The summaries are this corpus's id → status index, already built by
+        // the last load — the same one the board's badges came from.
+        let corpus = refs::Corpus::new(
+            &warm.prj.pcfg,
+            warm.summaries
+                .iter()
+                .map(|s| (s.id.as_str(), s.status.as_str())),
+        );
+        Ok(Some(view(&warm.prj, &doc, &corpus)))
     }
 
     /// Run user SQL. The outer error is ours (no warm store, projections would
@@ -583,6 +719,38 @@ impl Actor {
             .store
             .run_user_query(sql, params)
             .map(|(columns, rows)| QueryResult { columns, rows }))
+    }
+
+    /// Answer the pick oracle from the warm store.
+    ///
+    /// The documents are reconstructed per request, exactly as [`run_query`]
+    /// rebuilds the projections per request: [`next::pick`] needs whole
+    /// documents (relation maps and all) and the summaries the board is served
+    /// from carry no `blocks` map, so effective priority cannot come from them.
+    ///
+    /// [`run_query`]: Actor::run_query
+    fn run_next(&mut self, q: &PickQuery) -> Result<std::result::Result<PickResult, String>> {
+        let warm = self.warm()?;
+        if let Err(msg) = q.validate(&warm.prj.pcfg) {
+            return Ok(Err(msg));
+        }
+        let docs: Vec<Doc> = warm.store.all_docs()?.into_iter().map(|(_, d)| d).collect();
+        Ok(Ok(next::pick(&warm.prj, &docs, q, observe::now())))
+    }
+
+    /// Answer the flow graph from the warm store.
+    ///
+    /// The documents are reconstructed **once** and every node is computed from
+    /// that one set — the alternative, one `/next` request per status, would
+    /// reconstruct the whole corpus a dozen times over and still could not
+    /// answer the blocked count, which is not part of a [`PickResult`].
+    ///
+    /// The cid is cloned before [`Actor::warm`] borrows `self` mutably.
+    fn run_flow(&mut self, limit: usize) -> Result<FlowView> {
+        let cid = self.corpus.cid.clone();
+        let warm = self.warm()?;
+        let docs: Vec<Doc> = warm.store.all_docs()?.into_iter().map(|(_, d)| d).collect();
+        Ok(flow::flow(&warm.prj, &docs, &cid, limit))
     }
 
     /// Load afresh and swap the cache in. A failure leaves the previous warm
@@ -609,7 +777,7 @@ impl Actor {
         // `Project::open` searches *upward* for `opys.toml`. A corpus whose own
         // config has gone — a branch switch, a removed worktree — would
         // otherwise start serving the nearest enclosing project, which the user
-        // never allowlisted (ADR-0077), under this corpus's cid. Refuse; the
+        // never allowlisted (ADR-0031), under this corpus's cid. Refuse; the
         // manager's next tick retires the corpus properly, and until then reads
         // answer from the last good load rather than from someone else's
         // documents. `crate::action::perform` guards the write path the same way.
@@ -636,8 +804,19 @@ impl Actor {
         // Unparsable documents arrive as `parse_errors` and are already part of
         // what verify reports, so a broken file shows up as a problem rather
         // than taking the corpus down.
-        let problems = verify::collect_problems(&prj, &docs, parse_errors);
-        let summaries = docs.iter().filter_map(|d| summary(&prj, d)).collect();
+        let mut problems = verify::collect_problems(&prj, &docs, parse_errors);
+        // The corpus was just read off the medium and nothing has written since,
+        // so the spelling checks (format.md's quoted `history` keys) can run
+        // against it too — the dashboard's verify dot then says what `opys
+        // verify` says.
+        problems.extend(verify::spelling_problems(&docs, self.backend.as_ref()));
+        // One index for the whole board: blocked is derived from the corpus, not
+        // from a document on its own (ADR-0050 decision 3).
+        let corpus = refs::Corpus::of_docs(&prj.pcfg, &docs);
+        let summaries = docs
+            .iter()
+            .filter_map(|d| summary(&prj, d, &corpus))
+            .collect();
         Ok(Warm {
             prj,
             store,
@@ -665,8 +844,16 @@ fn rel_path(prj: &Project, doc: &Doc) -> String {
         .into_owned()
 }
 
-fn summary(prj: &Project, doc: &Doc) -> Option<DocSummary> {
+/// One board row from a parsed document. `pub(crate)` because the ref reader
+/// summarises the documents it decoded out of git objects the same way, and a
+/// second spelling of this would let a branch column and a worktree column
+/// disagree about what `blocked` means.
+pub(crate) fn summary(prj: &Project, doc: &Doc, corpus: &refs::Corpus<'_>) -> Option<DocSummary> {
     let id = doc.id()?.to_string();
+    let live_blockers: Vec<String> = refs::live_blockers(doc, corpus)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
     Some(DocSummary {
         type_name: type_of(prj, &id),
         status: doc.frontmatter.status().unwrap_or_default().to_string(),
@@ -674,14 +861,17 @@ fn summary(prj: &Project, doc: &Doc) -> Option<DocSummary> {
         tags: doc.frontmatter.tags().unwrap_or_default(),
         path: rel_path(prj, doc),
         updated: doc.frontmatter.get_str("updated").map(str::to_string),
-        blocked_by: live_relations(doc, refs::BLOCKED_BY),
+        blocked: !live_blockers.is_empty(),
+        live_blockers,
         blocks: live_relations(doc, refs::BLOCKS),
         priority: doc.frontmatter.get("priority").and_then(|v| v.as_i64()),
         id,
     })
 }
 
-/// How many entries of a relation map point at documents that still exist.
+/// How many entries of a relation map are not struck-through tombstones. The
+/// mirror side (`blocks`) only: what makes a *blocker* live is
+/// [`refs::live_blockers`], which also asks whether the target has released.
 fn live_relations(doc: &Doc, field: &str) -> usize {
     refs::parse_in(&doc.frontmatter, field)
         .into_iter()
@@ -689,7 +879,7 @@ fn live_relations(doc: &Doc, field: &str) -> usize {
         .count()
 }
 
-fn view(prj: &Project, doc: &Doc) -> DocView {
+fn view(prj: &Project, doc: &Doc, corpus: &refs::Corpus<'_>) -> DocView {
     let id = doc.id().unwrap_or_default().to_string();
     let mut fields = BTreeMap::new();
     for key in doc.frontmatter.keys() {
@@ -706,9 +896,18 @@ fn view(prj: &Project, doc: &Doc) -> DocView {
         .pcfg
         .type_name_for_id(&id)
         .and_then(|name| prj.pcfg.types.get(name));
+    let status = doc.frontmatter.status().unwrap_or_default().to_string();
+    let live_blockers: Vec<String> = refs::live_blockers(doc, corpus)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    let dangling_blockers: Vec<String> = refs::parse_in(&doc.frontmatter, refs::BLOCKED_BY)
+        .into_iter()
+        .filter(|(id, title)| !refs::is_struck(title) && !corpus.resolves(id))
+        .map(|(id, _)| id)
+        .collect();
     DocView {
         type_name: type_of(prj, &id),
-        status: doc.frontmatter.status().unwrap_or_default().to_string(),
         allowed_statuses: doc_type
             .map(|t| {
                 t.statuses
@@ -718,7 +917,26 @@ fn view(prj: &Project, doc: &Doc) -> DocView {
                     .collect()
             })
             .unwrap_or_default(),
-        closable: doc_type.is_some_and(|t| !t.terminal_statuses.is_empty()),
+        allowed_targets: doc_type.and_then(|t| {
+            lifecycle::allowed_targets(t, &status).map(|targets| {
+                targets
+                    .into_iter()
+                    .filter(|s| !t.terminal_statuses.contains(s))
+                    .collect()
+            })
+        }),
+        closable: doc_type
+            .is_some_and(|t| !t.terminal_statuses.is_empty() && lifecycle::can_close(t, &status)),
+        has_terminal_status: doc_type.is_some_and(|t| !t.terminal_statuses.is_empty()),
+        log_sections: doc_type
+            .map(|t| {
+                t.sections
+                    .iter()
+                    .filter(|s| s.kind.is_log())
+                    .map(|s| s.heading.clone())
+                    .collect()
+            })
+            .unwrap_or_default(),
         declared_fields: doc_type
             .map(|t| {
                 t.fields
@@ -740,10 +958,14 @@ fn view(prj: &Project, doc: &Doc) -> DocView {
         updated: doc.frontmatter.get_str("updated").map(str::to_string),
         references: relation(doc, refs::FIELD),
         blocked_by: relation(doc, refs::BLOCKED_BY),
+        blocked: !live_blockers.is_empty(),
+        live_blockers,
+        dangling_blockers,
         blocks: relation(doc, refs::BLOCKS),
         fields,
-        body_html: comrak::markdown_to_html(&doc.body, &markdown_options()),
+        body_html: render_markdown(&doc.body),
         body: doc.body.clone(),
+        status,
         id,
     }
 }
@@ -758,13 +980,20 @@ fn view(prj: &Project, doc: &Doc) -> DocView {
 /// `render.unsafe_` stays off, and must: bodies are user content and the client
 /// injects this string with `{@html}`. Raw HTML and `javascript:` hrefs are
 /// filtered by that switch, which none of these extensions touches.
-fn markdown_options() -> comrak::Options<'static> {
+pub(crate) fn markdown_options() -> comrak::Options<'static> {
     let mut options = comrak::Options::default();
     options.extension.table = true;
     options.extension.tasklist = true;
     options.extension.strikethrough = true;
     options.extension.autolink = true;
     options
+}
+
+/// Markdown to HTML exactly as a document body is rendered, for the editor's
+/// per-block previews (`POST /api/render`). One renderer for both, so a block
+/// looks the same in the editor as in the document it came from.
+pub fn render_markdown(markdown: &str) -> String {
+    comrak::markdown_to_html(markdown, &markdown_options())
 }
 
 /// One relation map as id → title. An absent map is an empty one: a caller
@@ -848,7 +1077,8 @@ mod tests {
             tags: vec!["server".into(), "core".into()],
             path: "inventory/FEAT-0001.md".into(),
             updated: None,
-            blocked_by: 0,
+            blocked: false,
+            live_blockers: Vec::new(),
             blocks: 0,
             priority: None,
         };

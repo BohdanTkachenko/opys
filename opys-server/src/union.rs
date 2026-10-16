@@ -1,5 +1,4 @@
-//! The worktree union view: one labeled table across a project's corpora
-//! (TASK-0073).
+//! The worktree union view: one labeled table across a project's corpora.
 //!
 //! A project group is a repository's main worktree plus every sibling worktree
 //! carrying the same inventory. Each is a separate corpus with its own copy of
@@ -9,7 +8,7 @@
 //! so the drift is *visible*.
 //!
 //! It is a view and nothing else. Nothing here merges, resolves, or writes —
-//! git remains the only merger (ADR-0051), and the honest thing a node can do
+//! git remains the only merger (ADR-0027), and the honest thing a node can do
 //! is show a user which branch says what and let them go and merge it.
 //!
 //! [`union`] is a pure function over [`CorpusDocs`] pairs: no manager, no
@@ -25,9 +24,22 @@
 //! document is new on the other branch. Taking it as *input* is what makes the
 //! second unrepresentable as the first — [`Column::error`], [`Cell::unknown`]
 //! and the `only_in` denominator all derive from it.
+//!
+//! A worktree is not the only thing that can hold a copy of the inventory. A
+//! branch nobody has checked out has no directory, no actor and no watcher, and
+//! its documents exist only as git objects — so it arrives here as a
+//! [`Branches`] value read by [`crate::refreader`], as a second kind of column
+//! (ADR-0053 decision 5: the union function is pure over columns and takes them
+//! unchanged). Branch columns merge exactly like worktree columns; the only
+//! things that know the difference are [`Column::kind`] — a client must not link
+//! a branch cell to a corpus that does not exist — and [`Row::occupants`], which
+//! is the branch reader's own answer to "who else holds this document, and since
+//! when".
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
+use opys_engine::git::Occupant;
 use opys_engine::refs;
 use serde::Serialize;
 
@@ -37,6 +49,86 @@ use crate::discover::{display_name, Corpus};
 /// What one corpus had to say: its document summaries, or why it could not
 /// answer (never loaded, stopped, still holding the inventory lock).
 pub type CorpusDocs = (Corpus, Result<Vec<DocSummary>, String>);
+
+/// One ref with no checkout, as a column heading.
+///
+/// Deliberately not a synthetic [`Corpus`]: a corpus is a directory holding
+/// `opys.toml`, and faking a root for a branch that has none would put a path
+/// that does not exist into [`labels`]'s disambiguation and into the client's
+/// links. This is the honest shape — a key, a name, and the commit it was read
+/// at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BranchColumn {
+    /// The column key, in [`Cell::cid`] and [`Row::only_in`] where a corpus
+    /// column puts its `cid`. `ref-<commit>`: unique because [`Branches`] holds
+    /// one entry per *commit*, and unmistakable for a corpus id, which always
+    /// ends in a 16-hex hash of its path.
+    pub key: String,
+    /// What to show above the column — the branch name, or the checkout
+    /// directories, exactly as `opys_engine::git::Ref::label` chose it.
+    pub label: String,
+    /// The commit the column was read at, full hex. Shown on hover, and the
+    /// thing to quote when a user goes to look at the branch themselves.
+    pub commit: String,
+}
+
+/// What one ref held, or why it could not be read — the branch-side twin of
+/// [`CorpusDocs`], and merged the same way.
+pub type BranchDocs = (BranchColumn, Result<Vec<DocSummary>, String>);
+
+/// Everything the node's ref reader last learned about a project's branches.
+///
+/// Held as a whole rather than as three loose arguments because the three are
+/// one answer: the columns, the per-document occupancy behind them, and the
+/// notices that say the reader could not look at all. An empty, notice-free
+/// value is the honest "not read yet" and also the honest "nothing to say", and
+/// [`Default`] is how a caller with no reader (every unit test below, a plain
+/// non-git project) spells it.
+#[derive(Debug, Clone, Default)]
+pub struct Branches {
+    pub columns: Vec<BranchDocs>,
+    /// Document id → the refs holding it at a status main's copy does not.
+    /// Restricted to the refs that became columns, so a row never carries a chip
+    /// for a branch that is already a worktree column of its own.
+    pub occupancy: BTreeMap<String, Vec<Occupant>>,
+    /// Why there are no branch columns, when there are none for a reason:
+    /// `git::NOT_A_REPOSITORY`, `git::NO_TRUTH_BRANCH`, `git::NO_GIT_FEATURE`.
+    ///
+    /// A notice and a [`Column::error`] are different states and must not look
+    /// alike: a notice says *the reader could not look at branches at all*, an
+    /// error says *this one branch could not be read* — which is why a failed
+    /// ref keeps its column.
+    pub notices: Vec<String>,
+    /// When the reader last completed a pass, `None` before its first.
+    pub read_at: Option<String>,
+    /// The branch each served corpus's checkout is on, as of that pass, keyed
+    /// by corpus root. Absent when the reader has no answer for it — no
+    /// repository, or a pass that could not open one.
+    ///
+    /// Discovery records a corpus's branch when it first walks the allowlist and
+    /// never again until the group is rebuilt, so a checkout that moves under a
+    /// running node keeps the name it was found on. That was a quiet staleness
+    /// until the reader gained a notice about *which* branch it is measuring
+    /// against: the same screen then read `main (primary)` above a column and
+    /// "no served worktree is on `main`" above the table. The reader re-resolves
+    /// every checkout each pass anyway — this is that answer, published so the
+    /// labels can be as fresh as the notice.
+    pub branch_of: BTreeMap<PathBuf, Option<String>>,
+}
+
+impl Branches {
+    /// Whether two passes say the same thing, ignoring when they were taken.
+    ///
+    /// The reader broadcasts only on a real change: the 60 s backstop otherwise
+    /// wakes every open browser every minute forever, and the client treats an
+    /// event it cannot attribute to a corpus as affecting every view.
+    pub fn same_answer(&self, other: &Branches) -> bool {
+        self.columns == other.columns
+            && self.occupancy == other.occupancy
+            && self.notices == other.notices
+            && self.branch_of == other.branch_of
+    }
+}
 
 /// One merged table: the corpora as columns, the union of their documents as
 /// rows.
@@ -50,14 +142,35 @@ pub struct UnionView {
     /// Every document id that appears in at least one corpus, ordered by the
     /// numeric part of the id.
     pub rows: Vec<Row>,
+    /// Why the table has no branch columns, when it has none for a reason —
+    /// [`Branches::notices`], passed through. Rendered above the table, once,
+    /// and never confused with a column that failed: see [`Column::error`].
+    pub notices: Vec<String>,
+}
+
+/// What a column *is*, so a client can render one it cannot navigate to.
+///
+/// A worktree column's [`Column::cid`] addresses a served corpus and every cell
+/// links to `/corpus/<cid>/doc/<id>`. A branch column's key addresses nothing —
+/// there is no directory, no actor, and no document route — so a client that
+/// linked its cells the same way would offer a table of 404s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ColumnKind {
+    /// A checked-out corpus the node serves.
+    Worktree,
+    /// A ref with no checkout, read out of git objects by the ref reader.
+    Branch,
 }
 
 /// One corpus, as a column heading.
 #[derive(Debug, Clone, Serialize)]
 pub struct Column {
-    /// The corpus id — the stable key. Labels are made distinct within a view
-    /// (see [`Column::label`]) but are still a human's string; this is the one
-    /// to key on.
+    /// The stable key: the corpus id for a worktree column, and
+    /// [`BranchColumn::key`] for a branch one. Labels are made distinct within a
+    /// view (see [`Column::label`]) but are still a human's string; this is the
+    /// one to key on — and the one to check [`Column::kind`] against before
+    /// treating it as something a document route will accept.
     pub cid: String,
     /// What to show above the column: the branch when git knows one, otherwise
     /// the corpus directory's name, with ` (primary)` appended for the main
@@ -84,6 +197,12 @@ pub struct Column {
     /// the same problem one layer out, where "did not answer" is routine.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Whether this column is a served worktree or a ref with no checkout.
+    pub kind: ColumnKind,
+    /// The commit a branch column was read at; `None` for a worktree column,
+    /// whose contents are files on disk rather than a fixed revision.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 /// One document across every corpus.
@@ -141,6 +260,18 @@ pub struct Row {
     /// either way. It can only miss a column that did not answer, whose ids are
     /// unknown.
     pub collision: bool,
+    /// Which refs hold this document at a status main's copy does not, and
+    /// since when (ADR-0053: branches are progress).
+    ///
+    /// Related to, but not derivable from, the branch cells beside it: a cell
+    /// says what a ref holds, an occupant says that it *disagrees with main*,
+    /// which is the claim an orchestrator acts on. The reader computes it off
+    /// the same diff that built the columns, so the two cannot drift.
+    ///
+    /// Omitted from the JSON when empty, which is the common case: most rows are
+    /// not in flight anywhere.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub occupants: Vec<Occupant>,
 }
 
 /// One document in one corpus.
@@ -203,36 +334,46 @@ pub struct Cell {
 /// separate argument so the warning survives a filtered view; see
 /// [`Row::collision`].
 ///
+/// `branches` is what the ref reader last read: columns for the refs nobody has
+/// checked out, the occupancy behind them, and the notices that explain their
+/// absence. They are appended after the worktree columns and merged identically
+/// — a branch that added a document makes a row, a branch that deleted one is
+/// reported by `only_in`, a branch that could not be read is a column with an
+/// error. Passing them in rather than reading git here is ADR-0053 decision 5:
+/// this function stays pure over its columns.
+///
 /// **The summaries are taken as given.** If the caller filtered them — the
 /// `?status=` on the route does exactly that, per corpus, before merging — then
 /// a document that is `open` here and `done` there was already dropped from the
 /// second corpus and shows up as `only_in` the first. That is the specified
 /// behaviour, and it means a filtered union answers "where does this match"
 /// rather than "where does this exist".
-pub fn union(corpora: &[CorpusDocs], contested: &BTreeSet<u64>) -> UnionView {
-    let columns: Vec<Column> = labels(corpora)
-        .into_iter()
-        .zip(corpora)
-        .map(|(label, (corpus, docs))| Column {
-            cid: corpus.cid.clone(),
-            label,
-            error: docs.as_ref().err().cloned(),
+pub fn union(corpora: &[CorpusDocs], branches: &Branches, contested: &BTreeSet<u64>) -> UnionView {
+    let sources = sources(corpora, branches);
+    let columns: Vec<Column> = sources
+        .iter()
+        .map(|source| Column {
+            cid: source.cid.clone(),
+            label: source.label.clone(),
+            error: source.docs.as_ref().err().cloned(),
+            kind: source.kind,
+            commit: source.commit.clone(),
         })
         .collect();
 
     // Which columns spoke at all. Everything derived below counts only these:
     // a silent column is not a corpus with no documents.
-    let answered: Vec<bool> = corpora.iter().map(|(_, docs)| docs.is_ok()).collect();
+    let answered: Vec<bool> = sources.iter().map(|s| s.docs.is_ok()).collect();
     let answered_count = answered.iter().filter(|ok| **ok).count();
 
     // id → one slot per column. A `BTreeMap` so the row set is already ordered
     // by id before the numeric sort below makes the tiebreak explicit.
     let mut slots: BTreeMap<&str, Vec<Option<&DocSummary>>> = BTreeMap::new();
-    for (index, (_, docs)) in corpora.iter().enumerate() {
-        for doc in docs.iter().flatten() {
+    for (index, source) in sources.iter().enumerate() {
+        for doc in source.docs.iter().flat_map(|docs| docs.iter()) {
             let row = slots
                 .entry(doc.id.as_str())
-                .or_insert_with(|| vec![None; corpora.len()]);
+                .or_insert_with(|| vec![None; sources.len()]);
             // One corpus carrying an id twice is a corpus `verify` already
             // rejects (`check_unique_numbers`). The first summary wins so the
             // view stays a table rather than growing a second row for a state
@@ -243,7 +384,7 @@ pub fn union(corpora: &[CorpusDocs], contested: &BTreeSet<u64>) -> UnionView {
         }
     }
 
-    let primary = corpora.iter().position(|(corpus, _)| corpus.is_primary);
+    let primary = sources.iter().position(|source| source.is_primary);
     let mut rows: Vec<Row> = slots
         .into_iter()
         .map(|(id, row)| {
@@ -291,6 +432,7 @@ pub fn union(corpora: &[CorpusDocs], contested: &BTreeSet<u64>) -> UnionView {
                 differs,
                 only_in,
                 collision: number != u64::MAX && contested.contains(&number),
+                occupants: branches.occupancy.get(id).cloned().unwrap_or_default(),
             }
         })
         .collect();
@@ -300,10 +442,59 @@ pub fn union(corpora: &[CorpusDocs], contested: &BTreeSet<u64>) -> UnionView {
             .then_with(|| a.id.cmp(&b.id))
     });
 
-    UnionView { columns, rows }
+    UnionView {
+        columns,
+        rows,
+        notices: branches.notices.clone(),
+    }
 }
 
-/// The id numbers more than one *distinct* id claims across these corpora.
+/// One column's inputs, whatever kind of thing produced it — the shape the merge
+/// above works over, so a worktree and a branch cannot be treated differently by
+/// accident.
+struct Source<'a> {
+    cid: String,
+    label: String,
+    kind: ColumnKind,
+    commit: Option<String>,
+    is_primary: bool,
+    docs: Result<&'a [DocSummary], String>,
+}
+
+/// The worktree columns, then the branch columns, in the order given.
+///
+/// Branch labels are left exactly as git chose them. They are not folded into
+/// [`labels`]'s deduplication because the two kinds are told apart on screen by
+/// [`Column::kind`] rather than by their names, and a branch that a worktree has
+/// checked out never reaches here — [`crate::refreader`] drops it, since the
+/// checkout is already a column of its own.
+fn sources<'a>(corpora: &'a [CorpusDocs], branches: &'a Branches) -> Vec<Source<'a>> {
+    let mut out: Vec<Source<'a>> = labels(corpora)
+        .into_iter()
+        .zip(corpora)
+        .map(|(label, (corpus, docs))| Source {
+            cid: corpus.cid.clone(),
+            label,
+            kind: ColumnKind::Worktree,
+            commit: None,
+            is_primary: corpus.is_primary,
+            docs: docs.as_deref().map_err(Clone::clone),
+        })
+        .collect();
+    out.extend(branches.columns.iter().map(|(column, docs)| Source {
+        cid: column.key.clone(),
+        label: column.label.clone(),
+        kind: ColumnKind::Branch,
+        commit: Some(column.commit.clone()),
+        // A branch is never the primary: that is a served worktree — the one
+        // discovery put first — and it is where a row's title comes from.
+        is_primary: false,
+        docs: docs.as_deref().map_err(Clone::clone),
+    }));
+    out
+}
+
+/// The id numbers more than one *distinct* id claims across these columns.
 ///
 /// Pure, and separate from [`union`] so the caller can compute it over the full
 /// summaries and still hand [`union`] a filtered set: an impending id collision
@@ -311,13 +502,21 @@ pub fn union(corpora: &[CorpusDocs], contested: &BTreeSet<u64>) -> UnionView {
 /// and a `?status=` that hides one half of the pair must not retract the
 /// warning.
 ///
+/// Branch columns count too, and must: two agents allocating `0042` on two
+/// branches is exactly the hazard, and it is *most* likely to happen on a branch
+/// nobody has checked out.
+///
 /// Distinct *ids*, not observations: the same document in three worktrees is
 /// three sightings of one id and nothing is wrong with it. Ids whose number does
 /// not parse are left out — they all collapse to one sentinel, so counting them
 /// would flag every malformed id as colliding with every other one.
-pub fn contested_numbers(corpora: &[CorpusDocs]) -> BTreeSet<u64> {
+pub fn contested_numbers(corpora: &[CorpusDocs], branches: &Branches) -> BTreeSet<u64> {
     let mut per_number: BTreeMap<u64, BTreeSet<&str>> = BTreeMap::new();
-    for (_, docs) in corpora {
+    let seen = corpora
+        .iter()
+        .map(|(_, docs)| docs)
+        .chain(branches.columns.iter().map(|(_, docs)| docs));
+    for docs in seen {
         for doc in docs.iter().flatten() {
             let number = refs::id_number(&doc.id);
             if number != u64::MAX {
@@ -401,7 +600,8 @@ mod tests {
             tags: Vec::new(),
             path: format!("inventory/{id}.md"),
             updated: None,
-            blocked_by: 0,
+            blocked: false,
+            live_blockers: Vec::new(),
             blocks: 0,
             priority: None,
         }
@@ -415,8 +615,25 @@ mod tests {
     /// The whole route's shape in one call: the collision set derived from the
     /// same (here unfiltered) summaries the merge is given.
     fn merged(corpora: Vec<CorpusDocs>) -> UnionView {
-        let contested = contested_numbers(&corpora);
-        union(&corpora, &contested)
+        merged_with(corpora, &Branches::default())
+    }
+
+    /// The same, with what the ref reader had to say.
+    fn merged_with(corpora: Vec<CorpusDocs>, branches: &Branches) -> UnionView {
+        let contested = contested_numbers(&corpora, branches);
+        union(&corpora, branches, &contested)
+    }
+
+    /// One branch column, spelled the way the reader spells it.
+    fn branch(label: &str, docs: Result<Vec<DocSummary>, String>) -> BranchDocs {
+        (
+            BranchColumn {
+                key: format!("ref-{label}"),
+                label: label.into(),
+                commit: "0".repeat(40),
+            },
+            docs,
+        )
     }
 
     /// The row for an id, or a panic naming what was actually there.
@@ -685,7 +902,7 @@ mod tests {
                 vec![doc("TASK-0004", "todo", "Theirs")],
             ),
         ];
-        let contested = contested_numbers(&corpora);
+        let contested = contested_numbers(&corpora, &Branches::default());
         // What the handler passes after filtering: only the branch's row.
         let filtered = vec![
             ok(corpus("proj", Some("main"), true), Vec::new()),
@@ -694,7 +911,7 @@ mod tests {
                 vec![doc("TASK-0004", "todo", "Theirs")],
             ),
         ];
-        let view = union(&filtered, &contested);
+        let view = union(&filtered, &Branches::default(), &contested);
         assert_eq!(ids(&view), ["TASK-0004"]);
         assert!(
             row(&view, "TASK-0004").collision,
@@ -820,7 +1037,11 @@ mod tests {
                 Err("corpus is not loaded: bad config".to_string()),
             ),
         ];
-        let view = union(&corpora, &contested_numbers(&corpora));
+        let view = union(
+            &corpora,
+            &Branches::default(),
+            &contested_numbers(&corpora, &Branches::default()),
+        );
 
         assert_eq!(view.columns[0].error, None);
         assert_eq!(
@@ -855,7 +1076,11 @@ mod tests {
                 Err("corpus is busy".to_string()),
             ),
         ];
-        let view = union(&corpora, &contested_numbers(&corpora));
+        let view = union(
+            &corpora,
+            &Branches::default(),
+            &contested_numbers(&corpora, &Branches::default()),
+        );
         assert_eq!(view.columns.len(), 2);
         assert!(view.rows.is_empty(), "no observations, no rows");
         assert!(view.columns.iter().all(|c| c.error.is_some()));
@@ -876,7 +1101,11 @@ mod tests {
                 Err("corpus is busy".to_string()),
             ),
         ];
-        let view = union(&corpora, &contested_numbers(&corpora));
+        let view = union(
+            &corpora,
+            &Branches::default(),
+            &contested_numbers(&corpora, &Branches::default()),
+        );
         let r = row(&view, "TASK-0001");
         assert_eq!(
             r.only_in,
@@ -884,5 +1113,217 @@ mod tests {
             "b answered and does not have it; c said nothing"
         );
         assert!(r.cells[2].unknown);
+    }
+
+    /// The whole point of a branch column: a ref nobody has checked out is a
+    /// column beside the worktrees, and the row says who holds it and since
+    /// when.
+    #[test]
+    fn a_branch_with_no_worktree_is_a_column_of_its_own() {
+        let branches = Branches {
+            columns: vec![branch(
+                "feat-x",
+                Ok(vec![
+                    doc("TASK-0001", "doing", "One"),
+                    doc("TASK-0002", "todo", "Two"),
+                ]),
+            )],
+            occupancy: BTreeMap::from([(
+                "TASK-0001".to_string(),
+                vec![Occupant {
+                    label: "feat-x".into(),
+                    status: "doing".into(),
+                    since: Some("2026-02-01T00:01:00.000000Z".into()),
+                }],
+            )]),
+            notices: vec!["packed-refs could not be read".to_string()],
+            ..Branches::default()
+        };
+        let view = merged_with(
+            vec![ok(
+                corpus("proj", Some("main"), true),
+                vec![
+                    doc("TASK-0001", "todo", "One"),
+                    doc("TASK-0002", "todo", "Two"),
+                ],
+            )],
+            &branches,
+        );
+
+        assert_eq!(
+            view.columns
+                .iter()
+                .map(|c| (c.label.as_str(), c.kind))
+                .collect::<Vec<_>>(),
+            [
+                ("main (primary)", ColumnKind::Worktree),
+                ("feat-x", ColumnKind::Branch),
+            ]
+        );
+        // A branch column names the commit it was read at; a worktree is files.
+        assert_eq!(
+            view.columns[1].commit.as_deref(),
+            Some("0".repeat(40).as_str())
+        );
+        assert!(view.columns[0].commit.is_none());
+
+        let r = row(&view, "TASK-0001");
+        assert_eq!(r.cells[1].status.as_deref(), Some("doing"));
+        assert!(r.differs, "main says todo, the branch says doing");
+        assert_eq!(r.occupants.len(), 1);
+        assert_eq!(r.occupants[0].label, "feat-x");
+        // A row nothing is doing carries no occupants at all.
+        assert!(row(&view, "TASK-0002").occupants.is_empty());
+
+        // And the wire form, because that is the contract the dashboard keys
+        // off: it renders a branch cell as text rather than a document link on
+        // `kind === "branch"`, so the *spelling* of the discriminant is load
+        // bearing — a rename here turns every branch cell into a 404.
+        let wire = serde_json::to_value(&view).expect("the view serializes");
+        assert_eq!(wire["columns"][0]["kind"], "worktree");
+        assert_eq!(
+            wire["columns"][0].get("commit"),
+            None,
+            "a worktree is files"
+        );
+        assert_eq!(wire["columns"][1]["kind"], "branch");
+        assert_eq!(wire["columns"][1]["cid"], "ref-feat-x");
+        assert_eq!(wire["columns"][1]["commit"], "0".repeat(40));
+        assert_eq!(
+            wire["rows"][0]["occupants"],
+            serde_json::json!([{
+                "label": "feat-x",
+                "status": "doing",
+                "since": "2026-02-01T00:01:00.000000Z",
+            }])
+        );
+        assert_eq!(
+            wire["rows"][1].get("occupants"),
+            None,
+            "an empty list is omitted, not rendered as a badge"
+        );
+        assert_eq!(
+            wire["notices"],
+            serde_json::json!(["packed-refs could not be read"]),
+            "the reader's notices are the view's, above the table"
+        );
+    }
+
+    /// The trap the overlay exists to avoid, pinned from the merge's side: a
+    /// branch column carries the *whole* inventory it holds, so a document the
+    /// branch left alone is not reported as missing from it.
+    #[test]
+    fn a_branch_that_changed_one_document_does_not_look_like_it_deleted_the_rest() {
+        let view = merged_with(
+            vec![ok(
+                corpus("proj", Some("main"), true),
+                vec![
+                    doc("TASK-0001", "todo", "One"),
+                    doc("TASK-0002", "todo", "Two"),
+                ],
+            )],
+            &Branches {
+                columns: vec![branch(
+                    "feat-x",
+                    Ok(vec![
+                        doc("TASK-0001", "doing", "One"),
+                        doc("TASK-0002", "todo", "Two"),
+                    ]),
+                )],
+                ..Branches::default()
+            },
+        );
+        for r in &view.rows {
+            assert!(r.only_in.is_empty(), "{}: {:?}", r.id, r.only_in);
+        }
+        // And a document the branch really did delete *is* reported.
+        let view = merged_with(
+            vec![ok(
+                corpus("proj", Some("main"), true),
+                vec![
+                    doc("TASK-0001", "todo", "One"),
+                    doc("TASK-0002", "todo", "Two"),
+                ],
+            )],
+            &Branches {
+                columns: vec![branch("feat-x", Ok(vec![doc("TASK-0001", "todo", "One")]))],
+                ..Branches::default()
+            },
+        );
+        assert_eq!(row(&view, "TASK-0002").only_in, ["cid-proj"]);
+    }
+
+    /// A ref the reader could not diff keeps its column. The alternative — a
+    /// column that quietly disappears — reads as a branch that never existed,
+    /// and the same `unknown`/`only_in` exclusions that protect a silent
+    /// worktree must protect it.
+    #[test]
+    fn a_branch_that_could_not_be_read_is_a_column_with_a_reason() {
+        let view = merged_with(
+            vec![ok(
+                corpus("proj", Some("main"), true),
+                vec![doc("TASK-0001", "todo", "One")],
+            )],
+            &Branches {
+                columns: vec![branch("feat-x", Err("git: bad object".into()))],
+                ..Branches::default()
+            },
+        );
+
+        assert_eq!(view.columns.len(), 2, "the column is still there");
+        assert_eq!(view.columns[1].error.as_deref(), Some("git: bad object"));
+        let r = row(&view, "TASK-0001");
+        assert!(r.cells[1].unknown, "nothing is claimed about this branch");
+        assert!(
+            r.only_in.is_empty(),
+            "a branch that did not answer is no evidence of absence: {:?}",
+            r.only_in
+        );
+    }
+
+    /// "No branches to read" and "one branch could not be read" are different
+    /// states: the first is a notice with no columns, the second a column with
+    /// an error. Conflating them would tell a user with no repository that a
+    /// branch broke.
+    #[test]
+    fn no_repository_is_a_notice_rather_than_a_broken_column() {
+        let view = merged_with(
+            vec![ok(
+                corpus("proj", None, true),
+                vec![doc("TASK-0001", "todo", "One")],
+            )],
+            &Branches {
+                notices: vec![opys_engine::git::NOT_A_REPOSITORY.to_string()],
+                ..Branches::default()
+            },
+        );
+        assert_eq!(view.columns.len(), 1, "no branch columns at all");
+        assert_eq!(view.notices, [opys_engine::git::NOT_A_REPOSITORY]);
+        assert!(view.columns.iter().all(|c| c.error.is_none()));
+    }
+
+    /// The hazard ADR-0053 names, on the column where it is most likely: two
+    /// agents on two branches minting the same number. A branch nobody checked
+    /// out must not be able to hide it.
+    #[test]
+    fn an_id_minted_only_on_a_branch_still_contests_its_number() {
+        let view = merged_with(
+            vec![ok(
+                corpus("proj", Some("main"), true),
+                vec![doc("TASK-0042", "todo", "Ours")],
+            )],
+            &Branches {
+                columns: vec![branch(
+                    "feat-x",
+                    Ok(vec![
+                        doc("TASK-0042", "todo", "Ours"),
+                        doc("FEAT-0042", "planned", "Theirs"),
+                    ]),
+                )],
+                ..Branches::default()
+            },
+        );
+        assert!(row(&view, "TASK-0042").collision);
+        assert!(row(&view, "FEAT-0042").collision);
     }
 }

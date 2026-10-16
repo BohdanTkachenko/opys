@@ -1,4 +1,4 @@
-//! The corpus actor over a real inventory on disk (TASK-0070).
+//! The corpus actor over a real inventory on disk.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -22,7 +22,12 @@ tags_required = false
 "#;
 
 fn write_note(inventory: &Path, n: u32, body: &str) {
-    let text = format!("---\nid: NOTE-{n:04}\nstatus: open\n---\n\n# Note {n}\n\n{body}\n");
+    // `history` is reserved and required: a document without it fails verify.
+    let text = format!(
+        "---\nid: NOTE-{n:04}\nstatus: open\n\
+         history:\n  \"2026-01-01T00:00:00.000000Z\": open\n\
+         ---\n\n# Note {n}\n\n{body}\n"
+    );
     std::fs::write(inventory.join(format!("NOTE-{n:04}.md")), text).unwrap();
 }
 
@@ -345,9 +350,9 @@ fn corpus_base_comes_from_the_project_config() {
 /// project it happens to sit inside.
 ///
 /// `Project::open` searches *upward*, which is the CLI's convenience and would
-/// be an allowlist escape here (ADR-0077): nested projects are the normal shape
+/// be an allowlist escape here (ADR-0031): nested projects are the normal shape
 /// a `[[prefix]]` entry produces, and a git worktree inside its main repo is the
-/// layout FEAT-0058 targets, so an inner corpus whose config went away on a
+/// layout FEAT-0029 targets, so an inner corpus whose config went away on a
 /// branch switch would silently list — and, through the action endpoint, write
 /// to — documents from a project nobody approved.
 #[test]

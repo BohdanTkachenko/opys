@@ -1,6 +1,6 @@
-//! Startup ordering: the socket is up before the filesystem is walked (BUG-0079).
+//! Startup ordering: the socket is up before the filesystem is walked.
 //!
-//! ADR-0077 bounds the discovery scan but does not make it free, and it is
+//! ADR-0031 bounds the discovery scan but does not make it free, and it is
 //! explicit that scanning never blocks startup. Expanding a `[[prefix]]` entry
 //! is what makes that concrete: the walk happens before anything can be served
 //! unless `run` binds first. The old order refused connections for the length of

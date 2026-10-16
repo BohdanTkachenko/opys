@@ -1,4 +1,4 @@
-//! Turning the allowlist into the node's data model (ADR-0077).
+//! Turning the allowlist into the node's data model (ADR-0031).
 //!
 //! Three jobs: a bounded filesystem scan, expansion of allowlist entries into
 //! [`Corpus`] values grouped per project, and suggestions for the user to
@@ -17,7 +17,7 @@ use crate::registry::{Entry, EntryKind, Registry, DEFAULT_DEPTH};
 
 /// Directories never descended into. Build output, vendored dependencies and
 /// caches: they hold no projects of the user's, and they are where the entries
-/// are (ADR-0077 measures the difference). Hidden directories are skipped too,
+/// are (ADR-0031 measures the difference). Hidden directories are skipped too,
 /// which covers `.git`, `.direnv`, `.venv` and friends without naming them.
 ///
 /// This also does correctness work: it stops an `opys.toml` vendored inside
@@ -104,7 +104,7 @@ pub fn id_for(path: &Path) -> String {
 /// Every directory holding an `opys.toml`, at most `depth` levels below `root`.
 ///
 /// **Never call this on a request path or at startup's critical path.** Over a
-/// large home directory it is a half-second of walking (ADR-0077 has the
+/// large home directory it is a half-second of walking (ADR-0031 has the
 /// table); it belongs in the background job, on demand, or on a slow timer.
 pub fn scan(root: &Path, depth: usize) -> Vec<PathBuf> {
     let mut found = Vec::new();

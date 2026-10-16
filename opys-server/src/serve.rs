@@ -31,7 +31,7 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:6797";
 const REFRESH_EVERY: Duration = Duration::from_secs(60);
 
 /// The expensive pass: re-read and re-expand the allowlist. A prefix entry makes
-/// this a bounded filesystem walk, so it runs rarely (ADR-0077 has the numbers).
+/// this a bounded filesystem walk, so it runs rarely (ADR-0031 has the numbers).
 const RESCAN_EVERY: Duration = Duration::from_secs(3600);
 
 /// How many events the broadcast channel buffers for a client that is not
@@ -109,7 +109,7 @@ pub async fn run(config: PathBuf, bind: SocketAddr) -> Result<()> {
         backend,
     )));
     // Bind *before* the first rescan. Expanding a `[[prefix]]` entry walks the
-    // filesystem, which ADR-0077 bounds but does not make free, and a startup
+    // filesystem, which ADR-0031 bounds but does not make free, and a startup
     // that scans first leaves the socket refusing connections for the length of
     // the walk — the exact shape that ADR refused. A malformed allowlist is
     // still fatal before this point: `bind_address` loaded and parsed the file

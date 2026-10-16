@@ -9,27 +9,29 @@ use std::process::Command;
 
 use regex::{Captures, Regex};
 
-use crate::commands::maybe_sync;
+use crate::commands::{maybe_sync, print_lines};
 use crate::doc::Doc;
 use crate::error::Result;
+use crate::ids::format_id;
 use crate::project::Project;
 use crate::Ctx;
 
 pub fn run(ctx: &Ctx, base: Option<&str>) -> Result<()> {
     let prj = ctx.open()?;
+    let mut ids = ctx.id_source(&prj)?;
     let (mut store, _) = ctx.load(&prj)?;
     let docs: Vec<(i64, Doc)> = store.all_docs()?;
 
     let just_docs: Vec<&Doc> = docs.iter().map(|(_, d)| d).collect();
     let conflicts = find_conflicts(&just_docs);
     if conflicts.is_empty() {
-        println!("renumber: no conflicting IDs found");
+        print_lines(["renumber: no conflicting IDs found"])?;
         return Ok(());
     }
 
     let (git_root, base_sha) = git_context(&prj.root, base);
     match &base_sha {
-        Some(sha) => println!("renumber: base {}", &sha[..sha.len().min(12)]),
+        Some(sha) => print_lines([format!("renumber: base {}", &sha[..sha.len().min(12)])])?,
         None => {
             eprintln!("renumber: warning: no git base found — keeping first of each conflict group")
         }
@@ -40,10 +42,11 @@ pub fn run(ctx: &Ctx, base: Option<&str>) -> Result<()> {
     // that existed at base but was relocated on the branch is still recognized.
     let base_ids = ids_at_base(&git_root, &base_sha, &prj);
 
-    // Build old→new mapping, allocating new IDs sequentially past the current max.
-    let mut counter = store.max_doc_num()? + 1;
-    let mut mapping: HashMap<String, String> = HashMap::new();
-
+    // Decide which ids to renumber, in group order, then allocate their
+    // replacements as one block through the id source: fresh numbers past the
+    // current max — in this allocator's slot under `[ids] modulus`, so the
+    // repair cannot collide again with a branch still allocating in another.
+    let mut victims: Vec<&str> = Vec::new();
     for group in &conflicts {
         let mut keep: Vec<&str> = Vec::new();
         let mut to_renumber: Vec<&str> = Vec::new();
@@ -59,17 +62,22 @@ pub fn run(ctx: &Ctx, base: Option<&str>) -> Result<()> {
         // If nothing is from the base (two feature branches both added an ID),
         // keep the first alphabetically and renumber the rest.
         let start = if keep.is_empty() { 1 } else { 0 };
-        for id in &to_renumber[start..] {
+        victims.extend_from_slice(&to_renumber[start..]);
+    }
+
+    let mut mapping: HashMap<String, String> = HashMap::new();
+    if !victims.is_empty() {
+        let nums = ids.block(&mut store, victims.len() as u64)?;
+        for (id, num) in victims.iter().zip(nums) {
             let prefix = id.split('-').next().unwrap_or("FEAT");
-            let new_id = format!("{}-{:0pad$}", prefix, counter, pad = prj.pcfg.pad);
-            println!("  {id} → {new_id}");
+            let new_id = format_id(prefix, num, prj.pcfg.pad);
+            print_lines([format!("  {id} → {new_id}")])?;
             mapping.insert(id.to_string(), new_id);
-            counter += 1;
         }
     }
 
     if mapping.is_empty() {
-        println!("renumber: all conflicting IDs are from the base branch, nothing to do");
+        print_lines(["renumber: all conflicting IDs are from the base branch, nothing to do"])?;
         return Ok(());
     }
 
@@ -95,7 +103,10 @@ pub fn run(ctx: &Ctx, base: Option<&str>) -> Result<()> {
     }
     ctx.flush(&prj, store)?;
 
-    println!("renumber: {} document(s) renumbered", mapping.len());
+    print_lines([format!(
+        "renumber: {} document(s) renumbered",
+        mapping.len()
+    )])?;
     maybe_sync(ctx, &prj);
 
     warn_file_references(&prj, &mapping);

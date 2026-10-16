@@ -11,7 +11,7 @@ git_tag_name = "v{{ version }}"
 git_release_name = "v{{ version }}"
 
 # opys-server/ui/dist is gitignored and built by the release job before this runs
-# (ADR-0086). Cargo refuses to package files named by `include` that git does not
+# (ADR-0037). Cargo refuses to package files named by `include` that git does not
 # track — even with an otherwise clean tree — so publishing needs --allow-dirty.
 #
 # This is narrower than it looks: the only untracked thing the tarball can pick
@@ -23,3 +23,15 @@ publish_allow_dirty = true
 name = "opys"
 git_release_enable = true
 git_tag_enable = true
+
+# release-plz finds a package's last release by rendering its `git_tag_name`
+# with the package's version. opys-server joined the workspace after v0.12.0
+# was published and has never been on crates.io, but the shared template
+# rendered `v0.12.0` for it too — a tag that exists — and release-plz refuses a
+# package whose tag exists but whose crate does not ("Consider running `cargo
+# publish` manually"). A name of its own matches no tag, so it is released as
+# a new crate at the workspace version. No tag is ever cut under this name:
+# `git_tag_enable` stays false for it, as for every crate but `opys`.
+[[package]]
+name = "opys-server"
+git_tag_name = "opys-server-v{{ version }}"

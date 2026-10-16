@@ -1,5 +1,5 @@
 //! The read API over real corpora, driven through the router rather than a
-//! socket (TASK-0071).
+//! socket.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -34,8 +34,33 @@ default_status = "todo"
 terminal_statuses = ["done"]
 tags_required = false
 
+# A status graph on one type, so the doc payload has to distinguish "this type
+# declares no graph" from "these are the moves" (`note` declares none).
+[types.task.transitions]
+todo = ["doing"]
+doing = ["todo", "done"]
+
 [types.task.fields.priority]
 type = "int"
+
+[[types.task.sections]]
+heading = "Progress"
+kind = "log"
+
+# The shape the shipped `feature` type has, and this repo's own `feature` and
+# `adr`: a status graph and *no* terminal status. `closable` is false for every
+# document of it, and not because of the graph — the payload has to say which of
+# the two refusals applies, or a client reads "not from here yet" into "never".
+[types.idea]
+prefix = "IDEA"
+statuses = ["draft", "live"]
+default_status = "draft"
+terminal_statuses = []
+tags_required = false
+
+[types.idea.transitions]
+draft = ["live"]
+live = ["draft"]
 "#;
 
 fn backend() -> Box<dyn Backend + Send> {
@@ -43,7 +68,8 @@ fn backend() -> Box<dyn Backend + Send> {
 }
 
 /// A project with two linked documents of two types, so the filters and the
-/// relation maps both have something to say.
+/// relation maps both have something to say, plus a third of the graph-without-
+/// a-terminal-status type nothing else covers.
 fn project(root: &Path) -> PathBuf {
     let inventory = root.join("inventory");
     std::fs::create_dir_all(&inventory).unwrap();
@@ -55,8 +81,9 @@ fn project(root: &Path) -> PathBuf {
          status: open\n\
          tags: [alpha, shared]\n\
          updated: \"2026-01-01T00:00:00Z\"\n\
-         references:\n  TASK-0002: Do the thing\n\
          blocks:\n  TASK-0002: Do the thing\n\
+         history:\n  \"2026-01-01T00:00:00.000000Z\": open\n\
+         references:\n  TASK-0002: Do the thing\n\
          ---\n\n# Note one\n\nHello <script>alert(1)</script> world.\n",
     )
     .unwrap();
@@ -66,25 +93,45 @@ fn project(root: &Path) -> PathBuf {
          id: TASK-0002\n\
          status: doing\n\
          tags: [shared]\n\
+         blocked_by:\n  NOTE-0001: Note one\n\
+         history:\n  \"2026-01-01T00:00:00.000000Z\": doing\n\
          priority: 5\n\
          references:\n  NOTE-0001: Note one\n\
-         blocked_by:\n  NOTE-0001: Note one\n\
          ---\n\n# Do the thing\n\nWork.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        inventory.join("IDEA-0003.md"),
+        "---\n\
+         id: IDEA-0003\n\
+         status: draft\n\
+         history:\n  \"2026-01-01T00:00:00.000000Z\": draft\n\
+         ---\n\n# An idea\n\nThink.\n",
     )
     .unwrap();
     std::fs::canonicalize(root).unwrap()
 }
 
-/// A project that loads but does not verify: frontmatter is closed, so the
-/// undeclared `bogus` key is exactly one problem. Without it every assertion
-/// about verify problems would hold whether or not they reach the client.
+/// A project that loads but does not verify, in exactly two ways: frontmatter
+/// is closed, so the undeclared `bogus` key is one problem, and the `blocked_by`
+/// entry points at an id no document answers to, which is the other. Without
+/// them every assertion about verify problems would hold whether or not they
+/// reach the client.
+///
+/// The dangling entry is also the only servable shape of a *non-live blocker
+/// that is not a release* (ADR-0050 decision 3 lets it release the document
+/// precisely because `verify` reports it), so the document view has something
+/// to distinguish.
 fn messy_project(root: &Path) -> PathBuf {
     let inventory = root.join("inventory");
     std::fs::create_dir_all(&inventory).unwrap();
     std::fs::write(root.join("opys.toml"), CONFIG).unwrap();
     std::fs::write(
         inventory.join("NOTE-0003.md"),
-        "---\nid: NOTE-0003\nstatus: open\nbogus: 1\n---\n\n# Messy\n\nText.\n",
+        "---\nid: NOTE-0003\nstatus: open\nbogus: 1\n\
+         blocked_by:\n  TASK-0009: Vanished\n\
+         history:\n  \"2026-01-01T00:00:00.000000Z\": open\n\
+         ---\n\n# Messy\n\nText.\n",
     )
     .unwrap();
     std::fs::canonicalize(root).unwrap()
@@ -257,7 +304,7 @@ async fn projects_carry_counts_and_surface_a_broken_config() {
         fx.root.join("inventory").display().to_string()
     );
     assert_eq!(good["is_primary"], true);
-    assert_eq!(good["doc_count"], 2);
+    assert_eq!(good["doc_count"], 3);
     assert_eq!(good["verify_problems"], 0, "{good:#}");
     assert!(good["loaded_at"].is_string(), "{good:#}");
     assert!(good.get("error").is_none(), "a healthy corpus has no error");
@@ -265,7 +312,7 @@ async fn projects_carry_counts_and_surface_a_broken_config() {
     // The count is the badge a UI shows, so it has to be the real one.
     let messy = find(&fx.messy_cid);
     assert_eq!(messy["doc_count"], 1, "{messy:#}");
-    assert_eq!(messy["verify_problems"], 1, "{messy:#}");
+    assert_eq!(messy["verify_problems"], 2, "{messy:#}");
 
     let broken = find(&fx.broken_cid);
     assert!(
@@ -283,7 +330,7 @@ async fn docs_filters_are_optional_and_and_combined() {
     let (status, all) = fx.get(&format!("/api/corpus/{}/docs", fx.cid)).await;
     assert_eq!(status, StatusCode::OK);
     let all = all.as_array().unwrap().clone();
-    assert_eq!(all.len(), 2, "{all:#?}");
+    assert_eq!(all.len(), 3, "{all:#?}");
     let note = all.iter().find(|d| d["id"] == "NOTE-0001").unwrap();
     assert_eq!(note["type"], "note");
     assert_eq!(note["status"], "open");
@@ -291,15 +338,19 @@ async fn docs_filters_are_optional_and_and_combined() {
     assert_eq!(note["tags"], json!(["alpha", "shared"]));
     assert_eq!(note["path"], "inventory/NOTE-0001.md");
     assert_eq!(note["updated"], "2026-01-01T00:00:00Z");
-    // The board's relation badges: live counts, from the summary itself. The
-    // fixture's note blocks the task and nothing blocks the note.
-    assert_eq!(note["blocked_by"], 0);
+    // The board's relation badges. Blocked is derived (ADR-0050 decision 3), so
+    // the summary names the live blockers rather than counting map entries: the
+    // fixture's note blocks the task, `note` declares no `releases_blocks` so it
+    // still holds, and nothing blocks the note.
+    assert_eq!(note["blocked"], false);
+    assert_eq!(note["live_blockers"], json!([]));
     assert_eq!(note["blocks"], 1);
     // Priority rides along when the frontmatter has one (the board orders a
     // column by it); a document without one says null, which sorts last.
     assert_eq!(note["priority"], json!(null));
     let task = all.iter().find(|d| d["id"] == "TASK-0002").unwrap();
-    assert_eq!(task["blocked_by"], 1);
+    assert_eq!(task["blocked"], true);
+    assert_eq!(task["live_blockers"], json!(["NOTE-0001"]));
     assert_eq!(task["blocks"], 0);
     assert_eq!(task["priority"], 5);
 
@@ -350,7 +401,7 @@ async fn docs_filters_are_optional_and_and_combined() {
         .await;
     assert_eq!(
         empty_filter.as_array().unwrap().len(),
-        2,
+        3,
         "{empty_filter:#}"
     );
 }
@@ -384,10 +435,14 @@ async fn doc_exposes_relations_and_the_rendered_body() {
     assert!(html.contains("world."), "{html}");
 }
 
-/// The status vocabulary travels with the document (TASK-0074), so the UI's
+/// The status vocabulary travels with the document, so the UI's
 /// status picker never has to read `opys.toml`. Terminal statuses are left out
 /// because `set-status` refuses them — `close` is the only way there — and
 /// `closable` says whether that door exists at all.
+///
+/// This is the type's whole vocabulary, unchanged by the status graph: narrowing
+/// it would have answered a different question under the same name.
+/// `allowed_targets` (below) is where the graph shows up.
 #[tokio::test]
 async fn doc_carries_the_statuses_a_write_would_accept() {
     let fx = Fixture::new();
@@ -413,6 +468,134 @@ async fn doc_carries_the_statuses_a_write_would_accept() {
         "{task:#}"
     );
     assert_eq!(task["closable"], true);
+
+    // Which sections `opys log` writes to travels the same way (FEAT-0056), so
+    // the entry box never has to read `opys.toml` either — and a type with no
+    // log section says so by carrying none.
+    assert_eq!(task["log_sections"], json!(["Progress"]), "{task:#}");
+    assert_eq!(note["log_sections"], json!([]), "{note:#}");
+}
+
+/// `closable` is false for two different reasons, and the payload has to say
+/// which: a type may declare a whole status graph and still have no terminal
+/// status — the shipped `feature` type, and this repo's `feature` and `adr`.
+///
+/// Without `has_terminal_status` a client can only guess from `allowed_targets`,
+/// which is non-null for *any* graph — and would then tell the reader to "move
+/// it along first" towards a close that can never happen.
+#[tokio::test]
+async fn a_graph_without_a_terminal_status_is_never_closable() {
+    let fx = Fixture::new();
+
+    let (status, idea) = fx
+        .get(&format!("/api/corpus/{}/doc/IDEA-0003", fx.cid))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(idea["status"], "draft");
+    assert_eq!(
+        idea["allowed_targets"],
+        json!(["live"]),
+        "`idea` declares a graph, so the menu is its edges: {idea:#}"
+    );
+    assert_eq!(
+        idea["closable"], false,
+        "no terminal status, so no close: {idea:#}"
+    );
+    assert_eq!(
+        idea["has_terminal_status"], false,
+        "…and the reason is the missing terminal status, not the graph: {idea:#}"
+    );
+
+    // The other shape, to pin that the two fields really do differ: `task` has
+    // both a graph and a terminal status, and `note` has a terminal status
+    // without a graph.
+    let (_, task) = fx
+        .get(&format!("/api/corpus/{}/doc/TASK-0002", fx.cid))
+        .await;
+    assert_eq!(task["has_terminal_status"], true, "{task:#}");
+    let (_, note) = fx
+        .get(&format!("/api/corpus/{}/doc/NOTE-0001", fx.cid))
+        .await;
+    assert_eq!(note["allowed_targets"], json!(null), "{note:#}");
+    assert_eq!(note["has_terminal_status"], true, "{note:#}");
+}
+
+/// Where *this* document may go, computed by the node from the type's declared
+/// status graph with the same engine helper `set-status`'s guard reads — so a
+/// menu built from it cannot offer a move the node would then refuse. `null`,
+/// not `[]`, for a type that declares no graph: "everything" and "nothing" are
+/// different answers, and the client needs to tell them apart to fall back.
+#[tokio::test]
+async fn doc_carries_the_moves_its_type_declares() {
+    let fx = Fixture::new();
+
+    let (status, note) = fx
+        .get(&format!("/api/corpus/{}/doc/NOTE-0001", fx.cid))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        note["allowed_targets"],
+        json!(null),
+        "`note` declares no transitions, so every status is reachable: {note:#}"
+    );
+
+    let (status, task) = fx
+        .get(&format!("/api/corpus/{}/doc/TASK-0002", fx.cid))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        task["allowed_targets"],
+        json!(["todo"]),
+        "TASK-0002 is `doing`, whose declared targets are todo and the terminal \
+         done — and a terminal status is `close`'s, not the menu's: {task:#}"
+    );
+    // The edge into `done` is still real: it is what makes the task closable.
+    assert_eq!(task["closable"], true);
+}
+
+/// Blocked is derived (ADR-0050 decision 3), and the document view says which
+/// `blocked_by` entries still hold. The map alone cannot: liveness depends on
+/// the rest of the corpus and on the blocker type's `releases_blocks`, so a
+/// client deriving it would be a second interpretation of `opys.toml`.
+#[tokio::test]
+async fn doc_says_which_of_its_blockers_still_hold() {
+    let fx = Fixture::new();
+
+    let (status, task) = fx
+        .get(&format!("/api/corpus/{}/doc/TASK-0002", fx.cid))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(task["blocked_by"], json!({"NOTE-0001": "Note one"}));
+    // `note` declares no `releases_blocks`, so an open one still holds.
+    assert_eq!(task["live_blockers"], json!(["NOTE-0001"]));
+    assert_eq!(task["blocked"], true);
+
+    assert_eq!(
+        task["dangling_blockers"],
+        json!([]),
+        "the blocker is a real document: {task:#}"
+    );
+
+    let (status, note) = fx
+        .get(&format!("/api/corpus/{}/doc/NOTE-0001", fx.cid))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(note["live_blockers"], json!([]));
+    assert_eq!(note["blocked"], false);
+
+    // The other way an entry stops holding, and the reason `live_blockers`
+    // alone cannot explain itself: nothing answers to the id. The document is
+    // released all the same — that is the recorded judgement call — but a view
+    // that called this "released" would be naming a status transition for a
+    // document that is not there, so the payload separates the two.
+    let (status, messy) = fx
+        .get(&format!("/api/corpus/{}/doc/NOTE-0003", fx.messy_cid))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(messy["blocked_by"], json!({"TASK-0009": "Vanished"}));
+    assert_eq!(messy["live_blockers"], json!([]));
+    assert_eq!(messy["dangling_blockers"], json!(["TASK-0009"]));
+    assert_eq!(messy["blocked"], false);
 }
 
 #[tokio::test]
@@ -458,7 +641,7 @@ async fn query_answers_select_and_refuses_anything_else() {
     // the cache is rebuilt only by a load, so it could not notice either way.
     let (status, body) = fx.post(&uri, json!({"sql": "SELECT id FROM docs"})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["rows"].as_array().unwrap().len(), 2, "{body}");
+    assert_eq!(body["rows"].as_array().unwrap().len(), 3, "{body}");
 
     let (status, body) = fx.post(&uri, json!({"sql": "SELECT * FROM nope"})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -554,12 +737,12 @@ async fn verify_reports_problems_and_when_they_were_computed() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["ok"], false, "{body:#}");
     let problems = body["problems"].as_array().expect("a list of problems");
-    assert_eq!(problems.len(), 1, "{body:#}");
+    assert_eq!(problems.len(), 2, "{body:#}");
     assert!(
-        problems[0]
-            .as_str()
-            .is_some_and(|p| p.contains("NOTE-0003")),
-        "the problem names the document: {body:#}"
+        problems
+            .iter()
+            .all(|p| p.as_str().is_some_and(|p| p.contains("NOTE-0003"))),
+        "every problem names the document: {body:#}"
     );
     assert!(body["loaded_at"].is_string(), "{body}");
 
@@ -723,7 +906,7 @@ fn cli_verify(root: &Path) -> opys_engine::error::Result<i32> {
     opys_engine::run(Cli::parse_from(argv), Box::new(MarkdownLocal))
 }
 
-/// FEAT-0058's test plan claims the node's verify status "matches `opys verify`
+/// FEAT-0029's test plan claims the node's verify status "matches `opys verify`
 /// exit semantics". This pins that — including the one case where it does not
 /// hold, so the divergence is recorded rather than assumed away.
 ///
@@ -787,4 +970,392 @@ async fn verify_agrees_with_the_cli_exit_code() {
         Some(0),
         "nothing was verified, so nothing may be reported as verified: {body:#}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The pick oracle endpoint: `GET /api/projects/{key}/next` (FEAT-0057)
+// ---------------------------------------------------------------------------
+
+/// The group key `/api/projects` publishes for the corpus this fixture serves
+/// first — the same string `/api/group/{key}/union` takes, and the one the pick
+/// endpoint is addressed by.
+async fn project_key(fx: &Fixture) -> String {
+    let (status, body) = fx.get("/api/projects").await;
+    assert_eq!(status, StatusCode::OK);
+    body.as_array()
+        .unwrap()
+        .iter()
+        .find(|p| {
+            p["corpora"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["cid"] == fx.cid.as_str())
+        })
+        .unwrap_or_else(|| panic!("no group holds {}: {body:#}", fx.cid))["key"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// What `opys_engine::next::pick` answers over the same corpus, as JSON.
+///
+/// Loaded through the real backend from the same root the node is serving, so
+/// this is the engine's own verdict rather than a transcription of it.
+fn engine_pick(root: &Path, q: &opys_engine::next::PickQuery) -> Value {
+    let prj = opys_engine::Project::open(&root.to_string_lossy()).unwrap();
+    let (mut store, _) = MarkdownLocal.load(&prj).unwrap();
+    let docs: Vec<opys_engine::doc::Doc> = store
+        .all_docs()
+        .unwrap()
+        .into_iter()
+        .map(|(_, d)| d)
+        .collect();
+    let out = opys_engine::next::pick(&prj, &docs, q, opys_engine::observe::now());
+    serde_json::to_value(out).unwrap()
+}
+
+/// The endpoint and the engine function answer the same bytes, because they are
+/// the same function and the same serde types: `opys/tests/cli.rs` pins the
+/// CLI's rendering of that payload, and this pins the node's, so neither
+/// surface can drift on its own.
+///
+/// It also pins what the payload *says* about this corpus: NOTE-0001 is
+/// pickable at `open`, and TASK-0002 is not pickable at `doing` because
+/// NOTE-0001 still blocks it — the derived-blocked rule, evaluated on the
+/// corpus the node serves (ADR-0053).
+#[tokio::test]
+async fn the_next_endpoint_answers_exactly_what_the_engine_does() {
+    let fx = Fixture::new();
+    let key = project_key(&fx).await;
+
+    let (status, body) = fx
+        .get(&format!("/api/projects/{key}/next?status=open"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body:#}");
+    assert_eq!(body["schema"], "opys.next/1", "{body:#}");
+    assert_eq!(body["items"][0]["id"], "NOTE-0001", "{body:#}");
+    assert_eq!(
+        body["items"][0]["path"], "inventory/NOTE-0001.md",
+        "{body:#}"
+    );
+    assert_eq!(body["limit"], 10, "the default limit: {body:#}");
+    assert_eq!(
+        body,
+        engine_pick(
+            &fx.root,
+            &opys_engine::next::PickQuery {
+                status: "open".to_string(),
+                type_filter: None,
+                limit: 10,
+            },
+        ),
+        "the endpoint must serialize the engine's answer verbatim"
+    );
+
+    // Blocked by a live NOTE-0001, so nothing is pickable at `doing`.
+    let (status, body) = fx
+        .get(&format!("/api/projects/{key}/next?status=doing"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body:#}");
+    assert_eq!(body["total"], 0, "{body:#}");
+    assert_eq!(body["items"].as_array().map(Vec::len), Some(0), "{body:#}");
+}
+
+/// `?type=` and `?n=` are the endpoint's spelling of `--type` and `-n`.
+#[tokio::test]
+async fn the_next_endpoint_takes_the_type_and_limit_filters() {
+    let fx = Fixture::new();
+    let key = project_key(&fx).await;
+
+    // `todo` is a status only `task` declares, and no task is at it.
+    let (status, body) = fx
+        .get(&format!("/api/projects/{key}/next?status=todo&type=task"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body:#}");
+    assert_eq!(body["type"], "task", "{body:#}");
+    assert_eq!(body["items"].as_array().map(Vec::len), Some(0), "{body:#}");
+    // An empty `?type=` is a cleared dropdown, not the empty type name.
+    let (status, body) = fx
+        .get(&format!("/api/projects/{key}/next?status=open&type="))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body:#}");
+    assert_eq!(body["type"], Value::Null, "{body:#}");
+    assert_eq!(body["items"][0]["id"], "NOTE-0001", "{body:#}");
+
+    let (status, body) = fx
+        .get(&format!("/api/projects/{key}/next?status=open&n=0"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body:#}");
+    assert_eq!(body["limit"], 0, "{body:#}");
+    assert_eq!(body["total"], 1, "the limit truncates, it does not filter");
+    assert_eq!(body["items"].as_array().map(Vec::len), Some(0), "{body:#}");
+}
+
+/// A caller's mistake is a 400, never the 500 an engine error would become: a
+/// bad `status` comes back through the actor's inner `Result`, the way user SQL
+/// does. A project nobody serves is a 404.
+#[tokio::test]
+async fn the_next_endpoint_classes_bad_input_as_bad_input() {
+    let fx = Fixture::new();
+    let key = project_key(&fx).await;
+
+    let (status, body) = fx.get(&format!("/api/projects/{key}/next")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body:#}");
+
+    let (status, body) = fx.get(&format!("/api/projects/{key}/next?status=")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body:#}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("status"),
+        "{body:#}"
+    );
+
+    let (status, body) = fx
+        .get(&format!("/api/projects/{key}/next?status=nonesuch"))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body:#}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("unknown status"),
+        "{body:#}"
+    );
+
+    let (status, body) = fx
+        .get(&format!("/api/projects/{key}/next?status=open&type=nope"))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body:#}");
+
+    let (status, body) = fx.get("/api/projects/nobody/next?status=open").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body:#}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no such project"),
+        "{body:#}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The flow graph endpoint: `GET /api/projects/{key}/flow` (FEAT-0060)
+// ---------------------------------------------------------------------------
+
+/// The node payload for one status, or a panic naming what was there instead.
+fn flow_node<'a>(body: &'a Value, status: &str) -> &'a Value {
+    body["nodes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no nodes: {body:#}"))
+        .iter()
+        .find(|n| n["status"] == status)
+        .unwrap_or_else(|| panic!("no {status} node: {body:#}"))
+}
+
+/// The graph is the config's, not the corpus's: every declared status is a
+/// node, the edges are the union of the `transitions` maps, and the type that
+/// declares no map contributes its statuses and no edges at all.
+#[tokio::test]
+async fn the_flow_endpoint_draws_the_graph_the_config_declares() {
+    let fx = Fixture::new();
+    let key = project_key(&fx).await;
+
+    let (status, body) = fx.get(&format!("/api/projects/{key}/flow")).await;
+    assert_eq!(status, StatusCode::OK, "{body:#}");
+    assert_eq!(body["cid"], fx.cid.as_str(), "{body:#}");
+    assert_eq!(body["limit"], 5, "the default per-node cap: {body:#}");
+
+    // Declaration order, which is the order everything ranked in this tool uses
+    // — never the alphabetical one a `BTreeMap` walk would give (idea, note, task).
+    let types: Vec<&str> = body["types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(types, vec!["note", "task", "idea"], "{body:#}");
+
+    let statuses: Vec<&str> = body["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["status"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        statuses,
+        vec!["open", "closed", "todo", "doing", "done", "draft", "live"],
+        "{body:#}"
+    );
+
+    let edges: Vec<(&str, &str)> = body["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| (e["from"].as_str().unwrap(), e["to"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        edges,
+        vec![
+            ("todo", "doing"),
+            ("doing", "todo"),
+            ("doing", "done"),
+            ("draft", "live"),
+            ("live", "draft"),
+        ],
+        "`note` declares no transitions, so it contributes no edges: {body:#}"
+    );
+
+    assert!(flow_node(&body, "open")["initial"].as_bool().unwrap());
+    assert!(flow_node(&body, "todo")["initial"].as_bool().unwrap());
+    assert!(flow_node(&body, "draft")["initial"].as_bool().unwrap());
+    assert!(!flow_node(&body, "doing")["initial"].as_bool().unwrap());
+    // A terminal node is always empty — `close` deletes the file — so it has to
+    // be marked, or it reads as a stage nobody ever reached.
+    assert!(flow_node(&body, "done")["terminal"].as_bool().unwrap());
+    assert!(flow_node(&body, "closed")["terminal"].as_bool().unwrap());
+    assert!(!flow_node(&body, "live")["terminal"].as_bool().unwrap());
+    assert!(flow_node(&body, "open")["declared"].as_bool().unwrap());
+}
+
+/// The composition guarantee, over the wire: a node lists exactly what the
+/// `next` endpoint lists for the same status, item for item.
+///
+/// Both halves come from the same `next::pick`, and this is what says so at the
+/// API boundary — that the two endpoints agree on every node of a real served
+/// project, including the empty and the blocked ones. The *ordering* half of
+/// the guarantee is not visible here: this fixture's types have disjoint status
+/// sets and one document each, so no node holds two items. The merged node with
+/// several documents of two types is pinned by
+/// `flow::tests::a_merged_node_lists_exactly_what_next_lists_in_the_same_order`.
+#[tokio::test]
+async fn a_flow_node_lists_exactly_what_next_lists() {
+    let fx = Fixture::new();
+    let key = project_key(&fx).await;
+
+    let (status, flow) = fx.get(&format!("/api/projects/{key}/flow")).await;
+    assert_eq!(status, StatusCode::OK, "{flow:#}");
+    let limit = flow["limit"].as_u64().unwrap();
+
+    for node in flow["nodes"].as_array().unwrap() {
+        let status_name = node["status"].as_str().unwrap();
+        let (code, picked) = fx
+            .get(&format!(
+                "/api/projects/{key}/next?status={status_name}&n={limit}"
+            ))
+            .await;
+        assert_eq!(code, StatusCode::OK, "{picked:#}");
+        assert_eq!(
+            node["items"], picked["items"],
+            "the {status_name} node and `next` disagree: {node:#} vs {picked:#}"
+        );
+        assert_eq!(node["pickable"], picked["total"], "{node:#}");
+        assert_eq!(node["orphaned"], picked["orphaned"], "{node:#}");
+    }
+}
+
+/// A blocked document is counted and named, never listed: it is not pickable,
+/// and a node offering it would be offering work nobody can take. TASK-0002 is
+/// `doing` with a live NOTE-0001 blocking it.
+#[tokio::test]
+async fn a_blocked_document_is_counted_not_listed() {
+    let fx = Fixture::new();
+    let key = project_key(&fx).await;
+
+    let (status, body) = fx.get(&format!("/api/projects/{key}/flow")).await;
+    assert_eq!(status, StatusCode::OK, "{body:#}");
+
+    let doing = flow_node(&body, "doing");
+    assert_eq!(doing["total"], 1, "{doing:#}");
+    assert_eq!(doing["pickable"], 0, "{doing:#}");
+    assert_eq!(
+        doing["items"].as_array().map(Vec::len),
+        Some(0),
+        "{doing:#}"
+    );
+    assert_eq!(doing["blocked"], json!(["TASK-0002"]), "{doing:#}");
+
+    // And the identity that keeps the three buckets honest, on every node.
+    for node in body["nodes"].as_array().unwrap() {
+        let parts = node["pickable"].as_u64().unwrap()
+            + node["blocked"].as_array().unwrap().len() as u64
+            + node["orphaned"].as_array().unwrap().len() as u64;
+        assert_eq!(node["total"].as_u64().unwrap(), parts, "{node:#}");
+    }
+}
+
+/// `?n=` is the per-node cap, and it truncates the list without touching the
+/// count behind it — which is what lets a node say "and N more".
+#[tokio::test]
+async fn the_flow_endpoint_takes_a_per_node_limit() {
+    let fx = Fixture::new();
+    let key = project_key(&fx).await;
+
+    let (status, body) = fx.get(&format!("/api/projects/{key}/flow?n=0")).await;
+    assert_eq!(status, StatusCode::OK, "{body:#}");
+    assert_eq!(body["limit"], 0, "{body:#}");
+    let open = flow_node(&body, "open");
+    assert_eq!(
+        open["pickable"], 1,
+        "the limit truncates, it does not filter"
+    );
+    assert_eq!(open["items"].as_array().map(Vec::len), Some(0), "{open:#}");
+
+    let (status, body) = fx.get(&format!("/api/projects/{key}/flow?n=nope")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body:#}");
+}
+
+/// A project nobody serves is a 404, worded exactly as the pick endpoint words
+/// it — the two share one resolver, and this is what pins that they still do.
+#[tokio::test]
+async fn the_flow_endpoint_404s_for_a_project_nobody_serves() {
+    let fx = Fixture::new();
+    let (status, body) = fx.get("/api/projects/nobody/flow").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body:#}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no such project"),
+        "{body:#}"
+    );
+}
+
+/// The editor's block previews: each block rendered on its own, with the same
+/// options as a document body — tables and task lists on, raw HTML escaped.
+#[tokio::test]
+async fn render_turns_blocks_into_the_bodys_html() {
+    let fx = Fixture::new();
+    let (status, body) = fx
+        .post(
+            "/api/render",
+            json!({ "markdown": ["- [x] done", "| a |\n|---|\n| 1 |", "<script>x</script>"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let html: Vec<&str> = body["html"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h.as_str().unwrap())
+        .collect();
+    assert_eq!(html.len(), 3);
+    assert!(
+        html[0].contains("type=\"checkbox\"") && html[0].contains("checked"),
+        "{}",
+        html[0]
+    );
+    assert!(html[1].contains("<table>"), "{}", html[1]);
+    assert!(
+        !html[2].contains("<script>"),
+        "raw HTML must stay escaped: {}",
+        html[2]
+    );
+
+    let (status, _) = fx
+        .post("/api/render", json!({ "markdown": "not a list" }))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }

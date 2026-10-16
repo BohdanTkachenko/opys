@@ -18,7 +18,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      # opys-server/ui/dist is generated and not committed (ADR-0086), and
+      # opys-server/ui/dist is generated and not committed (ADR-0037), and
       # build.rs embeds it, so every cargo job that compiles with the default
       # `web-ui` feature has to build the bundle first. Keep node-version
       # aligned with nodejs_22 in flake.nix.
@@ -29,6 +29,16 @@ jobs:
           cache-dependency-path: opys-server/ui/package-lock.json
       - name: Build the web UI bundle
         run: scripts/ui-build.sh
+      # The UI's pure modules (the flow view's layered layout) under Node's
+      # built-in runner. No framework and no devDependency: adding one would
+      # change package-lock.json and with it the npmDepsHash flake.nix pins.
+      - name: Test the web UI's pure modules
+        run: npm --prefix opys-server/ui test
+      # The block editor the UI links (packages/blockdown): its segmenter,
+      # splicing and diff are pure JS, tested with node's own runner — no
+      # dependencies to install.
+      - name: Test svelte-blockdown
+        run: npm test --prefix packages/blockdown
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
@@ -58,7 +68,7 @@ jobs:
       - name: Packaging manifest versions in sync
         run: scripts/sync-versions.sh --check
 
-  # The contributor-without-Node path (ADR-0086). No setup-node and no bundle
+  # The contributor-without-Node path (ADR-0037). No setup-node and no bundle
   # build on purpose: if this job ever needs one, the feature has stopped doing
   # its job. Runs the tests too, not just the build — the UI-less code paths
   # (the 501 routes, the empty asset table) only exist in this configuration,

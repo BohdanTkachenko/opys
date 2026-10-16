@@ -14,9 +14,21 @@ pub mod doc;
 pub mod error;
 pub mod file_refs;
 pub mod frontmatter;
+/// Reading the inventory out of git — the branch/worktree reader, the history
+/// command's timeline, and the migration seed. Not [`history`], which is the
+/// lifecycle map kept *in* frontmatter.
+pub mod git;
+pub mod history;
 pub mod ids;
+pub mod lifecycle;
 pub mod links;
 pub mod mdprism;
+/// The pick oracle: which documents at a status are pickable, and in what
+/// order. Read-only, and the single answer both `opys next` and the node's
+/// `/api/projects/{key}/next` serialize.
+pub mod next;
+pub mod observe;
+pub mod order;
 pub mod project;
 pub mod project_config;
 pub mod refs;
@@ -53,13 +65,23 @@ impl Ctx {
     pub fn flush(&self, prj: &Project, store: store::Store) -> Result<()> {
         self.backend.flush(prj, store)
     }
+
+    /// The id source for `prj`: the dense sequence, or — under `[ids]
+    /// modulus` — this allocator's interleaved slot (see [`ids::resolve`]).
+    /// Resolve it before [`Ctx::load`], so a bad `OPYS_ID_SLOT` fails without
+    /// taking the inventory lock.
+    pub fn id_source(&self, prj: &Project) -> Result<Box<dyn ids::IdSource>> {
+        ids::resolve(&prj.pcfg)
+    }
 }
 
 /// Execute a parsed CLI invocation, returning the process exit code.
 ///
-/// `verify` returns `1` when it finds problems (the CI-gate contract); all
-/// other commands return `0` on success and surface failures as
-/// [`OpysError`], which the binary maps to exit code `2`.
+/// `verify` returns `1` when it finds problems (the CI-gate contract) and `3`
+/// when all it found are [observations](observe) — a document past its `ttl` or
+/// at its `max_visits` limit, neither of which is a content problem; all other
+/// commands return `0` on success and surface failures as [`OpysError`], which
+/// the binary maps to exit code `2`.
 pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
     let ctx = Ctx {
         root: cli.root,
@@ -75,7 +97,6 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
             type_name,
             title,
             tags,
-            status,
             features,
             reason,
             field,
@@ -85,7 +106,6 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
                 &type_name,
                 &title,
                 &tags,
-                &status,
                 &features,
                 reason.as_deref(),
                 &field,
@@ -105,16 +125,40 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
             tag,
             status,
             field,
+            blocked,
+            unblocked,
+            sort,
             format,
         } => {
+            // One tri-state rather than two bools: clap has already refused the
+            // pair, and the pair would push `run` past the argument count
+            // clippy allows.
+            let blocked = blocked.then_some(true).or(unblocked.then_some(false));
             commands::list::run(
                 &ctx,
                 type_name.as_deref(),
                 tag.as_deref(),
                 status.as_deref(),
                 &field,
+                blocked,
+                sort,
                 format,
             )?;
+            Ok(0)
+        }
+        Command::Next {
+            status,
+            type_name,
+            limit,
+            json,
+            explain,
+        } => {
+            let q = next::PickQuery {
+                status,
+                type_filter: type_name,
+                limit,
+            };
+            commands::next::run(&ctx, &q, json, explain)?;
             Ok(0)
         }
         Command::SetStatus {
@@ -129,6 +173,34 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
             commands::tag::run(&ctx, &ids, add.as_deref(), remove.as_deref())?;
             Ok(0)
         }
+        Command::Log { id, text, section } => {
+            commands::log::run(&ctx, &id, &text, section.as_deref())?;
+            Ok(0)
+        }
+        Command::Apply {
+            ids,
+            status,
+            reason,
+            field,
+            remove_field,
+            log,
+            section,
+        } => {
+            let set_fields = commands::parse_key_values(&field)?;
+            commands::apply::run(
+                &ctx,
+                &ids,
+                &commands::apply::Apply {
+                    status: status.as_deref(),
+                    reason: reason.as_deref(),
+                    set_fields: &set_fields,
+                    remove_fields: &remove_field,
+                    log: log.as_deref(),
+                    section: section.as_deref(),
+                },
+            )?;
+            Ok(0)
+        }
         Command::Retire { ids, reason } => {
             commands::retire::run(&ctx, &ids, reason.as_deref())?;
             Ok(0)
@@ -141,7 +213,7 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
             commands::block::unblock(&ctx, &ids, &by)?;
             Ok(0)
         }
-        Command::Verify => commands::verify::run(&ctx),
+        Command::Verify { fix } => commands::verify::run(&ctx, fix),
         Command::Sync => {
             commands::sync::run_command(&ctx)?;
             Ok(0)
@@ -154,18 +226,12 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
             commands::stats::run(&ctx, plain)?;
             Ok(0)
         }
-        Command::Query {
-            sql,
-            plain,
-            write,
-            stdin,
-        } => {
-            commands::query::run(&ctx, &sql, plain, write, stdin)?;
+        Command::Query { sql, plain, stdin } => {
+            commands::query::run(&ctx, &sql, plain, stdin)?;
             Ok(0)
         }
-        #[cfg(feature = "history")]
-        Command::History { id } => {
-            commands::history::run(&ctx, &id)?;
+        Command::History { id, seed } => {
+            commands::history::run(&ctx, &id, seed)?;
             Ok(0)
         }
         Command::Close { ids, force } => {

@@ -15,14 +15,24 @@
   // wordmark, live dot, a projects toggle — that opens into the list on
   // demand. A phone that gave a third of every screen to a corpus list would
   // put the first card of every board below the fold.
+  //
+  // On a wide screen it folds the other way: into a rail (`sidebar.collapsed`,
+  // toggled by the button or `[`), which keeps the wordmark, the live dot and
+  // the way back out, and gives the rest of the width to the view.
 
   import Icon from './lib/Icon.svelte';
   import { corpora } from './lib/corpora.svelte.js';
+  import { sidebar } from './lib/sidebar.svelte.js';
   import { events } from './lib/events.svelte.js';
   import { corpusLabel, shortTime } from './lib/format.js';
-  import { boardPath, href, unionPath } from './lib/router.svelte.js';
+  import { boardPath, flowPath, href, unionPath } from './lib/router.svelte.js';
 
-  let { activeCid = null, activeKey = null } = $props();
+  /**
+   * `activeView` as well as `activeKey`: the union and the lifecycle graph are
+   * both routed by a group key, so the key alone cannot say which of a
+   * group's two links is the current one — and both would light up.
+   */
+  let { activeCid = null, activeKey = null, activeView = null } = $props();
 
   /** The narrow-screen list, opened by the toggle and closed by navigating. */
   let open = $state(false);
@@ -33,6 +43,7 @@
     // list that led there.
     void activeCid;
     void activeKey;
+    void activeView;
     open = false;
   });
 
@@ -60,9 +71,22 @@
     }
     return { kind: 'good', label: 'verify is clean' };
   }
+
+  /**
+   * How many columns this project's union view would have: its served corpora
+   * plus the refs nobody has checked out, as the node's ref reader counted them.
+   *
+   * Branches count because they are what the view is for. Gating the link on
+   * worktrees alone made it unreachable for the ordinary shape — one checkout,
+   * several branches — which is precisely where the comparison is interesting
+   * (ADR-0053).
+   */
+  function columnCount(group) {
+    return group.corpora.length + (group.branches ?? 0);
+  }
 </script>
 
-<aside class="sidebar" class:open>
+<aside class="sidebar" class:open class:collapsed={sidebar.collapsed}>
   <header>
     <a class="wordmark mono" href="#/">
       <span class="prompt" aria-hidden="true">❯</span><span class="grad-text">opys</span><span
@@ -78,14 +102,27 @@
         : 'The event stream is down. This page is retrying, and will refresh itself when it reconnects.'}
     >
       <span class="dot" class:good={events.live}></span>
-      {#if events.status === 'open'}
-        live
-      {:else if events.status === 'connecting'}
-        connecting…
-      {:else}
-        reconnecting…
-      {/if}
+      <span class="label">
+        {#if events.status === 'open'}
+          live
+        {:else if events.status === 'connecting'}
+          connecting…
+        {:else}
+          reconnecting…
+        {/if}
+      </span>
     </span>
+    <!-- Wide screens only (hidden by CSS on the bar): fold into a rail. -->
+    <button
+      class="fold"
+      type="button"
+      aria-expanded={!sidebar.collapsed}
+      aria-controls="projects"
+      title={sidebar.collapsed ? 'show the project list  [' : 'hide the project list  ['}
+      onclick={() => sidebar.toggle()}
+    >
+      <Icon name="sidebar" size={15} />
+    </button>
     <!-- Narrow screens only (hidden by CSS elsewhere): the list behind it. -->
     <button
       class="menu"
@@ -164,19 +201,34 @@
                 </li>
               {/each}
             </ul>
-            {#if group.corpora.length > 1}
-              <!-- Offered only for a group with something to compare. One worktree
+            {#if columnCount(group) > 1}
+              <!-- Offered only for a group with something to compare. One column
                    makes a valid one-column union — the node builds it happily —
                    but a link promising a comparison that cannot exist is noise in
-                   the one place that has to stay scannable. -->
+                   the one place that has to stay scannable.
+
+                   Branches count towards it: a repository with one worktree and
+                   three branches has plenty to compare, and gating on worktrees
+                   alone made the whole view unreachable for exactly the shape it
+                   was built for (ADR-0053). -->
               <a
-                class="union"
-                class:active={group.key === activeKey}
+                class="grouplink"
+                class:active={group.key === activeKey && activeView === 'union'}
                 href={href(unionPath(group.key))}
               >
-                <Icon name="compare" size={13} /> compare {group.corpora.length} worktrees
+                <Icon name="compare" size={13} /> compare {columnCount(group)} columns
               </a>
             {/if}
+            <!-- Ungated, unlike the union link above: a project with one
+                 worktree has nothing to compare, but it always has a lifecycle,
+                 and the graph is the same picture whatever git is doing. -->
+            <a
+              class="grouplink"
+              class:active={group.key === activeKey && activeView === 'flow'}
+              href={href(flowPath(group.key))}
+            >
+              <Icon name="flow" size={13} /> lifecycle
+            </a>
           </section>
         {/each}
       </nav>
@@ -363,7 +415,7 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .union {
+  .grouplink {
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
@@ -375,11 +427,11 @@
     text-decoration: none;
   }
 
-  .union:hover {
+  .grouplink:hover {
     color: var(--accent);
   }
 
-  .union.active {
+  .grouplink.active {
     background: var(--raised);
     color: var(--fg);
     box-shadow: inset 2px 0 0 var(--accent);
@@ -402,6 +454,43 @@
     padding-top: 0.6rem;
     color: var(--muted);
     font-size: 0.9em;
+  }
+
+  .fold {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2rem 0.3rem;
+    color: var(--muted);
+    cursor: pointer;
+  }
+
+  .fold:hover {
+    color: var(--accent);
+  }
+
+  /* The rail: the header stands on end — wordmark, live dot, unfold button —
+     and the list and footer fold away. The live label goes too; the dot
+     keeps its colour and its title says the rest. */
+  .sidebar.collapsed {
+    padding: 0.95rem 0.35rem;
+    align-items: center;
+  }
+
+  .sidebar.collapsed header {
+    flex-direction: column;
+    gap: 0.8rem;
+  }
+
+  .sidebar.collapsed .list,
+  .sidebar.collapsed footer,
+  .sidebar.collapsed .wordmark .grad-text,
+  .sidebar.collapsed .wordmark .cursor,
+  .sidebar.collapsed .live .label {
+    display: none;
+  }
+
+  .sidebar.collapsed .wordmark .prompt {
+    margin-right: 0;
   }
 
   /* The bar. Everything but the header folds away until the toggle opens it;
@@ -427,6 +516,27 @@
     .sidebar.open .list {
       display: block;
       padding-bottom: 0.4rem;
+    }
+
+    /* The bar has its own toggle; the rail is a wide-screen thing, so a
+       folded preference from a wider window must not empty the bar. */
+    .fold {
+      display: none;
+    }
+
+    .sidebar.collapsed {
+      padding: 0.5rem 0.8rem;
+      align-items: stretch;
+    }
+
+    .sidebar.collapsed header {
+      flex-direction: row;
+    }
+
+    .sidebar.collapsed .wordmark .grad-text,
+    .sidebar.collapsed .wordmark .cursor,
+    .sidebar.collapsed .live .label {
+      display: revert;
     }
 
     .menu {

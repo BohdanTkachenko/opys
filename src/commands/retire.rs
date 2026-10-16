@@ -1,6 +1,6 @@
 //! `opys retire` — delete a document and reserve its id forever (ledger).
 
-use crate::commands::{expand_ids, for_each_id, maybe_sync};
+use crate::commands::{apply_batch, maybe_sync, print_lines, resolve_ids};
 use crate::error::Result;
 use crate::project::Project;
 use crate::store::Store;
@@ -55,24 +55,25 @@ fn retire_one(prj: &Project, store: &mut Store, id: &str) -> Result<Vec<String>>
     Ok(warnings)
 }
 
-pub fn run(ctx: &Ctx, ids: &str, reason: Option<&str>) -> Result<()> {
+pub fn run(ctx: &Ctx, ids: &[String], reason: Option<&str>) -> Result<()> {
     let prj = ctx.open()?;
-    let ids = expand_ids(ids)?;
+    let ids = resolve_ids(ids)?;
     let (mut store, _) = ctx.load(&prj)?;
-    let res = for_each_id(&ids, |id| {
-        let warnings = retire_one(&prj, &mut store, id)?;
-        match reason {
-            Some(r) if !r.is_empty() => {
-                println!("retired {id}: {r} (ID will never be reused)")
-            }
-            _ => println!("retired {id} (ID will never be reused)"),
-        }
-        for w in warnings {
-            eprintln!("warning: {w}");
-        }
-        Ok(())
-    });
+    // Warnings are buffered with the confirmations: an abandoned batch must not
+    // report consequences of a retirement that never reached disk.
+    let mut warnings: Vec<String> = Vec::new();
+    let lines = apply_batch(&ids, |id| {
+        warnings.extend(retire_one(&prj, &mut store, id)?);
+        Ok(match reason {
+            Some(r) if !r.is_empty() => format!("retired {id}: {r} (ID will never be reused)"),
+            _ => format!("retired {id} (ID will never be reused)"),
+        })
+    })?;
     ctx.flush(&prj, store)?;
+    print_lines(lines)?;
+    for w in warnings {
+        eprintln!("warning: {w}");
+    }
     maybe_sync(ctx, &prj);
-    res
+    Ok(())
 }

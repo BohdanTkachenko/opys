@@ -1,4 +1,4 @@
-//! The API — reads and the event stream (TASK-0071), writes (TASK-0072).
+//! The API — reads and the event stream, and writes.
 //!
 //! Everything is JSON, there is no auth (a loopback bind is the boundary in M1),
 //! and every failure is `{"error": "<message>"}` with 400 for bad input, 404 for
@@ -11,10 +11,10 @@
 //! string, an unroutable path — because a client that parses one error shape
 //! should never meet a second.
 //!
-//! **No endpoint executes commands or accepts a filesystem path** (ADR-0077).
+//! **No endpoint executes commands or accepts a filesystem path** (ADR-0031).
 //! Corpora are addressed by their opaque `cid`, and the set of them comes from
 //! the allowlist file the user owns — the route surface here is exhaustive. The
-//! one endpoint that writes takes a closed enum of the six mutating commands and
+//! one endpoint that writes takes a closed enum of the mutating commands and
 //! their arguments, never anything shell- or path-shaped; see [`crate::action`].
 //!
 //! A loopback bind keeps other machines out, but not the user's own browser:
@@ -52,6 +52,7 @@ use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use opys_engine::commands::now_rfc3339;
 use opys_engine::error::OpysError;
+use opys_engine::next::{PickQuery, PickResult, DEFAULT_LIMIT};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
@@ -61,9 +62,10 @@ use crate::actor::{
     VerifyStatus,
 };
 use crate::discover::Corpus;
+use crate::flow::{FlowView, DEFAULT_NODE_LIMIT};
 use crate::manager::Manager;
 use crate::registry;
-use crate::union::{contested_numbers, union, CorpusDocs, UnionView};
+use crate::union::{contested_numbers, union, Branches, CorpusDocs, UnionView};
 
 /// How often the server pings an idle WebSocket client.
 const PING_EVERY: Duration = Duration::from_secs(30);
@@ -124,7 +126,7 @@ pub struct AppState {
     /// loopback default", which is the safe way to be wrong.
     bind: Option<SocketAddr>,
     /// Whether the first rescan has finished. The node binds before it scans
-    /// (BUG-0079), so an empty project list early on means "not yet looked",
+    /// so an empty project list early on means "not yet looked",
     /// not "nothing allowlisted" — and only this tells the two apart.
     scanned: Option<Arc<AtomicBool>>,
     ping: PingConfig,
@@ -268,7 +270,10 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/projects", get(projects))
-        // Allowlist management from the browser (ADR-0082). Every path these
+        // Markdown in, HTML out: the document editor's block previews. Pure —
+        // it reads no corpus and no file, so it needs no cid.
+        .route("/api/render", post(render))
+        // Allowlist management from the browser (ADR-0035). Every path these
         // accept goes through `registry::vet_ui_path` first; none of them can
         // reach outside `$HOME` or into a hidden directory.
         .route("/api/setup", get(setup).post(save_setup))
@@ -276,6 +281,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/allowlist", post(allowlist))
         // axum 0.8 path captures are `{name}`; the 0.7 `:name` form panics.
         .route("/api/group/{key}/union", get(group_union))
+        // Project-scoped, not corpus-scoped, and deliberately so: pickability
+        // is evaluated on **main** (ADR-0053), so the caller names the project
+        // and the node picks its primary worktree rather than making the client
+        // guess which of a group's corpora is the truth. `{key}` is the same
+        // key `/api/projects` returns.
+        .route("/api/projects/{key}/next", get(pick))
+        // The lifecycle graph of one project, answered from the same primary
+        // corpus and for the same reason (FEAT-0060).
+        .route("/api/projects/{key}/flow", get(flow))
         .route("/api/corpus/{cid}/docs", get(docs))
         .route("/api/corpus/{cid}/doc/{docid}", get(doc))
         .route("/api/corpus/{cid}/query", post(query))
@@ -284,11 +298,15 @@ pub fn router(state: AppState) -> Router {
         // `any`, not `get`: that is what enables WebSockets over HTTP/2, where
         // the handshake is a CONNECT rather than a GET.
         .route("/api/events", any(events))
-        // The web UI, compiled into the binary (ADR-0086). The SPA is hash
+        // The web UI, compiled into the binary (ADR-0037). The SPA is hash
         // routed, so `/` is the only document path there ever is and every
         // other view is a fragment the server never sees.
         .route("/", get(ui_index))
         .route("/ui/{*path}", get(ui_asset))
+        // The installable-app files (FEAT-0064). One segment only, and the
+        // handler serves nothing outside `assets::ROOT_FILES`, so every other
+        // root path still gets the JSON 404 below.
+        .route("/{file}", get(ui_root_file))
         // Routing-level failures answer in the same shape as everything else;
         // axum's own would be an empty body with no content type.
         .fallback(no_route)
@@ -475,6 +493,23 @@ async fn ui_asset(Path(path): Path<String>) -> Response {
         )
         .into_response(),
         None => ApiError::not_found(format!("no such asset: /ui/{path}")).into_response(),
+    }
+}
+
+/// One of the root-level bundle files — the manifest, its icons, the service
+/// worker — for `GET /{file}`. Anything not on [`crate::assets::ROOT_FILES`]
+/// is the same 404 an unrouted path gets, so this route widens nothing.
+async fn ui_root_file(Path(file): Path<String>, uri: Uri) -> Response {
+    if !crate::assets::ROOT_FILES.contains(&file.as_str()) {
+        return no_route(uri).await.into_response();
+    }
+    match crate::assets::get(&file) {
+        Some(asset) => serve(asset),
+        None if !crate::assets::embedded() => ApiError::not_implemented(
+            "this opys-server was built without the `web-ui` feature, so it serves no web UI",
+        )
+        .into_response(),
+        None => ApiError::internal(format!("the embedded web UI has no {file}")).into_response(),
     }
 }
 
@@ -770,12 +805,36 @@ async fn allowlist(
     setup(State(state)).await
 }
 
+/// Replace a corpus's discovery-time branch with the one its group's ref reader
+/// last resolved, when the reader has an answer for it.
+///
+/// Discovery reads the branch once, when it expands the allowlist, and the
+/// manager rebuilds a group only on a rescan — so between rescans a checkout
+/// that moved keeps the name it was found on, in the sidebar and in the union's
+/// column headings. The ref reader re-resolves every checkout on every pass
+/// (and broadcasts when the answer moves), so its answer is the fresh one.
+///
+/// A corpus the reader has no entry for is left alone: no repository, or a pass
+/// that could not open one, is not evidence that the branch changed.
+fn freshen_branch(corpus: &mut Corpus, branches: &Branches) {
+    if let Some(branch) = branches.branch_of.get(&corpus.root) {
+        corpus.branch = branch.clone();
+    }
+}
+
 /// One project (a repository and its worktrees) as the UI presents it.
 #[derive(Serialize)]
 struct ProjectOut {
     key: String,
     name: String,
     corpora: Vec<CorpusOut>,
+    /// How many branch columns the union view would add — refs with no checkout,
+    /// as the group's ref reader last counted them (ADR-0053).
+    ///
+    /// Here so a client can decide whether a comparison exists to offer. A
+    /// repository with one worktree and three branches has plenty to compare and
+    /// would otherwise look, from this payload alone, like a lone directory.
+    branches: usize,
 }
 
 /// One inventory, with the cached numbers for it.
@@ -803,16 +862,32 @@ struct CorpusOut {
 /// The allowlisted projects, each with its corpora and their cached counts.
 async fn projects(State(state): State<AppState>) -> Result<Json<Vec<ProjectOut>>, ApiError> {
     let manager = Arc::clone(&state.manager);
-    // One lock, taken off the reactor, held for two cheap clones.
-    let (groups, clients) = tokio::task::spawn_blocking(move || {
+    // One lock, taken off the reactor, held for three cheap clones: the group
+    // list, a branch count per group, and a client per corpus. The count is a
+    // read through the `Arc` the ref reader published — never a copy of the
+    // columns, which carry main's whole inventory apiece.
+    let (groups, branches, clients) = tokio::task::spawn_blocking(move || {
         let manager = lock(&manager);
-        let groups = manager.groups().to_vec();
+        let mut groups = manager.groups().to_vec();
+        let branches: BTreeMap<String, usize> = groups
+            .iter_mut()
+            .map(|g| {
+                let read = manager.branches_for(&g.key);
+                // The branch each corpus is *now* on, not the one discovery
+                // recorded when it first walked the allowlist; see
+                // `Branches::branch_of`.
+                for corpus in &mut g.corpora {
+                    freshen_branch(corpus, &read);
+                }
+                (g.key.clone(), read.columns.len())
+            })
+            .collect();
         let clients: Vec<CorpusClient> = manager
             .cids()
             .iter()
             .filter_map(|cid| manager.get(cid).map(CorpusHandle::client))
             .collect();
-        (groups, clients)
+        (groups, branches, clients)
     })
     .await
     .map_err(|e| ApiError::internal(format!("listing projects failed: {e}")))?;
@@ -821,6 +896,7 @@ async fn projects(State(state): State<AppState>) -> Result<Json<Vec<ProjectOut>>
     let out = groups
         .into_iter()
         .map(|group| ProjectOut {
+            branches: branches.get(&group.key).copied().unwrap_or_default(),
             key: group.key,
             name: group.name,
             corpora: group
@@ -930,11 +1006,11 @@ async fn docs(
     ))
 }
 
-/// The merged, labeled view across one project group's corpora (TASK-0073).
+/// The merged, labeled view across one project group's corpora.
 ///
 /// A group is a repository's worktrees, so this is the one endpoint that answers
 /// "what does each branch say about this document" — presentation only. The node
-/// never merges or resolves anything; git remains the only merger (ADR-0051).
+/// never merges or resolves anything; git remains the only merger (ADR-0027).
 ///
 /// The filters apply **per corpus, before merging**, which is what makes
 /// `?status=` mean "where does this document match" rather than "where does it
@@ -961,6 +1037,14 @@ async fn docs(
 /// show, and refusing the whole group because of it would hide the other
 /// columns. The failure is handed to the merge as such, so the column carries
 /// the reason and no row claims the branch deleted anything.
+///
+/// The columns for refs **nobody has checked out** come from the group's ref
+/// reader ([`crate::refreader`]), which read them in the background off a git
+/// watcher. Taking them from its published snapshot rather than reading git here
+/// is what keeps this handler free of a tree walk: the answer depends on the
+/// refs, not on the request, so it is computed once per ref change and cloned
+/// per request. The request's filter is applied to those columns exactly as it
+/// is to a worktree's.
 async fn group_union(
     State(state): State<AppState>,
     Path(key): Path<String>,
@@ -973,24 +1057,32 @@ async fn group_union(
     // One lock, taken off the reactor, held for the group's clone and a client
     // per member. `None` means no such group; an inner `None` means that member
     // stopped between the group being listed and its client being taken.
-    let members = tokio::task::spawn_blocking(move || {
+    let (members, branches) = tokio::task::spawn_blocking(move || {
         let manager = lock(&manager);
         let group = manager.groups().iter().find(|g| g.key == wanted)?;
+        // The reader's last snapshot, shared rather than copied, taken under the
+        // same lock. It is never computed here: the reader owns the git walk.
+        let branches = manager.branches_for(&wanted);
         let members: Vec<(Corpus, Option<CorpusClient>)> = group
             .corpora
             .iter()
-            .map(|c| (c.clone(), manager.get(&c.cid).map(CorpusHandle::client)))
+            .map(|c| {
+                let client = manager.get(&c.cid).map(CorpusHandle::client);
+                let mut c = c.clone();
+                freshen_branch(&mut c, &branches);
+                (c, client)
+            })
             .collect();
-        Some(members)
+        Some((members, branches))
     })
     .await
     .map_err(|e| ApiError::internal(format!("building the union view failed: {e}")))?
     .ok_or_else(|| ApiError::not_found(format!("no such project group: {key}")))?;
 
     // Unfiltered, because the collision warning is derived from every id the
-    // corpora hold; the request's filter is applied to the rows below.
+    // corpora and the branches hold; the request's filter is applied below.
     let gathered = gather_docs(members, DocFilter::default()).await;
-    let contested = contested_numbers(&gathered);
+    let contested = contested_numbers(&gathered, &branches);
     let rows: Vec<CorpusDocs> = gathered
         .into_iter()
         .map(|(corpus, docs)| {
@@ -1000,7 +1092,30 @@ async fn group_union(
             (corpus, docs)
         })
         .collect();
-    Ok(Json(union(&rows, &contested)))
+    // The one place the snapshot is copied, and only the parts the filter
+    // reshapes: the reader's `Arc` is shared with every other reader of it.
+    let branches = Branches {
+        columns: branches
+            .columns
+            .iter()
+            // Same rule as a corpus column, for the same reason: a branch that
+            // could not be read keeps its error rather than becoming empty.
+            .map(|(column, docs)| {
+                let docs = match docs {
+                    Ok(docs) => Ok(docs.iter().filter(|d| filter.matches(d)).cloned().collect()),
+                    Err(e) => Err(e.clone()),
+                };
+                (column.clone(), docs)
+            })
+            .collect(),
+        occupancy: branches.occupancy.clone(),
+        notices: branches.notices.clone(),
+        read_at: branches.read_at.clone(),
+        // Already applied to the columns above, by `freshen_branch`; carried so
+        // the reshaped value still says what the reader read.
+        branch_of: branches.branch_of.clone(),
+    };
+    Ok(Json(union(&rows, &branches, &contested)))
 }
 
 /// Every member's summaries — those matching `filter` — gathered in parallel
@@ -1058,6 +1173,45 @@ async fn doc(
         .ok_or_else(|| ApiError::not_found(format!("no such document: {docid}")))
 }
 
+/// Markdown blocks to render, in order.
+#[derive(Debug, Deserialize)]
+struct RenderBody {
+    markdown: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct Rendered {
+    html: Vec<String>,
+}
+
+/// The most the editor ever sends at once: every block of a large document.
+/// Bounds are the cost of a pure endpoint, which anything on the allowed
+/// origin can call: no unbounded render on the reactor.
+const RENDER_MAX_BLOCKS: usize = 5_000;
+const RENDER_MAX_BYTES: usize = 2 * 1024 * 1024;
+
+/// Render markdown blocks with the node's own options (`actor::render_markdown`),
+/// so the editor's preview of a block is the document view's rendering of it.
+async fn render(body: Result<Json<RenderBody>, JsonRejection>) -> Result<Json<Rendered>, ApiError> {
+    let Json(body) = body?;
+    let bytes: usize = body.markdown.iter().map(String::len).sum();
+    if body.markdown.len() > RENDER_MAX_BLOCKS || bytes > RENDER_MAX_BYTES {
+        return Err(ApiError::bad_request(format!(
+            "too much to render: {} blocks, {bytes} bytes (at most {RENDER_MAX_BLOCKS} and {RENDER_MAX_BYTES})",
+            body.markdown.len()
+        )));
+    }
+    let html = tokio::task::spawn_blocking(move || {
+        body.markdown
+            .iter()
+            .map(|md| crate::actor::render_markdown(md))
+            .collect()
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("render task failed: {e}")))?;
+    Ok(Json(Rendered { html }))
+}
+
 /// A user SQL query. `params` fills the statement's `$n` placeholders.
 #[derive(Debug, Deserialize)]
 struct QueryBody {
@@ -1083,6 +1237,115 @@ async fn query(
     // place that decision lives. Whatever it says goes back verbatim: it names
     // the statement kind it refused, which is more useful than a rewrite.
     result.map(Json).map_err(ApiError::bad_request)
+}
+
+/// The `?status=&type=&n=` query of the pick endpoint.
+///
+/// `status` is required — unlike [`DocQuery`]'s optional filters, it is the
+/// question itself, and there is no sensible default for it. A missing one is a
+/// [`QueryRejection`] (400) before this is ever built.
+#[derive(Debug, Deserialize)]
+struct NextQuery {
+    status: String,
+    #[serde(rename = "type")]
+    type_name: Option<String>,
+    n: Option<usize>,
+}
+
+/// The pick oracle for one project, from its **primary** corpus.
+///
+/// `{key}` is a project-group key, the same string `/api/projects` emits and
+/// `/api/group/{key}/union` accepts. A group is a repository and its worktrees;
+/// `next` must answer from exactly one of them, and ADR-0053 says which — main
+/// is the truth for pickability, so this is the main worktree (falling back to
+/// the group's first corpus when discovery marked none, which happens only
+/// outside git).
+///
+/// The body is [`PickResult`], serialized from the very same engine type the
+/// CLI's `--json` prints; `opys-server/tests/api.rs` pins that they agree.
+///
+/// Named `pick` rather than `next` because [`axum::middleware::Next`] is in
+/// scope here and a handler of that name beside it would read as the same
+/// thing.
+async fn pick(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    query: Result<Query<NextQuery>, QueryRejection>,
+) -> Result<Json<PickResult>, ApiError> {
+    let Query(query) = query?;
+    if query.status.is_empty() {
+        return Err(ApiError::bad_request("next: ?status= is required"));
+    }
+    let cid = primary_cid(&state, &key).await?;
+
+    let q = PickQuery {
+        status: query.status,
+        // `?type=` with no value is a cleared dropdown, not the empty type.
+        type_filter: query.type_name.filter(|s| !s.is_empty()),
+        limit: query.n.unwrap_or(DEFAULT_LIMIT),
+    };
+    let result = with_corpus(&state, &cid, move |client| client.next(q)).await?;
+    result.map(Json).map_err(ApiError::bad_request)
+}
+
+/// The corpus a project-keyed route answers from: the group's **primary**
+/// worktree, falling back to its first corpus when discovery marked none (which
+/// happens only outside git).
+///
+/// Shared by the two routes under `/api/projects/{key}/…` so they cannot come
+/// to disagree about which worktree is the truth — or about the wording of the
+/// 404, which `opys-server/tests/api.rs` asserts on.
+async fn primary_cid(state: &AppState, key: &str) -> Result<String, ApiError> {
+    let manager = Arc::clone(&state.manager);
+    let wanted = key.to_string();
+    // The manager lock, taken off the reactor, held only for the cid lookup.
+    tokio::task::spawn_blocking(move || {
+        let manager = lock(&manager);
+        let group = manager.groups().iter().find(|g| g.key == wanted)?;
+        let corpus = group
+            .corpora
+            .iter()
+            .find(|c| c.is_primary)
+            .or_else(|| group.corpora.first())?;
+        Some(corpus.cid.clone())
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("resolving the project failed: {e}")))?
+    .ok_or_else(|| ApiError::not_found(format!("no such project: {key}")))
+}
+
+/// The `?n=` query of the flow endpoint: how many items each node lists.
+#[derive(Debug, Deserialize)]
+struct FlowQuery {
+    n: Option<usize>,
+}
+
+/// The lifecycle graph of one project, from its **primary** corpus.
+///
+/// `{key}` is a project-group key, as for [`pick`], and for the same reason: the
+/// nodes carry `next::pick`'s answer per status, and pickability is evaluated on
+/// main (ADR-0053).
+///
+/// One call answers the whole view — the statuses, the edges the `transitions`
+/// maps declare, and the documents on each node — because the alternative is a
+/// request per status over a corpus the node would reconstruct each time, and
+/// because the blocked count a node greys out is not part of a `PickResult` at
+/// all.
+///
+/// Nothing here can be bad input but a malformed `?n=`, which the
+/// [`QueryRejection`] turns into a 400: every status in the answer comes from
+/// the project's own config.
+async fn flow(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    query: Result<Query<FlowQuery>, QueryRejection>,
+) -> Result<Json<FlowView>, ApiError> {
+    let Query(query) = query?;
+    let cid = primary_cid(&state, &key).await?;
+    let limit = query.n.unwrap_or(DEFAULT_NODE_LIMIT);
+    Ok(Json(
+        with_corpus(&state, &cid, move |client| client.flow(limit)).await?,
+    ))
 }
 
 /// The corpus's cached verify problems.
@@ -1131,7 +1394,7 @@ fn refusal(cid: &str, e: ActionError) -> ApiError {
 
 /// Perform one write against a corpus.
 ///
-/// The body is a closed enum of the six mutating commands
+/// The body is a closed enum of the mutating commands
 /// ([`crate::action::Action`]); an unknown action or an undeclared field fails
 /// deserialization and comes back as a 400, which is what makes this endpoint
 /// incapable of executing anything the node did not implement.
@@ -1184,9 +1447,13 @@ async fn action(
             target.ok_or_else(|| ApiError::not_found(format!("no such corpus: {cid}")))?;
         let backend = make_backend();
         let done = crate::action::perform(&root, backend.as_ref(), &request);
-        // Gone and Busy are the two outcomes that touched nothing; everything
-        // else reached the corpus — a refused core still flushes and syncs, so
-        // the files moved either way and the cache is stale either way.
+        // Gone and Busy are the two outcomes that provably touched nothing:
+        // neither ever reached the flush. Everything else reloads, including
+        // `Refused` — a refused *core* now leaves the bytes as they were, but
+        // the same variant also carries a failed flush and a failed load, and a
+        // flush that fails partway leaves files the cache has not seen. The
+        // cheap wrong answer here is one spare reload; the expensive one is a
+        // dashboard serving documents that moved.
         if !matches!(done, Err(ActionError::Gone | ActionError::Busy)) {
             if let Ok(outcome) = &done {
                 // Broadcast here rather than after the `.await` below: a client
@@ -1326,6 +1593,50 @@ async fn pump(mut socket: WebSocket, mut events: broadcast::Receiver<Event>, con
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A corpus's branch is discovery's answer from whenever it last walked the
+    /// allowlist; the ref reader's is from its last pass. The union's heading
+    /// and the sidebar must show the second, or a checkout that moved reads
+    /// `main (primary)` above the reader's own "no served worktree is on
+    /// `main`".
+    #[test]
+    fn a_corpus_shows_the_branch_the_ref_reader_last_resolved() {
+        let corpus = |dir: &str, branch: Option<&str>| Corpus {
+            cid: format!("cid-{dir}"),
+            root: PathBuf::from(format!("/tmp/{dir}")),
+            base: PathBuf::from(format!("/tmp/{dir}/inventory")),
+            group: "g".into(),
+            branch: branch.map(str::to_string),
+            is_primary: true,
+            error: None,
+        };
+        let branches = Branches {
+            branch_of: [
+                (PathBuf::from("/tmp/moved"), Some("topic".to_string())),
+                (PathBuf::from("/tmp/detached"), None),
+            ]
+            .into_iter()
+            .collect(),
+            ..Branches::default()
+        };
+
+        let mut moved = corpus("moved", Some("main"));
+        freshen_branch(&mut moved, &branches);
+        assert_eq!(moved.branch.as_deref(), Some("topic"), "the fresh answer");
+
+        // The reader looked and found no branch: that overwrites too, or the
+        // heading keeps a name nothing is on.
+        let mut detached = corpus("detached", Some("main"));
+        freshen_branch(&mut detached, &branches);
+        assert_eq!(detached.branch, None);
+
+        // But a corpus the reader has no entry for is left alone: no
+        // repository, or a pass that could not open one, is not evidence that
+        // anything moved.
+        let mut unknown = corpus("unknown", Some("main"));
+        freshen_branch(&mut unknown, &branches);
+        assert_eq!(unknown.branch.as_deref(), Some("main"));
+    }
 
     #[test]
     fn empty_query_values_mean_no_filter() {

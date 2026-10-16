@@ -28,4 +28,16 @@ pub trait Backend {
     /// returning parsed docs + non-fatal parse errors. Used by read-only passes
     /// (stats, history).
     fn load_docs(&self, prj: &Project) -> (Vec<crate::doc::Doc>, Vec<String>);
+
+    /// The document at `path` exactly as the medium stores it, when the medium
+    /// stores documents as text at all; `None` otherwise, and `None` when the
+    /// text can no longer be read (the store relocated the document in memory,
+    /// say).
+    ///
+    /// This is the *spelling*, not the model: parsing normalizes quoting away,
+    /// so the one check that needs the source — format.md's quoted `history`
+    /// keys, see `commands::verify::spelling_problems` — reaches the medium
+    /// through here rather than reading files behind the backend's back. A
+    /// backend that returns `None` simply does not run it.
+    fn stored_text(&self, path: &std::path::Path) -> Option<String>;
 }

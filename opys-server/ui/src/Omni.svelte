@@ -1,5 +1,5 @@
 <script>
-  // The omnibox: a fuzzy finder over tickets (FEAT-0098), opened from the
+  // The omnibox: a fuzzy finder over tickets (FEAT-0049), opened from the
   // header's placeholder, Ctrl/⌘+P, or `/`.
   //
   // Scope is the corpus on screen, or every served corpus when there is none —

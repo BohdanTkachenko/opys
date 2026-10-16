@@ -1,6 +1,6 @@
 //! `opys tag` — add/remove tags on documents through the corpus store.
 
-use crate::commands::{expand_ids, for_each_id, maybe_sync, split_csv, touch};
+use crate::commands::{apply_batch, maybe_sync, print_lines, resolve_ids, split_csv, touch};
 use crate::error::{usage, Result};
 use crate::project::Project;
 use crate::store::Store;
@@ -47,16 +47,16 @@ pub fn core(
     Ok(tags)
 }
 
-pub fn run(ctx: &Ctx, ids: &str, add: Option<&str>, remove: Option<&str>) -> Result<()> {
+pub fn run(ctx: &Ctx, ids: &[String], add: Option<&str>, remove: Option<&str>) -> Result<()> {
     let prj = ctx.open()?;
-    let ids = expand_ids(ids)?;
+    let ids = resolve_ids(ids)?;
     let (mut store, _) = ctx.load(&prj)?;
-    let res = for_each_id(&ids, |id| {
+    let lines = apply_batch(&ids, |id| {
         let tags = core(&prj, &mut store, id, add, remove)?;
-        println!("{id} tags: {}", tags.join(", "));
-        Ok(())
-    });
+        Ok(format!("{id} tags: {}", tags.join(", ")))
+    })?;
     ctx.flush(&prj, store)?;
+    print_lines(lines)?;
     maybe_sync(ctx, &prj);
-    res
+    Ok(())
 }

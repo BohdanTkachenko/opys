@@ -1,4 +1,4 @@
-//! The action endpoint over real corpora, driven through the router (TASK-0072).
+//! The action endpoint over real corpora, driven through the router.
 //!
 //! Every end-to-end case is checked the same way: the write is performed twice —
 //! once through the router against one project, once by running **the real CLI**
@@ -88,6 +88,9 @@ fn init() {
     ONCE.call_once(|| {
         std::env::set_var("OPYS_NOW", "2026-02-03T04:05:06Z");
         std::env::set_var("OPYS_LOCK_TIMEOUT_MS", "5000");
+        // Read only under an `[ids] modulus` (`new_under_a_modulus_allocates_in_the_nodes_slot`);
+        // every dense fixture leaves it unread, so it is harmless to pin here.
+        std::env::set_var("OPYS_ID_SLOT", "3");
     });
 }
 
@@ -103,9 +106,14 @@ fn backend() -> Box<dyn Backend + Send> {
 /// sync pass fills a missing pair from the file's mtime, and the two copies are
 /// created milliseconds apart.
 fn project(root: &Path) -> PathBuf {
+    project_with(root, CONFIG)
+}
+
+/// [`project`] under a different `opys.toml`.
+fn project_with(root: &Path, config: &str) -> PathBuf {
     let inventory = root.join("inventory");
     std::fs::create_dir_all(&inventory).unwrap();
-    std::fs::write(root.join("opys.toml"), CONFIG).unwrap();
+    std::fs::write(root.join("opys.toml"), config).unwrap();
     std::fs::write(
         inventory.join("NOTE-0001.md"),
         "---\n\
@@ -160,10 +168,10 @@ fn snapshot(root: &Path) -> BTreeMap<String, String> {
 /// This is `opys_engine::run` — the same function the `opys` binary calls with
 /// the same clap-parsed [`Cli`] — so the reference is `src/commands/*::run`,
 /// `maybe_sync` and clap's defaults rather than a copy of them. The order those
-/// establish is not the obvious one and is what the byte comparisons pin: the
-/// flush and the auto-sync pass happen *even when the core refused* (except for
-/// `new`, where a refusal propagates before either), and the sync is its own
-/// second load/flush cycle rather than a pass over the store above.
+/// establish is what the byte comparisons pin: a refused write propagates before
+/// the flush, so neither the flush nor the auto-sync pass runs, and on the
+/// success path the sync is its own second load/flush cycle rather than a pass
+/// over the store above.
 ///
 /// Stdout gets the CLI's success line, which is harmless here; a refusal comes
 /// back as the `OpysError` the binary would exit 2 on.
@@ -212,10 +220,15 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Fixture {
+        Fixture::with_config(CONFIG)
+    }
+
+    /// A fixture whose two copies run under `config` instead of [`CONFIG`].
+    fn with_config(config: &str) -> Fixture {
         init();
         let dir = tempfile::tempdir().unwrap();
-        let live = project(&dir.path().join("live"));
-        let reference = project(&dir.path().join("reference"));
+        let live = project_with(&dir.path().join("live"), config);
+        let reference = project_with(&dir.path().join("reference"), config);
         let config = dir.path().join("config/server.toml");
         std::fs::create_dir_all(config.parent().unwrap()).unwrap();
         std::fs::write(
@@ -351,15 +364,16 @@ async fn next_action_completed(
 #[tokio::test(flavor = "multi_thread")]
 async fn new_writes_what_the_cli_writes() {
     let fx = Fixture::new();
-    // No `status`, so the type's default has to be applied by `new::core` and
-    // not by anything in the server.
+    // The action carries no status at all — `new` has none any more — so the
+    // type's initial status has to be applied by `new::core` and not by anything
+    // in the server.
     let answer = fx
         .action(json!({
             "action": "new", "type": "task", "title": "Third thing", "tags": "alpha,beta"
         }))
         .await;
 
-    // No `--status` either, so clap's default reaches the core the same way.
+    // Nor does the CLI, so both reach the core with the same arguments.
     cli(
         &fx.reference,
         &[
@@ -400,6 +414,115 @@ async fn new_writes_what_the_cli_writes() {
     fx.assert_mirrors_reference();
 }
 
+/// Under `[ids] modulus` the node allocates in its own process's slot
+/// (ADR-0054): `action.rs` resolves the source itself, having no `Ctx`, and a
+/// refactor that built `SequenceMax` there would collide with every slotted
+/// CLI allocator while the dense fixture above stayed green.
+#[tokio::test(flavor = "multi_thread")]
+async fn new_under_a_modulus_allocates_in_the_nodes_slot() {
+    let fx = Fixture::with_config(&format!("{CONFIG}\n[ids]\nmodulus = 4\n"));
+    let answer = fx
+        .action(json!({"action": "new", "type": "task", "title": "Slotted", "tags": "alpha"}))
+        .await;
+
+    cli(
+        &fx.reference,
+        &[
+            "new", "--type", "task", "--title", "Slotted", "--tags", "alpha",
+        ],
+    )
+    .expect("the CLI accepts the same creation");
+    let created_path = match appeared(&fx.pristine, &snapshot(&fx.reference)).as_slice() {
+        [only] => only.clone(),
+        other => panic!("`opys new` created {} files: {other:?}", other.len()),
+    };
+    let id = Path::new(&created_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .expect("the created file is <ID>.md")
+        .to_string();
+
+    assert_eq!(
+        answer["id"], id,
+        "the node and the CLI resolve the same slot from the same environment"
+    );
+    // The corpus holds NOTE-0001 and TASK-0002; slot 3 of 4 (`OPYS_ID_SLOT`
+    // pinned in `init`) means the first number above 2 congruent to 3.
+    assert_eq!(id, "TASK-0003");
+    let num: u64 = id
+        .rsplit('-')
+        .next()
+        .and_then(|n| n.parse().ok())
+        .expect("a numbered id");
+    assert_eq!(num % 4, 3, "{id} is outside the node's slot");
+    fx.assert_mirrors_reference();
+}
+
+/// The node resolves the id source *before* the load takes the inventory lock,
+/// the ordering `Ctx::id_source` documents for the CLI (ADR-0054): a slot the
+/// project's modulus cannot accept is refused at once, not after waiting out
+/// `OPYS_LOCK_TIMEOUT_MS` behind whoever holds the lock — and refused with the
+/// slot's own message, so the client is told what is actually wrong instead of
+/// being blamed on a busy inventory.
+///
+/// The bad slot is arranged without touching the process environment (`init`
+/// pins `OPYS_ID_SLOT=3` for the whole binary): under `modulus = 2` the only
+/// valid slots are 0 and 1, so slot 3 is out of range by configuration.
+///
+/// Driven through [`action::perform`] rather than the router on purpose: the
+/// handler asks the corpus actor to reload after any outcome but `Gone`/`Busy`,
+/// and *that* load waits for the lock this test is holding — which would hide
+/// the very ordering under test.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bad_slot_is_refused_before_the_inventory_lock_is_taken() {
+    init();
+    let dir = tempfile::tempdir().unwrap();
+    let live = project_with(
+        &dir.path().join("live"),
+        &format!("{CONFIG}\n[ids]\nmodulus = 2\n"),
+    );
+    let pristine = snapshot(&live);
+
+    // Hold the lock exactly as a concurrent `opys` invocation would.
+    let prj = opys_engine::project::Project::open(&live.to_string_lossy()).unwrap();
+    let (mut store, _errors) = MarkdownLocal.load(&prj).expect("the test takes the lock");
+
+    let request: opys_server::action::Action = serde_json::from_value(
+        json!({"action": "new", "type": "task", "title": "Slotted", "tags": "alpha"}),
+    )
+    .unwrap();
+    let root = live.clone();
+    // Well inside `init`'s 5 s lock timeout: a cycle that reached the load
+    // would still be polling for the lock when this fires.
+    let attempt = tokio::time::timeout(
+        Duration::from_secs(2),
+        tokio::task::spawn_blocking(move || {
+            opys_server::action::perform(&root, &MarkdownLocal, &request)
+                .err()
+                .map(|e| e.to_string())
+        }),
+    )
+    .await
+    .expect("the refusal must not wait for the lock it never needs")
+    .unwrap();
+
+    let message = attempt.expect("an unusable slot is refused, not allocated");
+    assert!(message.contains("OPYS_ID_SLOT=3"), "{message}");
+    assert!(message.contains("modulus 2"), "{message}");
+    assert!(
+        !message.contains("busy"),
+        "the lock was never wanted, so it must not be blamed: {message}"
+    );
+
+    drop(store.take_lock());
+    drop(store);
+    assert_eq!(
+        snapshot(&live),
+        pristine,
+        "a refused allocation writes nothing"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn set_status_writes_what_the_cli_writes() {
     let fx = Fixture::new();
@@ -412,6 +535,37 @@ async fn set_status_writes_what_the_cli_writes() {
     cli(&fx.reference, &["set-status", "TASK-0002", "doing"])
         .expect("the CLI accepts the same transition");
     fx.assert_mirrors_reference();
+}
+
+/// The `log` action is `opys log`: the same stamp, the same splice, the same
+/// section scaffolded when the document lacks it.
+#[tokio::test(flavor = "multi_thread")]
+async fn log_writes_what_the_cli_writes() {
+    // The shared CONFIG declares no log section, so `task` gains one here.
+    // `required` stays false: making it required would put every fixture
+    // document into verify failure and change what the other tests measure.
+    let fx = Fixture::with_config(&format!(
+        "{CONFIG}\n[[types.task.sections]]\nheading = \"Progress\"\nkind = \"log\"\n"
+    ));
+    let answer = fx
+        .action(json!({"action": "log", "id": "TASK-0002", "text": "picked it up"}))
+        .await;
+    assert_eq!(answer["id"], "TASK-0002");
+    assert_eq!(
+        answer["message"],
+        "TASK-0002 logged to '## Progress' (section created)"
+    );
+
+    cli(&fx.reference, &["log", "TASK-0002", "picked it up"])
+        .expect("the CLI accepts the same entry");
+    fx.assert_mirrors_reference();
+
+    // And the entry really is stamped, not just appended.
+    let text = std::fs::read_to_string(fx.live.join("inventory/TASK-0002.md")).unwrap();
+    assert!(
+        text.contains("## Progress\n- 2026-02-03T04:05:06Z picked it up\n"),
+        "{text}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -480,12 +634,14 @@ async fn block_writes_what_the_cli_writes() {
         .expect("the CLI accepts the same link");
     fx.assert_mirrors_reference();
 
-    // The task type declares a `blocked` status, so the core auto-set it and
-    // remembered where it came from. Both are the engine's doing, and the byte
-    // comparison above is what proves the server did not reimplement either.
+    // The task type declares a `blocked` status and still does not get it:
+    // blocked is derived from the live `blocked_by` entries (ADR-0050 decision
+    // 3), so `block` writes the two relation maps and nothing else. The byte
+    // comparison above is what proves the server did not reimplement any of it.
     let task = fx.read("inventory/TASK-0002.md");
-    assert!(task.contains("status: blocked"), "{task}");
-    assert!(task.contains("blocked_from: todo"), "{task}");
+    assert!(task.contains("status: todo"), "{task}");
+    assert!(task.contains("NOTE-0001:"), "{task}");
+    assert!(!task.contains("blocked_from"), "{task}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -513,10 +669,11 @@ async fn unblock_writes_what_the_cli_writes() {
     .expect("the CLI accepts the same removal");
     fx.assert_mirrors_reference();
 
-    // The status the document held before it was auto-blocked comes back, and
-    // the bookkeeping key goes away with it.
+    // The entry is gone from both sides; the status never moved in either
+    // direction, because neither command ever touches one.
     let task = fx.read("inventory/TASK-0002.md");
     assert!(task.contains("status: todo"), "{task}");
+    assert!(!task.contains("blocked_by"), "{task}");
     assert!(!task.contains("blocked_from"), "{task}");
 }
 
@@ -573,6 +730,154 @@ async fn unknown_action_is_rejected() {
     );
 }
 
+/// [`CONFIG`] with a status graph on `note` (ADR-0050 decision 1). `task`
+/// deliberately keeps none, so one fixture carries both shapes the engine has to
+/// serve: a type whose moves are declared, and a type that kept the any-to-any
+/// rule. `task`'s `blocked` status is ordinary vocabulary here — nothing writes
+/// it, because blocked is derived (decision 3).
+const GRAPH_CONFIG: &str = r#"
+base = "inventory"
+
+[types.note]
+prefix = "NOTE"
+statuses = ["open", "review", "parked", "closed"]
+default_status = "open"
+terminal_statuses = ["closed"]
+tags_required = false
+
+[types.note.transitions]
+open = ["review"]
+review = ["parked", "closed", "open"]
+parked = ["open"]
+
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "doing", "blocked", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]
+tags_required = false
+"#;
+
+/// A move the type's status graph does not declare is refused by the node with
+/// the CLI's own words — the engine guard is shared, so this pins that the node
+/// really does go through it rather than round a shortcut, and that a refusal
+/// writes nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_move_off_the_status_graph_is_a_422() {
+    let fx = Fixture::with_config(GRAPH_CONFIG);
+    // NOTE-0001 is `open`, whose only declared target is `review`.
+    let (status, answer) = fx
+        .try_action(json!({"action": "set-status", "id": "NOTE-0001", "status": "parked"}))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+
+    let refused = cli(&fx.reference, &["set-status", "NOTE-0001", "parked"])
+        .expect_err("the CLI refuses the same move");
+    assert_eq!(
+        answer["error"],
+        refused.to_string(),
+        "the message must be the one the CLI prints for the same attempt"
+    );
+    assert!(
+        answer["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("from open: review")),
+        "the refusal has to say where the document may go: {answer}"
+    );
+    assert_eq!(
+        snapshot(&fx.live),
+        fx.pristine,
+        "a refused write must not have touched the inventory at all"
+    );
+
+    // The declared edge lands, through the same endpoint.
+    let answer = fx
+        .action(json!({"action": "set-status", "id": "NOTE-0001", "status": "review"}))
+        .await;
+    assert_eq!(answer["message"], "NOTE-0001 -> review", "{answer}");
+}
+
+/// A note whose `review` allows a single visit, and nothing else worth a graph:
+/// the budget is the subject, so the type declares no `[transitions]` (which
+/// would drag in the fix/recovery/escalation edges `config validate` demands and
+/// tell us nothing about the node).
+const VISITS_CONFIG: &str = r#"
+base = "inventory"
+
+[types.note]
+prefix = "NOTE"
+statuses = ["open", "review", "parked", "closed"]
+default_status = "open"
+terminal_statuses = ["closed"]
+tags_required = false
+
+[types.note.max_visits]
+review = { limit = 1, then = "parked" }
+
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "doing", "blocked", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]
+tags_required = false
+"#;
+
+/// An entry past the type's `max_visits` budget is refused by the node in the
+/// CLI's own words (ADR-0052). The sibling of
+/// [`a_move_off_the_status_graph_is_a_422`], for the other hard refusal
+/// `set_status::core` carries: the node runs the same core, so it must not be
+/// possible to give the API a budget the CLI does not have.
+///
+/// The refused move is one to the status the document already holds — legal as
+/// a graph move, and still a visit, because it appends an entry.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_entry_past_the_visit_budget_is_a_422() {
+    let fx = Fixture::with_config(VISITS_CONFIG);
+    // The single allowed entry, performed on both copies.
+    let answer = fx
+        .action(json!({"action": "set-status", "id": "NOTE-0001", "status": "review"}))
+        .await;
+    assert_eq!(answer["message"], "NOTE-0001 -> review", "{answer}");
+    cli(&fx.reference, &["set-status", "NOTE-0001", "review"])
+        .expect("the CLI accepts the first entry too");
+    fx.assert_mirrors_reference();
+    let spent = snapshot(&fx.live);
+
+    let (status, answer) = fx
+        .try_action(json!({"action": "set-status", "id": "NOTE-0001", "status": "review"}))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+    let refused = cli(&fx.reference, &["set-status", "NOTE-0001", "review"])
+        .expect_err("the CLI refuses the second entry");
+    assert_eq!(
+        answer["error"],
+        refused.to_string(),
+        "the message must be the one the CLI prints for the same attempt"
+    );
+    assert!(
+        answer["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("max_visits sends it to parked instead")),
+        "the refusal has to name the escape the budget configured: {answer}"
+    );
+    assert_eq!(
+        snapshot(&fx.live),
+        spent,
+        "a refused write must not have touched the inventory at all"
+    );
+    assert_eq!(
+        snapshot(&fx.reference),
+        spent,
+        "and the CLI's refusal must leave the same bytes"
+    );
+
+    // The escape the refusal names is a move the node performs.
+    let answer = fx
+        .action(json!({"action": "set-status", "id": "NOTE-0001", "status": "parked"}))
+        .await;
+    assert_eq!(answer["message"], "NOTE-0001 -> parked", "{answer}");
+}
+
 /// A write the corpus refuses is the caller's answer, not the node's failure:
 /// 422 with the engine's own message, which is the text the CLI prints before
 /// exiting 2. The expectation comes from running the same attempt through the
@@ -595,13 +900,19 @@ async fn invalid_transition_is_a_422() {
         "the message must be the one the CLI prints for the same attempt"
     );
 
-    // The CLI still flushes and syncs after a refused transition, and so must
-    // the node: on a corpus this pass has not touched yet, that is a visible
-    // difference (reconciled relations, linkified prose) rather than a no-op.
+    // A refused transition writes nothing — neither side flushes, and neither
+    // runs the auto-sync pass. This corpus is deliberately out of sync (a bare
+    // id awaiting linkify, a missing reverse reference), so a stray sync on
+    // either side would show up here as a difference from the pristine bytes.
     assert_eq!(
         snapshot(&fx.live),
         snapshot(&fx.reference),
         "a refused write must leave the same bytes the CLI leaves"
+    );
+    assert_eq!(
+        snapshot(&fx.live),
+        fx.pristine,
+        "a refused write must not have touched the inventory at all"
     );
 }
 
@@ -724,7 +1035,7 @@ async fn close_broadcasts_and_cache_catches_up() {
 }
 
 /// **The allowlist-escape test.** Approving a project and running the node are
-/// separate acts (ADR-0077), and the allowlist is the whole boundary — but
+/// separate acts (ADR-0031), and the allowlist is the whole boundary — but
 /// `Project::open` searches *upward* for `opys.toml`, so a corpus that has lost
 /// its own config would fall through to the enclosing project, which nobody
 /// approved. `Manager::refresh` only retires such a corpus on its next 60 s
@@ -1109,6 +1420,7 @@ async fn set_field_refuses_keys_a_dedicated_action_owns() {
         ("tags", "tag"),
         ("blocked_by", "block"),
         ("updated", "auto-maintained"),
+        ("history", "auto-maintained lifecycle history"),
     ] {
         let (status, answer) = fx
             .try_action(json!({
@@ -1156,5 +1468,300 @@ async fn remove_field_removes_and_a_missing_field_is_named() {
             .unwrap_or_default()
             .contains("no field 'priority'"),
         "{answer}"
+    );
+}
+
+/// [`CONFIG`] with everything the composite write needs on `task`: a status
+/// graph (so the transition guard has edges to name), the ordinary declared
+/// field a project records a claimant in, and a log section. `required` stays
+/// unset on the section, as in [`log_writes_what_the_cli_writes`], so the
+/// fixture documents do not start out failing verify.
+const CLAIM_CONFIG: &str = r#"
+base = "inventory"
+
+[types.note]
+prefix = "NOTE"
+statuses = ["open", "closed"]
+default_status = "open"
+terminal_statuses = ["closed"]
+tags_required = false
+
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "doing", "review", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]
+tags_required = false
+
+[types.task.transitions]
+todo = ["doing"]
+doing = ["review", "todo"]
+review = ["done", "doing"]
+
+[types.task.fields.claimed_by]
+type = "string"
+
+[[types.task.sections]]
+heading = "Progress"
+kind = "log"
+"#;
+
+/// The composite action is `opys apply`: one status transition, one field
+/// write and one log entry, and the node leaves exactly the bytes the CLI
+/// leaves — which is the whole point of exposing it, so a dispatcher over HTTP
+/// gets the atomicity a dispatcher over the CLI gets.
+#[tokio::test(flavor = "multi_thread")]
+async fn apply_writes_what_the_cli_writes() {
+    let fx = Fixture::with_config(CLAIM_CONFIG);
+    let answer = fx
+        .action(json!({
+            "action": "apply",
+            "id": "TASK-0002",
+            "status": "doing",
+            "fields": {"claimed_by": "agent-7"},
+            "log": "claimed"
+        }))
+        .await;
+    assert_eq!(answer["id"], "TASK-0002");
+    assert_eq!(
+        answer["message"],
+        "TASK-0002 -> doing, claimed_by set, logged to '## Progress' (section created)"
+    );
+
+    cli(
+        &fx.reference,
+        &[
+            "apply",
+            "TASK-0002",
+            "--status",
+            "doing",
+            "--field",
+            "claimed_by=agent-7",
+            "--log",
+            "claimed",
+        ],
+    )
+    .expect("the CLI accepts the same batch");
+    fx.assert_mirrors_reference();
+
+    let text = fx.read("inventory/TASK-0002.md");
+    assert!(text.contains("status: doing"), "{text}");
+    assert!(text.contains("claimed_by: agent-7"), "{text}");
+    assert!(
+        text.contains("## Progress\n- 2026-02-03T04:05:06Z claimed\n"),
+        "{text}"
+    );
+}
+
+/// A second claimant over HTTP loses exactly as it loses at the CLI: the
+/// transition guard refuses it with the engine's own words, 422, and the
+/// inventory is byte-identical to what the winner left.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_claim_over_the_api_is_a_422_that_writes_nothing() {
+    let fx = Fixture::with_config(CLAIM_CONFIG);
+    let claim = |who: &'static str| {
+        json!({
+            "action": "apply",
+            "id": "TASK-0002",
+            "status": "doing",
+            "fields": {"claimed_by": who},
+            "log": "claimed"
+        })
+    };
+    fx.action(claim("agent-7")).await;
+    cli(
+        &fx.reference,
+        &[
+            "apply",
+            "TASK-0002",
+            "--status",
+            "doing",
+            "--field",
+            "claimed_by=agent-7",
+            "--log",
+            "claimed",
+        ],
+    )
+    .expect("the CLI accepts the first claim too");
+    fx.assert_mirrors_reference();
+    let claimed = snapshot(&fx.live);
+
+    let (status, answer) = fx.try_action(claim("agent-9")).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+    let refused = cli(
+        &fx.reference,
+        &[
+            "apply",
+            "TASK-0002",
+            "--status",
+            "doing",
+            "--field",
+            "claimed_by=agent-9",
+            "--log",
+            "claimed",
+        ],
+    )
+    .expect_err("the CLI refuses the second claim");
+    assert_eq!(
+        answer["error"],
+        refused.to_string(),
+        "the message must be the one the CLI prints for the same attempt"
+    );
+    assert!(
+        answer["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("asserts a transition")),
+        "the refusal has to be the transition guard's: {answer}"
+    );
+    assert_eq!(
+        snapshot(&fx.live),
+        claimed,
+        "a refused claim must not have touched the inventory at all"
+    );
+    assert_eq!(snapshot(&fx.reference), claimed);
+}
+
+/// [`CLAIM_CONFIG`] plus the rule that makes a claim enforceable: the working
+/// status requires the claimant field. Its own const rather than an addition to
+/// `CLAIM_CONFIG`, which several tests move in and out of `doing` with no field
+/// at all.
+const GUARDED_CLAIM_CONFIG: &str = r#"
+base = "inventory"
+
+[types.note]
+prefix = "NOTE"
+statuses = ["open", "closed"]
+default_status = "open"
+terminal_statuses = ["closed"]
+tags_required = false
+
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "doing", "review", "done"]
+default_status = "todo"
+terminal_statuses = ["done"]
+tags_required = false
+
+[types.task.transitions]
+todo = ["doing"]
+doing = ["review", "todo"]
+review = ["done", "doing"]
+
+[types.task.fields.claimed_by]
+type = "string"
+
+[[types.task.sections]]
+heading = "Progress"
+kind = "log"
+
+[[rules]]
+when = { type = "task", status = "doing" }
+require_field = "claimed_by"
+"#;
+
+/// Releasing over HTTP is the claim backwards, and it stays one action even
+/// when the status being left is the one that *requires* the field being
+/// cleared — the configuration that makes a claim mean anything. The verify
+/// gate brackets the whole batch, so the removal is judged against the finished
+/// document, at `todo`, where the rule no longer applies. The node and the CLI
+/// leave the same bytes, as always.
+#[tokio::test(flavor = "multi_thread")]
+async fn apply_releases_a_guarded_claim_in_one_action() {
+    let fx = Fixture::with_config(GUARDED_CLAIM_CONFIG);
+    let claim = &[
+        "apply",
+        "TASK-0002",
+        "--status",
+        "doing",
+        "--field",
+        "claimed_by=agent-7",
+        "--log",
+        "claimed",
+    ];
+    fx.action(json!({
+        "action": "apply",
+        "id": "TASK-0002",
+        "status": "doing",
+        "fields": {"claimed_by": "agent-7"},
+        "log": "claimed"
+    }))
+    .await;
+    cli(&fx.reference, claim).expect("the CLI accepts the claim");
+    fx.assert_mirrors_reference();
+
+    let answer = fx
+        .action(json!({
+            "action": "apply",
+            "id": "TASK-0002",
+            "status": "todo",
+            "remove_fields": ["claimed_by"],
+            "log": "handing back"
+        }))
+        .await;
+    assert_eq!(
+        answer["message"],
+        "TASK-0002 -> todo, claimed_by removed, logged to '## Progress'"
+    );
+    cli(
+        &fx.reference,
+        &[
+            "apply",
+            "TASK-0002",
+            "--status",
+            "todo",
+            "--remove-field",
+            "claimed_by",
+            "--log",
+            "handing back",
+        ],
+    )
+    .expect("the CLI accepts the same release");
+    fx.assert_mirrors_reference();
+
+    let text = fx.read("inventory/TASK-0002.md");
+    assert!(text.contains("status: todo"), "{text}");
+    assert!(!text.contains("claimed_by"), "{text}");
+}
+
+/// A body that names no part at all is the usage error the CLI calls it, not a
+/// 200 that flushes nothing: every part but `id` is optional at the wire, so
+/// the refusal has to come from the engine, and it comes back with the words
+/// `opys apply` prints. The other two dropped-flag cases (`reason` without
+/// `status`, `section` without `log`) go the same way.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_apply_that_asks_for_nothing_is_a_422() {
+    let fx = Fixture::with_config(CLAIM_CONFIG);
+    let before = snapshot(&fx.live);
+
+    let cases: [(Value, &str); 3] = [
+        (
+            json!({"action": "apply", "id": "TASK-0002"}),
+            "apply needs something to do",
+        ),
+        (
+            json!({"action": "apply", "id": "TASK-0002", "reason": "because",
+                   "fields": {"claimed_by": "agent-7"}}),
+            "--reason writes <status>_reason and needs --status",
+        ),
+        (
+            json!({"action": "apply", "id": "TASK-0002", "section": "Nope",
+                   "fields": {"claimed_by": "agent-7"}}),
+            "--section names the section --log appends to and needs --log",
+        ),
+    ];
+    for (body, message) in cases {
+        let (status, answer) = fx.try_action(body.clone()).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}: {answer}");
+        assert!(
+            answer["error"]
+                .as_str()
+                .is_some_and(|e| e.contains(message)),
+            "{body}: {answer}"
+        );
+    }
+    assert_eq!(
+        snapshot(&fx.live),
+        before,
+        "a refused composite must not have written anything"
     );
 }

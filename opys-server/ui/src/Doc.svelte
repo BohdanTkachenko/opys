@@ -5,7 +5,8 @@
   // Everything about the document is edited where it is shown. The frontmatter
   // panel is one card of facts, each editable in place — status is a menu,
   // tags and blockers grow from an inline box on their own row, custom fields
-  // open on click — and the body is click-to-edit prose. There is no separate
+  // open on click — and the body is prose that a double-click turns into its
+  // source, saved when the editor is left. There is no separate
   // action bar: a control that lives apart from the fact it changes has to
   // explain which fact that is, and the explanation is the first thing a
   // reader has to scroll past to reach the document.
@@ -17,13 +18,17 @@
   // be two ten-second waits with one visible answer.
   //
   // What can be set is driven by the payload rather than by knowledge of the
-  // project's config. The status menu is `allowed_statuses` — the type's
-  // statuses minus its terminal ones, computed by the node — and close is
-  // gated on `closable`, because a type with no terminal status has nothing to
-  // close *to*. A UI that derived either from `opys.toml` would be a second
-  // interpretation of the config, wrong the first time a type was edited.
+  // project's config. The status menu is `allowed_targets` — where *this*
+  // document may go, computed by the node from the type's declared status graph
+  // — falling back to `allowed_statuses` (the type's whole vocabulary) for a
+  // type that declares no graph. Close is gated on `closable`, which answers the
+  // same question for the terminal door, with `has_terminal_status` saying
+  // which of its two refusals to word — no terminal status at all, or no edge
+  // into one from here. A UI that derived any of it from `opys.toml` would be a
+  // second interpretation of the config, wrong the first time a type was
+  // edited.
 
-  import { tick } from 'svelte';
+  import { Blockdown } from 'svelte-blockdown';
   import Icon from './lib/Icon.svelte';
   import { api } from './lib/api.js';
   import { affects, events } from './lib/events.svelte.js';
@@ -52,13 +57,16 @@
    *
    * `updated` is in here because the header shows it: every document has one, so
    * leaving it out listed the same timestamp twice, in two formats. `created`
-   * stays a custom row — nothing else renders it.
+   * stays a custom row — nothing else renders it. `history` is hidden: it is the
+   * auto-maintained lifecycle map (the engine refuses to edit it), and an
+   * ever-growing timestamp→status map rendered as one JSON line is noise.
    */
   const RESERVED = new Set([
     'id',
     'status',
     'tags',
     'updated',
+    'history',
     'references',
     'blocked_by',
     'blocks',
@@ -115,19 +123,19 @@
   const unsetDeclared = $derived(
     (d?.declared_fields ?? []).filter((f) => !(f.name in (d?.fields ?? {}))),
   );
-  /** Auto-maintained bookkeeping: shown, never editable (the engine refuses too). */
-  const AUTO = new Set(['blocked_from']);
-
   /**
-   * The status menu.
+   * The status menu: this document's declared targets when its type has a status
+   * graph, else its type's whole vocabulary. `null` is the "no graph" answer, so
+   * `??` picks the fallback while an empty array — a dead-end status — is
+   * honoured as the empty menu it is.
    *
-   * `allowed_statuses` leaves out terminal statuses on purpose — `set-status`
-   * refuses them — but the document might currently *be* in one, or in a status
-   * the type no longer declares. Prepending it keeps the menu from rendering
-   * blank; choosing it again is a no-op.
+   * Both leave out terminal statuses on purpose — `set-status` refuses them, and
+   * `close` is the door — but the document might currently *be* in one, or in a
+   * status the type no longer declares, or in a dead end. Prepending its own
+   * status keeps the menu from rendering blank; choosing it again is a no-op.
    */
   const statuses = $derived.by(() => {
-    const allowed = d?.allowed_statuses ?? [];
+    const allowed = d?.allowed_targets ?? d?.allowed_statuses ?? [];
     if (!d?.status || allowed.includes(d.status)) return allowed;
     return [d.status, ...allowed];
   });
@@ -142,7 +150,7 @@
 
   // Status. Choosing one writes it at once — the same gesture as dragging a
   // card between columns — and a refusal for want of a `<status>_reason`
-  // (blocked with no blocker, wontfix, whatever the project's rules say) opens
+  // (wontfix, archived, whatever the project's rules say) opens
   // a reason box on the row, holding the picked status, so the second attempt
   // is one line of typing rather than a second trip through the menu.
   /** `{ status, reason }` while a refused change waits for its reason. */
@@ -210,6 +218,44 @@
     if (outcome) blocker = '';
   }
 
+  // The log entry box, under the body. The node stamps the entry and splices
+  // it into the section, so this sends only the text — the same call `opys log`
+  // makes. A type with one log section needs no chooser; the `section` field
+  // only rides along when there is a choice to make.
+  let logEntry = $state('');
+  let logSection = $state('');
+
+  // Seed the chooser from the document, the way the status row seeds itself: a
+  // plain variable holds what it was seeded from, so navigating to another
+  // document re-seeds and a mere refresh leaves a half-typed entry alone.
+  let logSeeded = null;
+  $effect(() => {
+    const current = d?.id;
+    if (current === logSeeded) return;
+    logSeeded = current;
+    logSection = (d?.log_sections ?? [])[0] ?? '';
+  });
+
+  async function addLogEntry() {
+    const text = logEntry.trim();
+    if (text.length === 0) return;
+    const sections = d?.log_sections ?? [];
+    const section = sections.length > 1 ? logSection || sections[0] : undefined;
+    const outcome = await perform(
+      { action: 'log', id: d.id, text, section },
+      'adding a log entry',
+    );
+    if (outcome) logEntry = '';
+  }
+
+  /** ⌘/Ctrl+Enter sends the entry; the textarea keeps Enter for newlines. */
+  function logKeys(event) {
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      addLogEntry();
+    }
+  }
+
   /** Enter submits, Escape clears — for the inline boxes. */
   function inlineKeys(submit, clear) {
     return (event) => {
@@ -236,101 +282,23 @@
     return outcome;
   }
 
-  // Edit-in-place (the `edit-body` action): the rendered body swaps for its
-  // markdown source. The draft seeds from the payload when editing starts and
-  // is otherwise untouched by refreshes — a live reload must not eat an edit
-  // in progress.
-  let editing = $state(false);
-  let draft = $state('');
-  /** The body as editing began — the "untouched" reference for Escape. */
-  let seed = '';
-  /** The source textarea, for focus and caret placement on entry. */
-  let srcEl = $state(null);
+  // The body is edited in place by the block editor (svelte-blockdown): it
+  // shows the document rendered, a double-click turns one block into its
+  // markdown, and leaving the document saves it through the `edit-body`
+  // action — kept only if verify stays clean. Blocks are previewed by the
+  // node's own renderer, so a block looks the same mid-edit as after.
+  /** The editor, for the Edit button's keyboard path in. */
+  let editor = $state(null);
 
-  function startEdit() {
-    seed = d?.body ?? '';
-    draft = seed;
-    editing = true;
+  async function renderBlocks(markdown) {
+    const { html } = await api.render(markdown);
+    return html;
   }
 
-  async function editFromButton() {
-    startEdit();
-    await tick();
-    placeCaret(null);
-  }
-
-  /**
-   * Enter editing from a click in the rendered prose — the body is editable by
-   * default, Obsidian-style: the click swaps rendering for source and drops
-   * the caret at the section that was clicked.
-   *
-   * Deliberately inert when the click was really something else: a link
-   * (navigation wins), a selection being finished (copying is not editing), or
-   * a modified click.
-   */
-  async function editFromClick(event) {
-    if (editing || pending) return;
-    if (event.defaultPrevented || event.button !== 0) return;
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    if (event.target.closest?.('a')) return;
-    const selection = window.getSelection?.();
-    if (selection && !selection.isCollapsed) return;
-    const heading = nearestHeading(event.target, event.currentTarget);
-    startEdit();
-    await tick();
-    placeCaret(heading);
-  }
-
-  /**
-   * The heading governing the clicked spot: the clicked heading itself, or the
-   * nearest one above the clicked block. Headings survive rendering almost
-   * verbatim (`## Title` → `<h2>Title</h2>`), which is what makes them usable
-   * for mapping a click in the HTML back to a line of the source.
-   */
-  function nearestHeading(target, article) {
-    const el = target instanceof Element ? target : target?.parentElement;
-    const own = el?.closest?.('h1,h2,h3,h4,h5,h6');
-    if (own) return own;
-    let block = el;
-    while (block && block.parentElement !== article) block = block.parentElement;
-    for (let sib = block; sib; sib = sib.previousElementSibling) {
-      if (/^H[1-6]$/.test(sib.tagName)) return sib;
-    }
-    return null;
-  }
-
-  /** Focus the editor with the caret on `heading`'s source line (top if unknown). */
-  function placeCaret(heading) {
-    if (!srcEl) return;
-    let at = 0;
-    const text = heading?.textContent?.trim();
-    if (text) {
-      // A heading with inline markup (`code`, links) renders to different text
-      // than its source line, so fall through: heading-line match, then the
-      // bare text anywhere, then the top of the document.
-      const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const line = draft.match(new RegExp(`^#{1,6}[ \\t]+${escaped}[ \\t]*$`, 'm'));
-      at = line?.index ?? Math.max(0, draft.indexOf(text));
-    }
-    srcEl.focus();
-    srcEl.setSelectionRange(at, at);
-    // A textarea does not scroll to a programmatically placed caret on its
-    // own; proportional is close enough to land the right screenful.
-    srcEl.scrollTop = Math.max(
-      0,
-      (at / Math.max(1, draft.length)) * srcEl.scrollHeight - srcEl.clientHeight / 3,
-    );
-  }
-
-  function editorKeys(event) {
-    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-      event.preventDefault();
-      saveBody();
-    } else if (event.key === 'Escape' && draft === seed) {
-      // Escape discards only an untouched draft; once there are changes in
-      // the box, the explicit Cancel is the only way to lose them.
-      editing = false;
-    }
+  /** Persist the body. `false` tells the editor the node refused it. */
+  async function saveBody(body) {
+    const outcome = await perform({ action: 'edit-body', id: d.id, body }, 'saving the body');
+    return Boolean(outcome);
   }
 
   // Frontmatter fields, editable in place (the `set-field`/`remove-field`
@@ -363,7 +331,7 @@
   }
 
   function startFieldEdit(key, value) {
-    if (pending || AUTO.has(key)) return;
+    if (pending) return;
     fieldEdit = { key, text: fieldSource(value) };
   }
 
@@ -403,16 +371,6 @@
   function focusOnMount(node) {
     node.focus();
     node.select?.();
-  }
-
-  async function saveBody() {
-    const outcome = await perform(
-      { action: 'edit-body', id: d.id, body: draft },
-      'saving the body',
-    );
-    // On refusal the editor stays open with the draft intact — the node's
-    // message (shown below the panel) says which rule the edit broke.
-    if (outcome) editing = false;
   }
 
   /**
@@ -678,6 +636,19 @@
           <div class="chips">
             {#each entries as [refId, title] (refId)}
               {@const shown = relationTitle(title)}
+              <!-- Blocked is derived (ADR-0050 decision 3), so a `blocked_by`
+                   entry can be perfectly live-looking and no longer block. The
+                   node says which ones still hold; this view must not show the
+                   rest as if they did — and must not tell the reader the wrong
+                   reason, so it takes the two ways an entry stops holding from
+                   the node too: the target released, or nothing answers to the
+                   id (`verify` reports that one). -->
+              {@const dangling =
+                relation.key === 'blocked_by' && (d.dangling_blockers ?? []).includes(refId)}
+              {@const released =
+                relation.key === 'blocked_by' &&
+                !dangling &&
+                !(d.live_blockers ?? []).includes(refId)}
               {#if shown.struck}
                 <!-- A tombstone: the document was closed and its file deleted,
                      so this is deliberately not a link to anywhere. -->
@@ -686,7 +657,15 @@
                   {shown.text}
                 </span>
               {:else if relation.editable}
-                <span class="chip">
+                <span
+                  class="chip"
+                  class:released={released || dangling}
+                  title={dangling
+                    ? `${refId} no longer blocks ${d.id}: no document answers to that id — run opys verify`
+                    : released
+                      ? `${refId} no longer blocks ${d.id}: it has reached a status its type releases at`
+                      : undefined}
+                >
                   <a class="reflink" href={href(docPath(cid, refId))}>
                     <span class="mono">{refId}</span>
                     {shown.text}
@@ -762,8 +741,6 @@
             </button>
             <button class="btn small" onclick={() => (fieldEdit = null)}>Cancel</button>
           </span>
-        {:else if AUTO.has(key)}
-          <span class="value" title={isTimestamp(value) ? value : undefined}>{fieldDisplay(value)}</span>
         {:else}
           <span class="value editable">
             <button
@@ -827,7 +804,18 @@
 
     <div class="row closerow">
       <span class="label microlabel">Close</span>
-      {#if !d.closable}
+      {#if !d.closable && d.has_terminal_status}
+        <!-- The type *has* a terminal status, so what is missing is an edge
+             from where this document stands. `allowed_targets` cannot stand in
+             for that fact: it is non-null for any type that declares a graph,
+             terminal statuses or not — which is exactly the shipped `feature`
+             type — and this row would then promise a close that can never
+             happen. -->
+        <span class="small muted">
+          Not from <code>{d.status}</code>: the type's status graph declares no
+          move from here into a terminal status. Move it along first.
+        </span>
+      {:else if !d.closable}
         <span class="small muted">
           Never, for a <code>{d.type}</code>: the type declares no terminal
           status. Set one instead — archived, superseded, whatever the project
@@ -890,45 +878,66 @@
        markdown and nothing else. The heading is hidden below: it is the same
        title already in the header, extracted from this very line. -->
   <div class="page bodybar">
-    {#if !editing}
-      <button class="btn small" disabled={Boolean(pending)} onclick={editFromButton}>
-        <Icon name="doc" size={13} /> Edit
-      </button>
-      <span class="small muted">or click anywhere in the text</span>
-    {:else}
-      <button class="btn primary small" disabled={Boolean(pending)} onclick={saveBody}>
-        Save
-      </button>
-      <button class="btn small" disabled={Boolean(pending)} onclick={() => (editing = false)}>
-        Cancel
-      </button>
-      <span class="small muted">
-        markdown source · <kbd>⌘↵</kbd> saves — only if <code>verify</code> stays clean
-      </span>
-    {/if}
+    <button class="btn small" disabled={Boolean(pending)} onclick={() => editor?.startEditing()}>
+      <Icon name="doc" size={13} /> Edit
+    </button>
+    <span class="small muted">
+      {#if pending}
+        <span class="spinner"></span> saving…
+      {:else}
+        or double-click any block · saved when you click away, if <code>verify</code> stays clean
+      {/if}
+    </span>
   </div>
 
-  {#if editing}
-    <!-- Obsidian's source mode, not a rich editor: the file is markdown and
-         the person editing it knows that. -->
-    <textarea
-      class="page srcedit"
-      bind:this={srcEl}
-      bind:value={draft}
-      onkeydown={editorKeys}
-      rows={Math.min(40, Math.max(12, draft.split('\n').length + 2))}
-      spellcheck="false"
-      autocapitalize="off"
-      autocorrect="off"
-      aria-label="The document's markdown body"
-    ></textarea>
-  {:else}
-    <!-- The click opens the editor; the Edit button above is the keyboard path
-         to the same place, so the article itself stays a plain region. -->
-    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-    <article class="body page" use:markdownLinks onclick={editFromClick}>
-      {@html d.body_html}
-    </article>
+  <article class="body page" use:markdownLinks>
+    <Blockdown value={d.body} render={renderBlocks} onsave={saveBody} bind:this={editor} />
+  </article>
+
+  <!-- The log box sits after the body rather than inside the section it
+       writes to: the body arrives as one rendered blob, so there is no anchor
+       within it to hang a control on. It says which section it appends to,
+       which is the next best thing. -->
+  {#if (d.log_sections ?? []).length > 0}
+    <div class="page logbox">
+      <label class="small muted" for="logentry">
+        Append to
+        {#if d.log_sections.length > 1}
+          <select
+            class="inline"
+            bind:value={logSection}
+            disabled={Boolean(pending)}
+            aria-label="which log section to append to"
+          >
+            {#each d.log_sections as heading (heading)}
+              <option value={heading}>## {heading}</option>
+            {/each}
+          </select>
+        {:else}
+          <code>## {d.log_sections[0]}</code>
+        {/if}
+        — the node stamps it with the time.
+      </label>
+      <textarea
+        id="logentry"
+        class="logentry"
+        bind:value={logEntry}
+        onkeydown={logKeys}
+        rows="2"
+        placeholder="what just happened"
+        disabled={Boolean(pending)}
+      ></textarea>
+      <div class="logbar">
+        <button
+          class="btn small primary"
+          disabled={Boolean(pending) || logEntry.trim().length === 0}
+          onclick={addLogEntry}
+        >
+          Log
+        </button>
+        <span class="small muted"><kbd>⌘↵</kbd> adds the entry</span>
+      </div>
+    </div>
   {/if}
 {/if}
 </div>
@@ -950,15 +959,30 @@
     margin-block: 0.25rem 0.5rem;
   }
 
-  .srcedit {
+  /* Set apart from the body it appends to, but on the same reading measure:
+     it writes into the text above it, so it must not read as a new region. */
+  .logbox {
+    display: grid;
+    gap: 0.4rem;
+    margin-top: 1.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .logentry {
     display: block;
     width: 100%;
     font-family: var(--font-mono);
     font-size: 0.9rem;
-    line-height: 1.55;
+    line-height: 1.5;
     resize: vertical;
-    white-space: pre-wrap;
-    padding: 0.8rem 0.9rem;
+    padding: 0.5rem 0.6rem;
+  }
+
+  .logbar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
   }
 
   .tbside {
@@ -1168,14 +1192,22 @@
     font-size: 1.06rem;
     line-height: 1.68;
     padding-bottom: 2rem;
-    /* The prose is click-to-edit, and the I-beam is the honest cursor for
-       "this text can be typed into". Links inside still show the pointer. */
-    cursor: text;
   }
 
-  .body :global(h1:first-child) {
+  .body :global(.bd-block:first-child > h1:first-child) {
     /* The document's own title, already in the header above. */
     display: none;
+  }
+
+  /* The block editor's hooks: its source box in the UI's mono face, the open
+     block outlined in the accent, a whisper of hover on blocks. */
+  .body {
+    --bd-source-font: var(--font-mono);
+    --bd-source-bg: var(--raised);
+    --bd-source-border: var(--border);
+    --bd-accent: var(--accent);
+    --bd-hover: color-mix(in srgb, var(--raised) 60%, transparent);
+    --bd-muted: var(--muted);
   }
 
   /* Section headings wear their markdown: a muted `##` marker in front. The
@@ -1280,9 +1312,9 @@
   }
 
   .body :global(input[type='checkbox']) {
-    /* Checklists are part of the document's content, not a control here: a
-       write goes through an action, never through the rendered body. */
-    pointer-events: none;
+    /* A click ticks the item in the source and saves it — through the same
+       verify-gated `edit-body` action as any other body edit. */
+    cursor: pointer;
     accent-color: var(--good);
   }
 </style>

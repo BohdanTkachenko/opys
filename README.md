@@ -15,11 +15,18 @@ hold at write time and parallel agents don't collide; reads are plain `grep` +
 targeted file reads. A `verify` subcommand is the CI gate. It is deliberately
 *not* a task board — no sprints or assignees; priority exists only as an
 opt-in declared int field (`[types.X.fields.priority]`) that the web UI's
-board orders and reorders by.
+board orders and reorders by, and that a type's `order_by` chain — what
+`opys list --sort` applies — leads with.
 
 Need a different lifecycle — an `epic`, an `adr`, a `risk`? Add a `[types.<name>]`
-block to `opys.toml` and the whole tool (create, verify, index) works for
+block to `opys.toml` and the whole tool (create, verify, query) works for
 it. Durable knowledge → features; "what I'm doing right now" → a task/bug/chore.
+
+Orchestration is not opys' job. Driving agents around this inventory — who
+picks up what, when a stalled document is really abandoned — belongs to an
+orchestrator that uses opys as its tracker. What is here is
+the tracker: it records, guards and reports, and it starts no write off its own
+clock.
 
 It pairs with the `opys` skill (under `skills/`), which
 documents the format and the authoring/implementation workflows for coding
@@ -80,30 +87,75 @@ ID prefix.
 
 ```sh
 opys init                                   # bootstrap opys.toml + opys/
-# edit opys.toml: types, statuses, fields, sections, rules
+# edit opys.toml: types, statuses, transitions, fields, sections, rules
 
 opys new --title "Tab title follows OSC 0/2" --tags osc,tabs
 opys list --status planned
 opys list --tag area                        # exact tag, or any tag with key `area`
-opys set-status FEAT-0001 implemented       # rejected unless a test item is checked
-opys verify                                 # integrity check; nonzero exit on problems
+opys list --sort --format ids               # the type's order_by chain: effective
+                                            # priority, then blocks count, then id
+# `implemented` is a declared edge, but a rule also wants a checked `## Test
+# plan` item — and the shipped section check makes a checked item cite a test
+# that actually exists under `roots`, so a test plan cannot drift from the suite:
+mkdir -p src && printf 'fn title_survives_a_profile_switch() {}\n' > src/lib.rs
+printf '\n## Test plan\n- [x] survives a profile switch — `lib::title_survives_a_profile_switch`\n' >> opys/FEAT-0001.md
+opys set-status FEAT-0001 implemented
+opys verify                                 # integrity check; exit 1 on problems, 3 on
+                                            # time observations (`--fix` performs those)
 opys stats                                  # configurable [[stats]] sections (default: status/coverage/tags)
 opys tags                                   # distinct tags (--keys for just keys)
 
 # Ephemeral work, linked to a feature (default types: task/bug/chore):
 opys new --type bug --title "Survive profile switch" --features FEAT-0001
-opys close BUG-0002                         # deletes the file; reference struck through
+opys set-status BUG-0002 in-progress        # the shipped work-item graph runs
+opys log BUG-0002 "reproduced: the title survives, the icon does not"
+opys set-status BUG-0002 review             # todo -> in-progress -> review, and the
+                                            # move into review wants a `## Progress`
+                                            # entry since the status last changed
+sed -i 's/- \[ \] First item/- [x] fixed in the OSC parser/' opys/BUG-0002.md
+opys close BUG-0002                         # `close` needs an edge from where the
+                                            # document stands into the terminal
+                                            # status, and its `## Tasks` checked;
+                                            # deletes the file, strikes the reference
 
-# Bulk: the mutating commands take a comma-separated id list, or `-` for stdin
-opys set-status FEAT-0001,FEAT-0002 wontfix --reason "superseded"
-opys list --type task --status done --format ids | opys close -
+# Claim a document atomically: one status transition, one field write and one
+# log entry, applied together or not at all. Two agents racing for the same
+# document cannot both win — `--status` asserts a *transition*, so the second
+# finds it already taken and the whole batch is refused, writing nothing.
+# (`claimed_by` is an ordinary declared field; the default config ships
+# `[types.task.fields.claimed_by]` commented out, so uncomment it first.)
+sed -i 's/^# \(\[types.task.fields.claimed_by\]\)/\1/; s/^# \(type = "string"\)/\1/' opys.toml
+opys new --type task --title "Parse the OSC 2 terminator" --features FEAT-0001
+opys apply TASK-0003 --status in-progress --field claimed_by=agent-7 --log "picked up"
+sed -i 's/- \[ \] First item/- [x] the terminator is parsed/' opys/TASK-0003.md
+opys set-status TASK-0003 review            # the claim's own log entry is the
+                                            # checkpoint the handoff rule wants
+
+# Bulk: every id-taking mutating command (set-status, tag, retire, block,
+# unblock, close, apply) takes an id list — several ids, a comma-separated list,
+# or `-` for stdin. All-or-nothing: one bad id writes nothing. (`log` is the
+# exception: one id, because its second positional is the entry text and `-`
+# there means stdin.)
+# Filter on a status a live doc can hold — `done` is reached only *through*
+# `close`, so it selects nothing, and an empty selection exits 2.
+opys new --title "Report the icon separately" --tags osc
+opys new --title "Blink the cursor on bell" --tags osc
+opys set-status FEAT-0004 FEAT-0005 wontfix --reason "superseded"
+opys list --type task --status review --format ids | opys close -
 ```
 
-Mutating commands (`new`, `set-status`, `tag`, `retire`, `block`, `close`,
-`cleanup`) reconcile cross-references, linkify prose, and relocate documents to
-their canonical layout path (e.g. an archived doc moves into `_archived/`)
-automatically; pass `--no-sync` to skip, or run `opys sync` after editing files
-by hand.
+Mutating commands (`new`, `set-status`, `tag`, `log`, `apply`, `retire`,
+`block`, `close`, `cleanup`, and `verify --fix` on a run that fixed
+something) reconcile cross-references, linkify prose, and relocate
+documents to their canonical layout path (e.g. an archived doc moves into
+`_archived/`) automatically; pass `--no-sync` to skip, or run `opys sync` after
+editing files by hand.
+
+Ids come from one global, never-reused sequence. A project that creates
+documents on several branches at once sets `[ids] modulus = M` in `opys.toml`:
+each allocator then draws only the numbers of its slot (`OPYS_ID_SLOT`, else a
+stable hash of `user@host`, modulo `M`), so branches cannot collide and merge
+without a `renumber`. Without a modulus, allocation is the dense sequence.
 
 ## Commands
 
@@ -112,28 +164,58 @@ by hand.
 | `init` | bootstrap `opys.toml` + `opys/`, print a CLAUDE.md snippet |
 | `config <init\|validate>` | generate / validate the universal `opys.toml` |
 | `new --type <T>` | allocate the next ID and write a skeleton document of type `T` (auto-syncs) |
-| `import --type <T>` | bulk-create documents of type `T` from a JSONL file (sequential IDs, one sync) |
-| `show` / `list` | retrieval (`--type`, `--tag`, `--status`, `--format table\|ids\|paths`) |
-| `set-status` | guarded transitions, enforced by the type's configured rules |
+| `import --type <T>` | bulk-create documents of type `T` from a JSONL file (one ID block, one sync) |
+| `show` / `list` | retrieval (`--type`, `--tag`, `--status`, `--field`, `--blocked`/`--unblocked`, `--sort`, `--format table\|ids\|paths`) |
+| `next --status <s>` | the pick oracle: which documents at a status are pickable, best first — unblocked, with their type's `requires_link` still satisfied, ordered by the type's `order_by` chain. `--type`, `-n` (default 10), `--explain [ID]` for why a document is or is not listed, `--json` for the stable `opys.next/1` payload. A read: it exits `0` for every answer, an empty one included |
+| `set-status` | guarded transitions: the type's declared `[transitions]` edges (when it declares any), its `max_visits` budget for the target status (the refusal names the configured `then`), and its configured rules |
 | `tag` | add/remove tags (`--add a,b --remove c`) |
+| `log` | append a dated entry to a document's `kind = "log"` section (`opys log TASK-0042 "…"`, or `-` to read it from stdin) |
+| `apply` | several writes as one all-or-nothing batch — a status transition, `--field`/`--remove-field` writes and a `--log` entry, flushed once or not at all. How an agent claims a document: `--status` asserts a *transition*, so a second claimant is refused and writes nothing. Releasing is the same shape backwards, and stays one command even where the working status `require_field`s the claimant: the verify gate is taken once around the whole batch, so every part is judged against the document it finishes with |
 | `retire` | delete document(s); each ID is logged and never reused |
-| `block` / `unblock` | record a directional blocker between documents |
-| `close` / `cleanup` | finish document(s) of a type with a terminal status; strip struck refs |
-| `verify` | full integrity check — wire into CI |
+| `block` / `unblock` | record a directional blocker between documents; blocked is derived from the live entries, never stored |
+| `close` / `cleanup` | finish document(s) of a type with a terminal status (and, where a status graph is declared, an edge into one from where the document stands); strip struck refs |
+| `verify [--fix]` | full integrity check — wire into CI. Exit `0` clean, `1` content problems, `2` a real failure, `3` [time observations](#time-aware-verify-stuck-and-overflowed-documents) only; `--fix` performs the fixable ones and exits on what remains |
 | `sync` | reconcile references, linkify prose, relocate docs to their layout path (for hand edits) |
+| `renumber [--base REF]` | reconcile ids two branches allocated twice: keep the ones already at the merge-base, renumber the branch-added duplicates, retire the old numbers, and warn (with a `sed` fix per file) about code still citing them |
+| `history <id>` | the document's status timeline across commits, read out of git in-process (gix, never a spawned `git`), following the file across relocations |
+| `history --seed <id>` | one-time migration: write the `history` lifecycle map from that timeline; refuses to overwrite an existing map (see `docs/migration-history.md`) |
 | `stats` | render configured `[[stats]]` sections (each a SQL query over the corpus, shown as a table; default: status counts, coverage, tags) |
-| `query "SELECT …"` | run a SQL query over the inventory (`-` reads it from stdin; `--stdin` binds stdin to `$1` for escape-free values) and print the result table; `--write` allows INSERT/UPDATE/DELETE, applied only if the edit introduces no new `verify` problem (else nothing is written). The `blocks` table decomposes bodies into `##` sections — `UPDATE blocks SET text = …` edits a section in place |
+| `query "SELECT …"` | run a read-only SQL query over the inventory (`-` reads it from stdin; `--stdin` binds stdin to `$1` for escape-free values) and print the result table. Every statement must be a SELECT — writes are lifecycle commands, so bulk edits pipe `list --format ids` into one. The `blocks` table decomposes bodies into `##` sections, for querying into prose |
 | `agent-rules --tool <editor>` | generate a rules-based editor's instruction file from the canonical rule |
 | `web <start\|add\|remove\|list\|scan\|install\|uninstall>` | the always-on node: serve the allowlisted projects over HTTP — see [below](#the-always-on-node-opys-web) |
 
-A feature file looks like (the `references` map is auto-maintained — a work
-item links back, and a closed one leaves a struck-through tombstone):
+Both `history` forms read git **in-process through gix**, never by spawning
+`git`: the document's blob is found under the inventory base by *filename* —
+which is its id — so the relocation a status change causes is not read as a
+delete plus an add, and only the revisions that differ are decoded, through the
+real parser. That same engine-side reader also answers which branches and
+worktree heads hold the inventory and where they disagree with main, which is
+what `[git]` in `opys.toml` configures (the truth branch, and which refs count:
+local heads by default, remote-tracking refs opt-in). The dashboard's union view
+surfaces exactly that: a column per branch nobody has checked out, beside the
+columns for the worktrees, and a mark on each row saying which refs hold it at a
+status main's copy does not. That reader degrades rather than failing: a project that
+is not a repository, or a binary built without the `git` cargo feature
+(`--no-default-features`), is main-only and says so — and a repository that *is*
+there and cannot be read (a permission bit, a half-written `.git/config`) says
+that instead, in different words, because it can clear on its own and the other
+two cannot. The `history` *command* is
+the exception — its whole subject is the committed timeline, so rather than
+print an empty one it says why and exits 2, naming the missing feature or the
+missing repository.
+
+A feature file looks like (`history` and the `references` map are
+auto-maintained — `history` records every status change, and a work item that
+links back appears in `references`, struck through once it is closed):
 
 ```markdown
 ---
 id: FEAT-0421
 status: implemented
 tags: [osc, tabs]
+history:
+  "2026-06-16T14:30:00.000000Z": planned
+  "2026-07-01T09:00:00.000000Z": implemented
 references:
   TASK-0042: Make tab title survive profile switch
 ---
@@ -147,6 +229,243 @@ references:
 
 See `skills/opys/references/format.md` for the normative document format and the
 `opys.toml` config reference.
+
+## The lifecycle, end to end
+
+A type's `[transitions]` map *is* its lifecycle: which status may follow which.
+Declare it once and four places read it — `set-status`, `apply`, `close`, and
+`verify` over each document's recorded history — so they cannot disagree about
+the route. This is what the shipped `task` type declares:
+
+```toml
+[types.task.transitions]
+todo        = ["in-progress"]
+in-progress = ["review", "todo"]
+review      = ["done", "in-progress", "user-review"]
+user-review = ["done", "in-progress"]
+
+[types.task.fields.claimed_by]   # ships commented out — uncomment it to claim
+type = "string"
+```
+
+**Create.** There is one way in: a document takes its type's `default_status`,
+and `new` has no `--status` (`import` is the seam that seeds elsewhere).
+
+```console
+$ opys new --title "Tab title follows OSC 0/2" --tags osc,tabs
+/home/dan/work/demo/opys/FEAT-0001.md
+$ opys new --type task --title "Wire the OSC parser" --features FEAT-0001
+/home/dan/work/demo/opys/TASK-0002.md
+$ opys new --type task --title "Refactor the tab store" --features FEAT-0001
+/home/dan/work/demo/opys/TASK-0003.md
+```
+
+**Claim it, in one command.** `opys apply` applies a transition, field writes
+and a log entry as one all-or-nothing batch. Its `--status` asserts a
+*transition* — the document must not already hold it — so of two agents racing
+for the same document exactly one wins and the loser writes nothing at all:
+
+```console
+$ opys apply TASK-0002 --status in-progress --field claimed_by=agent-7 --log "picked up"
+TASK-0002 -> in-progress, claimed_by set, logged to '## Progress'
+$ opys apply TASK-0002 --status in-progress --field claimed_by=agent-9 --log "picked up"
+error: cannot move TASK-0002 from in-progress to in-progress: it is already in-progress, and a composite write asserts a transition — another writer got there first
+```
+
+**Off the route, nothing moves.** Every refusal names where the document stands
+and where it may go, so an agent takes the route from the message rather than
+guessing at one. TASK-0003 is still where `new` left it, at `todo`, and `review`
+is two moves away:
+
+```console
+$ opys set-status TASK-0003 review
+error: cannot move TASK-0003 from todo to review: type 'task' declares no such transition (from todo: in-progress)
+$ opys close TASK-0003
+error: cannot close TASK-0003 from todo: type 'task' declares no transition from there to a terminal status (done) — only review, user-review can close
+```
+
+**Log a checkpoint before handing off.** `## Progress` is a `log` section: its
+bullets are dated, `opys log` stamps them, and `verify` reports one written by
+hand. The shipped config makes a *fresh* entry a precondition of the handoff
+into `review` — one stamped since the status last changed — so whoever picks the
+document up reads what happened instead of guessing:
+
+```console
+$ opys set-status TASK-0003 in-progress
+TASK-0003 -> in-progress
+$ opys set-status TASK-0003 review
+error: cannot set TASK-0003 to review: '## Progress' has no log entry since the status last changed (append one with `opys log`)
+$ opys log TASK-0003 "reproduced; the store keeps a stale title"
+TASK-0003 logged to '## Progress'
+$ opys set-status TASK-0003 review
+TASK-0003 -> review
+```
+
+Or fold both into one composite write, which appends the entry *before* it
+evaluates the rule that demands one — and releases the claim in the same breath:
+
+```console
+$ opys apply TASK-0002 --status review --remove-field claimed_by --log "parser wired; tests green"
+TASK-0002 -> review, claimed_by removed, logged to '## Progress'
+```
+
+**Close.** A terminal status is reached only *through* `close`, which deletes
+the ephemeral document and strikes its reference through in the feature it was
+linked to. The type's own guards still apply:
+
+```console
+$ opys close TASK-0002
+error: cannot close — unchecked items remain in '## Tasks' (check them, or pass --force)
+$ opys close TASK-0002                      # with `## Tasks` checked
+closed TASK-0002 (deleted; references struck through)
+$ opys verify
+verify: OK (2 documents)
+```
+
+Every one of those moves was appended to the document's `history` map — an
+auto-maintained frontmatter map of UTC timestamp → status that nothing
+hand-edits. It is what `verify` re-checks each consecutive pair of against the
+graph, and what the time observations below are measured from.
+
+## The pick oracle (`opys next`)
+
+`opys next --status <s>` answers one deterministic question: **given a status,
+which documents are pickable, best first.** Pickable means at that status, with
+nothing live blocking it, and with its type's `requires_link` still satisfied.
+The order is the type's `order_by` chain — the same ranking `list --sort` uses,
+and the node's flow view lists each status node through this very function, so
+the three cannot put one set in three orders.
+
+The corpus below is a fresh one, not the one the walkthrough above just closed
+documents in: its `task` type also declares `[types.task.fields.priority]`
+(`type = "int"` — `order_by`'s priority key reads a declared field, and the
+shipped config declares none), TASK-0002 carries `priority: 1` and blocks a
+fourth task, and all three tasks are still at `todo`.
+
+```console
+$ opys next --status todo
+| # | ID | TYPE | STATUS | PRIORITY | BLOCKS | TITLE | NOTES |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | TASK-0002 | task | todo | 1 | 1 | Wire the OSC parser |  |
+| 2 | TASK-0003 | task | todo | - | 0 | Refactor the tab store |  |
+```
+
+`--explain` says why, one line per listed document — and with an id, why *that*
+one is missing:
+
+```console
+$ opys next --status todo --explain
+[the same table, then:]
+TASK-0002: listed 1 of 2 — priority 1, blocks 1 live document
+TASK-0003: listed 2 of 2 — no priority, blocks 0 live documents
+$ opys next --status todo --explain TASK-0004
+[the same table, then:]
+TASK-0004: not listed — blocked by TASK-0002
+```
+
+It is a **read**: it never syncs, never writes, and exits `0` for every answer,
+an empty one included — while a status or type no configured type declares is a
+usage error rather than an empty list, because an oracle that answers "nothing"
+to a typo cannot be told apart from an empty queue. `--json` is the stable
+`opys.next/1` payload, carrying each item's priority, effective priority, blocks
+count, position and time observations, plus every orphan with its reason.
+
+Pickability is decided on **main**, the corpus the command runs in: a blocker
+closed on a branch releases nothing until the merge lands. And `next` decides
+nothing about *who* picks the work up — concurrency, affinity and budgets are
+the caller's policy, which is why the answer is JSON when you ask for it.
+
+## Time-aware verify: stuck and overflowed documents
+
+A corpus is valid when it is written and *becomes* wrong with no write at all: a
+document sits in `in-progress` for a week because whoever took it is gone, or
+bounces between `review` and `in-progress` forever because the coder and the
+reviewer are both agents. Those are not content problems, so a type can declare
+what "too long" and "too often" mean for it and `verify` reports them apart:
+
+```toml
+[types.task.ttl]
+in-progress = { after = "2d", then = "stuck" }   # or a bare "2d" to observe only
+
+[types.task.max_visits]
+review = { limit = 3, then = "user-review" }
+
+[types.task.transitions]      # the moves those targets name have to be legal
+todo        = ["in-progress"]
+in-progress = ["review", "stuck", "user-review"]
+stuck       = ["in-progress", "todo"]
+review      = ["in-progress", "user-review", "done"]
+user-review = ["review", "in-progress", "done"]
+```
+
+(`stuck` is not in the shipped `statuses` list — a target has to be a status the
+type declares, so add it there too.)
+
+```console
+$ opys verify
+verify: 2 observation(s)
+  TASK-0001: stuck in in-progress since 2026-06-16T14:30:00.000001Z (ttl 2d) — `--fix` moves it to stuck
+  TASK-0002: 3 visits to review reaches its limit of 3 — `--fix` moves it to user-review
+$ echo $?
+3
+```
+
+`verify --fix` performs those transitions itself — an ordinary `set-status`
+each, history and relocation included — and exits on what remains:
+
+```console
+$ opys verify --fix
+fixed TASK-0001: in-progress -> stuck (stuck)
+fixed TASK-0002: review -> user-review (max_visits)
+verify: OK (2 documents)
+$ echo $?
+0
+```
+
+Both moves are deterministic — an elapsed `ttl` and a spent `max_visits` budget
+are computed from the document's own `history` and a clock — which is why opys
+performs them itself and needs no orchestrator to be a complete loop tracker.
+It is deliberately conservative: at most one fix per document per run, a refusal
+(a `then` whose rules the document cannot satisfy) is reported as a problem
+rather than aborting the pass, a run that fixed nothing writes nothing at all,
+and it stands down entirely while `opys config validate` has anything to say —
+a fix is a move along the graph that check guards.
+
+Where the type also declares `[transitions]`, `config validate` insists the
+graph holds the edges those moves need: `key -> then` for the fix itself,
+`then -> key` so a document flipped under a running agent is one `set-status`
+from where it was, and — for `max_visits` — an edge to `then` from every status
+that may enter the budgeted one, because the guard refuses the *entry* and the
+escape it names has to be legal from wherever the document stands.
+
+**Exit codes:** `0` clean, `1` content problems, `2` a real failure (bad flags,
+IO, a missing config), `3` observations and nothing else. Gate CI on **`1`**:
+most scripts gate on any nonzero code, which trips on `3` as well, and a corpus
+that only has observations was clean when it was written. `OPYS_NOW` (RFC3339)
+overrides the clock, so a rerun of one commit always says the same thing.
+
+## Upgrading an existing inventory
+
+Three reserved things arrived after opys' first release, and an inventory
+written before them needs a one-time pass for each. Only one of the three goes
+red on the binary upgrade alone: the `history` lifecycle map is reserved on
+every type, so no config declares it and `verify` starts saying `missing
+history` the moment you install the new binary. The other two wait for your own
+`opys.toml`. Bullets are dated and checked (`undated log entry`) only in a
+section the type declares `kind = "log"`, and `blocked` only becomes an `invalid
+status 'blocked'` once you drop it from a type's `statuses` — which is what
+retiring it means, now that blocked is derived from the `blocked_by` relation.
+
+[`docs/migration-history.md`](docs/migration-history.md) is the single upgrade
+document: one section per procedure, each with the `opys.toml` change it needs,
+the pass over the documents, and how to check the result. None of the three is
+derivable from the corpus, so `opys sync` cannot do any of them for you —
+`opys history --seed <id>` reconstructs the lifecycle map where git has the
+timeline, and the rest is a text pass.
+
+`opys verify` also gained exit code **3** for time observations. CI that gates
+on "any nonzero code" starts failing on a corpus that has no content problems at
+all; gate on `1` (see [above](#time-aware-verify-stuck-and-overflowed-documents)).
 
 ## The always-on node (`opys web`)
 
@@ -205,8 +524,8 @@ a background service once you like it ([below](#run-it-as-a-service)):
 
 ```
 $ opys web start
-opys-server: serving 1 corpus from /home/dan/.config/opys/server.toml
 opys-server listening on http://127.0.0.1:6797
+opys-server: serving 1 corpus from /home/dan/.config/opys/server.toml
 ```
 
 **4. Open <http://127.0.0.1:6797>.** That is the dashboard.
@@ -226,11 +545,14 @@ security boundary. Two guarantees follow from it:
   you. Discovery only ever *suggests*: `opys web scan` prints candidates and has
   no way to add one.
 - **The API is typed; the node cannot execute arbitrary commands.** Every write
-  the dashboard makes is a named action with named arguments — `set-status`,
-  `tag`, `block`, `unblock`, `close` — run through the same engine, the same
-  inventory lock and the same write-time rules as the CLI. The request body is a
-  closed set: there is no shell endpoint, no "run this opys command" endpoint,
-  and no endpoint anywhere that accepts a filesystem path.
+  the node accepts is a named action with named arguments — `new`, `set-status`,
+  `tag`, `log`, `apply`, `block`, `unblock`, `close`, and the three edit-in-place
+  actions behind the document view (`edit-body`, `set-field`, `remove-field`) —
+  run through the same engine, the same inventory lock and the same write-time
+  rules as the CLI. (The dashboard sends a subset of them; the rest are there
+  for an API client.) The request
+  body is a closed set: there is no shell endpoint, no "run this opys command"
+  endpoint, and no endpoint anywhere that accepts a filesystem path.
 
 ### More than one project
 
@@ -294,8 +616,8 @@ three:
 
 ```
 $ opys web start
-opys-server: serving 3 corpora from /home/dan/.config/opys/server.toml
 opys-server listening on http://127.0.0.1:6797
+opys-server: serving 3 corpora from /home/dan/.config/opys/server.toml
 ```
 
 ### What the dashboard shows
@@ -307,25 +629,80 @@ state (clean, *N* problems, or not read yet). Pick one and you get:
 - **the board** — every document in that corpus, in a column per status, with
   filters for type and tag, a text filter set from the omnibox, and drag and
   drop: onto another column to change status, within a column to set priority
-  (an opt-in field; see ADR-0095). The keyboard drives it too — arrows move
+  (an opt-in field; see ADR-0046). The keyboard drives it too — arrows move
   between columns and cards, Enter opens, Home/End jump within a column,
   PageUp/PageDown switch projects;
 - **a document** — its frontmatter and rendered body, both edited in place:
-  status, tags, blockers and custom fields on the panel, the markdown body by
-  clicking into it, and close behind a confirmation. Every write is a typed
+  status, tags, blockers and custom fields on the panel, the markdown body one
+  block at a time — double-click a paragraph or list item to edit its
+  markdown in place, tick checkboxes directly, click outside to save (there
+  is no cancel) — and close behind a confirmation. A document whose type
+  declares a `log` section gets an entry box under the body, which appends a
+  timestamped entry the way `opys log` does. Every write is a typed
   action taking the same write path as the equivalent `opys` command, so a
   write the CLI would refuse — a status change whose rule is unmet, say — is
   refused here too, with the same message. Creating documents stays a CLI job.
 - **the query console** — the same SQL over the corpus that `opys query` runs,
   read-only;
-- **the union view** — every worktree of one project side by side, so you can
-  see where two branches disagree about a document. It shows the drift and
-  nothing else: nothing here merges anything, because git is the merger.
+- **the union view** — every worktree of one project side by side, *plus a
+  column for every branch nobody has checked out*, so you can see where two
+  branches disagree about a document even when only one of them is on disk. The
+  branch columns are read straight out of git objects by a background reader (one
+  per project: a watcher on the git directory, a 250 ms debounce and a minute's
+  backstop), so they cost the request nothing and refresh themselves when a ref
+  moves. Each row also carries what is *in flight* on it — which refs hold it at
+  a status main's copy does not, and since when. Both are measured against the
+  worktree that has **main** checked out: a branch column shows that worktree's
+  documents with the branch's own changes over the top, so an uncommitted edit
+  there shows through on the rows the branch did not touch, and a project none of
+  whose served worktrees is on main gets a notice instead of branch columns
+  rather than a comparison against some third branch. A worktree column's heading
+is the branch that checkout is on *now*, refreshed by the same reader on the
+same event — so it cannot go on spelling `main` above a notice saying nothing is
+on main. Three blanks mean three
+  different things and are drawn differently: a column that does not have the
+  document, a column that could not be read (with the reason on its heading), and
+  — when there are no branch columns at all — one notice above the table saying
+  why, because "this project is not a repository" is not "a branch broke". It
+  shows the drift and nothing else: nothing here merges anything, because git is
+  the merger, and a branch cell does not link anywhere because a branch is not a
+  directory to open a file in.
+- **the flow view** — the same project drawn as the lifecycle its config
+  declares: a node per distinct status, merged by name across types (`task`,
+  `bug` and `chore` share one `todo`), and an edge wherever some type's
+  `transitions` map declares the move. A type that declares no transitions
+  contributes its statuses and *no* edges — any status may follow any other,
+  which is not the same thing as every edge. The layout is a small layered one:
+  the statuses documents start at sit in the first column, each target one
+  column past its deepest source, the cycles a left-to-right drawing has to
+  break come back as dashed returns, and disconnected components — the shipped
+  config draws two, for work items and features; this repository's own
+  inventory draws two as well, for features and decisions — stack with a gap.
+  Each node lists the top few documents standing on it, in `opys next` order and
+  from the same function, so the view and `opys next --status <status>` cannot
+  disagree; the rest are counted. An item's number is the one that ordered it —
+  the effective priority, with the document's own beside it when it inherited a
+  smaller one from something it blocks, exactly as the `PRIORITY` column of
+  `opys next` reads. Blocked documents are counted and named on hover rather
+  than listed, because they are not pickable, and stranded ones — the links
+  their type requires no longer hold — are counted separately with the reason.
+  A status no type declares gets a node too, marked `undeclared` (the blank one
+  reads `(no status)`): `opys verify` reports it, and hiding the node here would
+  hide the document with it. Clicking an item opens the document. It is answered
+  from the project's **main** worktree, because that is where pickability is
+  decided.
 
 **Ctrl+P** (⌘P on a Mac) or `/` opens the omnibox from any view: a fuzzy
 finder over the corpus's tickets — or every served corpus, from the home page
 — that opens a ticket on Enter or, from a board, applies the text as its
-filter.
+filter. `[` folds the sidebar into a rail and back, for a narrow window.
+
+The dashboard is an installable web app: your browser's *Install* (or *Add to
+Home Screen*) puts opys in its own window with its own icon. Installed, it still
+opens while the node is down — onto a page that says so and reconnects when the
+node returns; documents are never served from a cache. Browsers allow this only
+in a secure context, which the default loopback address is; over plain HTTP on
+another address the dashboard works as before but cannot be installed.
 
 Everything updates live: the node watches each inventory and pushes events over
 a WebSocket, so an edit you make in your editor — or a write from `opys` in
@@ -434,6 +811,19 @@ systemd.user.services.opys-server = {
 On a headless box add `users.users.<you>.linger = true;` (NixOS) for the same
 reason `loginctl enable-linger` exists above.
 
+If a served project sets `[ids] modulus`, the node's `new` action allocates in
+the node's own slot: `OPYS_ID_SLOT` from the unit's environment when set, else
+the hash of the account the service runs as (`$USER` at the hostname — from
+`$HOSTNAME`, else `$COMPUTERNAME`, else `/etc/hostname`) — normally the same
+slot as your own shell on that machine. On macOS, where none of those host
+inputs is normally set, everything on the machine hashes as `user@localhost`,
+so export `HOSTNAME` or pin a slot there. `opys web install` writes no slot
+line, so to
+pin one add `Environment=OPYS_ID_SLOT=<n>` under `[Service]` — as a drop-in
+(`systemctl --user edit opys-server`), since `install --force` rewrites the
+unit — or as `Service.Environment` / `serviceConfig.Environment` in the
+declarations above.
+
 The allowlist stays yours to edit either way: `opys web add` writes it, and the
 node picks the change up without a restart. (One caveat if you hand-edit
 `~/.config/opys/server.toml`: `opys web add`/`remove` rewrite the file from its
@@ -458,8 +848,9 @@ named rather than the default one.
 
 (`web scan` spells its scan root `--under` rather than `--root`, because `opys`
 already has a global `--root` for the inventory root and clap propagates a
-global into every subcommand. `--root` and `--no-sync` mean nothing to `web`,
-which refuses them rather than ignoring them — a scan of the wrong tree looks
+global into every subcommand. `--root` and `--no-sync` mean nothing to `web`:
+no `web … --help` offers them, and writing one anyway — in any position, at any
+value — is refused rather than ignored, because a scan of the wrong tree looks
 exactly like a scan of the right one. The same surface is also available as
 `opys-server web …` — one implementation, mounted by both binaries.)
 

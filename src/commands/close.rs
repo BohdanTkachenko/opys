@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use crate::body;
-use crate::commands::{expand_ids, for_each_id, maybe_sync};
+use crate::commands::{apply_batch, maybe_sync, print_lines, resolve_ids};
 use crate::error::{usage, Result};
 use crate::frontmatter::Frontmatter;
 use crate::project::Project;
@@ -13,7 +13,8 @@ use crate::store::{g_i64, IntoParam, Store};
 use crate::{refs, Ctx};
 
 /// Close `id`: delete its file and strike every reference to it. Does not flush/
-/// print/sync — the shared core for the CLI wrapper and the TUI. Striking other
+/// print/sync — the shared core for the CLI wrapper and the node's `close`
+/// action. Striking other
 /// docs' relation maps is housekeeping, so it does not bump their `updated`.
 pub fn core(prj: &Project, store: &mut Store, id: &str, force: bool) -> Result<()> {
     let tname = prj
@@ -30,6 +31,27 @@ pub fn core(prj: &Project, store: &mut Store, id: &str, force: bool) -> Result<(
 
     let dkey = store.dkey_of(id)?;
     let closing = store.doc(dkey)?;
+
+    // `close` is the door to a terminal status, so when the type declares a
+    // status graph (ADR-0050 decision 1) the current status must have an edge
+    // through it. Without this, the terminal edges a type declares
+    // (`review = ["done", …]`) would mean nothing and a document could be closed
+    // straight out of `todo`. `--force` does not bypass it: that flag is about
+    // unchecked checklist items, not about the graph.
+    let from = closing.frontmatter.status().unwrap_or_default();
+    if !crate::lifecycle::can_close(t, from) {
+        let closers = crate::lifecycle::closing_statuses(t);
+        let how = if closers.is_empty() {
+            "no status declares a transition to one".to_string()
+        } else {
+            format!("only {} can close", closers.join(", "))
+        };
+        return Err(usage(format!(
+            "cannot close {id} from {from}: type '{tname}' declares no transition from there \
+             to a terminal status ({}) — {how}",
+            t.terminal_statuses.join(", ")
+        )));
+    }
 
     // Don't close with unfinished work unless forced: any required checklist
     // section must be fully checked.
@@ -102,18 +124,18 @@ pub fn core(prj: &Project, store: &mut Store, id: &str, force: bool) -> Result<(
     Ok(())
 }
 
-pub fn run(ctx: &Ctx, ids: &str, force: bool) -> Result<()> {
+pub fn run(ctx: &Ctx, ids: &[String], force: bool) -> Result<()> {
     let prj = ctx.open()?;
-    let ids = expand_ids(ids)?;
+    let ids = resolve_ids(ids)?;
     let (mut store, _) = ctx.load(&prj)?;
-    let res = for_each_id(&ids, |id| {
+    let lines = apply_batch(&ids, |id| {
         core(&prj, &mut store, id, force)?;
-        println!("closed {id} (deleted; references struck through)");
-        Ok(())
-    });
+        Ok(format!("closed {id} (deleted; references struck through)"))
+    })?;
     ctx.flush(&prj, store)?;
+    print_lines(lines)?;
     maybe_sync(ctx, &prj);
-    res
+    Ok(())
 }
 
 /// Strike `id` to a tombstone in every relation map that lists it; for
