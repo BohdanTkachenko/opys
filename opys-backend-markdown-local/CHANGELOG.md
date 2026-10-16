@@ -11,11 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- lifecycle, pick oracle, branch reader, flow view and block editor
-- *(core)* advisory inventory lock + id-allocation seam; retire the TUI
+- The inventory lock and the id-allocation seam the lifecycle commands build on.
 
 ### Fixed
 
-- *(lock)* move the inventory lock out of the repo
-- harden the retired ledger, retire, and query --write (four bugs)
-- *(nix,publish)* repair the flake build and restore crate READMEs
+- The inventory lock lives outside the repository.
+- Hardened the retired ledger.
