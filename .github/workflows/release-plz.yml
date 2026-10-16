@@ -73,6 +73,15 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # cargo-semver-checks builds opys-server against its published version,
+      # and opys-server's build script refuses to build without the UI bundle.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: opys-server/ui/package-lock.json
+      - name: Build the web UI bundle
+        run: scripts/ui-build.sh
       - name: Run release-plz
         id: release-plz
         uses: release-plz/action@v0.5
