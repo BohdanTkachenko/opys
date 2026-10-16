@@ -64,7 +64,7 @@ pub fn checklist_items(body: &str, header: &str) -> Vec<ChecklistItem> {
 pub struct LogEntry {
     /// The bullet's leading RFC3339 UTC stamp, verbatim, or `None` when the
     /// bullet is undated — which is what `verify` reports and what the
-    /// migration in `docs/migration-history.md` fixes.
+    /// one-time upgrade pass fixes.
     pub ts: Option<String>,
     /// Everything after the stamp: the bullet's first line plus its
     /// continuation lines, joined by newlines with the two-space indent

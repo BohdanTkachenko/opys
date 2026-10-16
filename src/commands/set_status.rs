@@ -164,8 +164,8 @@ pub fn core_with(
     // backstop.)
     if let Some(why) = crate::history::botched(&doc.frontmatter) {
         return Err(usage(format!(
-            "cannot set {id} to {status}: {why}; repair the lifecycle map by hand \
-             (see docs/migration-history.md), then retry"
+            "cannot set {id} to {status}: {why}; repair the lifecycle map by hand, \
+             then retry"
         )));
     }
 

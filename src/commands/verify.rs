@@ -381,7 +381,7 @@ fn check_history(m: &Frontmatter, id: &str, errors: &mut Vec<String>) {
     if let Some(why) = crate::history::botched(m) {
         errors.push(format!(
             "{id}: {why}; opys will not rewrite a lifecycle map it cannot read — \
-             repair it by hand (see docs/migration-history.md)"
+             repair it by hand"
         ));
         return;
     }
@@ -389,7 +389,7 @@ fn check_history(m: &Frontmatter, id: &str, errors: &mut Vec<String>) {
     if entries.is_empty() {
         errors.push(format!(
             "{id}: missing history (the lifecycle map is written by new/set-status/apply/import; \
-             see docs/migration-history.md to seed an existing document)"
+             `opys history --seed <id>` seeds an existing document from git)"
         ));
         return;
     }
@@ -853,7 +853,7 @@ fn check_log(d: &Doc, id: &str, sec: &SectionSpec, errors: &mut Vec<String>) {
             errors.push(format!(
                 "{id}: section '{}': undated log entry {} (every entry starts \
                  with a UTC timestamp — append entries with `opys log`, which \
-                 stamps them; see docs/migration-history.md to date existing ones)",
+                 stamps them; date existing ones by hand)",
                 sec.heading,
                 pyrepr(Some(&first_words(&entry.text)))
             ));

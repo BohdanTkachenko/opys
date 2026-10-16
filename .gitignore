@@ -39,3 +39,6 @@ opys-server/ui/dist/
 
 # Written by the jj worktree shim; local bookkeeping, never committed.
 .jj-worktree-meta/
+
+# Personal agent notes, kept out of the repository.
+CLAUDE.local.md

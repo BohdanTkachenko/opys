@@ -114,8 +114,8 @@ fn seed_from_git(ctx: &Ctx, id: &str) -> Result<()> {
     // command must never do.
     if let Some(why) = history::botched(&doc.frontmatter) {
         return Err(usage(format!(
-            "cannot seed {id}: {why}; repair the lifecycle map by hand \
-             (see docs/migration-history.md), then retry"
+            "cannot seed {id}: {why}; repair the lifecycle map by hand, \
+             then retry"
         )));
     }
     let existing = history::entries(&doc.frontmatter).len();
@@ -146,7 +146,7 @@ fn seed_from_git(ctx: &Ctx, id: &str) -> Result<()> {
     if timeline.is_empty() {
         return Err(usage(format!(
             "{id}: git has no committed revision carrying a status — nothing to seed \
-             from (see docs/migration-history.md for the `created` fallback)"
+             from; add one entry by hand, keyed by `created` in UTC, at its current status"
         )));
     }
 

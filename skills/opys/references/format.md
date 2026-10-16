@@ -603,8 +603,8 @@ timeline predating `created` still increases; and a working copy whose `status`
 is ahead of the last commit gets a final entry at the wall clock. It **refuses**
 to overwrite anything carrying entries, and refuses when git has no committed
 revision carrying a status — history is not rebuildable, so what is already there
-is data. `docs/migration-history.md` is the full procedure, including the
-`created` fallback for documents git cannot answer for.
+is data. The README's "Upgrading an existing inventory" gives the full
+procedure, including the `created` fallback for documents git cannot answer for.
 
 ### Custom-field type mapping
 
@@ -1040,7 +1040,7 @@ Four places enforce the graph:
 Tightening a graph is retroactive, because history is an ongoing record and is
 never repaired automatically: pairs already written that the new graph does not
 declare become `verify` findings. Keep the old edge declared, or repair the
-affected documents by hand (`docs/migration-history.md`).
+affected documents by hand.
 
 ### Time-aware observations (`ttl` and `max_visits`)
 
@@ -1300,7 +1300,7 @@ so an id list would be ambiguous about which of the two the pipe is feeding
 
 1. **Every bullet is dated.** An undated one is reported by name and by its
    opening words. Existing inventories therefore report their old bullets until
-   they are migrated — see `docs/migration-history.md`.
+   they are migrated — see the README's "Upgrading an existing inventory".
 2. **Entries do not go backwards.** The check is *non-decreasing*, not strictly
    increasing: two entries may share a stamp (two `opys log` calls in one
    second, or a migration dating a document's bullets from its `created`). Only

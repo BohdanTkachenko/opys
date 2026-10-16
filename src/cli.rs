@@ -384,8 +384,8 @@ pub enum Command {
     History {
         id: String,
         /// Write the document's `history` lifecycle map from that timeline, for
-        /// a one-time migration of an inventory that predates the map (see
-        /// docs/migration-history.md). Refuses to overwrite an existing map.
+        /// a one-time migration of an inventory that predates the map.
+        /// Refuses to overwrite an existing map.
         #[arg(long)]
         seed: bool,
     },

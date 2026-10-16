@@ -3027,7 +3027,7 @@ fn verify_flags_a_botched_history_map() {
 /// written that way is not the string→string map format.md specifies for the
 /// other implementations that read it. `verify` therefore reads the stored text
 /// (`verify::spelling_problems`, through `Backend::stored_text`), which is also
-/// the only check the hand-written migration of docs/migration-history.md has:
+/// the only check a hand-written history migration has:
 /// nothing else reports the spelling, and the next unrelated write silently
 /// re-quotes the file, so the mistake would otherwise surface as a surprise diff
 /// long after the migration.
@@ -3527,7 +3527,7 @@ fn history_output_is_pinned_line_for_line() {
         .stdout(expected);
 }
 
-/// The migration path of `docs/migration-history.md` §2: a document that
+/// The seeding migration path: a document that
 /// predates the lifecycle map gets one built from what git actually recorded.
 #[cfg(feature = "git")]
 #[test]
@@ -3549,8 +3549,8 @@ fn history_seed_writes_the_lifecycle_map_from_the_git_timeline() {
 
     // A *later* clock than the one the document was written under: a seed
     // reconstructs the past, so `updated` must come out untouched below rather
-    // than stamped with this instant (docs/migration-history.md §2, on which
-    // §4's round-trip probe rests). Under the shared `PINNED_NOW` a stray
+    // than stamped with this instant (the upgrade's round-trip probe rests
+    // on that). Under the shared `PINNED_NOW` a stray
     // `touch` would rewrite `updated` to the identical string and hide itself.
     opys(&dir)
         .args(["history", "--seed", "FEAT-0001"])
@@ -3631,7 +3631,7 @@ fn history_seed_refuses_to_overwrite_an_existing_map() {
         )));
 }
 
-/// The second refusal of `docs/migration-history.md` §2: a `history` that is
+/// The second refusal of the seeding path: a `history` that is
 /// present but is not a lifecycle map is repaired by hand, never overwritten.
 /// It is the one refusal that fires before the store is consulted for a
 /// timeline at all, so the document must come back byte-identical.

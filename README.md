@@ -178,7 +178,7 @@ without a `renumber`. Without a modulus, allocation is the dense sequence.
 | `sync` | reconcile references, linkify prose, relocate docs to their layout path (for hand edits) |
 | `renumber [--base REF]` | reconcile ids two branches allocated twice: keep the ones already at the merge-base, renumber the branch-added duplicates, retire the old numbers, and warn (with a `sed` fix per file) about code still citing them |
 | `history <id>` | the document's status timeline across commits, read out of git in-process (gix, never a spawned `git`), following the file across relocations |
-| `history --seed <id>` | one-time migration: write the `history` lifecycle map from that timeline; refuses to overwrite an existing map (see `docs/migration-history.md`) |
+| `history --seed <id>` | one-time migration: write the `history` lifecycle map from that timeline; refuses to overwrite an existing map (see [Upgrading an existing inventory](#upgrading-an-existing-inventory)) |
 | `stats` | render configured `[[stats]]` sections (each a SQL query over the corpus, shown as a table; default: status counts, coverage, tags) |
 | `query "SELECT …"` | run a read-only SQL query over the inventory (`-` reads it from stdin; `--stdin` binds stdin to `$1` for escape-free values) and print the result table. Every statement must be a SELECT — writes are lifecycle commands, so bulk edits pipe `list --format ids` into one. The `blocks` table decomposes bodies into `##` sections, for querying into prose |
 | `agent-rules --tool <editor>` | generate a rules-based editor's instruction file from the canonical rule |
@@ -456,12 +456,31 @@ section the type declares `kind = "log"`, and `blocked` only becomes an `invalid
 status 'blocked'` once you drop it from a type's `statuses` — which is what
 retiring it means, now that blocked is derived from the `blocked_by` relation.
 
-[`docs/migration-history.md`](docs/migration-history.md) is the single upgrade
-document: one section per procedure, each with the `opys.toml` change it needs,
-the pass over the documents, and how to check the result. None of the three is
-derivable from the corpus, so `opys sync` cannot do any of them for you —
-`opys history --seed <id>` reconstructs the lifecycle map where git has the
-timeline, and the rest is a text pass.
+None of the three is derivable from the corpus, so `opys sync` cannot do them
+for you. Run them in this order, with `opys verify` clean and `opys sync` twice
+leaving an empty diff at the end:
+
+1. **Date the log bullets.** In each section the type declares `kind = "log"`,
+   `- YYYY-MM-DD: text` becomes `- YYYY-MM-DDT00:00:00Z text`, and an undated
+   `- text` takes the document's `created` (as UTC seconds) or the stamp of the
+   bullet above it, whichever is later. Equal stamps are fine; continuation lines
+   are left alone.
+2. **Retire `blocked`.** Drop it from each type's `statuses` (and from
+   `status_dirs`, `ttl`, `max_visits` and `transitions`), drop the
+   `blocked_from`/`blocked_reason` fields and the rule that guarded the status,
+   and give every permanent type a `releases_blocks` list. Then, per document at
+   `status: blocked`: set `status` to its `blocked_from` value (or the type's
+   `default_status`), delete `blocked_from` and `blocked_reason`, and rewrite any
+   `blocked` value in its `history` map to the status it now holds. Leave
+   `blocked_by`/`blocks` alone — they are what blocked is derived from now.
+3. **Seed `history`.** `opys history --seed <id>` writes each document's map from
+   its git timeline (`for id in $(opys list --format ids); do opys history --seed
+   "$id"; done`) and refuses to overwrite one. For a document git cannot answer
+   for, add a single entry by hand: the key is `created` in UTC with six
+   fractional digits (`"2026-09-06T03:56:36.000000Z"`), the value is the current
+   `status`, and the block sits in the frontmatter's canonical position (after
+   `blocked_by`/`blocks`, before the remaining keys alphabetically). Seed last:
+   step 2 rewrites `blocked` out of the maps this writes.
 
 `opys verify` also gained exit code **3** for time observations. CI that gates
 on "any nonzero code" starts failing on a corpus that has no content problems at

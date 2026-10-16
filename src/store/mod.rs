@@ -393,8 +393,7 @@ impl Store {
             let id = doc_id.as_deref().unwrap_or("this document");
             return Err(usage(format!(
                 "{id}: its 'history' is not a lifecycle map opys can read, so nothing may be \
-                 appended to it — run `opys verify` and repair the map by hand \
-                 (see docs/migration-history.md)"
+                 appended to it — run `opys verify` and repair the map by hand"
             )));
         }
         let (_, rows) = self.select(
