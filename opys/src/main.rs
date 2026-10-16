@@ -4,13 +4,14 @@
 //! engine's own command set plus `web`, and the dispatch that hands each half to
 //! its crate. The inventory commands go to [`opys_engine::run`] untouched; `web`
 //! goes to [`opys_server::cli::dispatch`], the same implementation the
-//! `opys-server` binary mounts (ADR-0077).
+//! `opys-server` binary mounts (ADR-0031).
 //!
 //! `opys-engine` deliberately knows nothing about the node — it is the library
 //! every consumer embeds, and it does not pull in axum or tokio. Joining the two
 //! surfaces is this binary's job.
 
-use clap::{Parser, Subcommand};
+use clap::parser::ValueSource;
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use opys_backend_markdown_local::MarkdownLocal;
 
@@ -43,13 +44,47 @@ enum TopCommand {
 
     /// The always-on node: serve the allowlisted projects over HTTP.
     Web {
+        /// Never read — declared so that clap does *not* propagate the root's
+        /// `--root` into the node's surface. `_propagate_global_args` skips a
+        /// global whose id the subcommand already defines, so re-declaring the
+        /// two ids here (hidden) keeps them out of `opys web … --help`, which
+        /// used to advertise flags the binary then refused: help and behaviour
+        /// saying opposite things. They stay `global` *within* `web` so a
+        /// misplaced `--root` still parses and gets the message below rather
+        /// than clap's "unexpected argument". Their values say nothing —
+        /// clap fills a global down the tree, so this `root` is `Some(".")`
+        /// even when nobody wrote it; [`written`] is what answers that.
+        #[arg(id = "root", long = "root", global = true, hide = true)]
+        _root: Option<String>,
+
+        /// The other half of the same block; see `_root`.
+        #[arg(id = "no_sync", long = "no-sync", global = true, hide = true)]
+        _no_sync: bool,
+
         #[command(subcommand)]
         command: opys_server::cli::WebCommand,
     },
 }
 
+/// The message `web` answers an inventory flag with, wherever it was written.
+const WEB_TAKES_NO_INVENTORY_FLAGS: &str =
+    "`--root` and `--no-sync` are inventory flags; `web` takes neither \
+     (the scan root is `opys web scan --under <PATH>`)";
+
+/// Was a flag *written*, as opposed to defaulted? `--root` defaults to `.`, so
+/// comparing the value against the default cannot tell `opys web --root .`
+/// (a flag `web` does not accept) from `opys web` (no flag at all) — and used
+/// to accept the first silently. `ValueSource` distinguishes them.
+fn written(matches: &clap::ArgMatches, id: &str) -> bool {
+    matches.value_source(id) == Some(ValueSource::CommandLine)
+}
+
 fn main() {
-    let cli = Cli::parse();
+    // Parsed through `ArgMatches` rather than `Cli::parse()` so `web` can ask
+    // whether a global was *written* on the command line, not merely whether it
+    // differs from its default.
+    let matches = Cli::command().get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     let result = match cli.command {
         TopCommand::Engine(command) => opys_engine::run(
             opys_engine::cli::Cli {
@@ -59,19 +94,20 @@ fn main() {
             },
             Box::new(MarkdownLocal),
         ),
-        TopCommand::Web { command } => {
-            // clap propagates a global into every subcommand, `web` included,
-            // where neither flag means anything — the node serves an allowlist,
+        TopCommand::Web { command, .. } => {
+            // Neither flag means anything to the node — it serves an allowlist,
             // not a project root. Refusing, rather than warning: `opys web scan
             // --root ~/work` is the spelling everyone reaches for first, and
             // ignoring it produces a confident, correct-looking scan of the
             // *home directory* instead. A warning above a long list of the wrong
             // projects is not a message anybody reads.
-            if cli.root != "." || cli.no_sync {
-                Err(opys_engine::error::usage(
-                    "`--root` and `--no-sync` are inventory flags; `web` takes neither \
-                     (the scan root is `opys web scan --under <PATH>`)",
-                ))
+            //
+            // One place to look, in every position: clap merges a global's
+            // matched value up and down the whole tree, so the root matches
+            // carry `CommandLine` whether the flag was written before `web`,
+            // between `web` and its subcommand, or after it.
+            if written(&matches, "root") || written(&matches, "no_sync") {
+                Err(opys_engine::error::usage(WEB_TAKES_NO_INVENTORY_FLAGS))
             } else {
                 opys_server::cli::dispatch(command)
             }
@@ -168,13 +204,54 @@ mod tests {
         assert!(matches!(
             cli.command,
             TopCommand::Web {
-                command: opys_server::cli::WebCommand::List { .. }
+                command: opys_server::cli::WebCommand::List { .. },
+                ..
             }
         ));
         assert!(
             Cli::try_parse_from(["opys", "web"]).is_err(),
             "`web` on its own is not a command"
         );
+    }
+
+    /// The inventory globals must not reach the node's help. clap propagates a
+    /// global into every subcommand, so `opys web scan --help` once listed
+    /// `--root <ROOT>` under Options while the binary refused it. `web`
+    /// re-declares both ids to block that; they survive only as hidden args, so
+    /// a misplaced flag still parses into the refusal instead of clap's
+    /// "unexpected argument".
+    #[test]
+    fn the_inventory_globals_are_hidden_throughout_web() {
+        let mut root = Cli::command();
+        // Globals are copied into subcommands at build time, so an unbuilt
+        // `Command` shows the declarations and not the propagation.
+        root.build();
+        let web = root
+            .get_subcommands()
+            .find(|c| c.get_name() == "web")
+            .expect("`web` is mounted");
+        let mut checked = 0;
+        let subs = web.get_subcommands().filter(|c| c.get_name() != "help");
+        for cmd in std::iter::once(web).chain(subs) {
+            for id in ["root", "no_sync"] {
+                let arg = cmd
+                    .get_arguments()
+                    .find(|a| a.get_id() == id)
+                    .unwrap_or_else(|| panic!("`{id}` is not declared on `{}`", cmd.get_name()));
+                assert!(
+                    arg.is_hide_set(),
+                    "`--{id}` is visible in `opys web {} --help`",
+                    cmd.get_name(),
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked >= 4, "the web surface has subcommands to check");
+        // …and the root command still offers them for real.
+        for id in ["root", "no_sync"] {
+            let arg = root.get_arguments().find(|a| a.get_id() == id).unwrap();
+            assert!(!arg.is_hide_set(), "`--{id}` must stay in `opys --help`");
+        }
     }
 
     /// The flattened half must keep parsing exactly as it did before `web`

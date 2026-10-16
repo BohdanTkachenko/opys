@@ -3,7 +3,7 @@ opys-server/ui/package-lock.json linguist-generated=true
 
 # EOL normalization would change what the UI sources compile to.
 #
-# The bundle is not committed (ADR-0086) — it is built by `ui-build`, by the Nix
+# The bundle is not committed (ADR-0037) — it is built by `ui-build`, by the Nix
 # derivation, and by the release job before `cargo publish`. Those three must
 # agree, and they only do if every checkout sees the same source bytes: with
 # core.autocrlf=true (a Windows contributor's default) vite would compile CRLF

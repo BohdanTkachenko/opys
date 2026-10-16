@@ -16,7 +16,7 @@ write authorities.
 output, `ui/dist`, is **generated and gitignored**, and compiled into the binary
 by `build.rs`. Nothing in the crate build ever runs Node or touches the network —
 `cargo install opys`, docs.rs and the nix sandbox cannot — and the page makes
-zero external requests: no CDN, no webfont, no source map (ADR-0086).
+zero external requests: no CDN, no webfont, no source map (ADR-0037).
 
 So the bundle has to be built before the crate is:
 
@@ -47,6 +47,6 @@ node on the default port.
 
 ## License
 
-Apache-2.0, like the rest of the workspace, permanently (ADR-0080).
+Apache-2.0, like the rest of the workspace, permanently (ADR-0033).
 
 See the [project README](../README.md) for what opys is and how to use it.

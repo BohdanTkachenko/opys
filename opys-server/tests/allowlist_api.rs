@@ -1,4 +1,4 @@
-//! Managing the allowlist from the browser (ADR-0082, FEAT-0083).
+//! Managing the allowlist from the browser (ADR-0035, FEAT-0036).
 //!
 //! The rules live in `registry::vet_ui_path` and are tested exhaustively in
 //! `vet_path.rs`. What is tested here is that the *endpoints* apply them — that

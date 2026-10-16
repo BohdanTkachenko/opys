@@ -46,9 +46,10 @@ impl Store {
         // the entries the bad read lost.
         self.ledger_guard()?;
         let rows = self.full_rows()?;
-        // Stored paths normally come from `relpath_of`/`doc_relpath`, but raw
-        // SQL (`query --write`) can put anything in `docs.path` — refuse any
-        // path that would land outside the inventory base when joined onto it.
+        // Stored paths all come from `relpath_of`/`doc_relpath`; this is defence
+        // in depth against a layout template or a backend putting something else
+        // in `docs.path` — refuse any path that would land outside the inventory
+        // base when joined onto it.
         for r in &rows {
             contained(&r.relpath)?;
         }
@@ -134,5 +135,36 @@ fn contained(relpath: &str) -> Result<()> {
         Err(usage(format!(
             "doc path {relpath:?} is not a plain relative path under the inventory base — refusing to flush"
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::contained;
+
+    /// The containment guard the flush plan runs over every `docs.path`: a plain
+    /// relative path (with harmless `.` segments) passes, anything that could
+    /// join to a location outside the inventory base does not.
+    #[test]
+    fn contained_accepts_relative_paths_and_refuses_escapes() {
+        for ok in [
+            "FEAT-0001.md",
+            "features/FEAT-0001.md",
+            "./features/FEAT-0001.md",
+            "./_archived/FEAT-0001.md",
+        ] {
+            assert!(contained(ok).is_ok(), "{ok} should be contained");
+        }
+        for bad in [
+            "",
+            "../escape.md",
+            "features/../../escape.md",
+            "/tmp/escape.md",
+        ] {
+            let e = contained(bad)
+                .err()
+                .unwrap_or_else(|| panic!("{bad} should be refused"));
+            assert!(e.to_string().contains("refusing to flush"), "{bad} → {e}");
+        }
     }
 }

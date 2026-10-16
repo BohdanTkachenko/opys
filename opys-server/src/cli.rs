@@ -1,4 +1,4 @@
-//! The `web` subcommand surface (ADR-0077), and the one implementation of it.
+//! The `web` subcommand surface (ADR-0031), and the one implementation of it.
 //!
 //! Mounted twice — as `opys web …` by the CLI and as `opys-server web …` by the
 //! node's own binary — from this single enum and this single [`dispatch`]. The
@@ -7,7 +7,7 @@
 //!
 //! `add` and `remove` edit the allowlist file and nothing else. They never speak
 //! to a running node, which is what keeps filesystem paths out of the HTTP
-//! surface entirely (ADR-0077) — the node watches the file instead. And `scan`
+//! surface entirely (ADR-0031) — the node watches the file instead. And `scan`
 //! cannot add anything: it is handed a `&Registry`, so the type system, not
 //! discipline, is what stops it.
 
@@ -15,6 +15,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
+use opys_engine::commands::print_lines;
 use opys_engine::error::{usage, Result};
 
 use crate::discover;
@@ -24,7 +25,7 @@ use crate::systemd;
 
 /// Where the node listens and which allowlist it serves.
 ///
-/// ADR-0077: no project paths. The allowlist file is the only way in, so
+/// ADR-0031: no project paths. The allowlist file is the only way in, so
 /// approving a project and running the node stay separate acts.
 ///
 /// `about`/`long_about` are reset because this struct is *flattened* into
@@ -103,10 +104,11 @@ pub enum WebCommand {
         /// Directory to search under. Defaults to your home directory.
         ///
         /// Spelled `--under`, not `--root`, and it has to be: `opys` declares a
-        /// *global* `--root` (the inventory root), and clap propagates a global
-        /// through the whole command tree — id and long name both — so a second
-        /// `--root` anywhere beneath it is either a duplicate long option or a
-        /// value of the wrong type arriving at the wrong level.
+        /// *global* `--root` (the inventory root), which takes that id and long
+        /// name tree-wide. `opys web` claims both of them back — hidden, and
+        /// only so it can refuse them — so a second, real `--root` here would
+        /// be a duplicate long option or a value of the wrong type arriving at
+        /// the wrong level.
         #[arg(long, value_name = "PATH")]
         under: Option<PathBuf>,
 
@@ -125,6 +127,16 @@ pub enum WebCommand {
 
     /// Remove the systemd user unit.
     Uninstall,
+}
+
+/// One line to stdout — `println!` minus the panic. Rust ignores `SIGPIPE`, so
+/// the print macros abort the process the moment a reader goes away
+/// (`opys web list | head -3`); the engine's `print_lines` reports that as the
+/// clean stop it is. Every line the `web` surface writes to *stdout* goes
+/// through here (`web start`'s progress notes are stderr, which no pipe
+/// touches), so no command in this binary turns a closed pipe into a crash.
+fn print_line(line: impl AsRef<str>) -> Result<()> {
+    print_lines([line])
 }
 
 /// Run one `web` subcommand, returning its exit code.
@@ -209,27 +221,31 @@ fn add(path: &Path, prefix: bool, config: Option<&Path>) -> Result<i32> {
         .iter()
         .any(|e| e.kind == kind && e.path == target)
     {
-        println!("already allowlisted: {}", target.display());
+        print_line(format!("already allowlisted: {}", target.display()))?;
         return Ok(0);
     }
     // A project already reached through a prefix needs no entry of its own; a
     // second one would only be something else to remove later.
     if kind == EntryKind::Project {
         if let Some(entry) = registry.entry_covering(&target) {
-            println!(
+            print_line(format!(
                 "already served by the {} entry {} in {}",
                 entry.kind.key(),
                 entry.raw_path,
                 config.display()
-            );
+            ))?;
             return Ok(0);
         }
     }
 
     if registry.add(&target, kind)? {
         registry.save()?;
-        println!("added {} to {}", target.display(), config.display());
-        println!("a running node picks this up within a minute");
+        print_line(format!(
+            "added {} to {}",
+            target.display(),
+            config.display()
+        ))?;
+        print_line("a running node picks this up within a minute")?;
     }
     Ok(0)
 }
@@ -246,22 +262,26 @@ fn remove(path: &Path, config: Option<&Path>) -> Result<i32> {
 
     if registry.remove(&target)? {
         registry.save()?;
-        println!("removed {} from {}", target.display(), config.display());
+        print_line(format!(
+            "removed {} from {}",
+            target.display(),
+            config.display()
+        ))?;
         return Ok(0);
     }
     match registry.entry_covering(&target) {
         Some(entry) => {
-            println!(
+            print_line(format!(
                 "not allowlisted directly — served by the {} entry {}",
                 entry.kind.key(),
                 entry.raw_path
-            );
-            println!(
+            ))?;
+            print_line(format!(
                 "remove that entry instead: opys web remove {}",
                 entry.raw_path
-            );
+            ))?;
         }
-        None => println!("not in the allowlist: {}", target.display()),
+        None => print_line(format!("not in the allowlist: {}", target.display()))?,
     }
     Ok(0)
 }
@@ -281,17 +301,17 @@ fn list(config: Option<&Path>) -> Result<i32> {
     let registry = Registry::load_from(&config)?;
     let bind = serve::resolve_bind(None, registry.bind.as_deref())?;
 
-    println!("allowlist: {}", config.display());
+    print_line(format!("allowlist: {}", config.display()))?;
     let source = if registry.bind.is_some() {
         "from the allowlist file"
     } else {
         "default"
     };
-    println!("bind:      {bind} ({source})");
-    println!();
+    print_line(format!("bind:      {bind} ({source})"))?;
+    print_line("")?;
 
     if registry.entries.is_empty() {
-        println!("nothing allowlisted — add a project with: opys web add <path>");
+        print_line("nothing allowlisted — add a project with: opys web add <path>")?;
         return Ok(0);
     }
     // The entry column is padded to its own widest row, so the `->` line up and
@@ -310,24 +330,24 @@ fn list(config: Option<&Path>) -> Result<i32> {
             Some(err) => format!("error: {err}"),
             None => entry.path.display().to_string(),
         };
-        println!(
+        print_line(format!(
             "  {:<7}  {written:<width$}  -> {resolved}",
             entry.kind.key()
-        );
+        ))?;
     }
-    println!();
+    print_line("")?;
 
     let groups = discover::expand(&registry);
     let corpora: usize = groups.iter().map(|g| g.corpora.len()).sum();
     if corpora == 0 {
-        println!("serving nothing: no project matched those entries");
+        print_line("serving nothing: no project matched those entries")?;
         return Ok(0);
     }
-    println!(
+    print_line(format!(
         "serving {} in {}:",
         plural(corpora, "corpus", "corpora"),
         plural(groups.len(), "project", "projects")
-    );
+    ))?;
     let width = groups.iter().map(|g| g.name.len()).max().unwrap_or(0);
     for group in &groups {
         for corpus in &group.corpora {
@@ -342,9 +362,9 @@ fn list(config: Option<&Path>) -> Result<i32> {
             if group.corpora.len() > 1 && corpus.is_primary {
                 line.push_str("  (primary)");
             }
-            println!("{line}");
+            print_line(&line)?;
             if let Some(err) = &corpus.error {
-                println!("    error: {err}");
+                print_line(format!("    error: {err}"))?;
             }
         }
     }
@@ -379,10 +399,10 @@ fn scan(under: Option<&Path>, depth: Option<usize>, config: Option<&Path>) -> Re
     }
     let depth = depth.unwrap_or(default_depth);
 
-    println!("scanning {} (depth {depth})…", root.display());
+    print_line(format!("scanning {} (depth {depth})…", root.display()))?;
     let found = discover::suggest(&root, depth, &registry);
     if found.is_empty() {
-        println!("no projects found under {}", root.display());
+        print_line(format!("no projects found under {}", root.display()))?;
         return Ok(0);
     }
     for suggestion in &found {
@@ -391,15 +411,15 @@ fn scan(under: Option<&Path>, depth: Option<usize>, config: Option<&Path>) -> Re
         } else {
             ""
         };
-        println!("  {}{mark}", suggestion.path.display());
+        print_line(format!("  {}{mark}", suggestion.path.display()))?;
     }
-    println!();
+    print_line("")?;
     match found.iter().find(|s| !s.already_allowlisted) {
         Some(next) => {
-            println!("scan never adds anything — allowlist one with:");
-            println!("  opys web add {}", next.path.display());
+            print_line("scan never adds anything — allowlist one with:")?;
+            print_line(format!("  opys web add {}", next.path.display()))?;
         }
-        None => println!("every project found is already allowlisted"),
+        None => print_line("every project found is already allowlisted")?,
     }
     Ok(0)
 }
@@ -437,37 +457,37 @@ fn install(args: InstallArgs) -> Result<i32> {
         .map(|path| std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()));
 
     let Some(dir) = dir else {
-        return Ok(no_systemd(&exe, bind, named.as_deref()));
+        return no_systemd(&exe, bind, named.as_deref());
     };
     let path = systemd::install(&dir, &exe, bind, named.as_deref(), args.force)?;
-    println!("wrote {}", path.display());
-    println!();
-    println!("enable it with:");
-    println!("  systemctl --user daemon-reload && systemctl --user enable --now opys-server");
-    println!();
-    println!("the node will listen on http://{bind}");
+    print_line(format!("wrote {}", path.display()))?;
+    print_line("")?;
+    print_line("enable it with:")?;
+    print_line("  systemctl --user daemon-reload && systemctl --user enable --now opys-server")?;
+    print_line("")?;
+    print_line(format!("the node will listen on http://{bind}"))?;
     Ok(0)
 }
 
 /// `web uninstall` — remove the unit, print how to forget it.
 fn uninstall() -> Result<i32> {
     let Some(dir) = systemd::unit_dir() else {
-        println!("no systemd user unit directory here — there is nothing to remove");
+        print_line("no systemd user unit directory here — there is nothing to remove")?;
         return Ok(0);
     };
     if !systemd::is_installed(&dir) {
-        println!("no unit at {}", systemd::unit_path(&dir).display());
+        print_line(format!("no unit at {}", systemd::unit_path(&dir).display()))?;
         return Ok(0);
     }
     // Printed *before* the removal line, because that is the order the user has
     // to execute in: deleting a unit file does not stop the service it started,
     // and a node left running still holds the port the next install wants.
-    println!("stop it first — removing the unit does not stop a running service:");
-    println!("  systemctl --user disable --now opys-server && systemctl --user daemon-reload");
-    println!();
+    print_line("stop it first — removing the unit does not stop a running service:")?;
+    print_line("  systemctl --user disable --now opys-server && systemctl --user daemon-reload")?;
+    print_line("")?;
     match systemd::uninstall(&dir)? {
-        Some(path) => println!("removed {}", path.display()),
-        None => println!("no unit at {}", systemd::unit_path(&dir).display()),
+        Some(path) => print_line(format!("removed {}", path.display()))?,
+        None => print_line(format!("no unit at {}", systemd::unit_path(&dir).display()))?,
     }
     Ok(0)
 }
@@ -480,16 +500,19 @@ fn uninstall() -> Result<i32> {
 ///
 /// The printed command carries whatever `--config` the user passed, so it is a
 /// line they can paste and have serve what `install` just reported on.
-fn no_systemd(exe: &Path, bind: SocketAddr, config: Option<&Path>) -> i32 {
+fn no_systemd(exe: &Path, bind: SocketAddr, config: Option<&Path>) -> Result<i32> {
     let config = match config {
         Some(path) => format!(" --config {}", path.display()),
         None => String::new(),
     };
-    println!("no systemd user unit directory here — nothing was installed");
-    println!();
-    println!("run the node yourself with:");
-    println!("  {} web start --bind {bind}{config}", exe.display());
-    0
+    print_line("no systemd user unit directory here — nothing was installed")?;
+    print_line("")?;
+    print_line("run the node yourself with:")?;
+    print_line(format!(
+        "  {} web start --bind {bind}{config}",
+        exe.display()
+    ))?;
+    Ok(0)
 }
 
 #[cfg(test)]
@@ -549,7 +572,7 @@ mod tests {
         assert_eq!(args.config, Some(PathBuf::from("/tmp/server.toml")));
         assert!(
             Harness::try_parse_from(["web", "start", "/tmp/a"]).is_err(),
-            "a project path is not an argument (ADR-0077)"
+            "a project path is not an argument (ADR-0031)"
         );
     }
 

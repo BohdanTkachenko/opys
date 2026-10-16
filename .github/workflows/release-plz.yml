@@ -34,7 +34,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The single most load-bearing step in this file. opys-server/ui/dist is
-      # gitignored (ADR-0086) and reaches crates.io only inside the published
+      # gitignored (ADR-0037) and reaches crates.io only inside the published
       # tarball, so publishing without building it first would ship an
       # opys-server whose build.rs finds no bundle — breaking `cargo install
       # opys` for everyone, with nothing in this workflow to notice. Keep

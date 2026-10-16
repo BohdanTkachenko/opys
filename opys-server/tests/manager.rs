@@ -1,5 +1,5 @@
 //! The manager keeping live corpus actors in step with the allowlist
-//! (TASK-0070, ADR-0077).
+//! (ADR-0031).
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -118,7 +118,7 @@ fn rescan_starts_and_stops_actors_from_the_allowlist() {
 }
 
 /// `opys web add` edits the file and nothing else, so the manager has to notice
-/// the file itself — this is the whole mechanism behind ADR-0077's rule that no
+/// the file itself — this is the whole mechanism behind ADR-0031's rule that no
 /// endpoint accepts a path.
 #[test]
 fn refresh_picks_up_an_edited_allowlist() {
@@ -184,6 +184,41 @@ fn refresh_drops_a_corpus_whose_project_vanished() {
     mgr.shutdown();
 }
 
+/// The manager starts a ref reader per group and hands out what it read. The
+/// notice differs by build — no repository here, or no `git` feature at all —
+/// so what is pinned is that a group has a reader and that its answer arrives
+/// through the manager rather than through a request-time git walk.
+#[test]
+fn every_served_group_gets_a_ref_reader() {
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = project(&tmp.path().join("proj"), 1);
+    let config = tmp.path().join("config/server.toml");
+    write_allowlist(&config, &[&proj]);
+
+    let (tx, mut rx) = broadcast::channel(32);
+    let mut mgr = Manager::new(config, tx, backend);
+    mgr.rescan().unwrap();
+    assert!(
+        wait_for(&mut rx, |e| matches!(e, Event::RefsChanged { .. })),
+        "the reader publishes its first answer"
+    );
+
+    let key = mgr.groups()[0].key.clone();
+    let branches = mgr.branches_for(&key);
+    assert!(branches.read_at.is_some(), "the reader ran");
+    assert!(
+        branches.columns.is_empty(),
+        "a plain directory has no branches"
+    );
+    assert!(
+        !branches.notices.is_empty(),
+        "and says why, once, rather than looking like a branch that broke"
+    );
+    // A key nobody serves is empty rather than an error: the union must render.
+    assert!(mgr.branches_for("nope").read_at.is_none());
+    mgr.shutdown();
+}
+
 /// A quiet tick must not churn: no restarts, no events, and the same actor
 /// (hence the same warm store) still answering.
 #[test]
@@ -208,6 +243,14 @@ fn a_quiet_refresh_changes_nothing() {
             .docs(DocFilter::default())
             .unwrap();
     }
+    // The ref reader is the other producer with a startup announcement: its
+    // first pass says what the branches are (here: this project is no
+    // repository, which is a notice), and it says it once. Wait for that too,
+    // or it lands in the window below and reads as an idle tick talking.
+    assert!(
+        wait_for(&mut rx, |e| matches!(e, Event::RefsChanged { .. })),
+        "the ref reader publishes its first answer"
+    );
     let _ = drain(&mut rx);
 
     for _ in 0..3 {

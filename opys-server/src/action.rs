@@ -1,7 +1,7 @@
-//! The write path: one CLI-identical cycle per request (TASK-0072).
+//! The write path: one CLI-identical cycle per request.
 //!
 //! The node is a *remote hand on the local write path*, never a second write
-//! authority (ADR-0051). Two rules follow, and both are load-bearing:
+//! authority (ADR-0027). Two rules follow, and both are load-bearing:
 //!
 //! - **Never write through a warm store.** The corpus actors hold stores loaded
 //!   in the past and *without* the inventory lock (that is the whole point of
@@ -15,9 +15,9 @@
 //!   a client has. Nothing here accepts a filesystem path, a command line, or
 //!   even a field it does not recognise: `deny_unknown_fields` turns anything
 //!   else into a deserialization failure before this module is reached, and that
-//!   is the no-arbitrary-execution guarantee (ADR-0077), not a nicety.
+//!   is the no-arbitrary-execution guarantee (ADR-0031), not a nicety.
 //! - **The corpus root is a boundary.** The allowlist is the whole security
-//!   boundary (ADR-0077), and `Project::open`'s upward search would walk
+//!   boundary (ADR-0031), and `Project::open`'s upward search would walk
 //!   straight through it; [`perform`] refuses to write anywhere but the corpus
 //!   it was addressed. See its docs.
 //!
@@ -28,7 +28,7 @@
 use std::path::Path;
 
 use opys_engine::backend::Backend;
-use opys_engine::commands::{block, close, edit, new, set_status, sync, tag};
+use opys_engine::commands::{apply, block, close, edit, log, new, set_status, sync, tag};
 use opys_engine::error::OpysError;
 use opys_engine::project::Project;
 use opys_engine::store::Store;
@@ -39,7 +39,7 @@ use serde::Deserialize;
 /// Deliberately says nothing about *where*: the engine's own message names the
 /// inventory directory and the lock file under `$XDG_RUNTIME_DIR`, and this is
 /// the one endpoint whose premise is that it never traffics in filesystem paths
-/// (ADR-0077).
+/// (ADR-0031).
 const BUSY: &str = "the inventory is busy — another opys invocation is holding the lock; retry";
 
 /// The result of asking the node to write.
@@ -49,11 +49,13 @@ pub type Attempt = std::result::Result<ActionOutcome, ActionError>;
 ///
 /// One variant per mutating CLI command, carrying that command's arguments in
 /// the same shape. Absent optional fields become the same values clap hands the
-/// core (an empty `tags`, an empty `status`, `None` for a reason), so an action
-/// and the corresponding `opys` invocation reach the engine identically; in
-/// particular the *empty* status is deliberate, because resolving a type's
-/// default status is `new::core`'s job and duplicating it here would be a second
-/// copy of a rule that can change.
+/// core (an empty `tags`, `None` for a reason), so an action and the
+/// corresponding `opys` invocation reach the engine identically. `New` carries
+/// no status at all, for the same reason the CLI no longer has `--status`: a
+/// document starts at its type's initial status (ADR-0050 decision 5), which is
+/// `new::core`'s to resolve, and `import` is the one seam that seeds elsewhere.
+/// Because the enum is `deny_unknown_fields`, a client still sending `status`
+/// is told so rather than silently ignored.
 ///
 /// `type` and `title` are the exception: the CLI defaults `--type` to `feature`
 /// for interactive convenience, but a client that forgets the field deserves to
@@ -70,8 +72,6 @@ pub enum Action {
         #[serde(default)]
         tags: String,
         #[serde(default)]
-        status: String,
-        #[serde(default)]
         features: String,
         reason: Option<String>,
     },
@@ -86,6 +86,20 @@ pub enum Action {
         id: String,
         add: Option<String>,
         remove: Option<String>,
+    },
+    /// Append a dated entry to the document's `log` section — the CLI's
+    /// `opys log`, whose stamp and splice this reuses verbatim.
+    ///
+    /// `section` carries the CLI's `--section`, per this enum's rule that a
+    /// variant holds its command's arguments in the same shape: a type with two
+    /// log sections would otherwise be unreachable from the node. Absent is the
+    /// same `None` clap hands the core, which is every type the shipped config
+    /// declares.
+    Log {
+        id: String,
+        text: String,
+        #[serde(default)]
+        section: Option<String>,
     },
     /// Record that `id` is blocked by `by`, writing both directions.
     Block { id: String, by: String },
@@ -119,6 +133,40 @@ pub enum Action {
     /// Remove one custom frontmatter field, verify-gated like `set-field` (so
     /// removing a required field is refused by name).
     RemoveField { id: String, key: String },
+    /// The composite write (`opys apply`): a status transition, field writes
+    /// and a log entry as one all-or-nothing batch — the primitive an agent
+    /// claims a document with, so a dispatcher over HTTP gets exactly the
+    /// atomicity a dispatcher over the CLI gets.
+    ///
+    /// `status` here asserts a *transition*: a second claimant, finding the
+    /// document already in the working status, is refused and writes nothing.
+    ///
+    /// `fields` is an object rather than the CLI's repeatable `--field k=v`,
+    /// the way `set-field` splits key from value. Its iteration order is
+    /// alphabetical where the CLI's is the order given, which changes nothing
+    /// on disk — frontmatter serialization is canonical — and can only decide
+    /// *which* of two simultaneously-bad fields is named in the refusal.
+    ///
+    /// Every part but `id` is optional at the wire, and the combinations that
+    /// mean nothing are refused by the engine rather than here: `apply::core`
+    /// runs the CLI's own usage checks first, so a body that asks for nothing,
+    /// or names a `reason` with no `status` or a `section` with no `log`, comes
+    /// back 422 carrying the words `opys apply` would have printed.
+    Apply {
+        id: String,
+        #[serde(default)]
+        status: Option<String>,
+        #[serde(default)]
+        reason: Option<String>,
+        #[serde(default)]
+        fields: std::collections::BTreeMap<String, String>,
+        #[serde(default)]
+        remove_fields: Vec<String>,
+        #[serde(default)]
+        log: Option<String>,
+        #[serde(default)]
+        section: Option<String>,
+    },
 }
 
 impl Action {
@@ -130,12 +178,14 @@ impl Action {
             Action::New { .. } => "new",
             Action::SetStatus { .. } => "set-status",
             Action::Tag { .. } => "tag",
+            Action::Log { .. } => "log",
             Action::Block { .. } => "block",
             Action::Unblock { .. } => "unblock",
             Action::Close { .. } => "close",
             Action::EditBody { .. } => "edit-body",
             Action::SetField { .. } => "set-field",
             Action::RemoveField { .. } => "remove-field",
+            Action::Apply { .. } => "apply",
         }
     }
 }
@@ -231,20 +281,21 @@ impl ActionOutcome {
 /// Run one action against the corpus rooted at `root`, exactly as the CLI would.
 ///
 /// The sequence is the one in `src/commands/*.rs`, verbatim: open the project,
-/// load a store (which takes the inventory lock), call the print-free core,
-/// flush (which releases it), then run the auto-sync pass. That last step is its
-/// own second load/flush cycle rather than a pass over the store above, and the
-/// difference is visible on disk: `sync::pass` backfills a missing
-/// `created`/`updated` from the file's mtime, so folding it into the first cycle
-/// would read the *pre-write* mtime and write different bytes.
+/// resolve the id source when the action allocates one (before the lock, as
+/// `Ctx::id_source` requires), load a store (which takes the inventory lock),
+/// call the print-free core, flush (which releases it), then run the auto-sync
+/// pass. That last step is its own second load/flush cycle rather than a pass
+/// over the store above, and the difference is visible on disk: `sync::pass`
+/// backfills a missing `created`/`updated` from the file's mtime, so folding it
+/// into the first cycle would read the *pre-write* mtime and write different
+/// bytes.
 ///
-/// The one place the six commands disagree with each other is what happens when
-/// a core refuses. `new::run` propagates immediately — nothing is flushed, no
-/// sync runs. The other five capture the error, flush and sync anyway, and
-/// return it last, so a refused write still leaves the corpus reconciled. That
-/// asymmetry is not tidied up here: it is observable whenever the corpus was not
-/// already in sync, and the point of this module is that the same write through
-/// the API and through the CLI leaves the same bytes.
+/// A refused core is the same everywhere: the error propagates *before* the
+/// flush, the store is dropped un-flushed, and no sync runs — so a write the
+/// corpus rejects leaves the bytes exactly as they were. That is the CLI's rule
+/// too — a batch is all-or-nothing — and the point of this module is
+/// that the same write through the API and through the CLI leaves the same
+/// bytes.
 ///
 /// Blocking, and possibly for a while — the load waits out `OPYS_LOCK_TIMEOUT_MS`
 /// (10 s by default) if another writer holds the inventory lock, which is
@@ -258,7 +309,7 @@ impl ActionOutcome {
 /// `Manager::refresh` only retires it on the next tick — and the cycle would
 /// then land in the nearest *enclosing* project, which the user never
 /// allowlisted. Nested projects are the normal shape a `[[prefix]]` entry
-/// produces, so this is not exotic. The allowlist is ADR-0077's whole security
+/// produces, so this is not exotic. The allowlist is ADR-0031's whole security
 /// boundary, so the walk is refused rather than inherited.
 pub fn perform(root: &Path, backend: &dyn Backend, action: &Action) -> Attempt {
     // The exact predicate `Manager::refresh` uses to decide a corpus is gone.
@@ -272,6 +323,20 @@ pub fn perform(root: &Path, backend: &dyn Backend, action: &Action) -> Attempt {
     if prj.root.as_path() != root {
         return Err(ActionError::Gone);
     }
+    // The id source is resolved *before* the load, which is where the inventory
+    // lock is taken — the ordering `Ctx::id_source` documents for the CLI, and
+    // the reason a bad `OPYS_ID_SLOT` is answered at once instead of after
+    // waiting out `OPYS_LOCK_TIMEOUT_MS` behind another writer. Only `New`
+    // allocates, and only under an `[ids] modulus` does the resolution read
+    // anything at all, so every other action stays exactly as it was.
+    let mut ids = match action {
+        Action::New { .. } => {
+            // The node allocates in its own process's slot (`OPYS_ID_SLOT` in
+            // its environment, else the hash of the user@host it runs as).
+            Some(opys_engine::ids::resolve(&prj.pcfg).map_err(ActionError::Refused)?)
+        }
+        _ => None,
+    };
     // Unparsable documents come back here as messages rather than as a failure,
     // and the CLI drops them at exactly this point: they are the corpus's
     // problem, reported by `verify`, not this write's.
@@ -281,19 +346,21 @@ pub fn perform(root: &Path, backend: &dyn Backend, action: &Action) -> Attempt {
             type_name,
             title,
             tags,
-            status,
             features,
             reason,
         } => {
             // The trailing `&[]` is the CLI's repeatable `--field key=value`,
             // which the action vocabulary deliberately does not expose.
+            let ids = ids
+                .as_mut()
+                .expect("the id source is resolved above for every `New`");
             let doc = new::core(
                 &prj,
                 &mut store,
+                &mut **ids,
                 type_name,
                 title,
                 tags,
-                status,
                 features,
                 reason.as_deref(),
                 &[],
@@ -326,6 +393,12 @@ pub fn perform(root: &Path, backend: &dyn Backend, action: &Action) -> Attempt {
                 .map_err(ActionError::Refused);
             finish(&prj, backend, store, done)
         }
+        Action::Log { id, text, section } => {
+            let done = log::core(&prj, &mut store, id, text, section.as_deref())
+                .map(|line| ActionOutcome::new(id, line))
+                .map_err(ActionError::Refused);
+            finish(&prj, backend, store, done)
+        }
         Action::Block { id, by } => {
             let done = block::block_core(&prj, &mut store, id, by)
                 .map(|()| ActionOutcome::new(id, format!("{id} blocked by {by}")))
@@ -339,9 +412,9 @@ pub fn perform(root: &Path, backend: &dyn Backend, action: &Action) -> Attempt {
             finish(&prj, backend, store, done)
         }
         Action::EditBody { id, body } => {
-            // Like `new`, not like the other five: a refused edit propagates
-            // *before* the flush, because the whole point of the verify gate is
-            // that a rejected body never reaches disk.
+            // Inlined rather than routed through `finish` only because the
+            // gate needs the load's parse errors: a refused edit propagates
+            // before the flush here too, so a rejected body never reaches disk.
             edit::body_core(&prj, &mut store, id, body, &parse_errors)
                 .map_err(ActionError::Refused)?;
             let mut outcome = ActionOutcome::new(id, format!("{id} body updated (verified)"));
@@ -367,6 +440,35 @@ pub fn perform(root: &Path, backend: &dyn Backend, action: &Action) -> Attempt {
             outcome.sync_skipped = auto_sync(&prj, backend);
             Ok(outcome)
         }
+        Action::Apply {
+            id,
+            status,
+            reason,
+            fields,
+            remove_fields,
+            log,
+            section,
+        } => {
+            // The one parse-error-taking action that still routes through
+            // `finish`: unlike edit-body/set-field/remove-field, nothing here
+            // has to be inlined — `apply::core` returns the printed line and
+            // `finish` propagates its refusal before the flush — so only the
+            // spec is assembled first.
+            let set_fields: Vec<(String, String)> =
+                fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            let spec = apply::Apply {
+                status: status.as_deref(),
+                reason: reason.as_deref(),
+                set_fields: &set_fields,
+                remove_fields,
+                log: log.as_deref(),
+                section: section.as_deref(),
+            };
+            let done = apply::core(&prj, &mut store, id, &spec, &parse_errors)
+                .map(|line| ActionOutcome::new(id, line))
+                .map_err(ActionError::Refused);
+            finish(&prj, backend, store, done)
+        }
         Action::Close { id, force } => {
             let done = close::core(&prj, &mut store, id, *force)
                 .map(|()| {
@@ -381,16 +483,15 @@ pub fn perform(root: &Path, backend: &dyn Backend, action: &Action) -> Attempt {
     }
 }
 
-/// The tail every command except `new` runs: flush and sync happen even when the
-/// core refused, and only then is the core's verdict returned. A failure to
-/// flush masks that verdict, which is also what the CLI's `ctx.flush(…)?` does.
+/// The tail every lifecycle action runs: a refusal propagates first (dropping
+/// the store un-flushed, so nothing reaches disk), then the flush and the
+/// auto-sync pass. The order is the CLI's — `commands::*::run` returns the
+/// error before `ctx.flush`, and only a successful write is synced.
 fn finish(prj: &Project, backend: &dyn Backend, store: Store, attempted: Attempt) -> Attempt {
+    let mut outcome = attempted?;
     backend.flush(prj, store).map_err(ActionError::Refused)?;
-    let skipped = auto_sync(prj, backend);
-    attempted.map(|mut outcome| {
-        outcome.sync_skipped = skipped;
-        outcome
-    })
+    outcome.sync_skipped = auto_sync(prj, backend);
+    Ok(outcome)
 }
 
 /// The auto-sync pass — reconcile relations, linkify prose, relocate documents
@@ -446,8 +547,7 @@ mod tests {
     }
 
     /// Absent optionals must reach the cores as the values clap hands them, not
-    /// as something this crate invented — an empty status especially, since
-    /// resolving a type's default is the engine's job.
+    /// as something this crate invented.
     #[test]
     fn absent_optionals_become_the_cli_defaults() {
         let action = parse(serde_json::json!({
@@ -458,7 +558,6 @@ mod tests {
             type_name,
             title,
             tags,
-            status,
             features,
             reason,
         } = action
@@ -468,16 +567,62 @@ mod tests {
         assert_eq!(type_name, "note");
         assert_eq!(title, "Only the required fields");
         assert_eq!(tags, "", "`--tags` defaults to empty, not to a made-up tag");
-        assert_eq!(
-            status, "",
-            "the type's default status is `new::core`'s call"
-        );
         assert_eq!(features, "");
         assert_eq!(reason, None);
 
         let close = parse(serde_json::json!({"action": "close", "id": "NOTE-0001"}))
             .expect("force is optional");
         assert!(matches!(close, Action::Close { force: false, .. }));
+    }
+
+    /// `new` has no status of its own any more (ADR-0050 decision 5). A client
+    /// written against the old vocabulary must be *told*: silently dropping the
+    /// field would create the document at the type's initial status while the
+    /// caller believed it had chosen one.
+    #[test]
+    fn new_no_longer_accepts_a_status() {
+        let err = parse(serde_json::json!({
+            "action": "new", "type": "note", "title": "Seeded", "status": "closed"
+        }))
+        .expect_err("`status` is not a field of the new action");
+        assert!(err.contains("status"), "{err}");
+    }
+
+    /// The composite's optionals are all absent-able, and absent must mean "do
+    /// not do that part" rather than "do it with a made-up value" — a body
+    /// carrying only `--log` has to reach the core as a log-only batch.
+    #[test]
+    fn an_apply_names_only_the_parts_it_carries() {
+        let action = parse(serde_json::json!({
+            "action": "apply", "id": "TASK-0002", "log": "checkpoint"
+        }))
+        .expect("id is the only required field");
+        let Action::Apply {
+            id,
+            status,
+            reason,
+            fields,
+            remove_fields,
+            log,
+            section,
+        } = action
+        else {
+            panic!("deserialized as the wrong variant");
+        };
+        assert_eq!(id, "TASK-0002");
+        assert_eq!(status, None, "no `--status` means no transition asserted");
+        assert_eq!(reason, None);
+        assert!(fields.is_empty(), "{fields:?}");
+        assert!(remove_fields.is_empty(), "{remove_fields:?}");
+        assert_eq!(log.as_deref(), Some("checkpoint"));
+        assert_eq!(section, None);
+
+        // And the vocabulary stays closed over the new variant too.
+        let unknown = parse(serde_json::json!({
+            "action": "apply", "id": "TASK-0002", "tags": "core"
+        }))
+        .expect_err("`tags` is not part of the composite");
+        assert!(unknown.contains("unknown field"), "{unknown}");
     }
 
     /// Why removal is its own action: a `set-field` with no `value` must be a
@@ -562,6 +707,10 @@ mod tests {
                 "tag",
             ),
             (
+                serde_json::json!({"action": "log", "id": "N-1", "text": "did a thing"}),
+                "log",
+            ),
+            (
                 serde_json::json!({"action": "block", "id": "N-1", "by": "N-2"}),
                 "block",
             ),
@@ -577,6 +726,17 @@ mod tests {
             (
                 serde_json::json!({"action": "remove-field", "id": "N-1", "key": "k"}),
                 "remove-field",
+            ),
+            (
+                serde_json::json!({"action": "edit-body", "id": "N-1", "body": "# T\n"}),
+                "edit-body",
+            ),
+            (
+                serde_json::json!({
+                    "action": "apply", "id": "N-1", "status": "doing",
+                    "fields": {"claimed_by": "agent-7"}, "log": "claimed"
+                }),
+                "apply",
             ),
         ];
         for (body, name) in cases {

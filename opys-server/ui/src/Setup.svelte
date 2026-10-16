@@ -1,6 +1,6 @@
 <script>
   // Allowlist management, and the first-run screen that introduces it
-  // (FEAT-0083, authorised by ADR-0082).
+  // (FEAT-0036, authorised by ADR-0035).
   //
   // One component, two moods. When the node has no allowlist file at all,
   // `configured` is false and this is onboarding: pick a mode, confirm a scan

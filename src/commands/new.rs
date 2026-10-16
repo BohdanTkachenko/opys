@@ -1,4 +1,4 @@
-use crate::commands::{maybe_sync, split_csv, touch};
+use crate::commands::{maybe_sync, print_lines, split_csv, touch};
 use crate::doc::Doc;
 use crate::error::{usage, Result};
 use crate::frontmatter::Frontmatter;
@@ -11,15 +11,16 @@ use crate::{refs, rules};
 
 /// Build, validate, and insert a new document into the store; returns the
 /// created [`Doc`] (its `path` is the canonical layout path). Does not
-/// flush/print/sync.
+/// flush/print/sync. The number comes from `ids` — the caller resolves the
+/// source ([`Ctx::id_source`], or [`crate::ids::resolve`] without a `Ctx`).
 #[allow(clippy::too_many_arguments)]
 pub fn core(
     prj: &Project,
     store: &mut Store,
+    ids: &mut dyn IdSource,
     type_name: &str,
     title: &str,
     tags: &str,
-    status: &str,
     features: &str,
     reason: Option<&str>,
     fields: &[String],
@@ -34,15 +35,16 @@ pub fn core(
         ))
     })?;
 
-    let first = crate::ids::SequenceMax.reserve(store, 1)?;
+    let first = ids.reserve(store, 1)?;
     let id = crate::ids::format_id(&t.prefix, first, pcfg.pad);
 
-    // Resolve status: empty → the type's default. Reject unknown / terminal.
-    let status = if status.is_empty() {
-        t.default_status.as_str()
-    } else {
-        status
-    };
+    // A document always starts at its type's initial status (ADR-0050 decision
+    // 5): `--status` is gone, and `import` is the one seam that seeds elsewhere.
+    // The two guards below still earn their place — `Project::open` never runs
+    // `ProjectConfig::validate`, so a `default_status` that is undeclared or
+    // terminal reaches here, and creating a document at one would mean a type
+    // whose every document is invalid, or unclosable, from birth.
+    let status = t.default_status.as_str();
     if !t.statuses.iter().any(|s| s == status) {
         return Err(usage(format!(
             "unknown status {status:?} for type '{type_name}' (allowed: {})",
@@ -79,15 +81,30 @@ pub fn core(
         refs::set(&mut fm, &references);
     }
 
-    // `--reason` sets the conventional `<status>_reason` field (wontfix/blocked/…).
+    // `--reason` sets the conventional `<status>_reason` field. With `--status`
+    // gone that can only ever be `<default_status>_reason`, which most types do
+    // not declare — and an undeclared key is frontmatter the very next `verify`
+    // rejects. Refuse instead, exactly as `set-status` does, so a successful
+    // command never leaves a red corpus.
     if let Some(r) = reason {
-        fm.set_str(&format!("{status}_reason"), r);
+        let field = format!("{status}_reason");
+        if !t.fields.contains_key(&field) {
+            return Err(usage(format!(
+                "--reason has nowhere to go: '{field}' is not a declared field for type \
+                 '{type_name}' (a new document starts at {status}; add \
+                 [types.{type_name}.fields.{field}], or drop --reason)"
+            )));
+        }
+        fm.set_str(&field, r);
     }
     for kv in fields {
         let (k, v) = project::parse_field(kv)?;
         fm.insert(&k, v);
     }
     touch(&mut fm);
+    // The first lifecycle entry, keyed off `created` so the two denote the same
+    // instant by construction (verify checks exactly that).
+    crate::history::seed(&mut fm, status, &crate::commands::now_utc_micros());
 
     let body = scaffold_body(title, t);
 
@@ -111,23 +128,22 @@ pub fn core(
     Ok(doc)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn run(
     ctx: &Ctx,
     type_name: &str,
     title: &str,
     tags: &str,
-    status: &str,
     features: &str,
     reason: Option<&str>,
     fields: &[String],
 ) -> Result<()> {
     let prj = ctx.open()?;
+    let mut ids = ctx.id_source(&prj)?;
     let (mut store, _) = ctx.load(&prj)?;
     let doc = core(
-        &prj, &mut store, type_name, title, tags, status, features, reason, fields,
+        &prj, &mut store, &mut *ids, type_name, title, tags, features, reason, fields,
     )?;
-    println!("{}", doc.path.display());
+    print_lines([doc.path.display().to_string()])?;
     ctx.flush(&prj, store)?;
     maybe_sync(ctx, &prj);
     Ok(())

@@ -2,9 +2,8 @@
 //!
 //! [`evaluate`] runs a project's `[[rules]]` against one document and returns a
 //! problem message for each failed assertion. It is the single place the
-//! configured guards are checked; later phases call it from `new`,
-//! `set-status`, `import`, and `verify` (today nothing in production calls it —
-//! it ships unit-tested, ready to wire in).
+//! configured guards are checked, and it is called from every write point
+//! (`new`, `set-status`, `import`, `retire`) as well as from `verify`.
 //!
 //! A rule fires when its `when { type?, status?, tag? }` matches the document,
 //! then its one assertion (from the closed set) is checked.
@@ -43,7 +42,7 @@ pub fn evaluate(
     }
     for rule in &prj.rules {
         if applies(rule, type_name, status, fm) {
-            if let Some(msg) = check(prj, rule, fm, body, doc_ids) {
+            if let Some(msg) = check(prj, rule, status, fm, body, doc_ids) {
                 out.push(msg);
             }
         }
@@ -58,10 +57,14 @@ fn applies(rule: &Rule, type_name: &str, status: &str, fm: &Frontmatter) -> bool
         && rule.when.tag.as_deref().is_none_or(|t| fm.has_tag(t))
 }
 
-/// Check a rule's single assertion; `Some(msg)` if it fails.
+/// Check a rule's single assertion; `Some(msg)` if it fails. `status` is the
+/// status the document is being evaluated *at* — the one it is moving to at a
+/// write point, the one it already holds at `verify` time — which
+/// `require_log_since_status` needs and the rest ignore.
 fn check(
     prj: &ProjectConfig,
     rule: &Rule,
+    status: &str,
     fm: &Frontmatter,
     body: &str,
     doc_ids: &HashSet<String>,
@@ -105,7 +108,49 @@ fn check(
             return Some(format!("requires one of: {}", describe_any(terms)));
         }
     }
+    if let Some(h) = &rule.require_log_since_status {
+        if let Some(since) = since_instant(fm, status) {
+            let fresh = body::log_entries(&body::section(body, h))
+                .iter()
+                .filter_map(|e| e.ts.as_deref().and_then(crate::history::parse))
+                // Seconds, because a history key carries six fractional digits
+                // and a log stamp carries none: `opys log` followed by
+                // `set-status` inside one second must pass.
+                .any(|t| t.unix_timestamp() >= since.unix_timestamp());
+            if !fresh {
+                return Some(format!(
+                    "'## {h}' has no log entry since the status last changed \
+                     (append one with `opys log`)"
+                ));
+            }
+        }
+    }
     None
+}
+
+/// The instant a `require_log_since_status` entry must not predate: the *last*
+/// `history` entry whose status differs from `status`, falling back to the
+/// first key when every entry holds it.
+///
+/// That definition, rather than "the last key", is what makes the two call
+/// sites agree. `set_status::core` evaluates the rules *before* appending the
+/// new entry, so at write time the map ends at the status being left and the
+/// last differing entry is that one; at `verify` time the new entry is there
+/// and "last differing" skips it, landing on the same key. A
+/// `review → in-progress → review` bounce moves the answer forward to the
+/// `in-progress` entry, so each visit needs its own fresh entry.
+///
+/// `None` — no history at all — passes the assertion. A document without a
+/// lifecycle map is already reported by `verify` under its own name; failing it
+/// twice for one cause is noise.
+fn since_instant(fm: &Frontmatter, status: &str) -> Option<time::OffsetDateTime> {
+    let entries = crate::history::entries(fm);
+    entries
+        .iter()
+        .rev()
+        .find(|(_, s)| s != status)
+        .or_else(|| entries.first())
+        .and_then(|(k, _)| crate::history::parse(k))
 }
 
 /// A field is "set" when present and not null / not an empty string.
@@ -211,8 +256,13 @@ mod tests {
         assert!(evaluate(&p, "feature", "implemented", &fm, done, &ids(&[])).is_empty());
     }
 
+    /// The shipped `task` type's one rule. There is no blocked rule to pair it
+    /// with any more: blocked is derived from the live `blocked_by` entries
+    /// (ADR-0050 decision 3), so there is no status left for a rule to fire on.
+    /// The `require_any` *assertion* is untouched, and still covered by
+    /// `require_any_accepts_a_tag_term` below.
     #[test]
-    fn task_requires_feature_link_and_blocked_needs_reason_or_link() {
+    fn task_requires_a_feature_link() {
         let p = cfg();
         // No references → the require_link rule fails.
         let mut fm = Frontmatter::new();
@@ -226,18 +276,13 @@ mod tests {
         refs::set(&mut fm, &[("FEAT-0001".into(), "F".into())]);
         assert!(evaluate(&p, "task", "todo", &fm, "# T\n", &ids(&["FEAT-0001"])).is_empty());
 
-        // blocked with neither reason nor blocker link → require_any fails.
-        let blocked = evaluate(&p, "task", "blocked", &fm, "# T\n", &ids(&["FEAT-0001"]));
-        assert!(
-            blocked.iter().any(|m| m.contains("requires one of")),
-            "{blocked:?}"
-        );
-        // A blocked_by link satisfies it.
+        // A blocker link is a relation, not a rule trigger: it adds nothing to
+        // check at any status.
         refs::set_in(&mut fm, "blocked_by", &[("FEAT-0002".into(), "B".into())]);
         assert!(evaluate(
             &p,
             "task",
-            "blocked",
+            "in-progress",
             &fm,
             "# T\n",
             &ids(&["FEAT-0001", "FEAT-0002"])
@@ -310,6 +355,94 @@ require_any = [ { tag = "area" }, { section = "Notes" } ]
         // An `area=cli` tag satisfies the tag term.
         fm.set_tags(&["area=cli".into()]);
         assert!(evaluate(&p, "feature", "planned", &fm, "# F\n", &ids(&[])).is_empty());
+    }
+
+    /// A `history` map from `(key, status)` pairs, exactly as the file holds it.
+    fn with_history(pairs: &[(&str, &str)]) -> Frontmatter {
+        let mut fm = Frontmatter::new();
+        for (key, status) in pairs {
+            crate::history::append(&mut fm, key, status);
+        }
+        fm
+    }
+
+    fn progress(stamps: &[&str]) -> String {
+        let mut body = "# T\n\n## Progress\n".to_string();
+        for s in stamps {
+            body.push_str(&format!("- {s} did a thing\n"));
+        }
+        body
+    }
+
+    #[test]
+    fn review_needs_a_log_entry_since_the_status_last_changed() {
+        let p = cfg();
+        let live = ids(&["FEAT-0001"]);
+        let mut fm = with_history(&[
+            ("2026-01-01T00:00:00.000000Z", "todo"),
+            ("2026-01-02T00:00:00.000000Z", "in-progress"),
+        ]);
+        refs::set(&mut fm, &[("FEAT-0001".into(), "F".into())]);
+
+        // Write time: the `review` entry is not appended yet, so `since` is the
+        // in-progress key. An entry from before it does not count.
+        let stale = progress(&["2026-01-01T12:00:00Z"]);
+        assert!(
+            evaluate(&p, "task", "review", &fm, &stale, &live)
+                .iter()
+                .any(|m| m.contains("no log entry since")),
+            "{:?}",
+            evaluate(&p, "task", "review", &fm, &stale, &live)
+        );
+        // An entry stamped in the same second as the transition is fresh
+        // enough: the comparison is at seconds granularity.
+        let fresh = progress(&["2026-01-01T12:00:00Z", "2026-01-02T00:00:00Z"]);
+        assert!(evaluate(&p, "task", "review", &fm, &fresh, &live).is_empty());
+
+        // Verify time: the same document, now carrying its `review` entry.
+        // "The last entry whose status differs" lands on the same key, so the
+        // verdict does not change.
+        let mut after = fm.clone();
+        crate::history::append(&mut after, "2026-01-02T00:00:01.000000Z", "review");
+        assert!(evaluate(&p, "task", "review", &after, &fresh, &live).is_empty());
+        assert!(!evaluate(&p, "task", "review", &after, &stale, &live).is_empty());
+    }
+
+    #[test]
+    fn a_review_bounce_needs_a_fresh_entry_each_time() {
+        let p = cfg();
+        let live = ids(&["FEAT-0001"]);
+        let mut fm = with_history(&[
+            ("2026-01-01T00:00:00.000000Z", "todo"),
+            ("2026-01-02T00:00:00.000000Z", "review"),
+            ("2026-01-03T00:00:00.000000Z", "in-progress"),
+        ]);
+        refs::set(&mut fm, &[("FEAT-0001".into(), "F".into())]);
+        // The entry that satisfied the first visit to `review` is stale for the
+        // second: `since` has moved on to the in-progress key.
+        let first_visit = progress(&["2026-01-02T00:00:00Z"]);
+        assert!(!evaluate(&p, "task", "review", &fm, &first_visit, &live).is_empty());
+        let second_visit = progress(&["2026-01-02T00:00:00Z", "2026-01-03T09:00:00Z"]);
+        assert!(evaluate(&p, "task", "review", &fm, &second_visit, &live).is_empty());
+    }
+
+    #[test]
+    fn require_log_since_status_falls_back_to_the_first_key_and_passes_without_history() {
+        let p = cfg();
+        let live = ids(&["FEAT-0001"]);
+        // Created straight into `review`: no differing entry, so the first key
+        // is the boundary.
+        let mut fm = with_history(&[("2026-01-02T00:00:00.000000Z", "review")]);
+        refs::set(&mut fm, &[("FEAT-0001".into(), "F".into())]);
+        assert!(!evaluate(&p, "task", "review", &fm, &progress(&[]), &live).is_empty());
+        let logged = progress(&["2026-01-02T00:00:00Z"]);
+        assert!(evaluate(&p, "task", "review", &fm, &logged, &live).is_empty());
+
+        // No history at all: `verify` reports that under its own name, so the
+        // rule stays quiet rather than failing twice for one cause.
+        let mut bare = Frontmatter::new();
+        refs::set(&mut bare, &[("FEAT-0001".into(), "F".into())]);
+        assert!(evaluate(&p, "task", "review", &bare, &progress(&[]), &live).is_empty());
     }
 
     #[test]

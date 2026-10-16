@@ -9,6 +9,7 @@
 
   import Board from './Board.svelte';
   import Doc from './Doc.svelte';
+  import Flow from './Flow.svelte';
   import Omni from './Omni.svelte';
   import Query from './Query.svelte';
   import Setup from './Setup.svelte';
@@ -19,13 +20,14 @@
   import { corpusLabel, middlePath } from './lib/format.js';
   import { notice } from './lib/notice.svelte.js';
   import { omni } from './lib/omni.svelte.js';
+  import { sidebar } from './lib/sidebar.svelte.js';
   import { boardPath, href, nav } from './lib/router.svelte.js';
 
   const route = $derived(nav.route);
 
   /**
    * The global shortcuts: Ctrl/⌘+P and `/` open the omnibox from any view,
-   * scoped to the corpus on screen. Ctrl+P is the browser's print key, so it
+   * scoped to the corpus on screen; `[` folds or unfolds the sidebar. Ctrl+P is the browser's print key, so it
    * is always claimed — even while the box is open, where it doubles as
    * "up" (the fzf habit) — or a slip would print the dashboard.
    */
@@ -36,11 +38,12 @@
       if (!omni.open) omni.show(route.cid ?? null);
       return;
     }
-    if (omni.open || event.key !== '/' || mod || event.altKey) return;
+    if (omni.open || (event.key !== '/' && event.key !== '[') || mod || event.altKey) return;
     const target = event.target;
     if (target instanceof HTMLElement && target.closest('input, textarea, select, [contenteditable]')) return;
     event.preventDefault();
-    omni.show(route.cid ?? null);
+    if (event.key === '[') sidebar.toggle();
+    else omni.show(route.cid ?? null);
   }
 
   // Effects return their teardown, so the socket closes and the subscription
@@ -54,8 +57,11 @@
 
 <svelte:window {onkeydown} />
 
-<div class="shell">
-  <Sidebar activeCid={route.cid ?? null} activeKey={route.key ?? null} />
+<div class="shell" class:folded={sidebar.collapsed}>
+  <!-- `activeView` as well as `activeKey`: the union and the lifecycle graph
+       are both keyed by the same group, so the sidebar cannot tell which of
+       its two group links is the current one from the key alone. -->
+  <Sidebar activeCid={route.cid ?? null} activeKey={route.key ?? null} activeView={route.view} />
 
   <main>
     {#if notice.message}
@@ -98,6 +104,13 @@
     {:else if route.view === 'union'}
       {#key route.key}
         <Union key={route.key} filters={route.query} />
+      {/key}
+    {:else if route.view === 'flow'}
+      <!-- Keyed like the union, and for the same reason: the resource keeps its
+           last answer while the next is in flight, so an unkeyed graph would
+           draw one project's statuses under another's name. -->
+      {#key route.key}
+        <Flow key={route.key} />
       {/key}
     {:else if route.view === 'setup'}
       <Setup />

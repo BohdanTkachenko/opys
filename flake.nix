@@ -35,17 +35,27 @@
         # Only what `vite build` reads. dist/ is deliberately absent — this
         # derivation is what creates it — and node_modules must never enter the
         # store, or every `npm ci` in a developer checkout would rehash this.
+        #
+        # Rooted at the repository, not at ui/, because the UI links the block
+        # editor from packages/blockdown (`file:../../packages/blockdown`):
+        # the link must resolve inside the sandbox. `sourceRoot` then builds
+        # from ui/ as before.
         src = pkgs.lib.fileset.toSource {
-          root = ./opys-server/ui;
+          root = ./.;
           fileset = pkgs.lib.fileset.unions [
+            ./packages/blockdown/package.json
+            ./packages/blockdown/src
             ./opys-server/ui/package.json
             ./opys-server/ui/package-lock.json
             ./opys-server/ui/index.html
             ./opys-server/ui/svelte.config.js
             ./opys-server/ui/vite.config.js
             ./opys-server/ui/src
+            # The installable-app files (FEAT-0064), copied to dist/ verbatim.
+            ./opys-server/ui/public
           ];
         };
+        sourceRoot = "source/opys-server/ui";
 
         npmDepsHash = "sha256-bpdX2bMIRP7UedeDVty81/wTBR6824tYaGRMIKIv6rw=";
 
@@ -80,7 +90,7 @@
           # the packaging manifests) don't invalidate it. skills/ is required
           # because src/templates.rs embeds skills/opys/agent-rule.md, and
           # opys-server/ because the `opys` binary links it for `opys web`
-          # (ADR-0077) — it is compiled here, build.rs and all.
+          # (ADR-0031) — it is compiled here, build.rs and all.
           src = pkgs.lib.fileset.toSource {
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
@@ -120,10 +130,14 @@
           # build installs no binary.
           buildAndTestSubdir = "opys";
 
-          # git as well as sh: `renumber_keeps_a_relocated_base_document` and the
-          # history tests build a real repo in a tempdir, and the sandbox has no
-          # git on PATH either. Without it `nix build .#opys` fails in the check
-          # phase — which is the path every `pkgs.opys` consumer takes.
+          # git as well as sh: `renumber_keeps_a_relocated_base_document` builds a
+          # real repo in a tempdir (and `opys renumber` itself shells out to `git
+          # merge-base`), and the sandbox has no git on PATH either. Without it
+          # `nix build .#opys` fails in the check phase — which is the path every
+          # `pkgs.opys` consumer takes. The `opys history` tests no longer need
+          # it: they build their repositories through gix (`opys_engine::git::
+          # fixture`), which is also what lets them produce a detached worktree
+          # head.
           nativeCheckInputs = [ shForTests pkgs.git ];
 
           meta = {
@@ -165,7 +179,7 @@
           rustfmt
           rust-analyzer
           gcc
-          # The web UI's build toolchain (ADR-0086). The *crate build* still
+          # The web UI's build toolchain (ADR-0037). The *crate build* still
           # never runs Node — `cargo install`, docs.rs and the nix sandbox all
           # have to work with no Node and no network, and they get the bundle
           # prebuilt (from the crate tarball, or from `mkUi` above). What changed
@@ -190,7 +204,7 @@
           text = ''exec bash ./scripts/sync-versions.sh "$@"'';
         };
 
-        # Build the node's web UI bundle, opys-server/ui/dist (ADR-0086). It is
+        # Build the node's web UI bundle, opys-server/ui/dist (ADR-0037). It is
         # generated, not committed, so this runs after editing opys-server/ui/src
         # *and* on a fresh checkout before the first cargo build. Wraps
         # scripts/ui-build.sh.
@@ -200,7 +214,7 @@
         # devPackages.
         ui-build = pkgs.writeShellApplication {
           name = "ui-build";
-          # No git, and no diffutils since ADR-0086 removed the drift gate. The
+          # No git, and no diffutils since ADR-0037 removed the drift gate. The
           # GNU tools because the script's audit uses `find -printf` and
           # `grep -r`, which BSD spells differently.
           runtimeInputs = with pkgs; [ nodejs_22 gnugrep findutils gawk coreutils ];

@@ -707,7 +707,7 @@ mod tests {
         );
     }
 
-    /// BUG-0029: a double-backtick (multi-run) code span must not be linkified.
+    /// A double-backtick (multi-run) code span must not be linkified.
     #[test]
     fn multi_backtick_code_span_is_not_linkified() {
         let dir = Path::new("/p/work-items");
@@ -721,7 +721,7 @@ mod tests {
         );
     }
 
-    /// BUG-0029: an id that is really a branch/filename fragment
+    /// An id that is really a branch/filename fragment
     /// (`FEAT-0001-fix`, `FEAT-0001.png`) is left untouched — no `-fix` residue.
     #[test]
     fn identifier_suffix_is_not_linkified() {
@@ -736,7 +736,7 @@ mod tests {
         );
     }
 
-    /// BUG-0029: a fence marker of a different char/shorter run does not toggle
+    /// A fence marker of a different char/shorter run does not toggle
     /// the fence state — a ``` line inside a ~~~ block stays code.
     #[test]
     fn mixed_fence_markers_do_not_toggle() {

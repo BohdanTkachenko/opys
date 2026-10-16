@@ -2,6 +2,7 @@
 //! their keys with `--keys`). Plain, sorted, one per line — easy to scan or
 //! pipe into `opys list --tag`.
 
+use crate::commands::print_lines;
 use crate::error::Result;
 use crate::store::g_str;
 use crate::Ctx;
@@ -17,10 +18,5 @@ pub fn run(ctx: &Ctx, keys_only: bool) -> Result<()> {
         "SELECT DISTINCT tag FROM tags ORDER BY tag"
     };
     let (_, rows) = store.select(sql, vec![])?;
-    for r in rows {
-        if let Some(t) = g_str(&r[0]) {
-            println!("{t}");
-        }
-    }
-    Ok(())
+    print_lines(rows.iter().filter_map(|r| g_str(&r[0])))
 }

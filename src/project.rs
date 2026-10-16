@@ -11,7 +11,6 @@ use regex::Regex;
 use crate::doc::Doc;
 use crate::error::{usage, OpysError, Result};
 use crate::project_config::ProjectConfig;
-use crate::refs;
 
 /// The directory to start the `opys.toml` search from: `root` made absolute
 /// (default `.` → the current working directory).
@@ -69,43 +68,6 @@ impl Project {
         self.base.join(self.pcfg.doc_relpath(id, status))
     }
 
-    /// Highest numeric id part across a document set, their relation maps, and
-    /// the retired ledger — the basis for the single global, monotonically
-    /// increasing id sequence shared by every type.
-    pub fn max_doc_id(&self, docs: &[Doc]) -> u64 {
-        let mut max = 0u64;
-        let mut consider = |id: &str| {
-            if let Some(n) = id_part(id) {
-                max = max.max(n);
-            }
-        };
-        for d in docs {
-            if let Some(id) = d.id() {
-                consider(id);
-            }
-            for id in refs::all_relation_ids(&d.frontmatter) {
-                consider(&id);
-            }
-        }
-        // A corrupt ledger reads as empty here; harmless for this best-effort
-        // max — every allocating path goes through the store, which refuses to
-        // run on a corrupt ledger.
-        for id in self.retired_ids().unwrap_or_default() {
-            consider(&id);
-        }
-        max
-    }
-
-    /// Next id for a type `prefix`: one past the global max, padded to `pcfg.pad`.
-    pub fn next_id_for(&self, prefix: &str, docs: &[Doc]) -> String {
-        format!(
-            "{}-{:0pad$}",
-            prefix,
-            self.max_doc_id(docs) + 1,
-            pad = self.pcfg.pad
-        )
-    }
-
     /// IDs that have been retired and may never be reused. Errs when the ledger
     /// file exists but cannot be read — never silently empty (see
     /// [`crate::retired::read`]).
@@ -122,12 +84,6 @@ impl Project {
             .find(|d| d.id() == Some(id))
             .ok_or_else(|| OpysError::NotFound { id: id.to_string() })
     }
-}
-
-/// The numeric part of a `PREFIX-NNNN` id, if it parses; `None` for malformed
-/// ids (which the global-sequence max ignores rather than treating as huge).
-fn id_part(id: &str) -> Option<u64> {
-    id.rsplit_once('-').and_then(|(_, n)| n.parse::<u64>().ok())
 }
 
 /// `^PREFIX-\d{pad,}$` — the verify-time id format (pad-or-more digits).

@@ -1,4 +1,4 @@
-//! `opys web` — the always-on node's command surface (ADR-0077, TASK-0075).
+//! `opys web` — the always-on node's command surface (ADR-0031).
 //!
 //! Everything here runs against a fake `$HOME` *and* a fake `$XDG_CONFIG_HOME`.
 //! Both, always: `config_home` prefers XDG, so setting only `HOME` would leave
@@ -161,17 +161,73 @@ fn web_help_lists_the_documented_subcommands() {
 }
 
 /// clap propagates the inventory globals into `web`, where they mean nothing.
-/// An invocation that relies on them is refused, not quietly obeyed.
+/// An invocation that relies on them is refused, not quietly obeyed — in every
+/// position, and whatever the value. The refusal used to compare `--root`
+/// against its default (`.`) rather than asking whether it was *written*, so
+/// `opys web list --root .` sailed through with exit 0 while the README
+/// promised a refusal.
 #[test]
 fn the_inherited_inventory_globals_are_refused() {
     let fx = Fx::new();
-    run(fx.opys().args(["--root", "/tmp", "web", "list"]))
-        .failed_with("`--root` and `--no-sync` are inventory flags; `web` takes neither");
-    run(fx.opys().args(["web", "list", "--no-sync"])).failed_with("`web` takes neither");
+    for args in [
+        vec!["--root", "/tmp", "web", "list"],
+        vec!["web", "--root", "/tmp", "list"],
+        vec!["web", "list", "--root", "/tmp"],
+        // The default value, spelled out: written is written.
+        vec!["--root", ".", "web", "list"],
+        vec!["web", "--root", ".", "list"],
+        vec!["web", "list", "--root", "."],
+    ] {
+        run(fx.opys().args(&args))
+            .failed_with("`--root` and `--no-sync` are inventory flags; `web` takes neither");
+    }
+    for args in [
+        vec!["--no-sync", "web", "list"],
+        vec!["web", "--no-sync", "list"],
+        vec!["web", "list", "--no-sync"],
+    ] {
+        run(fx.opys().args(&args)).failed_with("`web` takes neither");
+    }
 
     // …and a plain `web` invocation says nothing.
     let r = run(fx.opys().args(["web", "list"]));
     assert!(r.err.is_empty(), "unexpected stderr:\n{}", r.err);
+}
+
+/// The other half of that promise: help and behaviour have to agree. Every
+/// `web` subcommand used to list `--root <ROOT>` and `--no-sync` under Options
+/// — flags the binary answers with exit 2 — because clap propagates a global
+/// into the whole tree. `web` re-declares both ids, hidden, which blocks the
+/// propagation; the flags still *parse* (so the refusal above can name
+/// `--under`) but no help text offers them.
+#[test]
+fn web_help_does_not_advertise_the_inventory_globals() {
+    let fx = Fx::new();
+    for args in [
+        vec!["web", "--help"],
+        vec!["web", "start", "--help"],
+        vec!["web", "add", "--help"],
+        vec!["web", "remove", "--help"],
+        vec!["web", "list", "--help"],
+        vec!["web", "scan", "--help"],
+        vec!["web", "install", "--help"],
+        vec!["web", "uninstall", "--help"],
+    ] {
+        let r = run(fx.opys().args(&args));
+        for line in r.out.lines() {
+            let opt = line.trim_start();
+            assert!(
+                !opt.starts_with("--root") && !opt.starts_with("--no-sync"),
+                "`opys {}` advertises an inventory flag it refuses:\n{}",
+                args.join(" "),
+                r.out,
+            );
+        }
+    }
+    // The root command still offers them, of course.
+    let r = run(fx.opys().arg("--help"));
+    assert!(r.out.contains("--root"), "{}", r.out);
+    assert!(r.out.contains("--no-sync"), "{}", r.out);
 }
 
 /// `--root` is the spelling the spec, the ADR and muscle memory all reach for,
@@ -609,7 +665,7 @@ fn install_writes_the_unit_and_prints_the_enable_commands() {
 
     let text = std::fs::read_to_string(fx.unit()).unwrap();
     let exe = std::fs::canonicalize(assert_cmd::cargo::cargo_bin("opys")).unwrap();
-    // The unit carries the PATH the install ran under (BUG-0085): a user unit
+    // The unit carries the PATH the install ran under: a user unit
     // otherwise inherits the user manager's, which has no `git`, and the node
     // shells out to git to find a project's worktrees.
     let path_line = format!("Environment=PATH={}\n", std::env::var("PATH").unwrap());
@@ -826,4 +882,48 @@ fn uninstall_without_a_systemd_directory_exits_zero() {
         .env_remove("HOME")
         .env_remove("XDG_CONFIG_HOME"))
     .ok_saying("no systemd user unit directory here — there is nothing to remove");
+}
+
+/// Rust ignores `SIGPIPE`, so an unguarded `println!` aborts the process (exit
+/// 101, a backtrace on stderr) the moment the reader of a pipe goes away —
+/// `opys web list | head -3` included. Every `web` subcommand prints through
+/// `cli::print_line`, which reports the closed pipe as the clean stop it is;
+/// this pins that for the multi-line ones. Its engine counterpart is
+/// `cli::commands_stop_quietly_when_the_reader_closes_the_pipe`.
+#[test]
+fn web_commands_stop_quietly_when_the_reader_closes_the_pipe() {
+    let fx = Fx::new();
+    let project = fx.project("work/alpha");
+    run(fx.opys().args(["web", "add"]).arg(&project)).ok_saying("added");
+
+    for args in [
+        vec!["web".to_string(), "list".to_string()],
+        vec![
+            "web".to_string(),
+            "scan".to_string(),
+            "--under".to_string(),
+            fx.home.join("work").display().to_string(),
+        ],
+        vec!["web".to_string(), "uninstall".to_string()],
+    ] {
+        let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("opys"))
+            .env("HOME", &fx.home)
+            .env("XDG_CONFIG_HOME", fx.home.join(".config"))
+            .args(&args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        // Close the read end before the child prints anything: every write it
+        // then attempts fails with EPIPE.
+        drop(child.stdout.take());
+        let out = child.wait_with_output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!err.contains("panicked"), "`opys {args:?}` panicked: {err}");
+        assert!(
+            out.status.success(),
+            "`opys {args:?}` exited {:?}: {err}",
+            out.status.code()
+        );
+    }
 }

@@ -34,14 +34,20 @@ function parse(hash) {
   if (parts[0] === 'corpus' && parts.length === 4 && parts[2] === 'doc') {
     return { view: 'doc', cid: parts[1], id: parts[3], query };
   }
-  // Views 4 and 5 (the query console and the union view) route here. They are
-  // recognised already so that adding them is one component and one branch in
-  // `App.svelte`, with no change to link building or to this parser.
+  // Views 4, 5 and 6 (the query console, the union view and the lifecycle
+  // graph) route here. They are recognised already so that adding them is one
+  // component and one branch in `App.svelte`, with no change to link building
+  // or to this parser.
   if (parts[0] === 'corpus' && parts.length === 3 && parts[2] === 'query') {
     return { view: 'query', cid: parts[1], query };
   }
   if (parts[0] === 'group' && parts.length === 3 && parts[2] === 'union') {
     return { view: 'union', key: parts[1], query };
+  }
+  // View 6, the lifecycle graph. Group-keyed like the union — a project, not a
+  // corpus — even though the API spells the same key `/api/projects/{key}/flow`.
+  if (parts[0] === 'group' && parts.length === 3 && parts[2] === 'flow') {
+    return { view: 'flow', key: parts[1], query };
   }
 
   if (parts[0] === 'setup' && parts.length === 1) {
@@ -73,9 +79,38 @@ function search(params) {
   return rendered.length > 0 ? `?${rendered}` : '';
 }
 
-/** The board for a corpus, optionally with its filter state. */
+// The filters each corpus's board last showed, so a link back to the board —
+// from a document, the query console, the sidebar — returns to the board the
+// reader left rather than an unfiltered one. Per tab (sessionStorage), so a
+// reload of a document page keeps them and a second tab starts its own.
+const FILTERS_KEY = 'opys:board:filters';
+
+function readRemembered() {
+  try {
+    return JSON.parse(sessionStorage.getItem(FILTERS_KEY) ?? '{}') ?? {};
+  } catch {
+    return {};
+  }
+}
+
+const remembered = readRemembered();
+
+/** Record the filters a corpus's board is showing. The board calls this. */
+export function rememberFilters(cid, filters) {
+  remembered[cid] = { ...filters };
+  try {
+    sessionStorage.setItem(FILTERS_KEY, JSON.stringify(remembered));
+  } catch {
+    // Private browsing: remembered for this page's life only.
+  }
+}
+
+/**
+ * The board for a corpus. With `filters` the link carries exactly those (`{}`
+ * for none); without, it carries whatever the board last showed.
+ */
 export function boardPath(cid, filters) {
-  return `/corpus/${seg(cid)}${search(filters)}`;
+  return `/corpus/${seg(cid)}${search(filters ?? remembered[cid])}`;
 }
 
 /** One document. */
@@ -96,6 +131,15 @@ export function queryPath(cid) {
  */
 export function unionPath(key, filters) {
   return `/group/${seg(key)}/union${search(filters)}`;
+}
+
+/**
+ * The lifecycle graph for a project group (view 6).
+ *
+ * The *group* key again, not a cid — same namespace note as {@link unionPath}.
+ */
+export function flowPath(key) {
+  return `/group/${seg(key)}/flow`;
 }
 
 /** An `href` for a route path, so links stay real links — middle-click works. */

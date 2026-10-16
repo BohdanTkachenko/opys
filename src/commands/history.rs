@@ -1,82 +1,72 @@
-//! `opys history <id>` — reconstruct a document's lifecycle from git, in-process.
+//! `opys history <id>` — reconstruct a document's lifecycle from git, and
+//! `--seed`, the one-off migration that turns that timeline into the document's
+//! frontmatter lifecycle map.
 //!
-//! Walks the repository with `gix` (no subprocess) and decodes each revision's
-//! blob through the real [`Doc`] parser — so the status timeline is read from
-//! typed frontmatter, never scraped out of strings.
+//! Both read the repository through [`crate::git`]: in-process with `gix`, no
+//! subprocess, and every revision decoded through the real [`Doc`] parser, so
+//! the status timeline comes from typed frontmatter rather than being scraped
+//! out of strings.
 //!
-//! Relocations are handled without fuzzy rename detection: an opys document's
-//! filename *is* its ID and never changes when a status change moves the file
-//! between directories (e.g. into `_archived/`). So we find the ID-named blob
-//! within the inventory base subtree of each commit — exact, threshold-free, and
-//! oblivious to where under the base opys put the file. Each content-distinct
-//! revision is attributed to the commit that *introduced* it (its blob differs
-//! from its first parent's), not the newest commit while it was still current.
-//! The whole module is gated behind the optional `history` feature, so the
-//! default build has no git dependency.
+//! The reading half is gated behind the `git` feature (on by default). The
+//! *command* is not: a build without the feature still parses `opys history`
+//! and answers it by naming the feature it lacks ([`run`] below), because clap's
+//! "unrecognized subcommand 'history'; a similar subcommand exists: 'list'" is
+//! not an answer to what the user asked. Unlike the reader, it does not degrade
+//! to an empty timeline — that would claim it looked.
 
-use std::path::PathBuf;
-
-use gix::bstr::{BStr, ByteSlice};
-
-use crate::doc::Doc;
-use crate::error::{usage, Result};
+#[cfg(not(feature = "git"))]
+use crate::error::usage;
+use crate::error::Result;
 use crate::Ctx;
+#[cfg(feature = "git")]
+use {
+    crate::commands::{maybe_sync, now_utc_micros, print_lines},
+    crate::error::usage,
+    crate::git,
+    crate::history,
+};
 
-/// One content-distinct revision of the document.
-struct Rev {
-    short: String,
-    date: String,
-    author: String,
-    status: String,
-    summary: String,
+/// Main-only fallback: this binary has no git reader, and says so rather than
+/// pretending the timeline is empty. Exit 2, like any other usage error.
+#[cfg(not(feature = "git"))]
+pub fn run(_ctx: &Ctx, _id: &str, _seed: bool) -> Result<()> {
+    Err(usage(crate::git::NO_GIT_FEATURE_COMMAND))
 }
 
-pub fn run(ctx: &Ctx, id: &str) -> Result<()> {
+#[cfg(feature = "git")]
+pub fn run(ctx: &Ctx, id: &str, seed: bool) -> Result<()> {
+    if seed {
+        seed_from_git(ctx, id)
+    } else {
+        show(ctx, id)
+    }
+}
+
+/// Print the status timeline, newest first.
+#[cfg(feature = "git")]
+fn show(ctx: &Ctx, id: &str) -> Result<()> {
     let prj = ctx.open()?;
     let (docs, _) = ctx.backend.load_docs(&prj);
     let doc = prj.find(&docs, id)?;
+    let basename = basename_of(&doc.path, id)?;
 
-    // The document's filename is its ID and is stable across relocations; that
-    // basename is all we need to track it through history.
-    let basename = doc
-        .path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| usage("git history: document has no file name"))?
-        .to_owned();
-
-    // Discover the repository from the project root (it may sit above it).
-    let repo = gix::discover(&prj.root).map_err(|e| usage(format!("git history: {e}")))?;
-
-    // The inventory base, relative to the repo's working tree — we search only
-    // this subtree, so a same-named file elsewhere can't shadow the document and
-    // we don't walk the entire tree of every commit.
-    let workdir = repo.workdir().unwrap_or(prj.root.as_path());
-    let base_rel = prj.base.strip_prefix(workdir).unwrap_or(prj.base.as_path());
-    let base_components: Vec<String> = base_rel
-        .components()
-        .filter_map(|c| match c {
-            std::path::Component::Normal(s) => s.to_str().map(str::to_string),
-            _ => None,
-        })
-        .collect();
-
-    let revs = collect(&repo, &base_components, basename.as_bytes().as_bstr(), id)
+    let repo = open(&prj)?;
+    let revs = git::timeline(&repo, &prj, &basename, id)
         .map_err(|e| usage(format!("git history: {e}")))?;
 
     if revs.is_empty() {
-        println!("{id}: no committed history found");
+        print_lines([format!("{id}: no committed history found")])?;
         return Ok(());
     }
 
     let author_w = revs.iter().map(|r| r.author.len()).max().unwrap_or(0);
-    println!(
+    let mut lines = vec![format!(
         "History of {id} ({} revision{}, newest first):",
         revs.len(),
         if revs.len() == 1 { "" } else { "s" }
-    );
-    for r in &revs {
-        println!(
+    )];
+    lines.extend(revs.iter().map(|r| {
+        format!(
             "  {}  {}  {:<aw$}  {:<14}  {}",
             r.short,
             r.date,
@@ -84,113 +74,144 @@ pub fn run(ctx: &Ctx, id: &str) -> Result<()> {
             r.status,
             r.summary,
             aw = author_w
-        );
-    }
+        )
+    }));
+    print_lines(lines)?;
     Ok(())
 }
 
-/// Walk first-parent from HEAD and return one [`Rev`] per content-distinct
-/// revision (newest first). A revision is attributed to the commit that
-/// *introduced* it — the one whose blob differs from its first parent's — so
-/// unrelated later commits don't steal the credit. The document is located by
-/// its stable ID-named blob within the inventory base subtree, so relocations
-/// are followed without rename heuristics.
-fn collect(
-    repo: &gix::Repository,
-    base: &[String],
-    basename: &BStr,
-    id: &str,
-) -> anyhow::Result<Vec<Rev>> {
-    let mut revs = Vec::new();
-    let mut commit = repo.head_commit()?;
-    let mut cur = find_blob(repo, &commit.tree()?, base, basename)?;
+/// Write the document's lifecycle map from its git timeline: one entry per
+/// status the document has held, keyed by the commit that introduced it.
+///
+/// Three rules keep a successful seed from leaving a corpus `verify` rejects,
+/// and they are the reason this is a command rather than a script:
+///
+/// 1. the **first** entry is keyed from `created` when the document has one
+///    (that is what [`history::seed`] does), not from the first commit. `verify`
+///    requires `created` and the first key to denote the same second, and a
+///    document is essentially never committed in the second it was created;
+/// 2. later entries go through [`history::append`], which bumps a key that is
+///    not strictly greater than the previous one by a microsecond — so a
+///    timeline whose commits predate `created`, or two transitions in one
+///    second, still produces strictly increasing keys;
+/// 3. when the working copy's `status` is ahead of the last committed one (the
+///    normal state mid-migration, because the change that prompted it is not
+///    committed yet), a final entry at the wall clock records it. `verify`
+///    requires the last entry to match `status`.
+///
+/// It refuses to overwrite anything carrying entries. History cannot be rebuilt
+/// from ground truth, so a map that is already there is data — the same promise
+/// every other write path makes.
+#[cfg(feature = "git")]
+fn seed_from_git(ctx: &Ctx, id: &str) -> Result<()> {
+    let prj = ctx.open()?;
+    let (mut store, _) = ctx.load(&prj)?;
+    let dkey = store.dkey_of(id)?;
+    let mut doc = store.doc(dkey)?;
 
-    loop {
-        // The first parent (linear history; merges follow the mainline) and the
-        // blob as it stood there — that is what "current" becomes next iteration.
-        let parent = match commit.parent_ids().next() {
-            Some(pid) => Some(repo.find_commit(pid.detach())?),
-            None => None,
-        };
-        let parent_oid = match &parent {
-            Some(p) => find_blob(repo, &p.tree()?, base, basename)?,
-            None => None,
-        };
-
-        // This commit introduced the current blob iff its parent had a different
-        // (or no) blob — that is the commit the revision belongs to.
-        if let Some(oid) = &cur {
-            if parent_oid.as_ref() != Some(oid) {
-                let blob = repo.find_object(*oid)?.into_blob();
-                let text = String::from_utf8_lossy(&blob.data);
-                // Decode through the canonical parser; fall back gracefully if a
-                // historical revision predates the current frontmatter shape.
-                let status = Doc::parse(PathBuf::from(format!("{id}.md")), &text)
-                    .ok()
-                    .and_then(|d| d.status().map(str::to_string))
-                    .unwrap_or_else(|| "-".into());
-                revs.push(Rev {
-                    short: commit.id().to_hex_with_len(8).to_string(),
-                    date: commit.time()?.format(gix::date::time::format::SHORT)?,
-                    author: commit.author()?.name.to_string(),
-                    status,
-                    summary: commit.message()?.summary().to_string(),
-                });
-            }
-        }
-
-        match parent {
-            Some(p) => {
-                commit = p;
-                cur = parent_oid;
-            }
-            None => break,
-        }
+    // Refuse *before* any mutation and before the repository is even opened: a
+    // refusal that had already written something would be the one thing this
+    // command must never do.
+    if let Some(why) = history::botched(&doc.frontmatter) {
+        return Err(usage(format!(
+            "cannot seed {id}: {why}; repair the lifecycle map by hand \
+             (see docs/migration-history.md), then retry"
+        )));
     }
-    Ok(revs)
+    let existing = history::entries(&doc.frontmatter).len();
+    if existing > 0 {
+        return Err(usage(format!(
+            "{id} already has a lifecycle map ({existing} entr{}); --seed refuses to \
+             overwrite it — history is not rebuildable, so an existing map is data",
+            if existing == 1 { "y" } else { "ies" }
+        )));
+    }
+
+    let basename = basename_of(&doc.path, id)?;
+    let repo = open(&prj)?;
+    let revs = git::timeline(&repo, &prj, &basename, id)
+        .map_err(|e| usage(format!("git history: {e}")))?;
+
+    // Oldest first; drop revisions no status could be read out of (a document
+    // that predates the tool's frontmatter, say — git can only show what was
+    // committed), and collapse runs of the same status, keeping the commit that
+    // introduced it.
+    let mut timeline: Vec<(i64, String)> = revs
+        .iter()
+        .rev()
+        .filter(|r| r.status != "-")
+        .map(|r| (r.secs, r.status.clone()))
+        .collect();
+    timeline.dedup_by(|a, b| a.1 == b.1);
+    if timeline.is_empty() {
+        return Err(usage(format!(
+            "{id}: git has no committed revision carrying a status — nothing to seed \
+             from (see docs/migration-history.md for the `created` fallback)"
+        )));
+    }
+
+    let (first_secs, first_status) = &timeline[0];
+    history::seed(&mut doc.frontmatter, first_status, &key_at(*first_secs)?);
+    for (secs, status) in &timeline[1..] {
+        history::append(&mut doc.frontmatter, &key_at(*secs)?, status);
+    }
+    // The working copy may be ahead of the last commit — that is the ordinary
+    // case for the document whose status change prompted the migration.
+    let current = doc.frontmatter.status().unwrap_or_default().to_string();
+    if !current.is_empty() && timeline.last().map(|(_, s)| s.as_str()) != Some(current.as_str()) {
+        history::append(&mut doc.frontmatter, &now_utc_micros(), &current);
+    }
+
+    // Deliberately no `touch`: a seed reconstructs the past, it is not an edit,
+    // and the migration procedure's round-trip probe promises that `updated` is
+    // the only line that may move.
+    let entries = history::entries(&doc.frontmatter);
+    let summary = match (entries.first(), entries.last()) {
+        (Some((first, _)), Some((last, _))) if first != last => format!("{first} .. {last}"),
+        (Some((first, _)), _) => first.clone(),
+        _ => String::new(),
+    };
+    let count = entries.len();
+    store.put_doc(&prj.pcfg, Some(dkey), &doc)?;
+    ctx.flush(&prj, store)?;
+    print_lines([format!(
+        "{id}: seeded {count} history entr{} from git ({summary})",
+        if count == 1 { "y" } else { "ies" }
+    )])?;
+    maybe_sync(ctx, &prj);
+    Ok(())
 }
 
-/// Find the blob named `basename` within the inventory `base` subtree of `tree`,
-/// returning its object id. Descends the `base` path components first, so the
-/// search is confined to the inventory and a same-named file elsewhere in the
-/// repo cannot shadow it. An opys ID is globally unique, so at most one matches.
-fn find_blob(
-    repo: &gix::Repository,
-    tree: &gix::Tree,
-    base: &[String],
-    basename: &BStr,
-) -> anyhow::Result<Option<gix::ObjectId>> {
-    // Descend into the base directory; if any component is absent in this commit
-    // (the inventory didn't exist yet), there is nothing to find.
-    let mut scope = tree.clone();
-    for comp in base {
-        let Some(entry) = scope.iter().find_map(|e| {
-            let e = e.ok()?;
-            (e.mode().is_tree() && e.filename().to_str().ok() == Some(comp.as_str())).then_some(e)
-        }) else {
-            return Ok(None);
-        };
-        scope = repo.find_tree(entry.oid().to_owned())?;
-    }
-    search_tree(repo, &scope, basename)
+/// The document's filename, which is its id and is stable across relocations —
+/// what every blob lookup keys on.
+#[cfg(feature = "git")]
+fn basename_of(path: &std::path::Path, id: &str) -> Result<String> {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| usage(format!("git history: {id} has no file name")))
 }
 
-/// Recursively search `tree` for a blob named `basename`.
-fn search_tree(
-    repo: &gix::Repository,
-    tree: &gix::Tree,
-    basename: &BStr,
-) -> anyhow::Result<Option<gix::ObjectId>> {
-    for entry in tree.iter() {
-        let entry = entry?;
-        if entry.mode().is_tree() {
-            let sub = repo.find_tree(entry.oid().to_owned())?;
-            if let Some(found) = search_tree(repo, &sub, basename)? {
-                return Ok(Some(found));
-            }
-        } else if entry.filename() == basename {
-            return Ok(Some(entry.oid().to_owned()));
-        }
-    }
-    Ok(None)
+#[cfg(feature = "git")]
+fn open(prj: &crate::Project) -> Result<gix::Repository> {
+    git::open(prj)
+        .map_err(|e| usage(format!("git history: {e}")))?
+        .ok_or_else(|| {
+            // `components()` drops the interior `.` that `--root .` leaves in
+            // the discovered root, so the message names a path a user can paste.
+            let root: std::path::PathBuf = prj.root.components().collect();
+            usage(format!(
+                "git history: {} is not in a git repository — there is no \
+                 committed timeline to read",
+                root.display()
+            ))
+        })
+}
+
+/// A commit's instant as a canonical lifecycle key.
+#[cfg(feature = "git")]
+fn key_at(secs: i64) -> Result<String> {
+    time::OffsetDateTime::from_unix_timestamp(secs)
+        .map(history::format_key)
+        .map_err(|_| usage(format!("git history: commit time {secs} is out of range")))
 }

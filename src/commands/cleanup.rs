@@ -4,7 +4,7 @@
 //! stripped tombstone is reserved in `_retired.md` first, so the global id
 //! sequence still never reissues it.
 
-use crate::commands::maybe_sync;
+use crate::commands::{maybe_sync, print_lines};
 use crate::error::Result;
 use crate::frontmatter::Frontmatter;
 use crate::{refs, Ctx};
@@ -27,7 +27,9 @@ pub fn run(ctx: &Ctx) -> Result<()> {
     // removes the tombstones.
     store.reserve_unanchored(&stripped)?;
     ctx.flush(&prj, store)?;
-    println!("cleanup: removed struck references from {changed} doc(s)");
+    print_lines([format!(
+        "cleanup: removed struck references from {changed} doc(s)"
+    )])?;
     maybe_sync(ctx, &prj);
     Ok(())
 }

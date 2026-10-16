@@ -6,41 +6,153 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use walkdir::WalkDir;
 
 use crate::body;
+use crate::commands::print_lines;
 use crate::config::{FieldSpec, FieldType};
 use crate::doc::Doc;
 use crate::error::Result;
 use crate::frontmatter::Frontmatter;
 use crate::project::{id_format_re, Project, KEBAB_RE};
-use crate::project_config::{CheckScope, SectionCheck, SectionKind, SectionSpec};
+use crate::project_config::{CheckScope, DocType, SectionCheck, SectionKind, SectionSpec};
 use crate::refs;
 use crate::rules;
 use crate::Ctx;
 
-pub fn run(ctx: &Ctx) -> Result<i32> {
+/// The CI gate. Exit `0` clean, `1` content problems, `3`
+/// [observations](crate::observe) and nothing else; a real failure is an
+/// `OpysError` the binary maps to `2`.
+///
+/// With `fix`, the fixable observations are performed first — as ordinary
+/// transitions through `set_status::core`, then flushed, synced, and
+/// re-verified, so the code reports what *remains*. Only then is verify a
+/// mutating command; the inventory flock it has always taken through
+/// `Backend::load` is what makes that safe.
+pub fn run(ctx: &Ctx, fix: bool) -> Result<i32> {
     let prj = ctx.open()?;
     // Read the corpus through the store; unparsable files surface as errors
     // exactly as `load_docs` reported them, and the reconstructed docs are
     // byte-identical to the parsed ones (the store round-trip is a fixpoint).
     let (mut store, parse_errors) = ctx.load(&prj)?;
-    let docs: Vec<Doc> = store.all_docs()?.into_iter().map(|(_, d)| d).collect();
-    let errors = collect_problems(&prj, &docs, parse_errors);
+    let mut docs: Vec<Doc> = store.all_docs()?.into_iter().map(|(_, d)| d).collect();
+    let mut errors = collect_problems(&prj, &docs, parse_errors);
+    // …plus the checks that read the medium's own text (see below). The command
+    // has not written anything, so what the backend hands back is still the
+    // corpus the store was built from.
+    errors.extend(spelling_problems(&docs, ctx.backend.as_ref()));
+    let mut observations = crate::observe::observations(&prj, &docs, crate::observe::now());
 
-    if errors.is_empty() {
-        println!("verify: OK ({} documents)", docs.len());
-        Ok(0)
-    } else {
+    // A fix is an ordinary `set-status` along the graph the config declares, and
+    // `config validate` is what checks that graph leaves a fixed document a way
+    // back (ADR-0052 decision 6). Performing fixes while that check is failing
+    // would park documents in a dead end named by the very run that reported the
+    // misconfiguration — so `--fix` stands down and says so, once, on stderr.
+    // The problems themselves are already in `errors` (`collect_problems` runs
+    // `pcfg.validate()`), so the code is 1 either way.
+    if fix && !prj.pcfg.validate().is_empty() {
+        eprintln!(
+            "verify: --fix skipped — opys.toml has problems, and a fix follows the \
+             transitions it declares; run `opys config validate`"
+        );
+    } else if fix {
+        let fixes = crate::observe::apply_fixes(&prj, &mut store, &observations);
+        if fixes.applied.is_empty() {
+            // Nothing moved: no flush, and — the load-bearing half — no sync.
+            // The flush alone would write nothing anyway (it writes the
+            // documents a fix dirtied, and there are none), but the sync pass
+            // that follows it below backfills the auto-maintained timestamps
+            // and rewrites every document it touches canonically. Running the
+            // pair unconditionally would turn `verify --fix` into a silent
+            // `sync` over a corpus it found nothing to fix in.
+            errors.extend(fixes.refused);
+        } else {
+            // Flush, then announce, then sync — the order every mutating
+            // command uses: nothing claims a fix the flush did not land, and the
+            // flush is what drops the inventory flock, which `sync` then takes
+            // again for itself.
+            ctx.flush(&prj, store)?;
+            print_lines(&fixes.applied)?;
+            crate::commands::maybe_sync(ctx, &prj);
+            // Re-verify from the medium: the relocation happened at flush, and
+            // `spelling_problems` reads the stored text.
+            let (mut store, parse_errors) = ctx.load(&prj)?;
+            docs = store.all_docs()?.into_iter().map(|(_, d)| d).collect();
+            errors = collect_problems(&prj, &docs, parse_errors);
+            errors.extend(spelling_problems(&docs, ctx.backend.as_ref()));
+            errors.extend(fixes.refused);
+            observations = crate::observe::observations(&prj, &docs, crate::observe::now());
+        }
+    }
+
+    report(&docs, &errors, &observations)
+}
+
+/// Print the outcome and return the exit code: problems first, observations
+/// after them, both on stderr; the clean line on stdout.
+///
+/// One function, so the block's exact bytes have one place to change.
+///
+/// `verify: OK` is printed only for exit `0`. A corpus with observations *is*
+/// free of content problems, but a nonzero exit whose stdout says `OK` is the
+/// one line a CI script would grep and get wrong; what it found is on stderr
+/// with the problems, and the code says which of the two it was.
+fn report(
+    docs: &[Doc],
+    errors: &[String],
+    observations: &[crate::observe::Observation],
+) -> Result<i32> {
+    if !errors.is_empty() {
         eprintln!("verify: {} problem(s)", errors.len());
-        for e in &errors {
+        for e in errors {
             eprintln!("  {e}");
         }
-        Ok(1)
+    } else if observations.is_empty() {
+        print_lines([format!("verify: OK ({} documents)", docs.len())])?;
     }
+    if !observations.is_empty() {
+        eprintln!("verify: {} observation(s)", observations.len());
+        for o in observations {
+            eprintln!("  {o}");
+        }
+    }
+    Ok(match (errors.is_empty(), observations.is_empty()) {
+        (true, true) => 0,
+        (true, false) => 3,
+        (false, _) => 1,
+    })
+}
+
+/// The problems only the *stored* text can reveal: invariants about how a value
+/// is **written**, which the parsed model has already normalized away. There is
+/// one today — format.md requires every `history` key to be quoted, and both
+/// spellings parse to the identical string (see [`crate::history::unquoted_keys`]).
+///
+/// Deliberately outside [`collect_problems`]: that gate also runs over documents
+/// that exist only in memory (the "no worse than before" gate in
+/// [`crate::commands::edit`], which judges the *mutated* store), where the
+/// medium's text is *not* the text being judged — and opys's own writer always
+/// emits the quoted form, so a check against stale bytes could only produce a
+/// false verdict. Callers that do read the durable corpus (`verify`, the node's
+/// per-corpus problem list) add this on top.
+pub fn spelling_problems(docs: &[Doc], backend: &dyn crate::backend::Backend) -> Vec<String> {
+    let mut errors = Vec::new();
+    for d in docs {
+        let (Some(id), Some(stored)) = (d.id(), backend.stored_text(&d.path)) else {
+            continue;
+        };
+        for key in crate::history::unquoted_keys(&d.frontmatter, &stored) {
+            errors.push(format!(
+                "{id}: history key '{key}' is written unquoted (a bare RFC3339 \
+                 scalar is read as a timestamp, not a string, by a YAML 1.1 \
+                 reader); quote it: \"{key}\": <status>"
+            ));
+        }
+    }
+    errors
 }
 
 /// Run every integrity check over `docs`, appending to the parse errors already
-/// collected at load. Shared by the `verify` command and the `opys query
-/// --write` gate (a write is only flushed if this returns empty). Never returns
-/// an `OpysError` — content problems are data, not failures.
+/// collected at load. Shared by the `verify` command and the "no worse" gate in
+/// `commands::edit` (an edit is only flushed if it adds nothing to this list).
+/// Never returns an `OpysError` — content problems are data, not failures.
 pub fn collect_problems(prj: &Project, docs: &[Doc], parse_errors: Vec<String>) -> Vec<String> {
     let mut errors = parse_errors;
     let pcfg = &prj.pcfg;
@@ -123,6 +235,8 @@ pub fn collect_problems(prj: &Project, docs: &[Doc], parse_errors: Vec<String>) 
         }
 
         check_timestamps(m, id, &mut errors);
+        check_history(m, id, &mut errors);
+        check_transitions(m, id, tname, t, &mut errors);
         check_references(m, id, &doc_ids, &mut errors);
         for snip in crate::links::nested_links(&d.body) {
             errors.push(format!(
@@ -143,6 +257,9 @@ pub fn collect_problems(prj: &Project, docs: &[Doc], parse_errors: Vec<String>) 
             if sec.kind == SectionKind::Structured {
                 check_structured(d, id, sec, &mut errors);
             }
+            if sec.kind == SectionKind::Log {
+                check_log(d, id, sec, &mut errors);
+            }
             // Universal content checks, run regardless of kind.
             for chk in &sec.checks {
                 run_check(
@@ -162,8 +279,8 @@ pub fn collect_problems(prj: &Project, docs: &[Doc], parse_errors: Vec<String>) 
     check_unique_numbers(docs, &mut errors);
 
     // The status-conditional guards (wontfix⇒reason, implemented⇒checked test
-    // plan, blocked⇒reason/link, required links, required sections) are enforced
-    // by the engine against `prj.pcfg`.
+    // plan, required links, required sections) are enforced by the engine
+    // against `prj.pcfg`.
     check_rules(prj, docs, &doc_ids, &mut errors);
 
     // Each configured `[[stats]]` section must run cleanly against the real
@@ -201,9 +318,14 @@ fn check_stats(prj: &Project, docs: &[Doc], errors: &mut Vec<String>) {
 /// Frontmatter keys allowed on any document regardless of type (everything else
 /// must be a declared field of the doc's type).
 fn reserved_fields() -> Vec<&'static str> {
-    // `blocked_from` is auto-maintained bookkeeping: the status a doc held before
-    // `block` auto-set it to `blocked`, restored by `unblock` (see commands/block).
-    let mut v = vec!["id", "status", "tags", "created", "updated", "blocked_from"];
+    let mut v = vec![
+        "id",
+        "status",
+        "tags",
+        "created",
+        "updated",
+        crate::history::FIELD,
+    ];
     v.extend(refs::RELATION_FIELDS);
     v
 }
@@ -223,6 +345,139 @@ fn check_timestamps(m: &Frontmatter, id: &str, errors: &mut Vec<String>) {
                 ));
             }
         }
+    }
+}
+
+/// The `history` lifecycle map (written by `new`/`set-status`/`apply`/`import`,
+/// never by hand) must be present and well formed. Four checks, in order:
+///
+/// 1. it is a lifecycle map at all — `history::is_map`, the *one* shape rule the
+///    store and `history::entries` use too. A value that carries entries but
+///    fails it is reported through `history::botched`, which names the offending
+///    key or entry — or, when the value is not a mapping at all (a hand-migrated
+///    YAML list, say), its shape. Only a value carrying no entries whatever
+///    (absent, `{}`, `[]`, a bare scalar) says `missing history`, the phrase the
+///    migration procedure greps for: a document that *has* entries opys cannot
+///    read must never be told to add a block it already has. Reporting the whole
+///    map rather than reading its well-formed subset is what keeps the three
+///    readers honest: a map `verify` blessed but the store could not decompose
+///    was destroyed by the next `set-status`;
+/// 2. its last entry records the document's current `status`;
+/// 3. the keys strictly increase as instants (not as strings). Canonical
+///    spelling — RFC3339 UTC, `Z`, exactly six fractional digits — is already
+///    part of the shape rule, and is not pedantry: only fixed-width keys have
+///    the same lexical and chronological order, which is what the serializer's
+///    sorted block relies on, so a `2026-01-01T00:00:00Z` accepted here would be
+///    reordered past a `2026-01-01T00:00:00.5Z` by the next unrelated write;
+/// 4. `created` and the first key denote the same second, when both exist
+///    (`created` carries a local offset, the key is UTC — compare instants).
+///
+/// Unlike the relation maps, history is never repaired: it cannot be rebuilt
+/// from ground truth, so a botched one is reported and fixed by hand.
+fn check_history(m: &Frontmatter, id: &str, errors: &mut Vec<String>) {
+    // (1a) Present and carrying entries, but not a shape opys can read. Say
+    // exactly what is wrong: no append path will write beside this map (and no
+    // other path rewrites it) until a human fixes it.
+    if let Some(why) = crate::history::botched(m) {
+        errors.push(format!(
+            "{id}: {why}; opys will not rewrite a lifecycle map it cannot read — \
+             repair it by hand (see docs/migration-history.md)"
+        ));
+        return;
+    }
+    let entries = crate::history::entries(m);
+    if entries.is_empty() {
+        errors.push(format!(
+            "{id}: missing history (the lifecycle map is written by new/set-status/apply/import; \
+             see docs/migration-history.md to seed an existing document)"
+        ));
+        return;
+    }
+
+    // (2) The last entry is the current status.
+    if let (Some(status), Some((_, last))) = (m.status(), entries.last()) {
+        if last != status {
+            errors.push(format!(
+                "{id}: history's last entry ({last}) does not match status ({status})"
+            ));
+        }
+    }
+
+    // (3) Keys strictly increase (they are canonical — check 1 guaranteed it).
+    let mut prev: Option<(String, OffsetDateTime)> = None;
+    for (key, _) in &entries {
+        let dt = crate::history::parse(key).expect("is_map checked the key is canonical");
+        if let Some((pk, pdt)) = &prev {
+            if dt <= *pdt {
+                errors.push(format!(
+                    "{id}: history keys must strictly increase ('{key}' does not follow '{pk}')"
+                ));
+            }
+        }
+        prev = Some((key.clone(), dt));
+    }
+
+    // (4) `created` and the first key are the same second. An unparseable
+    // `created` is already reported by `check_timestamps`.
+    let (first_key, _) = &entries[0];
+    if let (Some(created), Some(first)) = (
+        m.get_str("created").and_then(crate::history::parse),
+        crate::history::parse(first_key),
+    ) {
+        if created.unix_timestamp() != first.unix_timestamp() {
+            errors.push(format!(
+                "{id}: 'created' ({}) does not match the first history entry ({first_key})",
+                m.get_str("created").unwrap_or_default()
+            ));
+        }
+    }
+}
+
+/// Every consecutive pair in the lifecycle map must be an edge the type
+/// declares (ADR-0050 decision 1), when it declares any.
+///
+/// This is what makes the status graph a CI check and not merely a write-time
+/// guard: `set-status` refuses an undeclared move, but a document hand-edited
+/// into `done`, or one written by an older opys, or one whose type's graph was
+/// tightened afterwards, is a *snapshot* verify used to have nothing to say
+/// about. The history map turns each move into an event, and an event can be
+/// checked against the graph long after it happened.
+///
+/// Two deliberate silences:
+///
+/// - a pair whose two statuses are **equal** is skipped. `set-status <id> <its
+///   current status>` is a legal no-op that appends an entry, so refusing the
+///   pair it writes would make a successful write leave a red corpus — the one
+///   thing no check here may do;
+/// - the **first** entry is not checked against `default_status`. `import` seeds
+///   a document at whatever status its record carried and leaves no marker
+///   saying so, so a rule of that shape could only be enforced by calling every
+///   imported document a problem. The graph constrains *moves*; where a
+///   document entered it is the seeding command's business.
+///
+/// A botched or absent map yields no entries (`check_history` already reported
+/// it), so nothing here fires twice on the same document.
+fn check_transitions(
+    m: &Frontmatter,
+    id: &str,
+    tname: &str,
+    t: &DocType,
+    errors: &mut Vec<String>,
+) {
+    if t.transitions.is_empty() {
+        return;
+    }
+    let entries = crate::history::entries(m);
+    for pair in entries.windows(2) {
+        let (from, to) = (&pair[0].1, &pair[1].1);
+        if from == to || crate::lifecycle::allows(t, from, to) {
+            continue;
+        }
+        errors.push(format!(
+            "{id}: history records {from} -> {to}, which type '{tname}' does not declare as a \
+             transition ({})",
+            crate::lifecycle::targets_phrase(t, from)
+        ));
     }
 }
 
@@ -576,6 +831,62 @@ fn check_structured(d: &Doc, id: &str, sec: &SectionSpec, errors: &mut Vec<Strin
     for p in schema.validate(&content) {
         errors.push(format!("{id}: section '{}': {p}", sec.heading));
     }
+}
+
+/// A `log` section: every bullet carries a UTC timestamp, and the timestamps
+/// do not go backwards.
+///
+/// Non-strict on purpose — equal stamps are fine. Two `opys log` calls inside
+/// one second produce the same stamp, and so does a migration that dates a
+/// document's undated bullets from its `created`; the property worth defending
+/// is that a log reads forwards, not that no two entries share a second. (The
+/// `history` map *is* strict, for a different reason: its keys are also its
+/// sort order.)
+fn check_log(d: &Doc, id: &str, sec: &SectionSpec, errors: &mut Vec<String>) {
+    if !body::has_section(&d.body, &sec.heading) {
+        return;
+    }
+    let entries = body::log_entries(&body::section(&d.body, &sec.heading));
+    let mut prev: Option<(String, OffsetDateTime)> = None;
+    for entry in &entries {
+        let Some(ts) = &entry.ts else {
+            errors.push(format!(
+                "{id}: section '{}': undated log entry {} (every entry starts \
+                 with a UTC timestamp — append entries with `opys log`, which \
+                 stamps them; see docs/migration-history.md to date existing ones)",
+                sec.heading,
+                pyrepr(Some(&first_words(&entry.text)))
+            ));
+            continue;
+        };
+        let Some(dt) = crate::history::parse(ts) else {
+            errors.push(format!(
+                "{id}: section '{}': log entry timestamp '{ts}' is not RFC3339",
+                sec.heading
+            ));
+            continue;
+        };
+        if let Some((pk, pdt)) = &prev {
+            if dt < *pdt {
+                errors.push(format!(
+                    "{id}: section '{}': log entries must not go backwards \
+                     ('{ts}' follows '{pk}')",
+                    sec.heading
+                ));
+            }
+        }
+        prev = Some((ts.clone(), dt));
+    }
+}
+
+/// The opening of a log entry, for naming it in a problem message.
+fn first_words(text: &str) -> String {
+    let line = text.lines().next().unwrap_or_default().trim();
+    let mut out: String = line.chars().take(40).collect();
+    if out.chars().count() < line.chars().count() {
+        out.push('…');
+    }
+    out
 }
 
 fn type_ok(v: &Value, want: FieldType) -> bool {

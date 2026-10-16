@@ -1,4 +1,4 @@
-//! The allowlist: what the node is permitted to serve (ADR-0077).
+//! The allowlist: what the node is permitted to serve (ADR-0031).
 //!
 //! A TOML file the user owns, holding two kinds of entry — an explicit project
 //! and a directory prefix. Nothing outside a matching entry is ever served, and
@@ -6,7 +6,7 @@
 //!
 //! `add`/`remove` edit this file and nothing else. They never speak to a running
 //! node, which is what keeps filesystem paths out of the API surface entirely
-//! (ADR-0077): the node watches the file instead.
+//! (ADR-0031): the node watches the file instead.
 
 use std::path::{Path, PathBuf};
 
@@ -15,7 +15,7 @@ use serde::Serialize;
 
 /// Depth bound for expanding a prefix entry and for suggestion scans. Ten
 /// levels covers every plausible project layout; the cost of going deeper is
-/// measured in ADR-0077.
+/// measured in ADR-0031.
 pub const DEFAULT_DEPTH: usize = 10;
 
 /// What an allowlist entry authorizes.
@@ -80,13 +80,13 @@ impl Entry {
     }
 }
 
-/// What the periodic scan does with what it finds (FEAT-0083).
+/// What the periodic scan does with what it finds (FEAT-0036).
 ///
 /// There is deliberately no auto-add. Allowlisting a project is what causes it
 /// to be *opened*, and opening it reads whatever its `opys.toml` points `base`
 /// at — so a mode that allowlisted without a person in the loop would also read
 /// without one. Once suggestions reach the UI, auto-add saves a single click and
-/// costs the explicit-allowlist property ADR-0077 exists to hold.
+/// costs the explicit-allowlist property ADR-0031 exists to hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ScanMode {
@@ -171,7 +171,7 @@ pub fn expand_tilde(s: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// Vet a path the *UI* supplied, before it can reach the allowlist (ADR-0082).
+/// Vet a path the *UI* supplied, before it can reach the allowlist (ADR-0035).
 ///
 /// This is the whole security boundary for browser-driven allowlisting, so it is
 /// written to be read rather than to be clever. Three rules, in this order:

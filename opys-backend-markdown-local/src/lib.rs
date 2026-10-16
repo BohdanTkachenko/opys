@@ -70,6 +70,13 @@ impl Backend for MarkdownLocal {
     fn load_docs(&self, prj: &Project) -> (Vec<Doc>, Vec<String>) {
         load_docs(prj)
     }
+
+    /// The file's bytes, unparsed. A document the store relocated in memory (or
+    /// one that was never on disk) reads as `None`, and the spelling checks
+    /// that use this then have nothing to say about it.
+    fn stored_text(&self, path: &Path) -> Option<String> {
+        std::fs::read_to_string(path).ok()
+    }
 }
 
 /// The directory holding inventory lock files: `$XDG_RUNTIME_DIR` when set
@@ -92,7 +99,8 @@ fn lock_dir() -> PathBuf {
 /// empty forever: the lock is the flock on its handle, which the OS releases
 /// when the holding process exits (however it exits), so stale locks cannot
 /// happen. Machine-local is the lock's whole scope by design — cross-machine
-/// coordination is id leases + `renumber`, not this file.
+/// coordination is interleaved id slots (`[ids] modulus`, ADR-0054) +
+/// `renumber`, not this file.
 pub fn lock_path(base: &Path) -> Result<PathBuf> {
     let canon = std::fs::canonicalize(base)?;
     let s = canon.to_string_lossy();

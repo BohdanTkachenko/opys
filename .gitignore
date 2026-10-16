@@ -17,16 +17,11 @@ target
 # Contains mutation testing data
 **/mutants.out*/
 
-# The web UI's build toolchain (ADR-0078).
-#
-# NEVER add opys-server/ui/dist here. The bundle is COMMITTED on purpose:
-# build.rs embeds it with include_bytes!, cargo packages only tracked files, and
-# `cargo install opys`, docs.rs and the nix sandbox all build with no Node and no
-# network. Ignoring it would break every one of them at once, and nothing in the
-# local dev loop would notice. Only the toolchain's working files belong here.
+# The web UI's build toolchain. (ADR-0032 said the bundle was committed and that
+# this file must never ignore it; ADR-0037 superseded that — see below.)
 opys-server/ui/node_modules/
 opys-server/ui/.vite/
-# The built bundle is a generated artifact and is not committed (ADR-0086).
+# The built bundle is a generated artifact and is not committed (ADR-0037).
 # It reaches crates.io consumers through `include` in opys-server/Cargo.toml,
 # which overrides this ignore when cargo packages the crate; every build from
 # source regenerates it with `ui-build`.
@@ -41,3 +36,6 @@ opys-server/ui/dist/
 
 # Agent worktrees live inside the repo; never commit them into it.
 .claude/worktrees/
+
+# Written by the jj worktree shim; local bookkeeping, never committed.
+.jj-worktree-meta/

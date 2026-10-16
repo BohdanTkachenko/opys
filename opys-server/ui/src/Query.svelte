@@ -43,7 +43,14 @@
       sql: 'SELECT status, COUNT(*) AS n FROM docs GROUP BY status',
     },
     {
-      label: 'Live blockers',
+      // Not "live blockers": whether a blocker still *holds* depends on the
+      // blocker type's `releases_blocks`, which is config and not a table, so
+      // SQL cannot ask it. This returns the relation entries that are not
+      // tombstones, some of which have already released — the derived answer
+      // is `opys list --blocked`, and a label promising it here would be the
+      // second, disagreeing opinion this change exists to remove.
+      label: 'Blocker relations',
+      note: 'every non-tombstone blocked_by entry — released ones included; for the derived answer use opys list --blocked',
       sql: "SELECT doc_id, ref_id, title FROM relations\n  WHERE field = 'blocked_by' AND struck = false",
     },
     {
@@ -117,16 +124,21 @@
 <header class="head">
   <h1>Query console</h1>
   <p class="small muted">
-    Read-only SQL over this corpus. The node refuses anything that is not a
-    <code>SELECT</code>; writing SQL is <code>opys query --write</code>, which
-    re-verifies the whole corpus before it keeps a change.
+    Read-only SQL over this corpus — here and in the CLI, every statement must be
+    a <code>SELECT</code>. Writes are lifecycle commands: pipe a selection into
+    one with <code>opys list --type task --status review --format ids | opys close -</code>.
   </p>
 </header>
 
 <div class="examples">
   <span class="small muted">Start from:</span>
   {#each EXAMPLES as example (example.label)}
-    <button class="btn small" disabled={result.loading} onclick={() => use(example)}>
+    <button
+      class="btn small"
+      disabled={result.loading}
+      title={example.note}
+      onclick={() => use(example)}
+    >
       {example.label}
     </button>
   {/each}
@@ -137,7 +149,7 @@
     <span class="prompt" aria-hidden="true">❯</span>
     <span class="termtitle">sql · read-only</span>
     <span class="tables muted" title="the tables this corpus decomposes into">
-      docs · tags · relations · fm_fields · retired · fields · sections · blocks
+      docs · tags · relations · history · fm_fields · retired · fields · sections · blocks
     </span>
   </div>
   <textarea
