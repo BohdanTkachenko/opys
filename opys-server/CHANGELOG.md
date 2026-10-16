@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1](https://github.com/BohdanTkachenko/opys/compare/opys-server-v0.13.0...opys-server-v0.13.1) - 2026-10-16
+
+### Added
+
+- lifecycle, pick oracle, branch reader, flow view and block editor
+
+### Fixed
+
+- *(release)* supply the UI bundle to temporary semver checkouts
+
+### Other
+
+- *(changelog)* write the 0.13.0 release notes
+- release v0.13.0
+
 ## [0.13.0](https://github.com/BohdanTkachenko/opys/compare/opys-server-v0.12.0...opys-server-v0.13.0) - 2026-10-16
 
 ### Added
