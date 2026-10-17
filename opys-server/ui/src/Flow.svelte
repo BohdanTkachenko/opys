@@ -17,7 +17,6 @@
   let zoom = $state(1);
   let viewportWidth = $state(620);
   let viewportHeight = $state(560);
-  let inspectOpen = $state(false);
   let search = $state('');
 
   async function load(wanted) {
@@ -30,7 +29,6 @@
     selected = null;
     search = '';
     zoom = 1;
-    inspectOpen = false;
     graph.run(() => load(wanted));
   });
   $effect(() => {
@@ -68,11 +66,10 @@
   $effect(() => {
     if (selected !== null && !model.nodes.some((node) => node.id === selected)) {
       selected = null;
-      inspectOpen = false;
       search = '';
     }
   });
-  function choose(id) { selected = id; search = ''; inspectOpen = true; }
+  function choose(id) { selected = id; search = ''; }
   function toggleType(name) {
     hiddenTypes = hiddenTypes.includes(name) ? hiddenTypes.filter((type) => type !== name) : [...hiddenTypes, name];
     zoom = 1;
@@ -137,8 +134,8 @@
     {/each}
   </nav>
 
-  {#if model.types.length}
-  <div class="workspace" class:inspecting={inspectOpen}>
+  <div class="workspace">
+    {#if model.types.length}
     <section class="map" aria-label="Project lifecycle graph for visible types">
       <div class="map-heading"><div><strong>Project graph</strong><span class="mode">{model.types.length} document types</span></div><span class="map-count">{model.nodes.length} statuses · {model.edges.length} transitions</span></div>
       {#if diagram.error}
@@ -176,11 +173,15 @@
       <div class="map-footer"><span>Showing every status and transition used by the enabled types.</span><div class="zoom"><button aria-label="Zoom out" onclick={() => zoom = Math.max(0.2, zoom - 0.2)}>−</button><button onclick={() => zoom = 1} aria-label="Fit workflow">Fit</button><button aria-label="Zoom in" onclick={() => zoom = Math.min(6, zoom + 0.4)}>+</button></div></div>
       <div class="workflow-explanation"><Icon name="flow" size={15} /><p>Shared statuses combine documents from every type. Two-way connections use arrowheads at both ends. Dashed connections are unrestricted; solid connections include configured transitions. Counts update live.</p></div>
     </section>
+    {:else if view.types.length}
+      <div class="notice" role="status"><p>No types selected. Enable a type above to show its workflow.</p><button class="btn small" onclick={() => { hiddenTypes = []; zoom = 1; }}>Show all types</button></div>
+    {:else}
+      <div class="notice"><p>No document workflows are configured for this project.</p></div>
+    {/if}
 
-    {#if inspectOpen}
-    <aside class="inspector" aria-label="Selected workflow status">
+    <aside class="inspector" aria-label="Workflow status details">
       {#if active}
-        <div class="inspector-heading"><div class="inspector-top"><span class="inspector-kicker">Status across visible types</span><button class="close-inspector" aria-label="Close inspector" onclick={() => { inspectOpen = false; selected = null; }}><Icon name="x" size={16} /></button></div><h2 class="mono">{label(active)}</h2><div class="status-totals"><strong>{currentDocs.length}</strong> {currentDocs.length === 1 ? 'document' : 'documents'}{#if blockers}<span class="blocked-count"><Icon name="lock" size={11} />{blockers} blocked</span>{/if}</div><p class="owner-counts">{#each active.types as name}<span>{name} {currentDocs.filter((doc) => doc.type === name).length}</span>{/each}</p></div>
+        <div class="inspector-heading"><span class="inspector-kicker">Status across visible types</span><h2 class="mono">{label(active)}</h2><div class="status-totals"><strong>{currentDocs.length}</strong> {currentDocs.length === 1 ? 'document' : 'documents'}{#if blockers}<span class="blocked-count"><Icon name="lock" size={11} />{blockers} blocked</span>{/if}</div><p class="owner-counts">{#each active.types as name}<span>{name} {currentDocs.filter((doc) => doc.type === name).length}</span>{/each}</p></div>
         <div class="movement"><h3>Next moves</h3>{#if outgoing.length}<div class="next-states">{#each outgoing as edge}{@const target = model.nodes.find((node) => node.id === edge.to)}<button title={`Allowed for ${edge.types.join(', ')}${edge.closingTypes.length ? '; close for '+edge.closingTypes.join(', ') : ''}`} onclick={() => choose(target.id)}>{label(target)}{#if edge.closing}<span>close</span>{/if}</button>{/each}</div>{:else}<p>{active.terminal ? 'Final status. Closed work items leave the inventory.' : 'No outgoing transitions configured.'}</p>{/if}</div>
         {#if nextItems.length}
           <div class="next-picks"><h3>Ready next <span>opys next</span></h3>{#each nextItems as item}<a href={href(docPath(view.cid, item.id))}><span class="mono">{item.id}</span><strong>{item.title}</strong></a>{/each}</div>
@@ -190,15 +191,9 @@
           <label class="document-search"><Icon name="search" size={13} /><input bind:value={search} placeholder="Filter documents…" aria-label="Filter documents at this status" /></label>
           <div class="document-list">{#each shownDocs as doc (doc.id)}<a href={href(docPath(view.cid, doc.id))}><span class="document-id mono">{doc.id}<span>{doc.type}{#if doc.blocked}<span class="blocked-label"><Icon name="lock" size={10} />blocked</span>{/if}</span></span><span>{doc.title || doc.id}</span></a>{:else}<p class="empty-inspector">No matching documents.</p>{/each}</div>
         {:else}<div class="empty-inspector"><Icon name={active.terminal ? 'check' : 'doc'} size={22} /><p>{active.terminal ? 'Completed items are removed when closed.' : 'No documents at this status.'}</p></div>{/if}
-      {:else}<div class="empty-inspector">Select a status to inspect its documents.</div>{/if}
+      {:else}<div class="empty-inspector"><Icon name="flow" size={24} /><h2>Status details</h2><p>Select a status to inspect its documents and next moves.</p></div>{/if}
     </aside>
-    {/if}
   </div>
-  {:else if view.types.length}
-    <div class="notice" role="status"><p>No types selected. Enable a type above to show its workflow.</p><button class="btn small" onclick={() => { hiddenTypes = []; zoom = 1; }}>Show all types</button></div>
-  {:else}
-    <div class="notice"><p>No document workflows are configured for this project.</p></div>
-  {/if}
 {/if}
 
 <style>
@@ -219,8 +214,7 @@
   .workflow-tabs button>span:last-child { font-size:0.7rem; background:var(--raised); padding:0.05rem 0.35rem; border-radius:4px; font-variant-numeric:tabular-nums; }
   .workflow-tabs .type-check { display:grid; place-items:center; width:13px; height:13px; padding:0; border:1px solid var(--muted); border-radius:3px; }
   .workflow-tabs .active .type-check { background:var(--accent); color:var(--accent-fg); border-color:var(--accent); }
-  .workspace { display:grid; grid-template-columns:minmax(0,1fr); gap:1.1rem; align-items:start; }
-  .workspace.inspecting { grid-template-columns:minmax(0,1fr) 310px; }
+  .workspace { display:grid; grid-template-columns:minmax(0,1fr) 310px; gap:1.1rem; align-items:start; }
   .map { min-width:0; border:1px solid var(--border); border-radius:12px; background:var(--panel); overflow:hidden; }
   .map-heading { display:flex; align-items:center; justify-content:space-between; gap:0.6rem; padding:1rem 1.1rem; border-bottom:1px solid var(--border); }
   .map-heading strong { font-size:0.95rem; }
@@ -253,8 +247,6 @@
   .workflow-explanation :global(svg) { margin-top:3px; color:var(--accent); }
   .inspector { border:1px solid var(--border); border-radius:12px; background:var(--panel); min-height:400px; overflow:hidden; }
   .inspector-heading { padding:1.2rem; border-bottom:1px solid var(--border); }
-  .inspector-top { display:flex; align-items:center; justify-content:space-between; }
-  .close-inspector { display:grid; place-items:center; padding:0.25rem; border:0; background:none; color:var(--muted); cursor:pointer; }
   .owner-counts { display:flex; flex-wrap:wrap; gap:0.4rem 0.65rem; margin:0.7rem 0 0; color:var(--muted); font-size:0.7rem; }
   .inspector-kicker { color:var(--muted); font-size:0.75rem; }
   .inspector h2 { margin:0.5rem 0 0.7rem; font-size:1.35rem; font-weight:550; overflow-wrap:anywhere; }
@@ -287,6 +279,6 @@
   .empty-inspector { padding:1rem 1.2rem 1.6rem; text-align:center; color:var(--muted); font-size:0.8rem; }
   .empty-inspector p { line-height:1.6; margin:0.6rem 0 0; }
   .layout-loading { min-height:530px; padding:2rem; color:var(--muted); font-size:0.85rem; }
-  @media (max-width:1050px) { .workspace.inspecting { grid-template-columns:minmax(0,1fr) 280px; } }
-  @media (max-width:850px) { .workspace.inspecting { grid-template-columns:1fr; } .inspector { min-height:0; } .page-title p { max-width:32ch; } }
+  @media (max-width:1050px) { .workspace { grid-template-columns:minmax(0,1fr) 280px; } }
+  @media (max-width:850px) { .workspace { grid-template-columns:1fr; } .inspector { min-height:0; } .page-title p { max-width:32ch; } }
 </style>

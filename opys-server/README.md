@@ -65,19 +65,20 @@ each type requires `close`. Unrestricted workflows draw every allowed status
 pair, rather than a wildcard rule. Each type control independently shows or
 hides that type. Shared nodes and edges remain while an enabled type uses them;
 counts, documents, permissions and reciprocal arrowheads reflect enabled types.
-The All types control restores every type or hides all of them.
-ELK routes the complete graph, including cycles. The inspector opens on
-selection and lists documents across types, blocked counts, next picks and a
-search field. Live count changes preserve node positions. Fit includes the
+The Only button isolates its type and highlights while it is the sole visible
+type. The All types control restores every type or hides all of them.
+ELK routes the complete graph, including cycles. The right inspector stays
+visible and lists documents for the selected status across types, blocked
+counts, next picks and a search field. Live count changes preserve node positions. Fit includes the
 whole diagram, with zoom available for detail. The layout engine is bundled
 locally and loaded only for this view.
 Reciprocal transitions share one connection with arrowheads at both ends. The
 underlying directions retain their own owning types, restrictions and closing
 semantics; the inspector and transition count still use the directed model.
 
-Project navigation is always expanded. There is no collapse button, persisted
-collapsed mode or sidebar keyboard toggle. Narrow screens show the project
-groups in an always-visible horizontally scrollable strip above the main view.
+Project navigation can collapse into a rail using its toggle or `[`; the
+preference persists across visits. Narrow screens have a separate project-list
+toggle. The lifecycle inspector has no collapse control.
 
 ## License
 
