@@ -16,6 +16,7 @@
   // millions — so this costs one array and no paging.
 
   import Icon from './lib/Icon.svelte';
+  import VerifyProblems from './VerifyProblems.svelte';
   import { api } from './lib/api.js';
   import { corpora } from './lib/corpora.svelte.js';
   import { affects, events } from './lib/events.svelte.js';
@@ -515,9 +516,11 @@
       {corpus.verify_problems === 1 ? 'problem' : 'problems'} in this corpus.
     </p>
     <p class="why">
-      The board still shows every document that parses. Run
-      <code>opys verify</code> in the project for the full list.
+      The board still shows every document that parses.
     </p>
+    {#key cid}
+      <VerifyProblems {cid} />
+    {/key}
   </div>
 {/if}
 

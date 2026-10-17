@@ -2,9 +2,8 @@
 //
 // Every request this UI makes is a function here, and no component builds a URL
 // or reads `response.status` itself. (Only the requests it makes: the node also
-// serves `/api/health` and `/api/corpus/{cid}/verify`, and nothing here calls
-// them — the version arrives in the event stream's `hello` frame and the verify
-// counts ride along with `/api/projects`. They are documented in
+// serves `/api/health`, which nothing here calls — the version arrives in the
+// event stream's `hello` frame. The endpoints are documented in
 // opys-server/README.md; a client method is one line if a view ever needs one.)
 // That is not tidiness: the API has three
 // conventions that are easy to get subtly wrong in a component and impossible to
@@ -146,6 +145,9 @@ const seg = encodeURIComponent;
 export const api = {
   /** The allowlisted project groups and their corpora, with cached counts. */
   projects: () => get('/api/projects'),
+
+  /** Cached verification findings, including load errors and freshness. */
+  verify: (cid) => get(`/api/corpus/${seg(cid)}/verify`),
 
   /**
    * Document summaries. The filters are exact equality (`tag` is membership),
