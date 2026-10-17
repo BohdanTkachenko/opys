@@ -45,6 +45,14 @@ not be able to make the whole workspace stop compiling.
 `npm run dev` in `ui/` gives a hot-reloading dev server that proxies `/api` to a
 node on the default port.
 
+Verification warnings include issue details and a **Fix** button. The corpus
+button applies `opys verify --fix`: seed missing lifecycle history from Git,
+then apply configured time/visit-limit transitions. A document view shows only
+that document's findings, and its **Fix** changes only that document (without a
+corpus-wide sync). Existing history is preserved; issues without an automatic
+fix remain visible. The closed action API exposes this as
+`{"action":"verify-fix"}` or `{"action":"verify-fix","id":"ADR-0010"}`.
+
 ## License
 
 Apache-2.0, like the rest of the workspace, permanently (ADR-0033).

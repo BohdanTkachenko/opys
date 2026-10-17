@@ -64,6 +64,8 @@ pub type Attempt = std::result::Result<ActionOutcome, ActionError>;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Action {
+    /// Apply verification fixes, optionally restricted to one document.
+    VerifyFix { id: Option<String> },
     /// Create a document. `tags`, `features` are comma-separated lists.
     New {
         #[serde(rename = "type")]
@@ -175,6 +177,7 @@ impl Action {
     /// the event vocabulary cannot drift from the request vocabulary silently.
     pub fn name(&self) -> &'static str {
         match self {
+            Action::VerifyFix { .. } => "verify-fix",
             Action::New { .. } => "new",
             Action::SetStatus { .. } => "set-status",
             Action::Tag { .. } => "tag",
@@ -342,6 +345,29 @@ pub fn perform(root: &Path, backend: &dyn Backend, action: &Action) -> Attempt {
     // problem, reported by `verify`, not this write's.
     let (mut store, parse_errors) = backend.load(&prj).map_err(ActionError::from_load)?;
     match action {
+        Action::VerifyFix { id } => {
+            let fixes = opys_engine::commands::verify::fix_core(&prj, &mut store, id.as_deref())
+                .map_err(ActionError::Refused)?;
+            let changed = !fixes.applied.is_empty();
+            let mut lines = fixes.applied;
+            lines.extend(fixes.refused);
+            if lines.is_empty() {
+                lines.push(
+                    "No automatic fixes available; remaining issues need manual repair.".into(),
+                );
+            }
+            let done = ActionOutcome::new(id.as_deref().unwrap_or_default(), lines.join("\n"));
+            if !changed {
+                return Ok(done);
+            }
+            if id.is_some() {
+                // A card's Fix must not sync or rewrite any other document.
+                backend.flush(&prj, store).map_err(ActionError::Refused)?;
+                Ok(done)
+            } else {
+                finish(&prj, backend, store, Ok(done))
+            }
+        }
         Action::New {
             type_name,
             title,

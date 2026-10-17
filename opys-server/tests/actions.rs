@@ -1765,3 +1765,38 @@ async fn an_apply_that_asks_for_nothing_is_a_422() {
         "a refused composite must not have written anything"
     );
 }
+
+/// A card-scoped migration changes only that card, even though auto-sync would
+/// normally rewrite timestamps and relations elsewhere in the inventory.
+#[cfg(feature = "git")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn verify_fix_scopes_history_seeding_to_one_document() {
+    let fx = Fixture::new();
+    let mut repo = opys_engine::git::fixture::Fixture::init(&fx.live);
+    repo.commit("Alice", "legacy inventory");
+    let before = snapshot(&fx.live);
+    let answer = fx
+        .action(json!({"action": "verify-fix", "id": "NOTE-0001"}))
+        .await;
+    assert!(answer["message"]
+        .as_str()
+        .unwrap()
+        .contains("NOTE-0001: seeded"));
+    let after = snapshot(&fx.live);
+    assert_ne!(
+        before["inventory/NOTE-0001.md"],
+        after["inventory/NOTE-0001.md"]
+    );
+    assert_eq!(
+        before["inventory/TASK-0002.md"],
+        after["inventory/TASK-0002.md"]
+    );
+    let again = fx
+        .action(json!({"action": "verify-fix", "id": "NOTE-0001"}))
+        .await;
+    assert!(again["message"]
+        .as_str()
+        .unwrap()
+        .contains("No automatic fixes"));
+    assert_eq!(snapshot(&fx.live), after);
+}

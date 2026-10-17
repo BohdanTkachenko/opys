@@ -323,7 +323,8 @@ pub enum Command {
     /// allows. Gate CI on 1: most scripts gate on any nonzero code, which trips
     /// on 3 as well, and 3 is a corpus that was clean when it was written.
     Verify {
-        /// Perform the fixable observations: move each stuck document to its
+        /// Seed missing lifecycle history from Git, then perform the fixable
+        /// observations: move each stuck document to its
         /// `ttl` target and each overflowed one to its `then`, as ordinary
         /// transitions (history appended, the sync pass run, the layout
         /// relocation performed), then re-verify and exit on what remains.

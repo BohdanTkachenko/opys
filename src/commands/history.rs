@@ -106,6 +106,20 @@ fn show(ctx: &Ctx, id: &str) -> Result<()> {
 fn seed_from_git(ctx: &Ctx, id: &str) -> Result<()> {
     let prj = ctx.open()?;
     let (mut store, _) = ctx.load(&prj)?;
+    let message = seed_in_store(&prj, &mut store, id)?;
+    ctx.flush(&prj, store)?;
+    print_lines([message])?;
+    maybe_sync(ctx, &prj);
+    Ok(())
+}
+
+/// Shared by the explicit migration and `verify --fix`, under the caller's lock.
+#[cfg(feature = "git")]
+fn seed_in_store(
+    prj: &crate::Project,
+    store: &mut crate::store::Store,
+    id: &str,
+) -> Result<String> {
     let dkey = store.dkey_of(id)?;
     let mut doc = store.doc(dkey)?;
 
@@ -128,9 +142,9 @@ fn seed_from_git(ctx: &Ctx, id: &str) -> Result<()> {
     }
 
     let basename = basename_of(&doc.path, id)?;
-    let repo = open(&prj)?;
-    let revs = git::timeline(&repo, &prj, &basename, id)
-        .map_err(|e| usage(format!("git history: {e}")))?;
+    let repo = open(prj)?;
+    let revs =
+        git::timeline(&repo, prj, &basename, id).map_err(|e| usage(format!("git history: {e}")))?;
 
     // Oldest first; drop revisions no status could be read out of (a document
     // that predates the tool's frontmatter, say — git can only show what was
@@ -173,13 +187,46 @@ fn seed_from_git(ctx: &Ctx, id: &str) -> Result<()> {
     };
     let count = entries.len();
     store.put_doc(&prj.pcfg, Some(dkey), &doc)?;
-    ctx.flush(&prj, store)?;
-    print_lines([format!(
+    Ok(format!(
         "{id}: seeded {count} history entr{} from git ({summary})",
         if count == 1 { "y" } else { "ies" }
-    )])?;
-    maybe_sync(ctx, &prj);
-    Ok(())
+    ))
+}
+
+/// Seed only absent/empty maps. Existing and malformed history is never replaced;
+/// failures are findings so one unseedable document cannot stop the whole pass.
+pub(super) fn seed_missing(
+    prj: &crate::Project,
+    store: &mut crate::store::Store,
+    only: Option<&str>,
+) -> Result<crate::observe::FixReport> {
+    let mut report = crate::observe::FixReport::default();
+    for (_, doc) in store.all_docs()? {
+        if crate::history::botched(&doc.frontmatter).is_some()
+            || !crate::history::entries(&doc.frontmatter).is_empty()
+        {
+            continue;
+        }
+        let Some(id) = doc.id() else { continue };
+        if only.is_some_and(|wanted| wanted != id) {
+            continue;
+        }
+        #[cfg(feature = "git")]
+        match seed_in_store(prj, store, id) {
+            Ok(message) => report.applied.push(message),
+            Err(error) => report
+                .refused
+                .push(format!("{id}: automatic history seed refused: {error}")),
+        }
+        #[cfg(not(feature = "git"))]
+        {
+            let _ = prj;
+            report.refused.push(format!(
+                "{id}: automatic history seed requires the git feature"
+            ));
+        }
+    }
+    Ok(report)
 }
 
 /// The document's filename, which is its id and is stable across relocations —

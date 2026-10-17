@@ -3576,6 +3576,59 @@ fn history_seed_writes_the_lifecycle_map_from_the_git_timeline() {
     opys(&dir).arg("verify").assert().success();
 }
 
+#[cfg(feature = "git")]
+#[test]
+fn verify_fix_seeds_missing_history_and_is_idempotent() {
+    let dir = project();
+    let mut fx = repo(&dir);
+    let doc = dir.child("opys/features/FEAT-0001.md");
+    let original = unseeded_doc("planned");
+    doc.write_str(&original).unwrap();
+    fx.commit("Alice", "create legacy feature");
+    doc.write_str(&unseeded_doc("partial")).unwrap();
+    let before = std::fs::read_to_string(doc.path()).unwrap();
+    opys(&dir).arg("verify").assert().code(1);
+    assert_eq!(std::fs::read_to_string(doc.path()).unwrap(), before);
+    opys(&dir)
+        .args(["verify", "--fix"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "seeded 2 history entries from git",
+        ));
+    doc.assert(predicate::str::contains(format!(
+        "history:\n  \"{PINNED_KEY}\": planned\n  \"2026-01-02T03:04:05.000001Z\": partial\n"
+    )));
+    let once = std::fs::read_to_string(doc.path()).unwrap();
+    opys(&dir).args(["verify", "--fix"]).assert().success();
+    assert_eq!(std::fs::read_to_string(doc.path()).unwrap(), once);
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn verify_fix_continues_after_an_unseedable_document_and_preserves_existing_history() {
+    let dir = project();
+    let mut fx = repo(&dir);
+    let first = dir.child("opys/features/FEAT-0001.md");
+    first.write_str(&unseeded_doc("planned")).unwrap();
+    fx.commit("Alice", "legacy feature");
+    let second = dir.child("opys/features/FEAT-0002.md");
+    let uncommitted = unseeded_doc("planned").replace("FEAT-0001", "FEAT-0002");
+    second.write_str(&uncommitted).unwrap();
+    opys(&dir)
+        .args(["verify", "--fix"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("FEAT-0001: seeded"))
+        .stderr(predicate::str::contains(
+            "FEAT-0002: automatic history seed refused",
+        ));
+    assert_eq!(std::fs::read_to_string(second.path()).unwrap(), uncommitted);
+    let seeded = std::fs::read_to_string(first.path()).unwrap();
+    opys(&dir).args(["verify", "--fix"]).assert().code(1);
+    assert_eq!(std::fs::read_to_string(first.path()).unwrap(), seeded);
+}
+
 /// The ordinary mid-migration state: the working copy is ahead of the last
 /// commit. That status is recorded last, at the wall clock, bumped past the
 /// entry it collides with — because verify requires the last entry to match
@@ -6218,6 +6271,28 @@ fn ttl_project() -> TempDir {
         .assert()
         .success();
     dir
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn verify_fix_observes_the_history_it_just_seeded() {
+    let dir = ttl_project();
+    let path = dir.path().join("opys/TASK-0001.md");
+    let mut doc =
+        opys_engine::doc::Doc::parse(path.clone(), &read(&dir, "opys/TASK-0001.md")).unwrap();
+    doc.frontmatter.remove("history");
+    std::fs::write(&path, doc.to_text()).unwrap();
+    let mut fx = repo(&dir);
+    fx.commit("Alice", "legacy task already doing");
+    opys(&dir)
+        .env("OPYS_NOW", LATE_NOW)
+        .args(["verify", "--fix"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("TASK-0001: seeded"))
+        .stdout(predicate::str::contains("fixed TASK-0001: doing -> stuck"));
+    dir.child("opys/_stuck/TASK-0001.md")
+        .assert(predicate::str::contains("status: stuck"));
 }
 
 /// A document past its status's `ttl` is an *observation*, not a problem: its

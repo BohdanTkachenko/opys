@@ -21,7 +21,8 @@ use crate::Ctx;
 /// [observations](crate::observe) and nothing else; a real failure is an
 /// `OpysError` the binary maps to `2`.
 ///
-/// With `fix`, the fixable observations are performed first — as ordinary
+/// With `fix`, missing history is seeded from Git, then fixable observations
+/// are performed — as ordinary
 /// transitions through `set_status::core`, then flushed, synced, and
 /// re-verified, so the code reports what *remains*. Only then is verify a
 /// mutating command; the inventory flock it has always taken through
@@ -53,7 +54,7 @@ pub fn run(ctx: &Ctx, fix: bool) -> Result<i32> {
              transitions it declares; run `opys config validate`"
         );
     } else if fix {
-        let fixes = crate::observe::apply_fixes(&prj, &mut store, &observations);
+        let fixes = fix_core(&prj, &mut store, None)?;
         if fixes.applied.is_empty() {
             // Nothing moved: no flush, and — the load-bearing half — no sync.
             // The flush alone would write nothing anyway (it writes the
@@ -83,6 +84,34 @@ pub fn run(ctx: &Ctx, fix: bool) -> Result<i32> {
     }
 
     report(&docs, &errors, &observations)
+}
+
+/// The shared CLI/API fix pass. `only` restricts every mutation to one document.
+/// Caller owns the inventory lock and flushes only when a fix was applied.
+pub fn fix_core(
+    prj: &Project,
+    store: &mut crate::store::Store,
+    only: Option<&str>,
+) -> Result<crate::observe::FixReport> {
+    if !prj.pcfg.validate().is_empty() {
+        return Err(crate::error::usage(
+            "verify: --fix skipped — opys.toml has problems; run `opys config validate`",
+        ));
+    }
+    if let Some(id) = only {
+        store.dkey_of(id)?;
+    }
+    let seeded = super::history::seed_missing(prj, store, only)?;
+    let docs: Vec<Doc> = store.all_docs()?.into_iter().map(|(_, doc)| doc).collect();
+    // Seed first: timing and visit budgets must see the reconstructed history.
+    let observations: Vec<_> = crate::observe::observations(prj, &docs, crate::observe::now())
+        .into_iter()
+        .filter(|observation| only.is_none_or(|id| observation.id == id))
+        .collect();
+    let mut fixes = crate::observe::apply_fixes(prj, store, &observations);
+    fixes.applied.splice(0..0, seeded.applied);
+    fixes.refused.splice(0..0, seeded.refused);
+    Ok(fixes)
 }
 
 /// Print the outcome and return the exit code: problems first, observations

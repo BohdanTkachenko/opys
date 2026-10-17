@@ -1,4 +1,5 @@
 <script>
+  import VerifyProblems from './VerifyProblems.svelte';
   // View 3: one document — its frontmatter, its rendered body, and the writes
   // the node will accept for it.
   //
@@ -546,6 +547,12 @@
       {/if}
     </div>
   </header>
+
+  <div class="page">
+    {#key `${cid}:${id}`}
+      <VerifyProblems {cid} {id} />
+    {/key}
+  </div>
 
   {#if doc.error}
     <div class="notice warn page"><p>Could not refresh: {doc.error.message}</p></div>

@@ -591,8 +591,16 @@ observations](#time-aware-observations-ttl-and-max_visits) possible: its last
 key is when the document entered the status it holds, and the number of entries
 recording a status is how often it has been there.
 
-Seeding the map on an inventory that predates it is a one-time procedure, and
-`opys history --seed <id>` is the tool for it: it reads the document's real
+Seeding the map on an inventory that predates it is a one-time procedure.
+`opys verify --fix` automatically seeds absent or empty history maps from Git
+before evaluating time-aware fixes; plain `verify` remains read-only. Existing
+and malformed history is preserved. An unavailable Git reader, repository, or
+committed status leaves the document unchanged and is reported as a remaining
+problem; other documents can still be fixed. A repeated pass does not reseed
+existing history. The web UI's **Fix** uses the same engine pass; on a document
+it seeds and transitions only that document, without a corpus-wide sync.
+
+`opys history --seed <id>` also performs this explicitly: it reads the document's real
 status timeline out of git (see `[git]` above) and writes one entry per status it
 held, keyed by the commit that introduced it — UTC, six digits, quoted, like
 every other entry. Three rules keep a seeded document green: the first entry is
@@ -1148,7 +1156,8 @@ run never claims to be OK. **Gate CI on `1`**: most scripts gate on any nonzero
 code, which trips on `3` as well, and a corpus that only has observations was
 clean when it was written.
 
-`verify --fix` performs the fixable observations first: each is an ordinary
+`verify --fix` first seeds missing history from Git, then performs the fixable
+observations using that history: each is an ordinary
 transition (history appended, the layout relocation performed, the sync pass run
 — skipped, like every other mutating command's, under `--no-sync`). One line per
 fix goes to **stdout**, before the re-verify's blocks:

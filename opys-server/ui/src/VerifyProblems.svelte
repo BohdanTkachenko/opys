@@ -3,8 +3,29 @@
   import { affects, events } from './lib/events.svelte.js';
   import { createResource } from './lib/resource.svelte.js';
 
-  let { cid } = $props();
+  let { cid, id = null } = $props();
   const report = createResource();
+  let fixing = $state(false);
+  let outcome = $state('');
+  let fixError = $state('');
+  const problems = $derived((report.data?.problems ?? []).filter(
+    (problem) => !id || problem.startsWith(`${id}:`),
+  ));
+
+  async function fix() {
+    fixing = true;
+    outcome = '';
+    fixError = '';
+    try {
+      const result = await api.action(cid, { action: 'verify-fix', ...(id ? { id } : {}) });
+      outcome = [result.message, result.sync_skipped].filter(Boolean).join('\n');
+      await report.run(() => api.verify(cid));
+    } catch (error) {
+      fixError = error.message;
+    } finally {
+      fixing = false;
+    }
+  }
 
   $effect(() => {
     const wanted = cid;
@@ -15,7 +36,7 @@
   });
 </script>
 
-{#if report.loading}
+{#if report.loading && !id}
   <p class="why" role="status">Loading issue details…</p>
 {/if}
 {#if report.error}
@@ -26,23 +47,30 @@
   {#if report.data.load_error}
     <p class="why" role="alert">Could not refresh the inventory: {report.data.load_error}</p>
   {/if}
-  {#if report.data.problems.length > 0}
+  {#if problems.length > 0}
     <details open>
-      <summary>Issue details ({report.data.problems.length})</summary>
+      <summary>Issue details ({problems.length})</summary>
       <ul aria-label="Verification issues">
-        {#each report.data.problems as problem}
+        {#each problems as problem}
           <li>{problem}</li>
         {/each}
       </ul>
     </details>
-  {:else}
+    <button class="btn small" disabled={fixing} onclick={fix}>
+      {fixing ? 'Fixing…' : 'Fix'}
+    </button>
+    <p class="why">{id ? 'Apply automatic fixes to this document.' : 'Apply automatic fixes to this corpus.'} Some issues may need manual repair.</p>
+  {:else if !id || outcome}
     <p class="why">No verification issues in the latest report.</p>
   {/if}
 {/if}
+{#if fixError}<p role="alert">{fixError}</p>{/if}
+{#if outcome}<p class="outcome" role="status">{outcome}</p>{/if}
 
 <style>
   details { margin-top: 0.75rem; }
   summary { cursor: pointer; }
   ul { max-height: 20rem; overflow-y: auto; padding-left: 1.5rem; }
   li { margin: 0.5rem 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .outcome { white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>
