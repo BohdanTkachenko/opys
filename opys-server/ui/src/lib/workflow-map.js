@@ -1,9 +1,9 @@
 // The complete permitted-transition graph. Shared status names and transitions
 // merge across types; every edge retains its owners and closing semantics.
-export function buildWorkflowMap(view, typeName = null, documents = []) {
-  const types = (view?.types ?? []).filter((type) => !typeName || type.name === typeName);
+export function buildWorkflowMap(view, typeName = null, documents = [], hiddenTypes = []) {
+  const types = (view?.types ?? []).filter((type) => (!typeName || type.name === typeName) && !hiddenTypes.includes(type.name));
   if (!types.length) return { nodes: [], edges: [], types: [] };
-  const statuses = [...new Set([...types.flatMap((type) => type.statuses), ...documents.filter((doc) => !typeName || doc.type === typeName).map((doc) => doc.status)])];
+  const statuses = [...new Set([...types.flatMap((type) => type.statuses), ...documents.filter((doc) => (!typeName || doc.type === typeName) && !hiddenTypes.includes(doc.type)).map((doc) => doc.status)])];
   const nodes = statuses.map((status) => ({
     id: `state-${encodeURIComponent(status)}`, status, kind: 'status', width: 172, height: 76,
     types: types.filter((type) => type.statuses.includes(status)).map((type) => type.name),

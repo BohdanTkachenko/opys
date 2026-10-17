@@ -714,7 +714,8 @@ on main. Three blanks mean three
 **Ctrl+P** (⌘P on a Mac) or `/` opens the omnibox from any view: a fuzzy
 finder over the corpus's tickets — or every served corpus, from the home page
 — that opens a ticket on Enter or, from a board, applies the text as its
-filter. `[` folds the sidebar into a rail and back, for a narrow window.
+filter. Project navigation is always visible, with no collapse control. On
+narrow screens its project list becomes a horizontally scrollable strip.
 
 The dashboard is an installable web app: your browser's *Install* (or *Add to
 Home Screen*) puts opys in its own window with its own icon. Installed, it still

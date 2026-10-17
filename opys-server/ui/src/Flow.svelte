@@ -12,7 +12,7 @@
   let { key } = $props();
   const graph = createResource();
   const diagram = createResource();
-  let selectedType = $state(null);
+  let hiddenTypes = $state([]);
   let selected = $state(null);
   let zoom = $state(1);
   let viewportWidth = $state(620);
@@ -26,7 +26,7 @@
   }
   $effect(() => {
     const wanted = key;
-    selectedType = null;
+    hiddenTypes = [];
     selected = null;
     search = '';
     zoom = 1;
@@ -43,8 +43,9 @@
   });
   const view = $derived(graph.data);
   const group = $derived(corpora.groups.find((candidate) => candidate.key === key));
-  const documents = $derived(view?.documents ?? []);
-  const model = $derived(buildWorkflowMap(view, null, documents));
+  const documents = $derived((view?.documents ?? []).filter((doc) => !hiddenTypes.includes(doc.type)));
+  const allTypesVisible = $derived((view?.types ?? []).every((type) => !hiddenTypes.includes(type.name)));
+  const model = $derived(buildWorkflowMap(view, null, documents, hiddenTypes));
   const layoutSignature = $derived(JSON.stringify(model));
   const activeId = $derived(model.nodes.some((node) => node.id === selected) ? selected
     : null);
@@ -53,7 +54,7 @@
   const shownDocs = $derived(currentDocs.filter((doc) => `${doc.id} ${doc.title}`.toLowerCase().includes(search.toLowerCase()))
     .sort((a, b) => (a.priority ?? Infinity) - (b.priority ?? Infinity) || a.id.localeCompare(b.id)));
   const blockers = $derived(currentDocs.filter((doc) => doc.blocked).length);
-  const nextItems = $derived(view?.nodes.find((node) => node.status === active?.status)?.items ?? []);
+  const nextItems = $derived((view?.nodes.find((node) => node.status === active?.status)?.items ?? []).filter((item) => !hiddenTypes.includes(item.type)));
   const outgoing = $derived(model.edges.filter((edge) => edge.from === activeId));
   const stage = $derived(diagram.data);
   const fit = $derived(stage ? fitWorkflowMap(stage.width, stage.height, viewportWidth, viewportHeight) : 1);
@@ -62,17 +63,31 @@
   $effect(() => {
     void layoutSignature;
     const wanted = untrack(() => model);
-    diagram.run(() => layoutWorkflowMap(wanted), { quiet: untrack(() => diagram.data !== null) });
+    diagram.run(() => layoutWorkflowMap(wanted));
   });
-  function choose(id) { selected = id; selectedType = null; search = ''; inspectOpen = true; }
-  function highlightType(name) { selectedType = name; selected = null; inspectOpen = false; }
+  $effect(() => {
+    if (selected !== null && !model.nodes.some((node) => node.id === selected)) {
+      selected = null;
+      inspectOpen = false;
+      search = '';
+    }
+  });
+  function choose(id) { selected = id; search = ''; inspectOpen = true; }
+  function toggleType(name) {
+    hiddenTypes = hiddenTypes.includes(name) ? hiddenTypes.filter((type) => type !== name) : [...hiddenTypes, name];
+    zoom = 1;
+  }
+  function toggleAllTypes() {
+    hiddenTypes = allTypesVisible ? (view?.types ?? []).map((type) => type.name) : [];
+    zoom = 1;
+  }
   function count(status) { return documents.filter((doc) => doc.status === status).length; }
   function label(node) { return node?.status || '(no status)'; }
-  function connected(edge) { return edge.from === activeId || edge.to === activeId || (selectedType && edge.types.includes(selectedType)); }
+  function connected(edge) { return edge.from === activeId || edge.to === activeId; }
   function arrowMarker(edge, reverse = false) {
     const direction = reverse ? edge.reverse : edge.forward;
     if (!direction) return undefined;
-    const highlighted = selectedType ? direction.types.includes(selectedType) : connected(edge);
+    const highlighted = connected(edge);
     return highlighted ? 'url(#workflow-arrow-selected)' : 'url(#workflow-arrow)';
   }
   function connectionTitle(edge) {
@@ -97,7 +112,7 @@
 
 <header class="head topbar">
   <div class="page-title"><span class="map-icon"><Icon name="flow" size={20} /></span><div><h1>{group?.name ?? 'Lifecycle'} <span>lifecycle</span></h1><p>How work can move, and what is waiting at each stage.</p></div></div>
-  {#if view}<span class="small muted">{view.documents.length} documents in this project</span>{/if}
+  {#if view}<span class="small muted">{#if allTypesVisible}{view.documents.length} documents in this project{:else}{documents.length} of {view.documents.length} documents shown{/if}</span>{/if}
 </header>
 
 {#if graph.error}
@@ -106,16 +121,17 @@
 {#if !view && !graph.error}
   <p class="muted">Loading the lifecycle…</p>
 {:else if view}
-  <nav class="workflow-tabs" aria-label="Highlight document type">
-    <button class:active={!selectedType} aria-pressed={!selectedType} onclick={() => highlightType(null)}>All types<span>{documents.length}</span></button>
+  <nav class="workflow-tabs" aria-label="Visible document types">
+    <button class:active={allTypesVisible} aria-pressed={allTypesVisible} onclick={toggleAllTypes}><span class="type-check">{#if allTypesVisible}<Icon name="check" size={11} />{/if}</span>All types<span>{view.documents.length}</span></button>
     {#each view.types as type (type.name)}
-      <button class:active={selectedType === type.name} aria-pressed={selectedType === type.name} onclick={() => highlightType(type.name)}>{type.name}<span>{view.documents.filter((doc) => doc.type === type.name).length}</span></button>
+      {@const visible = !hiddenTypes.includes(type.name)}
+      <button class:active={visible} aria-pressed={visible} title={`${visible ? 'Hide' : 'Show'} ${type.name}`} onclick={() => toggleType(type.name)}><span class="type-check">{#if visible}<Icon name="check" size={11} />{/if}</span>{type.name}<span>{view.documents.filter((doc) => doc.type === type.name).length}</span></button>
     {/each}
   </nav>
 
   {#if model.types.length}
   <div class="workspace" class:inspecting={inspectOpen}>
-    <section class="map" aria-label="Complete project lifecycle graph">
+    <section class="map" aria-label="Project lifecycle graph for visible types">
       <div class="map-heading"><div><strong>Project graph</strong><span class="mode">{model.types.length} document types</span></div><span class="map-count">{model.nodes.length} statuses · {model.edges.length} transitions</span></div>
       {#if diagram.error}
         <div class="notice bad"><p>Could not lay out this workflow: {diagram.error.message}</p><button class="btn small" onclick={() => diagram.run(() => layoutWorkflowMap(model))}>Retry layout</button></div>
@@ -137,7 +153,7 @@
           </svg>
           {#each stage.nodes as node (node.id)}
             {@const tone = statusTone(node.status)}
-            <button class="state" class:typed={selectedType && node.types.includes(selectedType)} class:selected={activeId === node.id} class:terminal={node.terminal} class:unknown={node.declared === false}
+            <button class="state" class:selected={activeId === node.id} class:terminal={node.terminal} class:unknown={node.declared === false}
               style:--tone={tone ?? 210} style:width={`${node.width}px`} style:height={`${node.height}px`}
               style:transform={`translate(${node.x * scale}px, ${node.y * scale}px) scale(${scale})`}
               title={`${label(node)} · ${node.types.join(', ')}`} aria-pressed={activeId === node.id} aria-label={`Inspect ${label(node)}: ${count(node.status)} documents`}
@@ -149,14 +165,14 @@
         </div>
       </div>
       {/if}
-      <div class="map-footer"><span>Every status and transition is shown. Select a type to highlight its workflow.</span><div class="zoom"><button aria-label="Zoom out" onclick={() => zoom = Math.max(0.2, zoom - 0.2)}>−</button><button onclick={() => zoom = 1} aria-label="Fit workflow">Fit</button><button aria-label="Zoom in" onclick={() => zoom = Math.min(6, zoom + 0.4)}>+</button></div></div>
+      <div class="map-footer"><span>Showing every status and transition used by the enabled types.</span><div class="zoom"><button aria-label="Zoom out" onclick={() => zoom = Math.max(0.2, zoom - 0.2)}>−</button><button onclick={() => zoom = 1} aria-label="Fit workflow">Fit</button><button aria-label="Zoom in" onclick={() => zoom = Math.min(6, zoom + 0.4)}>+</button></div></div>
       <div class="workflow-explanation"><Icon name="flow" size={15} /><p>Shared statuses combine documents from every type. Two-way connections use arrowheads at both ends. Dashed connections are unrestricted; solid connections include configured transitions. Counts update live.</p></div>
     </section>
 
     {#if inspectOpen}
     <aside class="inspector" aria-label="Selected workflow status">
       {#if active}
-        <div class="inspector-heading"><div class="inspector-top"><span class="inspector-kicker">Status across all types</span><button class="close-inspector" aria-label="Close inspector" onclick={() => { inspectOpen = false; selected = null; }}><Icon name="x" size={16} /></button></div><h2 class="mono">{label(active)}</h2><div class="status-totals"><strong>{currentDocs.length}</strong> {currentDocs.length === 1 ? 'document' : 'documents'}{#if blockers}<span class="blocked-count"><Icon name="lock" size={11} />{blockers} blocked</span>{/if}</div><p class="owner-counts">{#each active.types as name}<span>{name} {currentDocs.filter((doc) => doc.type === name).length}</span>{/each}</p></div>
+        <div class="inspector-heading"><div class="inspector-top"><span class="inspector-kicker">Status across visible types</span><button class="close-inspector" aria-label="Close inspector" onclick={() => { inspectOpen = false; selected = null; }}><Icon name="x" size={16} /></button></div><h2 class="mono">{label(active)}</h2><div class="status-totals"><strong>{currentDocs.length}</strong> {currentDocs.length === 1 ? 'document' : 'documents'}{#if blockers}<span class="blocked-count"><Icon name="lock" size={11} />{blockers} blocked</span>{/if}</div><p class="owner-counts">{#each active.types as name}<span>{name} {currentDocs.filter((doc) => doc.type === name).length}</span>{/each}</p></div>
         <div class="movement"><h3>Next moves</h3>{#if outgoing.length}<div class="next-states">{#each outgoing as edge}{@const target = model.nodes.find((node) => node.id === edge.to)}<button title={`Allowed for ${edge.types.join(', ')}${edge.closingTypes.length ? '; close for '+edge.closingTypes.join(', ') : ''}`} onclick={() => choose(target.id)}>{label(target)}{#if edge.closing}<span>close</span>{/if}</button>{/each}</div>{:else}<p>{active.terminal ? 'Final status. Closed work items leave the inventory.' : 'No outgoing transitions configured.'}</p>{/if}</div>
         {#if nextItems.length}
           <div class="next-picks"><h3>Ready next <span>opys next</span></h3>{#each nextItems as item}<a href={href(docPath(view.cid, item.id))}><span class="mono">{item.id}</span><strong>{item.title}</strong></a>{/each}</div>
@@ -170,6 +186,8 @@
     </aside>
     {/if}
   </div>
+  {:else if view.types.length}
+    <div class="notice" role="status"><p>No types selected. Enable a type above to show its workflow.</p><button class="btn small" onclick={() => { hiddenTypes = []; zoom = 1; }}>Show all types</button></div>
   {:else}
     <div class="notice"><p>No document workflows are configured for this project.</p></div>
   {/if}
@@ -181,10 +199,12 @@
   .page-title h1 span { color:var(--muted); font-weight:400; margin-left:0.3rem; }
   .page-title p { margin:0.3rem 0 0; color:var(--muted); font-size:0.85rem; }
   .map-icon { color:var(--accent); display:grid; place-items:center; width:2.4rem; height:2.4rem; border:1px solid var(--border); border-radius:10px; background:var(--panel); }
-  .workflow-tabs { display:flex; gap:1.3rem; overflow-x:auto; border-bottom:1px solid var(--border); margin-bottom:1.2rem; }
-  .workflow-tabs button { display:flex; align-items:center; gap:0.5rem; padding:0.75rem 0.1rem; background:none; color:var(--muted); border:0; border-bottom:2px solid transparent; cursor:pointer; font:inherit; font-size:0.9rem; white-space:nowrap; }
-  .workflow-tabs button.active { color:var(--fg); border-bottom-color:var(--accent); }
-  .workflow-tabs button span { font-size:0.72rem; background:var(--raised); padding:0.05rem 0.35rem; border-radius:4px; font-variant-numeric:tabular-nums; }
+  .workflow-tabs { display:flex; gap:0.5rem; overflow-x:auto; padding:0.15rem 0 0.65rem; margin-bottom:0.6rem; }
+  .workflow-tabs button { display:flex; align-items:center; gap:0.45rem; padding:0.45rem 0.65rem; background:var(--panel); color:var(--muted); border:1px solid var(--border); border-radius:7px; cursor:pointer; font:inherit; font-size:0.82rem; white-space:nowrap; }
+  .workflow-tabs button.active { color:var(--fg); border-color:color-mix(in srgb,var(--accent) 45%,var(--border)); background:color-mix(in srgb,var(--accent) 5%,var(--panel)); }
+  .workflow-tabs button>span:last-child { font-size:0.7rem; background:var(--raised); padding:0.05rem 0.35rem; border-radius:4px; font-variant-numeric:tabular-nums; }
+  .workflow-tabs .type-check { display:grid; place-items:center; width:13px; height:13px; padding:0; border:1px solid var(--muted); border-radius:3px; }
+  .workflow-tabs .active .type-check { background:var(--accent); color:var(--accent-fg); border-color:var(--accent); }
   .workspace { display:grid; grid-template-columns:minmax(0,1fr); gap:1.1rem; align-items:start; }
   .workspace.inspecting { grid-template-columns:minmax(0,1fr) 310px; }
   .map { min-width:0; border:1px solid var(--border); border-radius:12px; background:var(--panel); overflow:hidden; }
@@ -201,7 +221,6 @@
   .state { position:absolute; top:0; left:0; transform-origin:top left; display:grid; grid-template-columns:minmax(0,1fr) auto; align-content:center; gap:0.4rem 0.5rem; text-align:left; padding:14px 15px; border:1px solid var(--border-strong); border-radius:10px; background:var(--panel); color:var(--fg); cursor:pointer; box-shadow:0 2px 3px color-mix(in srgb,var(--fg) 4%,transparent); font:inherit; }
   .state:hover { border-color:var(--accent); }
   .state.selected { border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 12%,transparent); }
-  .state.typed { border-color:var(--accent); }
   .state:focus-visible { outline:2px solid var(--accent); outline-offset:5px; }
   .state-label { display:flex; gap:7px; align-items:center; font-size:13px; white-space:nowrap; }
   .state-label .mono { overflow:hidden; text-overflow:ellipsis; }

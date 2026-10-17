@@ -62,7 +62,10 @@ The lifecycle view is one live project-wide graph containing every document
 type, status and permitted transition. Shared status names merge into common
 nodes with combined counts; shared edges retain all owning types and whether
 each type requires `close`. Unrestricted workflows draw every allowed status
-pair, rather than a wildcard rule. Type controls highlight without filtering.
+pair, rather than a wildcard rule. Each type control independently shows or
+hides that type. Shared nodes and edges remain while an enabled type uses them;
+counts, documents, permissions and reciprocal arrowheads reflect enabled types.
+The All types control restores every type or hides all of them.
 ELK routes the complete graph, including cycles. The inspector opens on
 selection and lists documents across types, blocked counts, next picks and a
 search field. Live count changes preserve node positions. Fit includes the
@@ -71,6 +74,10 @@ locally and loaded only for this view.
 Reciprocal transitions share one connection with arrowheads at both ends. The
 underlying directions retain their own owning types, restrictions and closing
 semantics; the inspector and transition count still use the directed model.
+
+Project navigation is always expanded. There is no collapse button, persisted
+collapsed mode or sidebar keyboard toggle. Narrow screens show the project
+groups in an always-visible horizontally scrollable strip above the main view.
 
 ## License
 

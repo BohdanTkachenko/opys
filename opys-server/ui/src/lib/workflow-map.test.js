@@ -109,3 +109,24 @@ test('reciprocal connections retain asymmetric owners, guards and closing detail
   assert.equal(result[2].bidirectional,false,'a self-loop has only one directional record');
   assert.equal(JSON.stringify(edges),original,'pairing must not mutate the transition model');
 });
+
+test('visibility toggles remove only hidden types and recompute shared connections', () => {
+  const task={...type,statuses:['todo','doing','done']};
+  const milestone={...task,name:'milestone',terminal_statuses:[]};
+  const project={types:[task,milestone],edges:[]};
+  const docs=[{type:'task',status:'todo'},{type:'milestone',status:'done'},{type:'milestone',status:'legacy'}];
+  const all=buildWorkflowMap(project,null,docs);
+  assert.equal(mergeReciprocalEdges(all.edges).filter(edge=>edge.bidirectional).length,3);
+  const visible=buildWorkflowMap(project,null,docs,['milestone']);
+  assert.deepEqual(visible.types.map(t=>t.name),['task']);
+  assert.equal(visible.nodes.length,3,'hidden-only and historical statuses are removed');
+  assert.ok(visible.nodes.every(node=>node.types.every(name=>name==='task')));
+  assert.equal(visible.nodes.find(node=>node.status==='done').terminal,true);
+  assert.ok(!visible.edges.some(edge=>edge.from==='state-done'));
+  assert.equal(mergeReciprocalEdges(visible.edges).filter(edge=>edge.bidirectional).length,1);
+  assert.ok(visible.edges.every(edge=>edge.types.every(name=>name==='task')));
+  const none=buildWorkflowMap(project,null,docs,['task','milestone']);
+  assert.equal(none.nodes.length,0);
+  assert.equal(none.edges.length,0);
+  assert.deepEqual(buildWorkflowMap(project,null,docs,[]),all,'enabling everything restores the complete graph');
+});

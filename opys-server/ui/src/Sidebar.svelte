@@ -11,18 +11,11 @@
   // corpus's cached problem count. Asking `/api/corpus/{cid}/verify` per corpus
   // would be one request per project for a number the list just delivered.
   //
-  // On a narrow screen the shell stacks and this becomes a one-line bar —
-  // wordmark, live dot, a projects toggle — that opens into the list on
-  // demand. A phone that gave a third of every screen to a corpus list would
-  // put the first card of every board below the fold.
-  //
-  // On a wide screen it folds the other way: into a rail (`sidebar.collapsed`,
-  // toggled by the button or `[`), which keeps the wordmark, the live dot and
-  // the way back out, and gives the rest of the width to the view.
+  // Project navigation is always visible. On narrow screens the groups form
+  // a horizontal strip above the main view; there is no collapsed state.
 
   import Icon from './lib/Icon.svelte';
   import { corpora } from './lib/corpora.svelte.js';
-  import { sidebar } from './lib/sidebar.svelte.js';
   import { events } from './lib/events.svelte.js';
   import { corpusLabel, shortTime } from './lib/format.js';
   import { boardPath, flowPath, href, unionPath } from './lib/router.svelte.js';
@@ -33,21 +26,6 @@
    * group's two links is the current one — and both would light up.
    */
   let { activeCid = null, activeKey = null, activeView = null } = $props();
-
-  /** The narrow-screen list, opened by the toggle and closed by navigating. */
-  let open = $state(false);
-
-  $effect(() => {
-    // Reading the props subscribes to them: any navigation folds the list
-    // back into the bar, so a tap on a corpus lands on its board, not on the
-    // list that led there.
-    void activeCid;
-    void activeKey;
-    void activeView;
-    open = false;
-  });
-
-  const served = $derived(corpora.groups.reduce((n, group) => n + group.corpora.length, 0));
 
   /**
    * How healthy a corpus is, in three states.
@@ -86,7 +64,7 @@
   }
 </script>
 
-<aside class="sidebar" class:open class:collapsed={sidebar.collapsed}>
+<aside class="sidebar">
   <header>
     <a class="wordmark mono" href="#/">
       <span class="prompt" aria-hidden="true">❯</span><span class="grad-text">opys</span><span
@@ -112,31 +90,6 @@
         {/if}
       </span>
     </span>
-    <!-- Wide screens only (hidden by CSS on the bar): fold into a rail. -->
-    <button
-      class="fold"
-      type="button"
-      aria-expanded={!sidebar.collapsed}
-      aria-controls="projects"
-      title={sidebar.collapsed ? 'show the project list  [' : 'hide the project list  ['}
-      onclick={() => sidebar.toggle()}
-    >
-      <Icon name="sidebar" size={15} />
-    </button>
-    <!-- Narrow screens only (hidden by CSS elsewhere): the list behind it. -->
-    <button
-      class="menu"
-      type="button"
-      aria-expanded={open}
-      aria-controls="projects"
-      title={open ? 'hide the project list' : 'show the project list'}
-      onclick={() => (open = !open)}
-    >
-      <Icon name={open ? 'x' : 'menu'} size={15} />
-      {#if !open && served > 0}
-        <span class="mono">{served}</span>
-      {/if}
-    </button>
   </header>
 
   <div class="list" id="projects">
@@ -289,10 +242,6 @@
 
   .list {
     display: contents;
-  }
-
-  .menu {
-    display: none;
   }
 
   header {
@@ -456,47 +405,7 @@
     font-size: 0.9em;
   }
 
-  .fold {
-    display: inline-flex;
-    align-items: center;
-    padding: 0.2rem 0.3rem;
-    color: var(--muted);
-    cursor: pointer;
-  }
-
-  .fold:hover {
-    color: var(--accent);
-  }
-
-  /* The rail: the header stands on end — wordmark, live dot, unfold button —
-     and the list and footer fold away. The live label goes too; the dot
-     keeps its colour and its title says the rest. */
-  .sidebar.collapsed {
-    padding: 0.95rem 0.35rem;
-    align-items: center;
-  }
-
-  .sidebar.collapsed header {
-    flex-direction: column;
-    gap: 0.8rem;
-  }
-
-  .sidebar.collapsed .list,
-  .sidebar.collapsed footer,
-  .sidebar.collapsed .wordmark .grad-text,
-  .sidebar.collapsed .wordmark .cursor,
-  .sidebar.collapsed .live .label {
-    display: none;
-  }
-
-  .sidebar.collapsed .wordmark .prompt {
-    margin-right: 0;
-  }
-
-  /* The bar. Everything but the header folds away until the toggle opens it;
-     the footer (version, last load) is desktop furniture and stays hidden.
-     Last in the sheet on purpose: these override rules of equal specificity
-     above, and the cascade settles ties by order. */
+  /* Navigation remains visible on phones, in a scrollable project strip. */
   @media (max-width: 46rem) {
     .sidebar {
       position: static;
@@ -508,55 +417,27 @@
       border-bottom: 1px solid var(--border);
     }
 
-    .sidebar:not(.open) .list,
-    footer {
-      display: none;
-    }
-
-    .sidebar.open .list {
+    .list {
       display: block;
-      padding-bottom: 0.4rem;
+      min-width: 0;
     }
-
-    /* The bar has its own toggle; the rail is a wide-screen thing, so a
-       folded preference from a wider window must not empty the bar. */
-    .fold {
-      display: none;
-    }
-
-    .sidebar.collapsed {
-      padding: 0.5rem 0.8rem;
-      align-items: stretch;
-    }
-
-    .sidebar.collapsed header {
+    nav {
+      display: flex;
       flex-direction: row;
+      align-items: start;
+      gap: 1rem;
+      overflow-x: auto;
+      padding-bottom: 0.4rem;
+      margin: 0;
     }
-
-    .sidebar.collapsed .wordmark .grad-text,
-    .sidebar.collapsed .wordmark .cursor,
-    .sidebar.collapsed .live .label {
-      display: revert;
+    nav section {
+      flex: 0 0 15rem;
     }
-
-    .menu {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.35rem;
-      min-height: 1.9rem;
-      padding: 0.15rem 0.5rem;
-      font-size: 0.8rem;
-      color: var(--muted);
-      cursor: pointer;
-    }
-
-    .menu .mono {
-      font-size: 0.75rem;
-      font-variant-numeric: tabular-nums;
-    }
-
-    .live {
-      margin-left: auto;
+    footer {
+      grid-template-columns: auto 1fr;
+      gap: 0.5rem;
+      align-items: baseline;
+      font-size: 0.7rem;
     }
   }
 </style>
