@@ -13,21 +13,27 @@
 //! a contributor with no Node toolchain can still build and test the crate.
 //!
 //! The output is `$OUT_DIR/assets.rs`: one static table of
-//! `(url path, content type, bytes)` with an `include_bytes!` per file, anchored
-//! at `CARGO_MANIFEST_DIR` so it also resolves when cargo verifies a packaged
-//! tarball in a temp directory.
+//! `(url path, content type, bytes)` with an absolute `include_bytes!` per file.
+//! The bundle defaults to `CARGO_MANIFEST_DIR/ui/dist`, including when cargo
+//! verifies a packaged tarball. `OPYS_UI_DIST` can point at an existing bundle
+//! when release-plz builds a temporary clone that excludes generated files.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 fn main() {
     let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("set by cargo"));
-    let dist = manifest_dir.join("ui/dist");
+    // release-plz checks a temporary clone without gitignored build products.
+    // Its caller can supply the bundle built in the original checkout.
+    println!("cargo::rerun-if-env-changed=OPYS_UI_DIST");
+    let dist = std::env::var_os("OPYS_UI_DIST")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| manifest_dir.join("ui/dist"));
 
     // Re-run when files appear or disappear. Per-file directives follow, which
     // is what catches an edit in place: a directory watch only sees its own
     // mtime change, so a rebuild that reuses a filename would go unnoticed.
-    println!("cargo::rerun-if-changed=ui/dist");
+    println!("cargo::rerun-if-changed={}", dist.display());
     println!("cargo::rerun-if-changed=build.rs");
 
     // `--no-default-features`: emit the same table shape with no rows, so
@@ -51,12 +57,17 @@ fn main() {
     // byte-stable so an unrelated rebuild does not churn.
     files.sort();
 
+    let dist = dist
+        .canonicalize()
+        .expect("bundle directory was read above");
+
     let mut out = String::from(TABLE_HEADER);
     for url in &files {
-        println!("cargo::rerun-if-changed=ui/dist/{url}");
+        let asset = dist.join(url);
+        println!("cargo::rerun-if-changed={}", asset.display());
         let _ = writeln!(
             out,
-            "    ({url:?}, {ctype:?}, include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/ui/dist/{url}\"))),",
+            "    ({url:?}, {ctype:?}, include_bytes!({asset:?})),",
             ctype = content_type(url),
         );
     }

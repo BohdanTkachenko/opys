@@ -41,6 +41,8 @@ jobs:
         run: npm test --prefix packages/blockdown
       - name: Format
         run: cargo fmt --all --check
+      - name: Test bundle paths in the build script
+        run: bash scripts/test-ui-build-script.sh
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
