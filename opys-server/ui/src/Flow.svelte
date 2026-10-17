@@ -129,9 +129,10 @@
     <button class:active={allTypesVisible} aria-pressed={allTypesVisible} onclick={toggleAllTypes}><span class="type-check">{#if allTypesVisible}<Icon name="check" size={11} />{/if}</span>All types<span>{view.documents.length}</span></button>
     {#each view.types as type (type.name)}
       {@const visible = !hiddenTypes.includes(type.name)}
+      {@const only = visible && model.types.length === 1}
       <div class="type-control">
         <button class="type-toggle" class:active={visible} aria-pressed={visible} title={`${visible ? 'Hide' : 'Show'} ${type.name}`} onclick={() => toggleType(type.name)}><span class="type-check">{#if visible}<Icon name="check" size={11} />{/if}</span>{type.name}<span>{view.documents.filter((doc) => doc.type === type.name).length}</span></button>
-        <button class="type-only" aria-label={`Show only ${type.name}`} title={`Show only ${type.name}`} onclick={() => showOnlyType(type.name)}>Only</button>
+        <button class="type-only" class:active={only} aria-pressed={only} aria-label={`Show only ${type.name}`} title={`Show only ${type.name}`} onclick={() => showOnlyType(type.name)}>Only</button>
       </div>
     {/each}
   </nav>
@@ -212,7 +213,8 @@
   .type-control { display:flex; flex:none; }
   .workflow-tabs .type-toggle { border-radius:7px 0 0 7px; }
   .workflow-tabs .type-only { border-left:0; border-radius:0 7px 7px 0; padding-inline:0.45rem; font-size:0.7rem; }
-  .workflow-tabs .type-only:hover { color:var(--accent); background:var(--raised); }
+  .workflow-tabs .type-only:hover:not(.active) { color:var(--accent); background:var(--raised); }
+  .workflow-tabs .type-only.active { color:var(--accent-fg); background:var(--accent); border-color:var(--accent); }
   .workflow-tabs button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; z-index:1; }
   .workflow-tabs button>span:last-child { font-size:0.7rem; background:var(--raised); padding:0.05rem 0.35rem; border-radius:4px; font-variant-numeric:tabular-nums; }
   .workflow-tabs .type-check { display:grid; place-items:center; width:13px; height:13px; padding:0; border:1px solid var(--muted); border-radius:3px; }
