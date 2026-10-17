@@ -1,820 +1,257 @@
 <script>
-  // View 6: one project's lifecycle, drawn as the graph its config declares.
-  //
-  // The board draws a column per status because that is the shape the corpus
-  // has on disk. This draws the shape `opys.toml` describes — a node per
-  // distinct status name, an edge wherever some type declares the move — and
-  // puts the documents standing on each node on it. Nothing here is about
-  // agents; it is the board rearranged into the picture the transitions make.
-  //
-  // Four things about the payload are worth knowing before reading the markup:
-  //
-  //  1. **A node is a status name, merged across types.** `task`, `bug` and
-  //     `chore` all declare `todo` and share one node. `node.types` says who,
-  //     and the guards stay per type — nothing is evaluated here.
-  //  2. **The items are `opys next`'s answer, verbatim.** Same function, same
-  //     order, so this view and `opys next --status <s>` cannot disagree; the
-  //     order is `order::Corpus::ranked`'s, which groups by type declaration
-  //     order first and then by each type's `order_by` chain. So a merged node
-  //     reads task-block, bug-block, chore-block rather than one interleaved
-  //     priority run — exactly as the CLI prints it.
-  //  3. **Blocked documents are counted, never listed.** They are not pickable,
-  //     and a card offering one would be offering work nobody can take. The
-  //     chip names them on hover.
-  //  4. **A back edge is a real edge.** The layout ({@link layout}) breaks
-  //     cycles so the drawing can be left-to-right at all, and hands back which
-  //     edges it had to turn around. They are drawn as returns, dashed and
-  //     below, rather than dropped — a lifecycle without its returns is a lie.
-  //
-  // The edge geometry is measured from the rendered cards rather than computed
-  // from the grid: node cards have wildly different heights (one lists five
-  // items, its neighbour none), so anything that assumed a cell size would draw
-  // lines into the gaps between them.
-
   import Icon from './lib/Icon.svelte';
   import { api } from './lib/api.js';
   import { corpora } from './lib/corpora.svelte.js';
   import { affects, affectsProject, events } from './lib/events.svelte.js';
-  import { layout, workflow } from './lib/flow.js';
-  import { priorityChip, statusTone, typeTone } from './lib/format.js';
+  import { statusTone } from './lib/format.js';
   import { createResource } from './lib/resource.svelte.js';
   import { docPath, href } from './lib/router.svelte.js';
+  import { buildWorkflowMap, layoutWorkflowMap } from './lib/workflow-map.js';
 
   let { key } = $props();
-
   const graph = createResource();
+  const diagram = createResource();
+  let selectedType = $state(null);
+  let selected = $state(null);
+  let zoom = $state(1);
+  let viewportWidth = $state(620);
+  let search = $state('');
 
+  async function load(wanted) {
+    const view = await api.flow(wanted);
+    return { ...view, documents: await api.docs(view.cid) };
+  }
   $effect(() => {
-    // Read `key` into a local first: that is what subscribes the effect to it.
-    // Reading it inside the async callback instead would subscribe to nothing
-    // and leave the graph showing the previous project.
     const wanted = key;
     selectedType = null;
-    selectedTrace = null;
-    showAll = false;
-    graph.run(() => api.flow(wanted));
+    selected = null;
+    search = '';
+    zoom = 1;
+    graph.run(() => load(wanted));
   });
-
   $effect(() => {
     const wanted = key;
     return events.subscribe((batch) => {
-      const cid = graph.data?.cid;
-      // Two frames matter and they are matched by different functions.
-      // `corpus-reloaded` carries the cid this answer came from; `refs-changed`
-      // carries only a project key and is invisible to `affects` by design. The
-      // second cannot change *this* payload today — occupancy is not drawn here
-      // — but it is the frame that says the project's git moved, and a view
-      // that ignored it would be the one place in the app that does.
-      if (affectsProject(batch, wanted) || !cid || affects(batch, cid)) {
-        graph.run(() => api.flow(wanted), { quiet: true });
+      if (affectsProject(batch, wanted) || !graph.data?.cid || affects(batch, graph.data.cid)) {
+        graph.run(() => load(wanted), { quiet: true });
       }
     });
   });
-
-  const group = $derived(corpora.groups.find((candidate) => candidate.key === key));
   const view = $derived(graph.data);
-
-  let selectedType = $state(null);
-  const activeType = $derived(selectedType ?? (view?.types.some((type) => type.name === 'task') ? 'task' : view?.types[0]?.name));
-  const drawing = $derived(workflow(view, activeType === '*' ? null : activeType));
-  const placed = $derived(layout(drawing.nodes, drawing.edges));
-  let selectedTrace = $state(null);
-  let showAll = $state(false);
-  const tracedStatus = $derived(drawing.nodes.some((node) => node.status === selectedTrace)
-    ? selectedTrace : (drawing.nodes.find((node) => node.initial)?.status ?? drawing.nodes[0]?.status));
-  const visibleEdges = $derived(placed.edges.filter((edge) => showAll || edge.from === tracedStatus));
-  /** status → the node payload, so the grid can render in placement order. */
-  const byStatus = $derived(new Map(drawing.nodes.map((node) => [node.status, node])));
-  const documents = $derived((view?.nodes ?? []).reduce((n, node) => n + node.total, 0));
-
-  // --- edge geometry -------------------------------------------------------
-
-  /** The positioned container, and one element per node card. */
-  let canvas = $state(null);
-  let cards = $state({});
-  /** `{d, back}` per drawable edge, in container coordinates. */
-  let wires = $state([]);
-  let size = $state({ width: 0, height: 0 });
-  let highlighted = $state(null);
-
-  function boxes() {
-    if (!canvas) return null;
-    const base = canvas.getBoundingClientRect();
-    const found = new Map();
-    for (const [status, element] of Object.entries(cards)) {
-      if (!element) continue;
-      const box = element.getBoundingClientRect();
-      found.set(status, {
-        x: box.left - base.left,
-        y: box.top - base.top,
-        w: box.width,
-        h: box.height,
-      });
-    }
-    return { base, found };
-  }
-
-  /**
-   * A forward edge leaves the right of its source and enters the left of its
-   * target; a return leaves the left and comes back to the right, bowing below
-   * both cards so it never crosses the row it belongs to.
-   */
-  function wire(a, b, back, lane = 0, bottom = 0, top = 0, fromPort = 0.5, toPort = 0.5) {
-    if (a === b) {
-      const x = a.x + a.w / 2;
-      return `M ${x - 16} ${a.y} C ${x - 26} ${a.y - 30}, ${x + 26} ${a.y - 30}, ${x + 16} ${a.y}`;
-    }
-    if (!back) {
-      const x1 = a.x + a.w;
-      const y1 = a.y + a.h * fromPort;
-      const x2 = b.x;
-      const y2 = b.y + b.h * toPort;
-      if (x2 - x1 < 80) {
-        const bend = (x2 - x1) / 2;
-        return `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
-      }
-      const rise = top - 24 - lane * 8;
-      return `M ${x1} ${y1} H ${x1 + 8} Q ${x1 + 18} ${y1} ${x1 + 18} ${y1 - 10} V ${rise + 10} Q ${x1 + 18} ${rise} ${x1 + 28} ${rise} H ${x2 - 28} Q ${x2 - 18} ${rise} ${x2 - 18} ${rise + 10} V ${y2 - 10} Q ${x2 - 18} ${y2} ${x2 - 8} ${y2} H ${x2}`;
-    }
-    const x1 = a.x;
-    const y1 = a.y + a.h * fromPort;
-    const x2 = b.x + b.w;
-    const y2 = b.y + b.h * toPort;
-    const dip = bottom + 24 + lane * 8;
-    if (x1 - x2 < 80) {
-      return `M ${x1} ${y1} C ${x1 - 30} ${dip}, ${x2 + 30} ${dip}, ${x2} ${y2}`;
-    }
-    return `M ${x1} ${y1} H ${x1 - 8} Q ${x1 - 18} ${y1} ${x1 - 18} ${y1 + 10} V ${dip - 10} Q ${x1 - 18} ${dip} ${x1 - 28} ${dip} H ${x2 + 28} Q ${x2 + 18} ${dip} ${x2 + 18} ${dip - 10} V ${y2 + 10} Q ${x2 + 18} ${y2} ${x2 + 8} ${y2} H ${x2}`;
-  }
-
-  function measure() {
-    const measured = boxes();
-    if (!measured) return;
-    const { base, found } = measured;
-    const bottom = Math.max(0, ...[...found.values()].map((box) => box.y + box.h));
-    const top = Math.min(...[...found.values()].map((box) => box.y));
-    let forwardLane = 0;
-    let backLane = 0;
-    const counts = new Map();
-    const used = new Map();
-    const portKey = (edge, source) => `${source ? edge.from : edge.to}:${source !== edge.back ? 'right' : 'left'}`;
-    for (const edge of visibleEdges) {
-      for (const source of [true, false]) {
-        const key = portKey(edge, source);
-        counts.set(key, (counts.get(key) ?? 0) + 1);
-      }
-    }
-    const port = (edge, source) => {
-      const key = portKey(edge, source);
-      const index = (used.get(key) ?? 0) + 1;
-      used.set(key, index);
-      return 0.2 + 0.6 * index / (counts.get(key) + 1);
-    };
-    size = { width: base.width, height: base.height };
-    wires = visibleEdges
-      .map((edge) => {
-        const a = found.get(edge.from);
-        const b = found.get(edge.to);
-        if (!a || !b) return null;
-        const source = drawing.edges.find((candidate) => candidate.from === edge.from && candidate.to === edge.to);
-        return { from: edge.from, to: edge.to,
-          d: wire(a, b, edge.back, edge.back ? backLane++ : forwardLane++, bottom, top, port(edge, true), port(edge, false)), back: edge.back, implicit: source?.implicit,
-          label: `${edge.from} → ${edge.to}${source?.implicit ? ' (unrestricted workflow)' : ''}` };
-      })
-      .filter(Boolean);
-  }
+  const group = $derived(corpora.groups.find((candidate) => candidate.key === key));
+  const typeName = $derived(view?.types.some((type) => type.name === selectedType) ? selectedType
+    : view?.types.find((type) => type.name === 'task')?.name ?? view?.types[0]?.name);
+  const documents = $derived((view?.documents ?? []).filter((doc) => doc.type === typeName));
+  const model = $derived(buildWorkflowMap(view, typeName, documents));
+  const activeId = $derived(model.nodes.some((node) => node.id === selected) ? selected
+    : model.nodes.find((node) => node.initial && documents.some((doc) => doc.status === node.status))?.id
+      ?? model.nodes.find((node) => node.kind === 'status' && documents.some((doc) => doc.status === node.status))?.id
+      ?? model.nodes.find((node) => node.initial)?.id ?? model.nodes[0]?.id);
+  const active = $derived(model.nodes.find((node) => node.id === activeId));
+  const currentDocs = $derived(active?.kind === 'status' ? documents.filter((doc) => doc.status === active.status) : []);
+  const shownDocs = $derived(currentDocs.filter((doc) => `${doc.id} ${doc.title}`.toLowerCase().includes(search.toLowerCase()))
+    .sort((a, b) => (a.priority ?? Infinity) - (b.priority ?? Infinity) || a.id.localeCompare(b.id)));
+  const blockers = $derived(currentDocs.filter((doc) => doc.blocked).length);
+  const nextItems = $derived((view?.nodes.find((node) => node.status === active?.status)?.items ?? []).filter((item) => item.type === typeName));
+  const outgoing = $derived(model.edges.filter((edge) => edge.from === activeId));
+  const stage = $derived(diagram.data);
+  const fit = $derived(stage ? Math.min(1.15, Math.max(0.8, (viewportWidth - 40) / stage.width), Math.max(0.8, 490 / stage.height)) : 1);
+  const scale = $derived(fit * zoom);
 
   $effect(() => {
-    // Depend on the placement *and* on the bound elements: a refresh that brings
-    // different items re-renders every card, and a line drawn to where a card
-    // used to be is worse than no line at all. `Object.values` is what
-    // subscribes to the card set — reading the state object alone would not.
-    void placed;
-    const elements = Object.values(cards).filter(Boolean);
-    if (!canvas) return;
-    measure();
-    // Anything that moves a card without changing the data above: a window
-    // resize, the sidebar folding away on a narrow screen, a title rewrapping.
-    // Observing the container alone would miss the last of those.
-    const observer = new ResizeObserver(() => measure());
-    observer.observe(canvas);
-    for (const element of elements) observer.observe(element);
-    return () => observer.disconnect();
+    const wanted = model;
+    diagram.run(() => layoutWorkflowMap(wanted));
   });
-
-  /** What a node's tooltip says about who declares it. */
-  function declaredBy(node) {
-    if (!node.declared) return 'no type declares this status — `opys verify` reports it';
-    return `declared by ${node.types.join(', ')}`;
-  }
-
-  /**
-   * A node's heading. The one status that has no name of its own is the blank
-   * one — `status: ""`, which `opys verify` reports as `invalid status ''` —
-   * and the node sends it as an ordinary undeclared node rather than dropping
-   * the documents on it. Rendering the empty string would draw a heading that
-   * is just a count, so it gets a label here, where labels live.
-   */
-  function statusLabel(status) {
-    return status.length > 0 ? status : '(no status)';
+  function choose(id) { selected = id; search = ''; }
+  function selectType(name) { selectedType = name; selected = null; search = ''; zoom = 1; }
+  function count(status) { return documents.filter((doc) => doc.status === status).length; }
+  function label(node) { return node?.kind === 'rule' ? 'Any active status' : node?.status || '(no status)'; }
+  function connected(edge) { return edge.from === activeId || edge.to === activeId; }
+  function measureViewport(element) {
+    let frame;
+    const update = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => { viewportWidth = element.clientWidth; });
+    };
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    update();
+    return { destroy() { observer.disconnect(); cancelAnimationFrame(frame); } };
   }
 </script>
 
 <header class="head topbar">
-  <div class="title">
-    <h1>{group ? group.name : key}</h1>
-    {#if view}
-      <span class="small muted">
-        {placed.nodes.length}
-        {placed.nodes.length === 1 ? 'status' : 'statuses'} · {drawing.edges.length}
-        {drawing.edges.length === 1 ? 'transition' : 'transitions'} · {documents}
-        {documents === 1 ? 'document' : 'documents'}
-        {#if graph.loading}· refreshing…{/if}
-      </span>
-    {/if}
-  </div>
+  <div class="page-title"><span class="map-icon"><Icon name="flow" size={20} /></span><div><h1>{group?.name ?? 'Lifecycle'} <span>lifecycle</span></h1><p>How work can move, and what is waiting at each stage.</p></div></div>
+  {#if view}<span class="small muted">{view.documents.length} documents in this project</span>{/if}
 </header>
 
-{#if graph.error && !graph.data}
-  <div class="notice bad">
-    <p>{graph.error.message}</p>
-    <p class="why">
-      {#if graph.error.status === 404}
-        No project group with that key is served. Group keys are derived from the
-        repository, not from a corpus id — a link built from a cid lands here.
-      {:else if graph.error.offline}
-        The node is not answering.
-      {:else}
-        The node could not build this view.
-      {/if}
-    </p>
-    <p>
-      <button class="btn small" onclick={() => graph.run(() => api.flow(key))}>Try again</button>
-    </p>
-  </div>
-{:else if !graph.settled}
+{#if graph.error}
+  <div class="notice bad"><p>{graph.error.message}</p><button class="btn small" onclick={() => graph.run(() => load(key))}>Retry</button></div>
+{/if}
+{#if !view && !graph.error}
   <p class="muted">Loading the lifecycle…</p>
 {:else if view}
-  {#if graph.error}
-    <div class="notice warn"><p>Could not refresh: {graph.error.message}</p></div>
-  {/if}
+  <nav class="workflow-tabs" aria-label="Document workflows">
+    {#each view.types as type (type.name)}
+      <button class:active={typeName === type.name} aria-pressed={typeName === type.name} onclick={() => selectType(type.name)}>{type.name}<span>{view.documents.filter((doc) => doc.type === type.name).length}</span></button>
+    {/each}
+  </nav>
 
-  {#if placed.nodes.length === 0}
-    <div class="notice">
-      <p>This project declares no statuses.</p>
-      <p class="why">
-        Every node here comes from a type's <code>statuses</code> list in
-        <code>opys.toml</code>; there is nothing to draw until one declares some.
-      </p>
-    </div>
-  {:else}
-    <div class="types small muted" aria-label="Workflow type">
-      <button class="btn small" class:chosen={activeType === '*'} aria-pressed={activeType === '*'} onclick={() => selectedType = '*'}>All types</button>
-      {#each view.types as type (type.name)}
-        {@const tone = typeTone(type.name)}
-        <button
-          class="chip"
-          class:chosen={activeType === type.name}
-          aria-pressed={activeType === type.name}
-          onclick={() => selectedType = type.name}
-          style:--tone={tone}
-          class:neutral={tone === null}
-          title={type.has_graph
-            ? `${type.prefix} · ${type.statuses.length} statuses, with a declared transition graph`
-            : `${type.prefix} · unrestricted workflow; dashed arrows show permitted moves`}
-        >
-          {type.name}{#if !type.has_graph}<span class="loose"> ⋯</span>{/if}
-        </button>
-      {/each}
-      <span class="note">
-        listing the top {view.limit} of each status, in <code>opys next</code> order
-      </span>
-    </div>
-    <div class="trace-controls small">
-      <span aria-live="polite">{#if showAll}Showing all {placed.edges.length} transitions{:else}{visibleEdges.length} {visibleEdges.length === 1 ? 'transition' : 'transitions'} from <strong>{statusLabel(tracedStatus ?? '')}</strong>{/if}</span>
-      <button class="btn small" aria-pressed={showAll} onclick={() => showAll = !showAll}>All transitions</button>
-    </div>
-    <p class="small muted">
-      {#if drawing.unrestricted}Long-dashed arrows show moves allowed without a transitions map.{/if}
-      Select a status to see its next moves. Counts and cards include all types sharing each status.
-    </p>
-
-    <div class="scroll">
-      <div
-        class="canvas"
-        bind:this={canvas}
-        style:--layers={placed.layers}
-        style:--rows={placed.rows}
-        style:--return-lanes={visibleEdges.filter((edge) => edge.back).length}
-        style:--forward-lanes={visibleEdges.filter((edge) => !edge.back).length}
-      >
-        <!-- Under the cards, and inert: the cards are the links. Drawn from
-             measured positions, so it survives cards of different heights. -->
-        <svg
-          class="wires"
-          width={size.width}
-          height={size.height}
-          viewBox={`0 0 ${Math.max(size.width, 1)} ${Math.max(size.height, 1)}`}
-          aria-hidden="true"
-        >
-          <defs>
-            <marker
-              id="flow-arrow"
-              viewBox="0 0 8 8"
-              refX="7"
-              refY="4"
-              markerWidth="6"
-              markerHeight="6"
-              orient="auto-start-reverse"
-            >
-              <path d="M0 0 L8 4 L0 8 z" fill="currentColor" />
-            </marker>
-            <marker id="flow-arrow-active" viewBox="0 0 8 8" refX="7" refY="4"
-              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-              <path d="M0 0 L8 4 L0 8 z" fill="var(--accent)" />
-            </marker>
-          </defs>
-          {#each wires as edge, index (index)}
-            <path class="wire" class:back={edge.back} class:implicit={edge.implicit}
-              class:highlighted={!showAll || highlighted === edge.from || highlighted === edge.to}
-              class:dimmed={showAll && highlighted !== null && highlighted !== edge.from && highlighted !== edge.to}
-              d={edge.d} marker-end={!showAll || highlighted === edge.from || highlighted === edge.to ? 'url(#flow-arrow-active)' : 'url(#flow-arrow)'}><title>{edge.label}</title></path>
+  {#if model.type}
+  <div class="workspace">
+    <section class="map" aria-label={`${typeName} workflow diagram`}>
+      <div class="map-heading"><div><strong>{typeName}</strong><span class="mode">{model.type.has_graph ? 'Defined workflow' : 'Open workflow'}</span></div><span class="map-count">{model.nodes.filter((node) => node.kind === 'status').length} statuses</span></div>
+      {#if diagram.error}
+        <div class="notice bad"><p>Could not lay out this workflow: {diagram.error.message}</p><button class="btn small" onclick={() => diagram.run(() => layoutWorkflowMap(model))}>Retry layout</button></div>
+      {:else if !stage || diagram.loading}
+        <p class="layout-loading" role="status">Arranging the workflow…</p>
+      {:else}
+      <div class="map-viewport" use:measureViewport>
+        <div class="stage" style:width={`${stage.width * scale}px`} style:height={`${stage.height * scale}px`}>
+          <svg class="connections" width={stage.width * scale} height={stage.height * scale} viewBox={`0 0 ${stage.width} ${stage.height}`} aria-hidden="true">
+            <defs>
+              <marker id="workflow-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M 1 1 L 7 4 L 1 7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" /></marker>
+              <marker id="workflow-arrow-selected" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M 1 1 L 7 4 L 1 7" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></marker>
+            </defs>
+            {#each stage.edges as edge (edge.id)}
+              {#each edge.paths as path}
+                <path class="connection" class:related={connected(edge)} class:wildcard={edge.wildcard} d={path} marker-end={connected(edge) ? 'url(#workflow-arrow-selected)' : 'url(#workflow-arrow)'} />
+              {/each}
+            {/each}
+          </svg>
+          {#each stage.nodes as node (node.id)}
+            {@const tone = node.kind === 'status' ? statusTone(node.status) : null}
+            <button class="state" class:rule={node.kind === 'rule'} class:selected={activeId === node.id} class:terminal={node.terminal} class:unknown={node.declared === false}
+              style:--tone={tone ?? 210} style:width={`${node.width}px`} style:height={`${node.height}px`}
+              style:transform={`translate(${node.x * scale}px, ${node.y * scale}px) scale(${scale})`}
+              title={label(node)} aria-pressed={activeId === node.id} aria-label={node.kind === 'rule' ? 'Inspect unrestricted transition rule' : `Inspect ${label(node)}: ${count(node.status)} documents`}
+              onclick={() => choose(node.id)}>
+              {#if node.kind === 'rule'}
+                <span class="rule-symbol"><Icon name="flow" size={18} /></span><span class="rule-title">Any active status</span><span class="rule-subtitle">Shared permission</span>
+              {:else}
+                <span class="state-label"><span class="state-dot"></span><span class="mono">{label(node)}</span></span><span class="state-count">{count(node.status)}</span>
+                <span class="state-caption">{node.initial ? 'Starting status' : node.terminal ? 'Closed with close' : node.declared ? 'Documents' : 'Undeclared status'}</span>
+              {/if}
+            </button>
           {/each}
-        </svg>
+        </div>
+      </div>
+      {/if}
+      <div class="map-footer"><span><span class="legend-line" class:solid={model.type.has_graph}></span>{model.type.has_graph ? 'Configured transition' : 'Allowed from any active status'}</span><div class="zoom"><button aria-label="Zoom out" onclick={() => zoom = Math.max(0.5, zoom - 0.2)}>−</button><button onclick={() => zoom = 1} aria-label="Fit workflow">Fit</button><button aria-label="Zoom in" onclick={() => zoom = Math.min(2.5, zoom + 0.2)}>+</button></div></div>
+      <div class="workflow-explanation"><Icon name={model.type.has_graph ? 'flow' : 'zap'} size={15} /><p>{#if model.type.has_graph}Arrows follow this type’s configured transitions. Select a status to inspect its documents.{:else}No transition restrictions are configured. The shared rule allows each active status to move to any listed status. Closing uses <code>close</code>.{/if}</p></div>
+    </section>
 
-        {#each placed.nodes as spot (spot.status)}
-          {@const node = byStatus.get(spot.status)}
-          {@const tone = statusTone(spot.status)}
-          <section
-            aria-label={`${statusLabel(spot.status)}: focus to highlight connected transitions`}
-            onpointerenter={() => highlighted = spot.status}
-            onpointerleave={() => highlighted = null}
-            onfocusin={() => { highlighted = spot.status; selectedTrace = spot.status; }}
-            onfocusout={() => highlighted = null}
-            class="node panel"
-            class:traced={!showAll && tracedStatus === spot.status}
-            class:neutral={tone === null}
-            class:terminal={node.terminal}
-            class:undeclared={!node.declared}
-            style:--tone={tone}
-            style:grid-column={spot.layer + 1}
-            style:grid-row={spot.row + 1}
-            bind:this={cards[spot.status]}
-          >
-            <h2 title={declaredBy(node)}>
-              <button class="status mono status-focus" class:nameless={spot.status.length === 0}
-                aria-label={`Show transitions from ${statusLabel(spot.status)}`}
-                aria-pressed={!showAll && tracedStatus === spot.status}
-                onclick={() => { selectedTrace = spot.status; showAll = false; }}
-                >{statusLabel(spot.status)}</button
-              >
-              {#if node.initial}<span class="pill" title="where a new document starts">start</span>
-              {/if}
-              {#if node.terminal}
-                <!-- Always empty, and marked so it does not read as a stage
-                     nobody reached: `close` deletes the file, and `set-status`
-                     refuses a terminal target. -->
-                <span class="pill" title="reached by `opys close`, which deletes the document">
-                  end
-                </span>
-              {/if}
-              {#if !node.declared}
-                <span class="pill bad" title="no type declares this status">undeclared</span>
-              {/if}
-              <span class="count mono" title="documents at this status">{node.total}</span>
-            </h2>
-
-            {#if node.types.length > 0}
-              <p class="owners small muted">{node.types.join(' · ')}</p>
-            {/if}
-
-            {#if node.items.length > 0}
-              <details><summary class="small">{node.pickable} pickable · show items</summary>
-              <ul>
-                {#each node.items as item (item.id)}
-                  {@const itemTone = typeTone(item.type)}
-                  {@const chip = priorityChip(item.priority, item.effective_priority)}
-                  <li>
-                    <a
-                      class="item"
-                      class:neutral={itemTone === null}
-                      style:--tone={itemTone}
-                      href={href(docPath(view.cid, item.id))}
-                    >
-                      <span class="idrow">
-                        <span class="id mono small">{item.id}</span>
-                        {#if chip}
-                          <!-- The number that *ordered* the item, which is the
-                               effective one: `next::pick` ranks by the smallest
-                               priority over the document and everything it
-                               still blocks, so drawing the document's own here
-                               would contradict the order it is drawn in. The
-                               qualifier is the CLI's (`30`, `1 (own 30)`,
-                               `1 (inherited)`), and the guard is on the chip so
-                               a document that inherits its whole rank still
-                               shows one. -->
-                          <span class="prio mono" title={chip.title}>
-                            <Icon name="flag" size={9} />{chip.rank}{#if chip.note}<span
-                                class="own">({chip.note})</span
-                              >{/if}
-                          </span>
-                        {/if}
-                      </span>
-                      <span class="item-title">{item.title}</span>
-                    </a>
-                  </li>
-                {/each}
-              </ul>
-              {#if node.pickable > node.items.length}
-                <p class="more small muted">
-                  and {node.pickable - node.items.length} more pickable
-                </p>
-              {/if}
-              </details>
-            {:else if node.pickable === 0 && node.total > 0}
-              <p class="more small muted">nothing here is pickable</p>
-            {:else if node.total === 0}
-              <p class="more small muted">empty</p>
-            {/if}
-
-            {#if node.blocked.length > 0 || node.orphaned.length > 0}
-              <p class="marks">
-                {#if node.blocked.length > 0}
-                  <!-- Counted, never listed: a blocked document is not pickable,
-                       and a node offering it would be offering work nobody can
-                       take. The ids are on the chip so the count is checkable. -->
-                  <span
-                    class="mark blocked"
-                    title={`blocked by a live blocker: ${node.blocked.join(', ')}`}
-                  >
-                    <Icon name="lock" size={10} />
-                    {node.blocked.length} blocked
-                  </span>
-                {/if}
-                {#if node.orphaned.length > 0}
-                  <span
-                    class="mark orphaned"
-                    title={node.orphaned
-                      .map((orphan) => `${orphan.id}: ${orphan.reason}`)
-                      .join('\n')}
-                  >
-                    <Icon name="alert" size={10} />
-                    {node.orphaned.length} stranded
-                  </span>
-                {/if}
-              </p>
-            {/if}
-          </section>
-        {/each}
-      </div>
-    </div>
-
-    <dl class="legend small muted">
-      <div>
-        <dt><span class="swatch forward"></span> transition</dt>
-        <dd>
-          an allowed move. Configured forward moves use solid lines;
-          long dashes show unrestricted moves allowed when no map is configured.
-          Moving into a terminal status uses <code>close</code>.
-        </dd>
-      </div>
-      <div>
-        <dt><span class="swatch return"></span> return</dt>
-        <dd>
-          the same kind of edge, drawn coming back: a left-to-right picture has to
-          break the cycles, and hiding the edges it broke would hide half the lifecycle
-        </dd>
-      </div>
-      <div>
-        <dt><span class="mark blocked static">blocked</span></dt>
-        <dd>
-          at this status with a live blocker, so not pickable — counted and named on
-          hover, never listed
-        </dd>
-      </div>
-      <div>
-        <dt><span class="mark orphaned static">stranded</span></dt>
-        <dd>
-          the links its type requires no longer hold (the parent shipped or was
-          abandoned), so it will never become pickable on its own
-        </dd>
-      </div>
-      <div>
-        <dt>items</dt>
-        <dd>
-          exactly what <code>opys next --status &lt;status&gt;</code> answers over this
-          project's main worktree, in that order
-        </dd>
-      </div>
-    </dl>
+    <aside class="inspector" aria-label="Selected workflow status">
+      {#if active?.kind === 'rule'}
+        <div class="inspector-heading"><span class="inspector-kicker">Transition rule</span><h2>Any active status</h2><p>A shared permission, rather than an extra stage in the workflow.</p></div>
+        <div class="rule-copy"><p>Documents can move freely between the declared statuses. Terminal statuses are reached through <code>close</code>, which removes the document.</p><p>No preferred sequence is implied. Configure transitions in <code>opys.toml</code> when the workflow should enforce one.</p></div>
+        <h3 class="list-heading">Possible destinations</h3><div class="destinations">{#each model.nodes.filter((node) => node.kind === 'status' && node.declared) as node}<button onclick={() => choose(node.id)}>{label(node)}<span>{count(node.status)}</span></button>{/each}</div>
+      {:else if active}
+        <div class="inspector-heading"><span class="inspector-kicker">{typeName} status</span><h2 class="mono">{label(active)}</h2><div class="status-totals"><strong>{currentDocs.length}</strong> {currentDocs.length === 1 ? 'document' : 'documents'}{#if blockers}<span class="blocked-count"><Icon name="lock" size={11} />{blockers} blocked</span>{/if}</div></div>
+        <div class="movement"><h3>Next moves</h3>{#if !model.type.has_graph && !active.terminal}<p>Any declared status <span class="rule-link">· unrestricted</span></p>{:else if outgoing.length}<div class="next-states">{#each outgoing as edge}{@const target = model.nodes.find((node) => node.id === edge.to)}<button onclick={() => choose(target.id)}>{label(target)}{#if edge.closing}<span>close</span>{/if}</button>{/each}</div>{:else}<p>{active.terminal ? 'Final status. Closed work items leave the inventory.' : 'No outgoing transitions configured.'}</p>{/if}</div>
+        {#if nextItems.length}
+          <div class="next-picks"><h3>Ready next <span>opys next</span></h3>{#each nextItems as item}<a href={href(docPath(view.cid, item.id))}><span class="mono">{item.id}</span><strong>{item.title}</strong></a>{/each}</div>
+        {/if}
+        <div class="document-heading"><h3>All documents</h3><span>{currentDocs.length}</span></div>
+        {#if currentDocs.length}
+          <label class="document-search"><Icon name="search" size={13} /><input bind:value={search} placeholder="Filter documents…" aria-label="Filter documents at this status" /></label>
+          <div class="document-list">{#each shownDocs as doc (doc.id)}<a href={href(docPath(view.cid, doc.id))}><span class="document-id mono">{doc.id}{#if doc.blocked}<span class="blocked-label"><Icon name="lock" size={10} />blocked</span>{/if}</span><span>{doc.title || doc.id}</span></a>{:else}<p class="empty-inspector">No matching documents.</p>{/each}</div>
+        {:else}<div class="empty-inspector"><Icon name={active.terminal ? 'check' : 'doc'} size={22} /><p>{active.terminal ? 'Completed items are removed when closed.' : 'No documents at this status.'}</p></div>{/if}
+      {:else}<div class="empty-inspector">Select a status to inspect its documents.</div>{/if}
+    </aside>
+  </div>
+  {:else}
+    <div class="notice"><p>No document workflows are configured for this project.</p></div>
   {/if}
 {/if}
 
 <style>
-  .title {
-    display: flex;
-    align-items: baseline;
-    gap: 0.6rem;
-    flex-wrap: wrap;
-  }
-
-  h1 {
-    margin: 0;
-    font-size: 1.3rem;
-    overflow-wrap: anywhere;
-  }
-
-  .types {
-    display: flex;
-    gap: 0.3rem;
-    align-items: center;
-    flex-wrap: wrap;
-    margin: 0 0 0.7rem;
-  }
-
-  .types .loose {
-    opacity: 0.7;
-  }
-
-  .types button { cursor: pointer; font: inherit; }
-  .types .chosen { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .trace-controls { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
-  .trace-controls button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
-  .node.traced { outline: 1px solid var(--accent); outline-offset: 3px; }
-
-  .types .note {
-    margin-left: 0.3rem;
-  }
-
-  .scroll {
-    overflow-x: auto;
-    max-width: 100%;
-    padding-bottom: 0.4rem;
-  }
-
-  /* One column per layer and one row per row the layout assigned. Columns are
-     a fixed minimum so the picture reads as a flow rather than reflowing into
-     a list; the container scrolls sideways instead. */
-  .canvas {
-    position: relative;
-    display: grid;
-    grid-template-columns: repeat(var(--layers), minmax(9.5rem, 1fr));
-    grid-auto-rows: min-content;
-    gap: 2.6rem 2.8rem;
-    align-items: start;
-    min-width: min-content;
-    padding: calc(2rem + var(--forward-lanes) * 8px) 1.5rem calc(2rem + var(--return-lanes) * 8px);
-  }
-
-  .wires {
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    overflow: visible;
-    color: var(--muted);
-  }
-
-  .wire {
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.3;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    opacity: 0.55;
-  }
-
-  /* A return is the same relation drawn the other way; dashed and dimmer so the
-     forward spine of the graph stays the thing you read first. */
-  .wire.back {
-    stroke-dasharray: 4 4;
-    opacity: 0.45;
-  }
-  .wire.implicit { stroke-dasharray: 6 4; }
-  .wire.highlighted { stroke: var(--accent); opacity: 1; stroke-width: 1.8; }
-  .wire.dimmed { opacity: 0.12; }
-  .status-focus { background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; text-align: left; }
-  .status-focus:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-  .node summary { cursor: pointer; margin-top: 0.6rem; color: var(--muted); }
-
-  .node {
-    position: relative;
-    z-index: 1;
-    display: grid;
-    gap: 0.35rem;
-    padding: 0.55rem 0.65rem 0.6rem;
-    /* The status's hue on the leading edge, the same annotation the board's
-       column rail carries. Neutral — a retired-family word, or one this app has
-       never heard of — gets grey furniture rather than an invented colour. */
-    border-left: 3px solid hsl(var(--tone) 70% 55%);
-  }
-
-  .node.neutral {
-    border-left-color: var(--unknown);
-  }
-
-  /* A terminus: the last thing on its path, and always empty. */
-  .node.terminal {
-    border-style: dashed;
-    border-left-style: solid;
-  }
-
-  .node.undeclared {
-    border-left-color: var(--bad);
-  }
-
-  h2 {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    margin: 0;
-    font-size: 0.85rem;
-    font-weight: 600;
-    flex-wrap: wrap;
-  }
-
-  .status {
-    color: hsl(var(--tone) 45% var(--tone-text));
-    overflow-wrap: anywhere;
-  }
-
-  .node.neutral .status {
-    color: var(--muted);
-  }
-
-  /* The blank status has no name to set in mono — the label stands in for one. */
-  .status.nameless {
-    font-style: italic;
-    opacity: 0.8;
-  }
-
-  .count {
-    margin-left: auto;
-    font-size: 0.78rem;
-    font-variant-numeric: tabular-nums;
-    color: var(--muted);
-  }
-
-  .pill {
-    font-size: 0.62rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    padding: 0 0.25rem;
-    color: var(--muted);
-    font-weight: 500;
-  }
-
-  .pill.bad {
-    border-color: var(--bad);
-    color: var(--bad);
-  }
-
-  .owners {
-    margin: -0.2rem 0 0;
-    overflow-wrap: anywhere;
-  }
-
-  ul {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: grid;
-    gap: 0.25rem;
-  }
-
-  .item {
-    display: grid;
-    gap: 0.1rem;
-    padding: 0.28rem 0.4rem;
-    border-radius: 5px;
-    border: 1px solid var(--border);
-    border-left: 2px solid hsl(var(--tone) 65% 55%);
-    background: var(--raised);
-    text-decoration: none;
-    color: inherit;
-    transition:
-      border-color 120ms ease,
-      transform 120ms ease;
-  }
-
-  .item.neutral {
-    border-left-color: var(--unknown);
-  }
-
-  .item:hover {
-    border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
-    transform: translateX(1px);
-  }
-
-  .idrow {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-  }
-
-  .id {
-    color: hsl(var(--tone) 60% var(--tone-text));
-    letter-spacing: 0.02em;
-  }
-
-  .item.neutral .id {
-    color: var(--muted);
-  }
-
-  .prio {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.1rem;
-    margin-left: auto;
-    font-size: 0.7rem;
-    color: var(--muted);
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* The qualifier beside an inherited rank — quieter than the number, because
-     the number is the one that ordered the item. */
-  .prio .own {
-    margin-left: 0.15rem;
-    opacity: 0.75;
-  }
-
-  .item-title {
-    font-size: 0.82rem;
-    line-height: 1.25;
-    overflow-wrap: anywhere;
-  }
-
-  .more {
-    margin: 0;
-  }
-
-  .marks {
-    display: flex;
-    gap: 0.25rem;
-    flex-wrap: wrap;
-    margin: 0.1rem 0 0;
-  }
-
-  .mark {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.2rem;
-    font-size: 0.72rem;
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    padding: 0 0.3rem;
-    white-space: nowrap;
-    color: var(--muted);
-  }
-
-  /* Blocked work is greyed, not coloured: it is normal, temporary and nobody's
-     fault. Stranded work is a warning — it will not clear on its own. */
-  .mark.orphaned {
-    border-color: var(--warn);
-    color: var(--warn);
-  }
-
-  .legend {
-    display: grid;
-    gap: 0.2rem 1rem;
-    margin: 0.75rem 0 0;
-    max-width: 52rem;
-  }
-
-  .legend > div {
-    display: flex;
-    gap: 0.4rem;
-    align-items: baseline;
-    flex-wrap: wrap;
-  }
-
-  .legend dt {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    flex: none;
-    font-weight: 600;
-  }
-
-  .legend dd {
-    margin: 0;
-    flex: 1 1 18rem;
-  }
-
-  .legend .mark.static {
-    font-weight: 400;
-  }
-
-  .swatch {
-    display: inline-block;
-    width: 1.1rem;
-    height: 0;
-    border-top: 1.5px solid var(--border);
-  }
-
-  .swatch.return {
-    border-top-style: dashed;
-    opacity: 0.6;
-  }
+  .page-title { display:flex; align-items:center; gap:0.8rem; }
+  .page-title h1 { font-size:1.2rem; margin:0; font-weight:650; }
+  .page-title h1 span { color:var(--muted); font-weight:400; margin-left:0.3rem; }
+  .page-title p { margin:0.3rem 0 0; color:var(--muted); font-size:0.85rem; }
+  .map-icon { color:var(--accent); display:grid; place-items:center; width:2.4rem; height:2.4rem; border:1px solid var(--border); border-radius:10px; background:var(--panel); }
+  .workflow-tabs { display:flex; gap:1.3rem; overflow-x:auto; border-bottom:1px solid var(--border); margin-bottom:1.2rem; }
+  .workflow-tabs button { display:flex; align-items:center; gap:0.5rem; padding:0.75rem 0.1rem; background:none; color:var(--muted); border:0; border-bottom:2px solid transparent; cursor:pointer; font:inherit; font-size:0.9rem; white-space:nowrap; }
+  .workflow-tabs button.active { color:var(--fg); border-bottom-color:var(--accent); }
+  .workflow-tabs button span { font-size:0.72rem; background:var(--raised); padding:0.05rem 0.35rem; border-radius:4px; font-variant-numeric:tabular-nums; }
+  .workspace { display:grid; grid-template-columns:minmax(0,1fr) 310px; gap:1.1rem; align-items:start; }
+  .map { min-width:0; border:1px solid var(--border); border-radius:12px; background:var(--panel); overflow:hidden; }
+  .map-heading { display:flex; align-items:center; justify-content:space-between; gap:0.6rem; padding:1rem 1.1rem; border-bottom:1px solid var(--border); }
+  .map-heading strong { font-size:0.95rem; }
+  .mode { color:var(--muted); font-size:0.72rem; margin-left:0.65rem; }
+  .map-count { color:var(--muted); font-size:0.75rem; white-space:nowrap; }
+  .map-viewport { overflow:auto; padding:20px; min-height:530px; display:grid; align-items:center; background:radial-gradient(circle,color-mix(in srgb,var(--border) 60%,transparent) 0.6px,transparent 0.7px); background-size:20px 20px; }
+  .stage { position:relative; margin:auto; flex:none; }
+  .connections { position:absolute; inset:0; overflow:visible; color:var(--border-strong); pointer-events:none; }
+  .connection { fill:none; stroke:var(--border-strong); stroke-width:1.4; stroke-linecap:round; stroke-linejoin:round; }
+  .connection.wildcard { stroke-dasharray:3 4; }
+  .connection.related { stroke:var(--accent); stroke-width:1.8; }
+  .state { position:absolute; top:0; left:0; transform-origin:top left; display:grid; grid-template-columns:minmax(0,1fr) auto; align-content:center; gap:0.4rem 0.5rem; text-align:left; padding:14px 15px; border:1px solid var(--border-strong); border-radius:10px; background:var(--panel); color:var(--fg); cursor:pointer; box-shadow:0 2px 3px color-mix(in srgb,var(--fg) 4%,transparent); font:inherit; }
+  .state:hover { border-color:var(--accent); }
+  .state.selected { border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 12%,transparent); }
+  .state:focus-visible { outline:2px solid var(--accent); outline-offset:5px; }
+  .state-label { display:flex; gap:7px; align-items:center; font-size:13px; white-space:nowrap; }
+  .state-label .mono { overflow:hidden; text-overflow:ellipsis; }
+  .state-dot { width:6px; height:6px; border-radius:50%; background:hsl(var(--tone) 65% 48%); flex:none; }
+  .state-count { font-size:23px; font-weight:500; line-height:1; font-variant-numeric:tabular-nums; grid-row:span 2; align-self:center; }
+  .state-caption { font-size:10px; color:var(--muted); padding-left:13px; }
+  .state.terminal { border-style:dashed; }
+  .state.unknown { border-color:var(--bad); }
+  .state.rule { grid-template-columns:26px 1fr; border-style:dashed; background:color-mix(in srgb,var(--accent) 4%,var(--panel)); border-color:color-mix(in srgb,var(--accent) 45%,var(--border)); box-shadow:none; }
+  .rule-symbol { grid-row:span 2; color:var(--accent); align-self:center; }
+  .rule-title { font-size:12px; font-weight:600; }
+  .rule-subtitle { color:var(--muted); font-size:10px; }
+  .map-footer { display:flex; justify-content:space-between; gap:0.5rem; align-items:center; padding:0.75rem 1rem; border-top:1px solid var(--border); font-size:0.7rem; color:var(--muted); }
+  .map-footer>span { display:flex; align-items:center; gap:0.5rem; }
+  .legend-line { width:20px; border-top:1px dashed var(--muted); }
+  .legend-line.solid { border-top-style:solid; }
+  .zoom { display:flex; border:1px solid var(--border); border-radius:6px; overflow:hidden; }
+  .zoom button { border:0; border-left:1px solid var(--border); background:var(--panel); color:var(--muted); padding:0.2rem 0.5rem; cursor:pointer; font:inherit; }
+  .zoom button:first-child { border-left:0; }
+  .workflow-explanation { display:flex; gap:0.6rem; align-items:start; padding:0.8rem 1rem; color:var(--muted); border-top:1px solid var(--border); background:color-mix(in srgb,var(--raised) 35%,var(--panel)); }
+  .workflow-explanation p { margin:0; font-size:0.76rem; line-height:1.6; }
+  .workflow-explanation :global(svg) { margin-top:3px; color:var(--accent); }
+  .inspector { border:1px solid var(--border); border-radius:12px; background:var(--panel); min-height:400px; overflow:hidden; }
+  .inspector-heading { padding:1.2rem; border-bottom:1px solid var(--border); }
+  .inspector-kicker { color:var(--muted); font-size:0.75rem; }
+  .inspector h2 { margin:0.5rem 0 0.7rem; font-size:1.35rem; font-weight:550; overflow-wrap:anywhere; }
+  .inspector-heading>p { font-size:0.85rem; color:var(--muted); line-height:1.6; margin:0; }
+  .status-totals { display:flex; align-items:center; gap:0.35rem; font-size:0.8rem; color:var(--muted); }
+  .status-totals strong { color:var(--fg); font-size:1.15rem; font-weight:550; }
+  .blocked-count { margin-left:auto; display:flex; gap:0.25rem; align-items:center; color:var(--warn); font-size:0.75rem; }
+  .inspector h3 { font-size:0.75rem; font-weight:600; margin:0 0 0.55rem; }
+  .movement { padding:1rem 1.2rem; border-bottom:1px solid var(--border); }
+  .movement p { margin:0; font-size:0.8rem; color:var(--muted); line-height:1.5; }
+  .rule-link { color:var(--accent); font-size:0.7rem; }
+  .next-states { display:flex; flex-wrap:wrap; gap:0.35rem; }
+  .next-states button { padding:0.25rem 0.5rem; background:var(--raised); border:1px solid var(--border); border-radius:5px; font:inherit; font-size:0.73rem; color:var(--fg); cursor:pointer; }
+  .next-states span { color:var(--muted); margin-left:0.4rem; }
+  .next-picks { padding:1rem 1.2rem; border-bottom:1px solid var(--border); background:color-mix(in srgb,var(--accent) 3%,var(--panel)); }
+  .next-picks h3 { display:flex; justify-content:space-between; }
+  .next-picks h3 span { font-weight:400; color:var(--muted); font-size:0.68rem; }
+  .next-picks a { display:block; color:var(--fg); margin-top:0.7rem; text-decoration:none; font-size:0.8rem; }
+  .next-picks a>span { color:var(--accent); font-size:0.7rem; display:block; margin-bottom:0.2rem; }
+  .next-picks a strong { font-weight:500; line-height:1.5; }
+  .document-heading { display:flex; justify-content:space-between; align-items:center; padding:1rem 1.2rem 0.6rem; }
+  .document-heading h3 { margin:0; }
+  .document-heading>span { color:var(--muted); font-size:0.75rem; }
+  .document-search { display:flex; gap:0.4rem; align-items:center; margin:0 1.2rem 0.7rem; padding:0.3rem 0.5rem; border:1px solid var(--border); border-radius:6px; color:var(--muted); }
+  .document-search input { width:100%; min-width:0; padding:0; border:0; background:transparent; box-shadow:none; font-size:0.75rem; }
+  .document-list { max-height:350px; overflow:auto; padding:0 0.5rem 0.5rem; }
+  .document-list a { display:block; padding:0.7rem; border-radius:7px; color:var(--fg); font-size:0.8rem; line-height:1.45; text-decoration:none; }
+  .document-list a:hover { background:var(--raised); }
+  .document-id { display:flex; align-items:center; justify-content:space-between; color:var(--muted); font-size:0.68rem; margin-bottom:0.3rem; }
+  .blocked-label { display:flex; gap:0.2rem; align-items:center; color:var(--warn); font-family:inherit; font-size:0.65rem; }
+  .empty-inspector { padding:1rem 1.2rem 1.6rem; text-align:center; color:var(--muted); font-size:0.8rem; }
+  .empty-inspector p { line-height:1.6; margin:0.6rem 0 0; }
+  .rule-copy { padding:0.5rem 1.2rem; color:var(--muted); font-size:0.8rem; line-height:1.6; }
+  .list-heading { padding:0.6rem 1.2rem 0; }
+  .destinations { display:grid; padding:0 0.7rem 1rem; }
+  .destinations button { display:flex; justify-content:space-between; padding:0.6rem 0.5rem; background:none; border:0; text-align:left; color:var(--fg); font:inherit; font-size:0.8rem; border-radius:6px; cursor:pointer; }
+  .destinations button:hover { background:var(--raised); }
+  .destinations button span { color:var(--muted); }
+  .layout-loading { min-height:530px; padding:2rem; color:var(--muted); font-size:0.85rem; }
+  @media (max-width:1050px) { .workspace { grid-template-columns:minmax(0,1fr) 280px; } }
+  @media (max-width:850px) { .workspace { grid-template-columns:1fr; } .map-viewport { min-height:420px; } .inspector { min-height:0; } .page-title p { max-width:32ch; } }
 </style>

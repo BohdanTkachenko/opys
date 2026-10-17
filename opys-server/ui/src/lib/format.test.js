@@ -3,7 +3,7 @@
 //
 //     cd opys-server/ui && npm test
 //
-// Same rules as `flow.test.js`: no test framework and no new dependency, and
+// Same rules as the other helper tests: no test framework or extra dependency, and
 // nothing imports this file, so Vite never puts it in the bundle.
 
 import assert from 'node:assert/strict';

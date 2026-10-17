@@ -57,7 +57,7 @@
         };
         sourceRoot = "source/opys-server/ui";
 
-        npmDepsHash = "sha256-bpdX2bMIRP7UedeDVty81/wTBR6824tYaGRMIKIv6rw=";
+        npmDepsHash = "sha256-SkOFtkqdROTTB1cA0oSUjcmrTIh4P3I9Q6oWZ/RqdYU=";
 
         # The bundle is the whole output: $out *is* dist/, so the consumer can
         # `cp -r ${ui} …/ui/dist` without reaching through a subdirectory.
@@ -96,6 +96,10 @@
             fileset = pkgs.lib.fileset.unions [
               ./Cargo.toml
               ./Cargo.lock
+              # CLI documentation tests read these alongside the engine sources.
+              ./README.md
+              ./inventory/FEAT-0013.md
+              ./opys-server/ui/src/Query.svelte
               ./src
               ./opys
               ./opys-backend-markdown-local

@@ -119,7 +119,10 @@ fail() {
 # Everything else is a finding. Keep this list short and justified.
 #   - http://www.w3.org/…      XML namespaces handed to createElementNS / in SVG
 #   - https://svelte.dev/e/…   error-code doc links inside thrown message strings
-allowed_url_prefixes='^(http://www\.w3\.org/|https://svelte\.dev/e/)'
+# ELK embeds four EMF model namespace identifiers; Rolldown embeds a diagnostic
+# link for unsupported dynamic requires. These are literal identifiers/error
+# messages, never request destinations. Keep these exceptions exact.
+allowed_url_prefixes='^(http://www\.w3\.org/|https://svelte\.dev/e/|http:///org/eclipse/emf/ecore/util/ExtendedMetaData$|http://www\.eclipse\.org/elk/ElkGraph$|http://www\.eclipse\.org/emf/2002/Ecore$|http://www\.eclipse\.org/emf/2003/XMLType$|https://rolldown\.rs/in-depth/bundling-cjs#require-external-modules$)'
 
 if [[ ! -f "$dist/index.html" ]]; then
   fail "the build produced no dist/index.html"

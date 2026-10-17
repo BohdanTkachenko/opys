@@ -58,15 +58,15 @@ the real engine fix pass in a disposable store without flushing or syncing.
 fields and other manual-only findings do not enable it; after the fixable
 findings are cleared, the button is disabled even if other problems remain.
 
-The lifecycle view draws directed arrows between status nodes. Use the workflow
-type selector to focus the diagram, or select all types. Explicit transition
-maps produce solid arrows; a type without a map shows its permitted unrestricted
-moves as dashed arrows, with no departures from terminal states. Document counts
-remain merged by status across types. Node item lists expand on demand, and
-return arrows use lanes below the nodes so cycles stay visible.
-By default, only the selected status's outgoing arrows are shown, starting at
-the workflow's initial status. Select a status to inspect its next moves; the
-**All transitions** toggle restores the complete graph.
+The lifecycle view is a compact state diagram with an inspector. Select a
+document type, then a status to see its own counts, blocked documents, next
+picks and searchable document list. Explicit workflows use ELK's layered layout
+and preserve every configured edge, including cycles. An unrestricted workflow
+uses one distinct **Any active status** rule node with a connector to each
+destination, rather than expanding the rule into every pairwise transition.
+The rule is a permission, not a document state. Terminal destinations still use
+`close`. The layout engine is bundled locally and loaded only for this view;
+the diagram supports zoom/fit and stacks above the inspector on narrow screens.
 
 ## License
 
