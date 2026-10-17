@@ -47,7 +47,7 @@
     <p class="why" role="alert">Could not refresh the inventory: {report.data.load_error}</p>
   {/if}
   {#if problems.length > 0}
-    <details open>
+    <details>
       <summary>Issue details ({problems.length})</summary>
       <ul aria-label="Verification issues">
         {#each problems as problem}
