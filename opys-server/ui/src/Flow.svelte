@@ -112,16 +112,11 @@
 </script>
 
 <header class="head topbar">
-  <div class="page-title"><span class="map-icon"><Icon name="flow" size={20} /></span><div><h1>{group?.name ?? 'Lifecycle'} <span>lifecycle</span></h1><p>How work can move, and what is waiting at each stage.</p></div></div>
-  {#if view}<span class="small muted">{#if allTypesVisible}{view.documents.length} documents in this project{:else}{documents.length} of {view.documents.length} documents shown{/if}</span>{/if}
-</header>
-
-{#if graph.error}
-  <div class="notice bad"><p>{graph.error.message}</p><button class="btn small" onclick={() => graph.run(() => load(key))}>Retry</button></div>
-{/if}
-{#if !view && !graph.error}
-  <p class="muted">Loading the lifecycle…</p>
-{:else if view}
+  <div class="header-summary">
+    <div class="page-title"><span class="map-icon"><Icon name="flow" size={20} /></span><div><h1>{group?.name ?? 'Lifecycle'} <span>lifecycle</span></h1><p>How work can move, and what is waiting at each stage.</p></div></div>
+    {#if view}<span class="document-total small muted">{#if allTypesVisible}{view.documents.length} documents in this project{:else}{documents.length} of {view.documents.length} documents shown{/if}</span>{/if}
+  </div>
+  {#if view}
   <nav class="workflow-tabs" aria-label="Visible document types">
     <button class:active={allTypesVisible} aria-pressed={allTypesVisible} onclick={toggleAllTypes}><span class="type-check">{#if allTypesVisible}<Icon name="check" size={11} />{/if}</span>All types<span>{view.documents.length}</span></button>
     {#each view.types as type (type.name)}
@@ -133,6 +128,15 @@
       </div>
     {/each}
   </nav>
+  {/if}
+</header>
+
+{#if graph.error}
+  <div class="notice bad"><p>{graph.error.message}</p><button class="btn small" onclick={() => graph.run(() => load(key))}>Retry</button></div>
+{/if}
+{#if !view && !graph.error}
+  <p class="muted">Loading the lifecycle…</p>
+{:else if view}
 
   <div class="workspace">
     {#if model.types.length}
@@ -170,8 +174,14 @@
         </div>
       </div>
       {/if}
-      <div class="map-footer"><span>Showing every status and transition used by the enabled types.</span><div class="zoom"><button aria-label="Zoom out" onclick={() => zoom = Math.max(0.2, zoom - 0.2)}>−</button><button onclick={() => zoom = 1} aria-label="Fit workflow">Fit</button><button aria-label="Zoom in" onclick={() => zoom = Math.min(6, zoom + 0.4)}>+</button></div></div>
-      <div class="workflow-explanation"><Icon name="flow" size={15} /><p>Shared statuses combine documents from every type. Two-way connections use arrowheads at both ends. Dashed connections are unrestricted; solid connections include configured transitions. Counts update live.</p></div>
+      <footer class="map-footer">
+        <div class="map-legend" aria-label="Connection legend">
+          <span title="Solid connections include configured transitions"><span class="legend-line" aria-hidden="true"></span>Configured</span>
+          <span title="Dashed connections allow unrestricted transitions"><span class="legend-line dashed" aria-hidden="true"></span>Unrestricted</span>
+          <span title="Arrowheads at both ends allow transitions in either direction"><svg class="legend-arrow" width="22" height="12" viewBox="0 0 22 12" aria-hidden="true"><path d="M2 6h18M6 2 2 6l4 4M16 2l4 4-4 4" /></svg>Two-way</span>
+        </div>
+        <div class="zoom" role="group" aria-label="Graph zoom"><button aria-label="Zoom out" onclick={() => zoom = Math.max(0.2, zoom - 0.2)}>−</button><button onclick={() => zoom = 1} aria-label="Fit workflow">Fit</button><button aria-label="Zoom in" onclick={() => zoom = Math.min(6, zoom + 0.4)}>+</button></div>
+      </footer>
     </section>
     {:else if view.types.length}
       <div class="notice" role="status"><p>No types selected. Enable a type above to show its workflow.</p><button class="btn small" onclick={() => { hiddenTypes = []; zoom = 1; }}>Show all types</button></div>
@@ -197,12 +207,15 @@
 {/if}
 
 <style>
+  .head { display:flex; flex-direction:column; gap:0.85rem; }
+  .header-summary { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0.6rem 1rem; }
+  .document-total { font-variant-numeric:tabular-nums; }
   .page-title { display:flex; align-items:center; gap:0.8rem; }
   .page-title h1 { font-size:1.2rem; margin:0; font-weight:650; }
   .page-title h1 span { color:var(--muted); font-weight:400; margin-left:0.3rem; }
   .page-title p { margin:0.3rem 0 0; color:var(--muted); font-size:0.85rem; }
   .map-icon { color:var(--accent); display:grid; place-items:center; width:2.4rem; height:2.4rem; border:1px solid var(--border); border-radius:10px; background:var(--panel); }
-  .workflow-tabs { display:flex; gap:0.5rem; overflow-x:auto; padding:0.15rem 0 0.65rem; margin-bottom:0.6rem; }
+  .workflow-tabs { display:flex; gap:0.5rem; overflow-x:auto; padding:0.15rem 2px; margin:0 -2px; }
   .workflow-tabs button { display:flex; align-items:center; gap:0.45rem; padding:0.45rem 0.65rem; background:var(--panel); color:var(--muted); border:1px solid var(--border); border-radius:7px; cursor:pointer; font:inherit; font-size:0.82rem; white-space:nowrap; }
   .workflow-tabs button.active { color:var(--fg); border-color:color-mix(in srgb,var(--accent) 45%,var(--border)); background:color-mix(in srgb,var(--accent) 5%,var(--panel)); }
   .type-control { display:flex; flex:none; }
@@ -237,14 +250,15 @@
   .state-caption { font-size:10px; color:var(--muted); padding-left:13px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
   .state.terminal { border-style:dashed; }
   .state.unknown { border-color:var(--bad); }
-  .map-footer { display:flex; justify-content:space-between; gap:0.5rem; align-items:center; padding:0.75rem 1rem; border-top:1px solid var(--border); font-size:0.7rem; color:var(--muted); }
-  .map-footer>span { display:flex; align-items:center; gap:0.5rem; }
-  .zoom { display:flex; border:1px solid var(--border); border-radius:6px; overflow:hidden; }
+  .map-footer { display:flex; flex-wrap:wrap; gap:0.6rem 1rem; align-items:center; padding:0.55rem 0.85rem; border-top:1px solid var(--border); font-size:0.7rem; color:var(--muted); }
+  .map-legend { display:flex; flex-wrap:wrap; align-items:center; gap:0.55rem 0.9rem; }
+  .map-legend>span { display:inline-flex; align-items:center; gap:0.4rem; white-space:nowrap; }
+  .legend-line { width:20px; border-top:1.5px solid var(--border-strong); }
+  .legend-line.dashed { border-top-style:dashed; }
+  .legend-arrow { color:var(--border-strong); fill:none; stroke:currentColor; stroke-width:1.4; stroke-linecap:round; stroke-linejoin:round; }
+  .zoom { display:flex; flex:none; margin-left:auto; border:1px solid var(--border); border-radius:6px; overflow:hidden; }
   .zoom button { border:0; border-left:1px solid var(--border); background:var(--panel); color:var(--muted); padding:0.2rem 0.5rem; cursor:pointer; font:inherit; }
   .zoom button:first-child { border-left:0; }
-  .workflow-explanation { display:flex; gap:0.6rem; align-items:start; padding:0.8rem 1rem; color:var(--muted); border-top:1px solid var(--border); background:color-mix(in srgb,var(--raised) 35%,var(--panel)); }
-  .workflow-explanation p { margin:0; font-size:0.76rem; line-height:1.6; }
-  .workflow-explanation :global(svg) { margin-top:3px; color:var(--accent); }
   .inspector { border:1px solid var(--border); border-radius:12px; background:var(--panel); min-height:400px; overflow:hidden; }
   .inspector-heading { padding:1.2rem; border-bottom:1px solid var(--border); }
   .owner-counts { display:flex; flex-wrap:wrap; gap:0.4rem 0.65rem; margin:0.7rem 0 0; color:var(--muted); font-size:0.7rem; }
