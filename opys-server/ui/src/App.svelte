@@ -63,7 +63,7 @@
        its two group links is the current one from the key alone. -->
   <Sidebar activeCid={route.cid ?? null} activeKey={route.key ?? null} activeView={route.view} />
 
-  <main>
+  <main class:lifecycle-page={route.view === 'flow'}>
     {#if notice.message}
       <!-- Raised by a view that has since navigated away (a `close` whose sync
            pass was skipped), so it lives here rather than in any one view. -->

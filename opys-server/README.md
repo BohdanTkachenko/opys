@@ -72,6 +72,9 @@ visible and lists documents for the selected status across types, blocked
 counts, next picks and a search field. Live count changes preserve node positions. Fit includes the
 whole diagram, with zoom available for detail. The layout engine is bundled
 locally and loaded only for this view.
+Type filters sit in the page header above an open graph canvas. The right
+inspector is a full-height pane matching the main navigation, with independently
+scrolling details; graph legend and zoom controls sit along the canvas edge.
 Reciprocal transitions share one connection with arrowheads at both ends. The
 underlying directions retain their own owning types, restrictions and closing
 semantics; the inspector and transition count still use the directed model.

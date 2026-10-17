@@ -111,6 +111,8 @@
   }
 </script>
 
+<div class="lifecycle">
+<div class="workflow-main">
 <header class="head topbar">
   <div class="header-summary">
     <div class="page-title"><span class="map-icon"><Icon name="flow" size={20} /></span><div><h1>{group?.name ?? 'Lifecycle'} <span>lifecycle</span></h1><p>How work can move, and what is waiting at each stage.</p></div></div>
@@ -138,10 +140,9 @@
   <p class="muted">Loading the lifecycle…</p>
 {:else if view}
 
-  <div class="workspace">
     {#if model.types.length}
     <section class="map" aria-label="Project lifecycle graph for visible types">
-      <div class="map-heading"><div><strong>Project graph</strong><span class="mode">{model.types.length} document types</span></div><span class="map-count">{model.nodes.length} statuses · {model.edges.length} transitions</span></div>
+      <div class="map-meta"><span>{model.types.length} document {model.types.length === 1 ? 'type' : 'types'}</span><span class="map-count">{model.nodes.length} statuses · {model.edges.length} transitions</span></div>
       {#if diagram.error}
         <div class="notice bad"><p>Could not lay out this workflow: {diagram.error.message}</p><button class="btn small" onclick={() => diagram.run(() => layoutWorkflowMap(model))}>Retry layout</button></div>
       {:else if !stage || diagram.loading}
@@ -184,12 +185,16 @@
       </footer>
     </section>
     {:else if view.types.length}
-      <div class="notice" role="status"><p>No types selected. Enable a type above to show its workflow.</p><button class="btn small" onclick={() => { hiddenTypes = []; zoom = 1; }}>Show all types</button></div>
+      <div class="canvas-notice notice" role="status"><p>No types selected. Enable a type above to show its workflow.</p><button class="btn small" onclick={() => { hiddenTypes = []; zoom = 1; }}>Show all types</button></div>
     {:else}
-      <div class="notice"><p>No document workflows are configured for this project.</p></div>
+      <div class="canvas-notice notice"><p>No document workflows are configured for this project.</p></div>
     {/if}
+{/if}
+</div>
 
     <aside class="inspector" aria-label="Workflow status details">
+      <header class="inspector-title"><Icon name="flow" size={17} /><strong>Status details</strong></header>
+      <div class="inspector-body">
       {#if active}
         <div class="inspector-heading"><span class="inspector-kicker">Status across visible types</span><h2 class="mono">{label(active)}</h2><div class="status-totals"><strong>{currentDocs.length}</strong> {currentDocs.length === 1 ? 'document' : 'documents'}{#if blockers}<span class="blocked-count"><Icon name="lock" size={11} />{blockers} blocked</span>{/if}</div><p class="owner-counts">{#each active.types as name}<span>{name} {currentDocs.filter((doc) => doc.type === name).length}</span>{/each}</p></div>
         <div class="movement"><h3>Next moves</h3>{#if outgoing.length}<div class="next-states">{#each outgoing as edge}{@const target = model.nodes.find((node) => node.id === edge.to)}<button title={`Allowed for ${edge.types.join(', ')}${edge.closingTypes.length ? '; close for '+edge.closingTypes.join(', ') : ''}`} onclick={() => choose(target.id)}>{label(target)}{#if edge.closing}<span>close</span>{/if}</button>{/each}</div>{:else}<p>{active.terminal ? 'Final status. Closed work items leave the inventory.' : 'No outgoing transitions configured.'}</p>{/if}</div>
@@ -201,13 +206,15 @@
           <label class="document-search"><Icon name="search" size={13} /><input bind:value={search} placeholder="Filter documents…" aria-label="Filter documents at this status" /></label>
           <div class="document-list">{#each shownDocs as doc (doc.id)}<a href={href(docPath(view.cid, doc.id))}><span class="document-id mono">{doc.id}<span>{doc.type}{#if doc.blocked}<span class="blocked-label"><Icon name="lock" size={10} />blocked</span>{/if}</span></span><span>{doc.title || doc.id}</span></a>{:else}<p class="empty-inspector">No matching documents.</p>{/each}</div>
         {:else}<div class="empty-inspector"><Icon name={active.terminal ? 'check' : 'doc'} size={22} /><p>{active.terminal ? 'Completed items are removed when closed.' : 'No documents at this status.'}</p></div>{/if}
-      {:else}<div class="empty-inspector"><Icon name="flow" size={24} /><h2>Status details</h2><p>Select a status to inspect its documents and next moves.</p></div>{/if}
+      {:else}<div class="empty-inspector"><p>Select a status on the canvas to see its documents and next moves.</p></div>{/if}
+      </div>
     </aside>
-  </div>
-{/if}
+</div>
 
 <style>
-  .head { display:flex; flex-direction:column; gap:0.85rem; }
+  .lifecycle { display:grid; grid-template-columns:minmax(0,1fr) 310px; min-height:100dvh; }
+  .workflow-main { display:flex; flex-direction:column; min-width:0; height:100dvh; }
+  .head { display:flex; flex:none; flex-direction:column; gap:0.85rem; margin:0; padding:0.85rem 1.25rem; }
   .header-summary { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0.6rem 1rem; }
   .document-total { font-variant-numeric:tabular-nums; }
   .page-title { display:flex; align-items:center; gap:0.8rem; }
@@ -227,13 +234,11 @@
   .workflow-tabs button>span:last-child { font-size:0.7rem; background:var(--raised); padding:0.05rem 0.35rem; border-radius:4px; font-variant-numeric:tabular-nums; }
   .workflow-tabs .type-check { display:grid; place-items:center; width:13px; height:13px; padding:0; border:1px solid var(--muted); border-radius:3px; }
   .workflow-tabs .active .type-check { background:var(--accent); color:var(--accent-fg); border-color:var(--accent); }
-  .workspace { display:grid; grid-template-columns:minmax(0,1fr) 310px; gap:1.1rem; align-items:start; }
-  .map { min-width:0; border:1px solid var(--border); border-radius:12px; background:var(--panel); overflow:hidden; }
-  .map-heading { display:flex; align-items:center; justify-content:space-between; gap:0.6rem; padding:1rem 1.1rem; border-bottom:1px solid var(--border); }
-  .map-heading strong { font-size:0.95rem; }
-  .mode { color:var(--muted); font-size:0.72rem; margin-left:0.65rem; }
-  .map-count { color:var(--muted); font-size:0.75rem; white-space:nowrap; }
-  .map-viewport { overflow:auto; padding:20px; height:clamp(360px,calc(100dvh - 340px),850px); display:grid; align-items:center; background:radial-gradient(circle,color-mix(in srgb,var(--border) 60%,transparent) 0.6px,transparent 0.7px); background-size:20px 20px; }
+  .map { display:flex; flex:1; flex-direction:column; min-width:0; min-height:0; background:radial-gradient(circle,var(--grid-dot) 0.8px,transparent 0.9px); background-size:20px 20px; }
+  .map-meta { display:flex; flex:none; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0.4rem 0.75rem; padding:0.8rem 1.25rem; color:var(--muted); font-size:0.72rem; }
+  .map-count { white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .map-viewport { overflow:auto; padding:20px; display:grid; align-items:center; flex:1; min-height:0; }
+  .canvas-notice { margin:1.25rem; }
   .stage { position:relative; margin:auto; flex:none; }
   .connections { position:absolute; inset:0; overflow:visible; color:var(--border-strong); pointer-events:none; }
   .connection { fill:none; stroke:var(--border-strong); stroke-width:1.4; stroke-linecap:round; stroke-linejoin:round; }
@@ -250,7 +255,7 @@
   .state-caption { font-size:10px; color:var(--muted); padding-left:13px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
   .state.terminal { border-style:dashed; }
   .state.unknown { border-color:var(--bad); }
-  .map-footer { display:flex; flex-wrap:wrap; gap:0.6rem 1rem; align-items:center; padding:0.55rem 0.85rem; border-top:1px solid var(--border); font-size:0.7rem; color:var(--muted); }
+  .map-footer { display:flex; flex:none; flex-wrap:wrap; gap:0.6rem 1rem; align-items:center; padding:0.7rem 1.25rem; font-size:0.7rem; color:var(--muted); }
   .map-legend { display:flex; flex-wrap:wrap; align-items:center; gap:0.55rem 0.9rem; }
   .map-legend>span { display:inline-flex; align-items:center; gap:0.4rem; white-space:nowrap; }
   .legend-line { width:20px; border-top:1.5px solid var(--border-strong); }
@@ -259,8 +264,12 @@
   .zoom { display:flex; flex:none; margin-left:auto; border:1px solid var(--border); border-radius:6px; overflow:hidden; }
   .zoom button { border:0; border-left:1px solid var(--border); background:var(--panel); color:var(--muted); padding:0.2rem 0.5rem; cursor:pointer; font:inherit; }
   .zoom button:first-child { border-left:0; }
-  .inspector { border:1px solid var(--border); border-radius:12px; background:var(--panel); min-height:400px; overflow:hidden; }
-  .inspector-heading { padding:1.2rem; border-bottom:1px solid var(--border); }
+  .inspector { display:flex; flex-direction:column; position:sticky; top:0; align-self:start; height:100dvh; min-width:0; border-left:1px solid var(--border); background:var(--panel); }
+  @supports (backdrop-filter:blur(1px)) { .inspector { background:var(--overlay); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px); } }
+  .inspector-title { display:flex; flex:none; align-items:center; gap:0.6rem; padding:1rem 0.95rem; border-bottom:1px solid var(--border); font-size:0.9rem; }
+  .inspector-title :global(svg) { color:var(--muted); }
+  .inspector-body { flex:1; min-height:0; overflow-y:auto; }
+  .inspector-heading { padding:1rem 0.95rem; border-bottom:1px solid var(--border); }
   .owner-counts { display:flex; flex-wrap:wrap; gap:0.4rem 0.65rem; margin:0.7rem 0 0; color:var(--muted); font-size:0.7rem; }
   .inspector-kicker { color:var(--muted); font-size:0.75rem; }
   .inspector h2 { margin:0.5rem 0 0.7rem; font-size:1.35rem; font-weight:550; overflow-wrap:anywhere; }
@@ -268,31 +277,38 @@
   .status-totals strong { color:var(--fg); font-size:1.15rem; font-weight:550; }
   .blocked-count { margin-left:auto; display:flex; gap:0.25rem; align-items:center; color:var(--warn); font-size:0.75rem; }
   .inspector h3 { font-size:0.75rem; font-weight:600; margin:0 0 0.55rem; }
-  .movement { padding:1rem 1.2rem; border-bottom:1px solid var(--border); }
+  .movement { padding:1rem 0.95rem; border-bottom:1px solid var(--border); }
   .movement p { margin:0; font-size:0.8rem; color:var(--muted); line-height:1.5; }
   .next-states { display:flex; flex-wrap:wrap; gap:0.35rem; }
   .next-states button { padding:0.25rem 0.5rem; background:var(--raised); border:1px solid var(--border); border-radius:5px; font:inherit; font-size:0.73rem; color:var(--fg); cursor:pointer; }
   .next-states span { color:var(--muted); margin-left:0.4rem; }
-  .next-picks { padding:1rem 1.2rem; border-bottom:1px solid var(--border); background:color-mix(in srgb,var(--accent) 3%,var(--panel)); }
+  .next-picks { padding:1rem 0.95rem; border-bottom:1px solid var(--border); background:color-mix(in srgb,var(--accent) 3%,var(--panel)); }
   .next-picks h3 { display:flex; justify-content:space-between; }
   .next-picks h3 span { font-weight:400; color:var(--muted); font-size:0.68rem; }
   .next-picks a { display:block; color:var(--fg); margin-top:0.7rem; text-decoration:none; font-size:0.8rem; }
   .next-picks a>span { color:var(--accent); font-size:0.7rem; display:block; margin-bottom:0.2rem; }
   .next-picks a strong { font-weight:500; line-height:1.5; }
-  .document-heading { display:flex; justify-content:space-between; align-items:center; padding:1rem 1.2rem 0.6rem; }
+  .document-heading { display:flex; justify-content:space-between; align-items:center; padding:1rem 0.95rem 0.6rem; }
   .document-heading h3 { margin:0; }
   .document-heading>span { color:var(--muted); font-size:0.75rem; }
-  .document-search { display:flex; gap:0.4rem; align-items:center; margin:0 1.2rem 0.7rem; padding:0.3rem 0.5rem; border:1px solid var(--border); border-radius:6px; color:var(--muted); }
+  .document-search { display:flex; gap:0.4rem; align-items:center; margin:0 0.95rem 0.7rem; padding:0.3rem 0.5rem; border:1px solid var(--border); border-radius:6px; color:var(--muted); }
   .document-search input { width:100%; min-width:0; padding:0; border:0; background:transparent; box-shadow:none; font-size:0.75rem; }
-  .document-list { max-height:350px; overflow:auto; padding:0 0.5rem 0.5rem; }
+  .document-list { padding:0 0.25rem 0.5rem; }
   .document-list a { display:block; padding:0.7rem; border-radius:7px; color:var(--fg); font-size:0.8rem; line-height:1.45; text-decoration:none; }
   .document-list a:hover { background:var(--raised); }
   .document-id { display:flex; align-items:center; justify-content:space-between; color:var(--muted); font-size:0.68rem; margin-bottom:0.3rem; }
   .document-id>span { display:flex; align-items:center; gap:0.5rem; }
   .blocked-label { display:flex; gap:0.2rem; align-items:center; color:var(--warn); font-family:inherit; font-size:0.65rem; }
-  .empty-inspector { padding:1rem 1.2rem 1.6rem; text-align:center; color:var(--muted); font-size:0.8rem; }
+  .empty-inspector { padding:1rem 0.95rem 1.6rem; color:var(--muted); font-size:0.8rem; }
   .empty-inspector p { line-height:1.6; margin:0.6rem 0 0; }
-  .layout-loading { min-height:530px; padding:2rem; color:var(--muted); font-size:0.85rem; }
-  @media (max-width:1050px) { .workspace { grid-template-columns:minmax(0,1fr) 280px; } }
-  @media (max-width:850px) { .workspace { grid-template-columns:1fr; } .inspector { min-height:0; } .page-title p { max-width:32ch; } }
+  .layout-loading { flex:1; padding:2rem; color:var(--muted); font-size:0.85rem; }
+  @media (max-width:1050px) { .lifecycle { grid-template-columns:minmax(0,1fr) 280px; } }
+  @media (max-width:850px) {
+    .lifecycle { grid-template-columns:1fr; }
+    .workflow-main { min-height:560px; }
+    .head { padding:0.85rem 0.9rem; }
+    .inspector { position:static; height:auto; min-height:20rem; border-left:0; border-top:1px solid var(--border); }
+    .inspector-body { overflow-y:visible; }
+    .page-title p { max-width:32ch; }
+  }
 </style>

@@ -644,6 +644,10 @@ a.chip:hover {
   padding: 1.4rem var(--main-px) 4rem;
 }
 
+.shell > main.lifecycle-page {
+  padding: 0;
+}
+
 /* A view's persistent header: full-bleed across the main column, sticky, and
    glassed so content slides beneath it. The negative margins undo main's
    padding; the same variable puts it back inside, so the bar's content stays
