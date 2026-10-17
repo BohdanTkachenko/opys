@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1](https://github.com/BohdanTkachenko/opys/compare/v0.13.0...v0.13.1) - 2026-10-17
+
+### Other
+
+- a short contributor guide, and the upgrade steps in the README
+
 ## [0.13.0](https://github.com/BohdanTkachenko/opys/compare/v0.12.0...v0.13.0) - 2026-10-16
 
 ### Added
