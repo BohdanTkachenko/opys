@@ -222,7 +222,7 @@
   .page-title h1 span { color:var(--muted); font-weight:400; margin-left:0.3rem; }
   .page-title p { margin:0.3rem 0 0; color:var(--muted); font-size:0.85rem; }
   .map-icon { color:var(--accent); display:grid; place-items:center; width:2.4rem; height:2.4rem; border:1px solid var(--border); border-radius:10px; background:var(--panel); }
-  .workflow-tabs { display:flex; gap:0.5rem; overflow-x:auto; padding:0.15rem 2px; margin:0 -2px; }
+  .workflow-tabs { display:flex; flex-wrap:wrap; gap:0.5rem; padding:0.15rem 2px; margin:0 -2px; }
   .workflow-tabs button { display:flex; align-items:center; gap:0.45rem; padding:0.45rem 0.65rem; background:var(--panel); color:var(--muted); border:1px solid var(--border); border-radius:7px; cursor:pointer; font:inherit; font-size:0.82rem; white-space:nowrap; }
   .workflow-tabs button.active { color:var(--fg); border-color:color-mix(in srgb,var(--accent) 45%,var(--border)); background:color-mix(in srgb,var(--accent) 5%,var(--panel)); }
   .type-control { display:flex; flex:none; }
