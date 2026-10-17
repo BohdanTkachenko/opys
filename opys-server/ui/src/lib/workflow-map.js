@@ -1,31 +1,38 @@
-// Semantic graph compression and ELK layout for the lifecycle inspector.
-// Wildcard rules are represented once; they are not synthetic document states.
-export function buildWorkflowMap(view, typeName, documents = []) {
-  const type = view?.types.find((candidate) => candidate.name === typeName);
-  if (!type) return { nodes: [], edges: [], type: null };
-  const statuses = [...new Set([...type.statuses, ...documents.filter((doc) => doc.type === typeName).map((doc) => doc.status)])];
+// The complete permitted-transition graph. Shared status names and transitions
+// merge across types; every edge retains its owners and closing semantics.
+export function buildWorkflowMap(view, typeName = null, documents = []) {
+  const types = (view?.types ?? []).filter((type) => !typeName || type.name === typeName);
+  if (!types.length) return { nodes: [], edges: [], types: [] };
+  const statuses = [...new Set([...types.flatMap((type) => type.statuses), ...documents.filter((doc) => !typeName || doc.type === typeName).map((doc) => doc.status)])];
   const nodes = statuses.map((status) => ({
     id: `state-${encodeURIComponent(status)}`, status, kind: 'status', width: 172, height: 76,
-    initial: status === type.default_status,
-    terminal: type.terminal_statuses.includes(status),
-    declared: type.statuses.includes(status),
+    types: types.filter((type) => type.statuses.includes(status)).map((type) => type.name),
+    initial: types.some((type) => status === type.default_status),
+    terminal: types.some((type) => type.statuses.includes(status)) && types.filter((type) => type.statuses.includes(status)).every((type) => type.terminal_statuses.includes(status)),
+    declared: types.some((type) => type.statuses.includes(status)),
   }));
   const byStatus = new Map(nodes.map((node) => [node.status, node.id]));
-  let edges;
-  if (type.has_graph) {
-    edges = view.edges.filter((edge) => edge.types.includes(typeName))
-      .filter((edge) => byStatus.has(edge.from) && byStatus.has(edge.to))
-      .map((edge, index) => ({ id: `move-${index}`, from: byStatus.get(edge.from), to: byStatus.get(edge.to), closing: type.terminal_statuses.includes(edge.to), wildcard: false }));
-  } else {
-    // There is no useful wildcard rule if every state is terminal.
-    const active = nodes.filter((node) => node.declared && !node.terminal);
-    if (active.length) {
-      nodes.unshift({ id: 'any-active', kind: 'rule', width: 196, height: 84 });
-      edges = nodes.filter((node) => node.kind === 'status' && node.declared && (active.length > 1 || node.status !== active[0].status))
-        .map((node, index) => ({ id: `rule-${index}`, from: 'any-active', to: node.id, closing: node.terminal, wildcard: true }));
-    } else edges = [];
+  const edges = new Map();
+  function add(type, from, to, unrestricted) {
+    if (!byStatus.has(from) || !byStatus.has(to)) return;
+    const id = JSON.stringify([from, to]);
+    const edge = edges.get(id) ?? { id, from: byStatus.get(from), to: byStatus.get(to), types: [], closingTypes: [], unrestricted: true };
+    if (!edge.types.includes(type.name)) edge.types.push(type.name);
+    if (type.terminal_statuses.includes(to) && !edge.closingTypes.includes(type.name)) edge.closingTypes.push(type.name);
+    edge.unrestricted &&= unrestricted;
+    edges.set(id, edge);
   }
-  return { type, nodes, edges };
+  for (const type of types) {
+    if (type.has_graph) {
+      for (const edge of view.edges ?? []) if (edge.types.includes(type.name)) add(type, edge.from, edge.to, false);
+    } else {
+      for (const from of type.statuses) {
+        if (type.terminal_statuses.includes(from)) continue;
+        for (const to of type.statuses) if (from !== to) add(type, from, to, true);
+      }
+    }
+  }
+  return { types, nodes, edges: [...edges.values()].map((edge) => ({ ...edge, closing: edge.closingTypes.length === edge.types.length })), direction: typeName ? 'DOWN' : 'RIGHT' };
 }
 
 export function roundedRoute(points, radius = 8) {
@@ -45,6 +52,11 @@ export function roundedRoute(points, radius = 8) {
   return `${path} L ${last.x} ${last.y}`;
 }
 
+/** Fit the complete graph in the viewport, including its drawing margin. */
+export function fitWorkflowMap(width, height, viewportWidth, viewportHeight) {
+  return Math.min(1.15, Math.max(1, viewportWidth - 40) / Math.max(1, width), Math.max(1, viewportHeight - 40) / Math.max(1, height));
+}
+
 let engine;
 export async function layoutWorkflowMap(model) {
   if (!model.nodes.length) return { nodes: [], edges: [], width: 1, height: 1 };
@@ -54,12 +66,13 @@ export async function layoutWorkflowMap(model) {
   const result = await engine.layout({
     id: 'workflow',
     layoutOptions: {
-      'elk.algorithm': 'layered', 'elk.direction': model.type?.has_graph ? 'DOWN' : 'RIGHT',
+      'elk.algorithm': 'layered', 'elk.direction': model.direction ?? 'RIGHT',
       'elk.edgeRouting': 'ORTHOGONAL', 'elk.spacing.nodeNode': '24',
       'elk.layered.spacing.nodeNodeBetweenLayers': '88',
       'elk.layered.spacing.edgeNodeBetweenLayers': '24',
       'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
       'elk.layered.cycleBreaking.strategy': 'MODEL_ORDER',
+      'elk.layered.mergeEdges': 'false',
       'elk.layered.crossingMinimization.forceNodeModelOrder': 'true',
       'elk.padding': '[top=24,left=24,bottom=24,right=24]',
     },
