@@ -77,6 +77,10 @@
     hiddenTypes = hiddenTypes.includes(name) ? hiddenTypes.filter((type) => type !== name) : [...hiddenTypes, name];
     zoom = 1;
   }
+  function showOnlyType(name) {
+    hiddenTypes = (view?.types ?? []).map((type) => type.name).filter((type) => type !== name);
+    zoom = 1;
+  }
   function toggleAllTypes() {
     hiddenTypes = allTypesVisible ? (view?.types ?? []).map((type) => type.name) : [];
     zoom = 1;
@@ -125,7 +129,10 @@
     <button class:active={allTypesVisible} aria-pressed={allTypesVisible} onclick={toggleAllTypes}><span class="type-check">{#if allTypesVisible}<Icon name="check" size={11} />{/if}</span>All types<span>{view.documents.length}</span></button>
     {#each view.types as type (type.name)}
       {@const visible = !hiddenTypes.includes(type.name)}
-      <button class:active={visible} aria-pressed={visible} title={`${visible ? 'Hide' : 'Show'} ${type.name}`} onclick={() => toggleType(type.name)}><span class="type-check">{#if visible}<Icon name="check" size={11} />{/if}</span>{type.name}<span>{view.documents.filter((doc) => doc.type === type.name).length}</span></button>
+      <div class="type-control">
+        <button class="type-toggle" class:active={visible} aria-pressed={visible} title={`${visible ? 'Hide' : 'Show'} ${type.name}`} onclick={() => toggleType(type.name)}><span class="type-check">{#if visible}<Icon name="check" size={11} />{/if}</span>{type.name}<span>{view.documents.filter((doc) => doc.type === type.name).length}</span></button>
+        <button class="type-only" aria-label={`Show only ${type.name}`} title={`Show only ${type.name}`} onclick={() => showOnlyType(type.name)}>Only</button>
+      </div>
     {/each}
   </nav>
 
@@ -202,6 +209,11 @@
   .workflow-tabs { display:flex; gap:0.5rem; overflow-x:auto; padding:0.15rem 0 0.65rem; margin-bottom:0.6rem; }
   .workflow-tabs button { display:flex; align-items:center; gap:0.45rem; padding:0.45rem 0.65rem; background:var(--panel); color:var(--muted); border:1px solid var(--border); border-radius:7px; cursor:pointer; font:inherit; font-size:0.82rem; white-space:nowrap; }
   .workflow-tabs button.active { color:var(--fg); border-color:color-mix(in srgb,var(--accent) 45%,var(--border)); background:color-mix(in srgb,var(--accent) 5%,var(--panel)); }
+  .type-control { display:flex; flex:none; }
+  .workflow-tabs .type-toggle { border-radius:7px 0 0 7px; }
+  .workflow-tabs .type-only { border-left:0; border-radius:0 7px 7px 0; padding-inline:0.45rem; font-size:0.7rem; }
+  .workflow-tabs .type-only:hover { color:var(--accent); background:var(--raised); }
+  .workflow-tabs button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; z-index:1; }
   .workflow-tabs button>span:last-child { font-size:0.7rem; background:var(--raised); padding:0.05rem 0.35rem; border-radius:4px; font-variant-numeric:tabular-nums; }
   .workflow-tabs .type-check { display:grid; place-items:center; width:13px; height:13px; padding:0; border:1px solid var(--muted); border-radius:3px; }
   .workflow-tabs .active .type-check { background:var(--accent); color:var(--accent-fg); border-color:var(--accent); }
