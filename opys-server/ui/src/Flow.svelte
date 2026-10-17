@@ -69,6 +69,19 @@
   function count(status) { return documents.filter((doc) => doc.status === status).length; }
   function label(node) { return node?.status || '(no status)'; }
   function connected(edge) { return edge.from === activeId || edge.to === activeId || (selectedType && edge.types.includes(selectedType)); }
+  function arrowMarker(edge, reverse = false) {
+    const direction = reverse ? edge.reverse : edge.forward;
+    if (!direction) return undefined;
+    const highlighted = selectedType ? direction.types.includes(selectedType) : connected(edge);
+    return highlighted ? 'url(#workflow-arrow-selected)' : 'url(#workflow-arrow)';
+  }
+  function connectionTitle(edge) {
+    return [edge.forward, edge.reverse].filter(Boolean).map((direction) => {
+      const from = model.nodes.find((node) => node.id === direction.from)?.status;
+      const to = model.nodes.find((node) => node.id === direction.to)?.status;
+      return `${from} → ${to}: ${direction.types.join(', ')} (${direction.unrestricted ? 'unrestricted' : 'configured'})${direction.closingTypes.length ? '; close for '+direction.closingTypes.join(', ') : ''}`;
+    }).join('\n');
+  }
   function measureViewport(element) {
     let frame;
     const update = () => {
@@ -113,12 +126,12 @@
         <div class="stage" style:width={`${stage.width * scale}px`} style:height={`${stage.height * scale}px`}>
           <svg class="connections" width={stage.width * scale} height={stage.height * scale} viewBox={`0 0 ${stage.width} ${stage.height}`} aria-hidden="true">
             <defs>
-              <marker id="workflow-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M 1 1 L 7 4 L 1 7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" /></marker>
-              <marker id="workflow-arrow-selected" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M 1 1 L 7 4 L 1 7" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></marker>
+              <marker id="workflow-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 1 1 L 7 4 L 1 7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" /></marker>
+              <marker id="workflow-arrow-selected" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 1 1 L 7 4 L 1 7" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></marker>
             </defs>
             {#each stage.edges as edge (edge.id)}
               {#each edge.paths as path}
-                <path class="connection" class:related={connected(edge)} class:unrestricted={edge.unrestricted} d={path} marker-end={connected(edge) ? 'url(#workflow-arrow-selected)' : 'url(#workflow-arrow)'}><title>{model.nodes.find((node) => node.id === edge.from)?.status} → {model.nodes.find((node) => node.id === edge.to)?.status}: {edge.types.join(', ')}</title></path>
+                <path class="connection" class:related={connected(edge)} class:unrestricted={edge.unrestricted} data-bidirectional={edge.bidirectional || undefined} d={path} marker-start={arrowMarker(edge, true)} marker-end={arrowMarker(edge)}><title>{connectionTitle(edge)}</title></path>
               {/each}
             {/each}
           </svg>
@@ -137,7 +150,7 @@
       </div>
       {/if}
       <div class="map-footer"><span>Every status and transition is shown. Select a type to highlight its workflow.</span><div class="zoom"><button aria-label="Zoom out" onclick={() => zoom = Math.max(0.2, zoom - 0.2)}>−</button><button onclick={() => zoom = 1} aria-label="Fit workflow">Fit</button><button aria-label="Zoom in" onclick={() => zoom = Math.min(6, zoom + 0.4)}>+</button></div></div>
-      <div class="workflow-explanation"><Icon name="flow" size={15} /><p>Shared statuses combine documents from every type. Dashed arrows are unrestricted moves; solid arrows are configured transitions. Counts update live. Select a status to inspect its documents.</p></div>
+      <div class="workflow-explanation"><Icon name="flow" size={15} /><p>Shared statuses combine documents from every type. Two-way connections use arrowheads at both ends. Dashed connections are unrestricted; solid connections include configured transitions. Counts update live.</p></div>
     </section>
 
     {#if inspectOpen}

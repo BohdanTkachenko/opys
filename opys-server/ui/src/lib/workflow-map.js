@@ -57,12 +57,33 @@ export function fitWorkflowMap(width, height, viewportWidth, viewportHeight) {
   return Math.min(1.15, Math.max(1, viewportWidth - 40) / Math.max(1, width), Math.max(1, viewportHeight - 40) / Math.max(1, height));
 }
 
+/** Pair reciprocal transitions for drawing; retain both directional records. */
+export function mergeReciprocalEdges(edges) {
+  const key = (from, to) => JSON.stringify([from, to]);
+  const byPair = new Map(edges.map((edge) => [key(edge.from, edge.to), edge]));
+  const seen = new Set();
+  const connections = [];
+  for (const forward of edges) {
+    if (seen.has(key(forward.from, forward.to))) continue;
+    const reverse = forward.from !== forward.to ? byPair.get(key(forward.to, forward.from)) : undefined;
+    seen.add(key(forward.from, forward.to));
+    if (reverse) seen.add(key(reverse.from, reverse.to));
+    connections.push({
+      ...forward, forward, reverse, bidirectional: !!reverse,
+      types: [...new Set([...forward.types, ...(reverse?.types ?? [])])],
+      unrestricted: forward.unrestricted && (!reverse || reverse.unrestricted),
+    });
+  }
+  return connections;
+}
+
 let engine;
 export async function layoutWorkflowMap(model) {
   if (!model.nodes.length) return { nodes: [], edges: [], width: 1, height: 1 };
   // Loaded only when the lifecycle is opened; everything is bundled locally.
   const { default: ELK } = await import('elkjs/lib/elk.bundled.js');
   engine ??= new ELK();
+  const connections = mergeReciprocalEdges(model.edges);
   const result = await engine.layout({
     id: 'workflow',
     layoutOptions: {
@@ -77,12 +98,12 @@ export async function layoutWorkflowMap(model) {
       'elk.padding': '[top=24,left=24,bottom=24,right=24]',
     },
     children: model.nodes.map(({ id, width, height }) => ({ id, width, height })),
-    edges: model.edges.map(({ id, from, to }) => ({ id, sources: [from], targets: [to] })),
+    edges: connections.map(({ id, from, to }) => ({ id, sources: [from], targets: [to] })),
   });
   return {
     width: result.width, height: result.height,
     nodes: result.children.map((node) => ({ ...model.nodes.find((item) => item.id === node.id), x: node.x, y: node.y })),
-    edges: result.edges.map((edge) => ({ ...model.edges.find((item) => item.id === edge.id),
+    edges: result.edges.map((edge) => ({ ...connections.find((item) => item.id === edge.id),
       paths: (edge.sections ?? []).map((section) => roundedRoute([section.startPoint, ...(section.bendPoints ?? []), section.endPoint])),
     })),
   };

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildWorkflowMap, fitWorkflowMap, layoutWorkflowMap, roundedRoute } from './workflow-map.js';
+import { buildWorkflowMap, fitWorkflowMap, layoutWorkflowMap, mergeReciprocalEdges, roundedRoute } from './workflow-map.js';
 
 const type = {name:'task',statuses:['todo','doing','review','blocked','done'],default_status:'todo',terminal_statuses:['done'],has_graph:false};
 const view = {types:[type],nodes:[],edges:[]};
@@ -43,7 +43,8 @@ test('explicit cyclic workflows preserve only their configured transitions', asy
   const model = buildWorkflowMap(explicit, 'task');
   assert.equal(model.edges.length, 4);
   const result = await layoutWorkflowMap(model);
-  assert.equal(result.edges.length, 4);
+  assert.equal(result.edges.length, 3);
+  assert.equal(result.edges.filter(edge=>edge.bidirectional).length, 1);
   assert.ok(result.edges.every(edge=>edge.paths.length && edge.paths.every(path=>!path.includes('NaN'))));
   const y = (status) => result.nodes.find(node=>node.status===status).y;
   assert.ok(y('todo') < y('doing') && y('doing') < y('review') && y('review') < y('done'));
@@ -51,7 +52,8 @@ test('explicit cyclic workflows preserve only their configured transitions', asy
 
 test('ELK routes every edge of the full project graph without overlapping nodes', async () => {
   const result = await layoutWorkflowMap(buildWorkflowMap(view));
-  assert.equal(result.edges.length,16);
+  assert.equal(result.edges.length,10);
+  assert.equal(result.edges.reduce((n,edge)=>n+(edge.bidirectional?2:1),0),16);
   assert.ok(Number.isFinite(result.width) && result.width>0);
   assert.ok(Number.isFinite(result.height) && result.height>0);
   for (const a of result.nodes) for(const b of result.nodes) {
@@ -87,4 +89,23 @@ test('rounded routes tolerate repeated bend points', () => {
   const path=roundedRoute([{x:0,y:0},{x:10,y:0},{x:10,y:0},{x:10,y:20}]);
   assert.ok(!path.includes('NaN'));
   assert.ok(path.endsWith('L 10 20'));
+});
+
+test('reciprocal connections retain asymmetric owners, guards and closing details', () => {
+  const forward={id:'a-b',from:'a',to:'b',types:['task'],closingTypes:['task'],closing:true,unrestricted:false};
+  const reverse={id:'b-a',from:'b',to:'a',types:['milestone'],closingTypes:[],closing:false,unrestricted:true};
+  const oneWay={id:'b-c',from:'b',to:'c',types:['task'],closingTypes:[],unrestricted:true};
+  const loop={id:'c-c',from:'c',to:'c',types:['task'],closingTypes:[],unrestricted:false};
+  const edges=[forward,reverse,oneWay,loop];
+  const original=JSON.stringify(edges);
+  const result=mergeReciprocalEdges(edges);
+  assert.equal(result.length,3);
+  assert.equal(result[0].bidirectional,true);
+  assert.deepEqual(result[0].types,['task','milestone']);
+  assert.deepEqual(result[0].forward,forward);
+  assert.deepEqual(result[0].reverse,reverse);
+  assert.equal(result[0].unrestricted,false);
+  assert.equal(result[1].bidirectional,false);
+  assert.equal(result[2].bidirectional,false,'a self-loop has only one directional record');
+  assert.equal(JSON.stringify(edges),original,'pairing must not mutate the transition model');
 });
