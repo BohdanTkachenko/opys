@@ -47,6 +47,8 @@
     <p class="why" role="alert">Could not refresh the inventory: {report.data.load_error}</p>
   {/if}
   {#if problems.length > 0}
+    <section class:card-warning={id !== null} aria-label="Verification problems">
+    {#if id}<p class="warning-title">Verification problems</p>{/if}
     <details>
       <summary>Issue details ({problems.length})</summary>
       <ul aria-label="Verification issues">
@@ -59,6 +61,7 @@
       {fixing ? 'Fixing…' : 'Fix'}
     </button>
     <p class="why">{id ? 'Apply automatic fixes to this document.' : 'Apply automatic fixes to this corpus.'} Some issues may need manual repair.</p>
+    </section>
   {:else if !id || outcome}
     <p class="why">No verification issues in the latest report.</p>
   {/if}
@@ -67,6 +70,16 @@
 {#if outcome}<p class="outcome" role="status">{outcome}</p>{/if}
 
 <style>
+  .card-warning {
+    background: color-mix(in srgb, var(--bad) 8%, var(--panel));
+    border: 1px solid color-mix(in srgb, var(--bad) 45%, var(--border));
+    border-left: 3px solid var(--bad);
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+    margin-bottom: 1rem;
+  }
+  .warning-title { color: var(--bad); font-weight: 600; margin: 0; }
+  .card-warning .why { color: var(--muted); font-size: 0.9em; }
   details { margin-top: 0.75rem; }
   summary { cursor: pointer; }
   ul { max-height: 20rem; overflow-y: auto; padding-left: 1.5rem; }
