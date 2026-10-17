@@ -88,6 +88,7 @@
   /** `{d, back}` per drawable edge, in container coordinates. */
   let wires = $state([]);
   let size = $state({ width: 0, height: 0 });
+  let highlighted = $state(null);
 
   function boxes() {
     if (!canvas) return null;
@@ -111,25 +112,32 @@
    * target; a return leaves the left and comes back to the right, bowing below
    * both cards so it never crosses the row it belongs to.
    */
-  function wire(a, b, back, lane = 0, bottom = 0, top = 0) {
+  function wire(a, b, back, lane = 0, bottom = 0, top = 0, fromPort = 0.5, toPort = 0.5) {
     if (a === b) {
       const x = a.x + a.w / 2;
       return `M ${x - 16} ${a.y} C ${x - 26} ${a.y - 30}, ${x + 26} ${a.y - 30}, ${x + 16} ${a.y}`;
     }
     if (!back) {
       const x1 = a.x + a.w;
-      const y1 = a.y + a.h / 2;
+      const y1 = a.y + a.h * fromPort;
       const x2 = b.x;
-      const y2 = b.y + b.h / 2;
+      const y2 = b.y + b.h * toPort;
+      if (x2 - x1 < 80) {
+        const bend = (x2 - x1) / 2;
+        return `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
+      }
       const rise = top - 24 - lane * 8;
-      return `M ${x1} ${y1} H ${x1 + 18} V ${rise} H ${x2 - 18} V ${y2} H ${x2}`;
+      return `M ${x1} ${y1} H ${x1 + 8} Q ${x1 + 18} ${y1} ${x1 + 18} ${y1 - 10} V ${rise + 10} Q ${x1 + 18} ${rise} ${x1 + 28} ${rise} H ${x2 - 28} Q ${x2 - 18} ${rise} ${x2 - 18} ${rise + 10} V ${y2 - 10} Q ${x2 - 18} ${y2} ${x2 - 8} ${y2} H ${x2}`;
     }
     const x1 = a.x;
-    const y1 = a.y + a.h / 2;
+    const y1 = a.y + a.h * fromPort;
     const x2 = b.x + b.w;
-    const y2 = b.y + b.h / 2;
+    const y2 = b.y + b.h * toPort;
     const dip = bottom + 24 + lane * 8;
-    return `M ${x1} ${y1} H ${x1 - 18} V ${dip} H ${x2 + 18} V ${y2} H ${x2}`;
+    if (x1 - x2 < 80) {
+      return `M ${x1} ${y1} C ${x1 - 30} ${dip}, ${x2 + 30} ${dip}, ${x2} ${y2}`;
+    }
+    return `M ${x1} ${y1} H ${x1 - 8} Q ${x1 - 18} ${y1} ${x1 - 18} ${y1 + 10} V ${dip - 10} Q ${x1 - 18} ${dip} ${x1 - 28} ${dip} H ${x2 + 28} Q ${x2 + 18} ${dip} ${x2 + 18} ${dip - 10} V ${y2 + 10} Q ${x2 + 18} ${y2} ${x2 + 8} ${y2} H ${x2}`;
   }
 
   function measure() {
@@ -140,6 +148,21 @@
     const top = Math.min(...[...found.values()].map((box) => box.y));
     let forwardLane = 0;
     let backLane = 0;
+    const counts = new Map();
+    const used = new Map();
+    const portKey = (edge, source) => `${source ? edge.from : edge.to}:${source !== edge.back ? 'right' : 'left'}`;
+    for (const edge of placed.edges) {
+      for (const source of [true, false]) {
+        const key = portKey(edge, source);
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+    }
+    const port = (edge, source) => {
+      const key = portKey(edge, source);
+      const index = (used.get(key) ?? 0) + 1;
+      used.set(key, index);
+      return 0.2 + 0.6 * index / (counts.get(key) + 1);
+    };
     size = { width: base.width, height: base.height };
     wires = placed.edges
       .map((edge) => {
@@ -147,7 +170,8 @@
         const b = found.get(edge.to);
         if (!a || !b) return null;
         const source = drawing.edges.find((candidate) => candidate.from === edge.from && candidate.to === edge.to);
-        return { d: wire(a, b, edge.back, edge.back ? backLane++ : forwardLane++, bottom, top), back: edge.back, implicit: source?.implicit,
+        return { from: edge.from, to: edge.to,
+          d: wire(a, b, edge.back, edge.back ? backLane++ : forwardLane++, bottom, top, port(edge, true), port(edge, false)), back: edge.back, implicit: source?.implicit,
           label: `${edge.from} → ${edge.to}${source?.implicit ? ' (unrestricted workflow)' : ''}` };
       })
       .filter(Boolean);
@@ -261,7 +285,7 @@
     </div>
     <p class="small muted">
       {#if drawing.unrestricted}Long-dashed arrows show moves allowed without a transitions map.{/if}
-      Counts and cards include all document types sharing each status. Expand a node to inspect its items.
+      Counts and cards include all document types sharing each status. Hover or focus a status to trace its arrows.
     </p>
 
     <div class="scroll">
@@ -294,9 +318,16 @@
             >
               <path d="M0 0 L8 4 L0 8 z" fill="currentColor" />
             </marker>
+            <marker id="flow-arrow-active" viewBox="0 0 8 8" refX="7" refY="4"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0 0 L8 4 L0 8 z" fill="var(--accent)" />
+            </marker>
           </defs>
           {#each wires as edge, index (index)}
-            <path class="wire" class:back={edge.back} class:implicit={edge.implicit} d={edge.d} marker-end="url(#flow-arrow)"><title>{edge.label}</title></path>
+            <path class="wire" class:back={edge.back} class:implicit={edge.implicit}
+              class:highlighted={highlighted === edge.from || highlighted === edge.to}
+              class:dimmed={highlighted !== null && highlighted !== edge.from && highlighted !== edge.to}
+              d={edge.d} marker-end={highlighted === edge.from || highlighted === edge.to ? 'url(#flow-arrow-active)' : 'url(#flow-arrow)'}><title>{edge.label}</title></path>
           {/each}
         </svg>
 
@@ -304,6 +335,11 @@
           {@const node = byStatus.get(spot.status)}
           {@const tone = statusTone(spot.status)}
           <section
+            aria-label={`${statusLabel(spot.status)}: focus to highlight connected transitions`}
+            onpointerenter={() => highlighted = spot.status}
+            onpointerleave={() => highlighted = null}
+            onfocusin={() => highlighted = spot.status}
+            onfocusout={() => highlighted = null}
             class="node panel"
             class:neutral={tone === null}
             class:terminal={node.terminal}
@@ -314,8 +350,10 @@
             bind:this={cards[spot.status]}
           >
             <h2 title={declaredBy(node)}>
-              <span class="status mono" class:nameless={spot.status.length === 0}
-                >{statusLabel(spot.status)}</span
+              <button class="status mono status-focus" class:nameless={spot.status.length === 0}
+                aria-label={`Highlight ${statusLabel(spot.status)} transitions`}
+                onclick={() => highlighted = spot.status}
+                >{statusLabel(spot.status)}</button
               >
               {#if node.initial}<span class="pill" title="where a new document starts">start</span>
               {/if}
@@ -523,16 +561,23 @@
   .wire {
     fill: none;
     stroke: currentColor;
-    stroke-width: 2;
+    stroke-width: 1.3;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    opacity: 0.55;
   }
 
   /* A return is the same relation drawn the other way; dashed and dimmer so the
      forward spine of the graph stays the thing you read first. */
   .wire.back {
     stroke-dasharray: 4 4;
-    opacity: 0.8;
+    opacity: 0.45;
   }
   .wire.implicit { stroke-dasharray: 6 4; }
+  .wire.highlighted { stroke: var(--accent); opacity: 1; stroke-width: 1.8; }
+  .wire.dimmed { opacity: 0.12; }
+  .status-focus { background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; text-align: left; }
+  .status-focus:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   .node summary { cursor: pointer; margin-top: 0.6rem; color: var(--muted); }
 
   .node {
