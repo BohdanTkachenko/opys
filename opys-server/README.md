@@ -64,6 +64,9 @@ maps produce solid arrows; a type without a map shows its permitted unrestricted
 moves as dashed arrows, with no departures from terminal states. Document counts
 remain merged by status across types. Node item lists expand on demand, and
 return arrows use lanes below the nodes so cycles stay visible.
+By default, only the selected status's outgoing arrows are shown, starting at
+the workflow's initial status. Select a status to inspect its next moves; the
+**All transitions** toggle restores the complete graph.
 
 ## License
 

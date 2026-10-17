@@ -50,6 +50,8 @@
     // and leave the graph showing the previous project.
     const wanted = key;
     selectedType = null;
+    selectedTrace = null;
+    showAll = false;
     graph.run(() => api.flow(wanted));
   });
 
@@ -76,6 +78,11 @@
   const activeType = $derived(selectedType ?? (view?.types.some((type) => type.name === 'task') ? 'task' : view?.types[0]?.name));
   const drawing = $derived(workflow(view, activeType === '*' ? null : activeType));
   const placed = $derived(layout(drawing.nodes, drawing.edges));
+  let selectedTrace = $state(null);
+  let showAll = $state(false);
+  const tracedStatus = $derived(drawing.nodes.some((node) => node.status === selectedTrace)
+    ? selectedTrace : (drawing.nodes.find((node) => node.initial)?.status ?? drawing.nodes[0]?.status));
+  const visibleEdges = $derived(placed.edges.filter((edge) => showAll || edge.from === tracedStatus));
   /** status → the node payload, so the grid can render in placement order. */
   const byStatus = $derived(new Map(drawing.nodes.map((node) => [node.status, node])));
   const documents = $derived((view?.nodes ?? []).reduce((n, node) => n + node.total, 0));
@@ -151,7 +158,7 @@
     const counts = new Map();
     const used = new Map();
     const portKey = (edge, source) => `${source ? edge.from : edge.to}:${source !== edge.back ? 'right' : 'left'}`;
-    for (const edge of placed.edges) {
+    for (const edge of visibleEdges) {
       for (const source of [true, false]) {
         const key = portKey(edge, source);
         counts.set(key, (counts.get(key) ?? 0) + 1);
@@ -164,7 +171,7 @@
       return 0.2 + 0.6 * index / (counts.get(key) + 1);
     };
     size = { width: base.width, height: base.height };
-    wires = placed.edges
+    wires = visibleEdges
       .map((edge) => {
         const a = found.get(edge.from);
         const b = found.get(edge.to);
@@ -283,9 +290,13 @@
         listing the top {view.limit} of each status, in <code>opys next</code> order
       </span>
     </div>
+    <div class="trace-controls small">
+      <span aria-live="polite">{#if showAll}Showing all {placed.edges.length} transitions{:else}{visibleEdges.length} {visibleEdges.length === 1 ? 'transition' : 'transitions'} from <strong>{statusLabel(tracedStatus ?? '')}</strong>{/if}</span>
+      <button class="btn small" aria-pressed={showAll} onclick={() => showAll = !showAll}>All transitions</button>
+    </div>
     <p class="small muted">
       {#if drawing.unrestricted}Long-dashed arrows show moves allowed without a transitions map.{/if}
-      Counts and cards include all document types sharing each status. Hover or focus a status to trace its arrows.
+      Select a status to see its next moves. Counts and cards include all types sharing each status.
     </p>
 
     <div class="scroll">
@@ -294,8 +305,8 @@
         bind:this={canvas}
         style:--layers={placed.layers}
         style:--rows={placed.rows}
-        style:--return-lanes={placed.edges.filter((edge) => edge.back).length}
-        style:--forward-lanes={placed.edges.filter((edge) => !edge.back).length}
+        style:--return-lanes={visibleEdges.filter((edge) => edge.back).length}
+        style:--forward-lanes={visibleEdges.filter((edge) => !edge.back).length}
       >
         <!-- Under the cards, and inert: the cards are the links. Drawn from
              measured positions, so it survives cards of different heights. -->
@@ -325,9 +336,9 @@
           </defs>
           {#each wires as edge, index (index)}
             <path class="wire" class:back={edge.back} class:implicit={edge.implicit}
-              class:highlighted={highlighted === edge.from || highlighted === edge.to}
-              class:dimmed={highlighted !== null && highlighted !== edge.from && highlighted !== edge.to}
-              d={edge.d} marker-end={highlighted === edge.from || highlighted === edge.to ? 'url(#flow-arrow-active)' : 'url(#flow-arrow)'}><title>{edge.label}</title></path>
+              class:highlighted={!showAll || highlighted === edge.from || highlighted === edge.to}
+              class:dimmed={showAll && highlighted !== null && highlighted !== edge.from && highlighted !== edge.to}
+              d={edge.d} marker-end={!showAll || highlighted === edge.from || highlighted === edge.to ? 'url(#flow-arrow-active)' : 'url(#flow-arrow)'}><title>{edge.label}</title></path>
           {/each}
         </svg>
 
@@ -338,9 +349,10 @@
             aria-label={`${statusLabel(spot.status)}: focus to highlight connected transitions`}
             onpointerenter={() => highlighted = spot.status}
             onpointerleave={() => highlighted = null}
-            onfocusin={() => highlighted = spot.status}
+            onfocusin={() => { highlighted = spot.status; selectedTrace = spot.status; }}
             onfocusout={() => highlighted = null}
             class="node panel"
+            class:traced={!showAll && tracedStatus === spot.status}
             class:neutral={tone === null}
             class:terminal={node.terminal}
             class:undeclared={!node.declared}
@@ -351,8 +363,9 @@
           >
             <h2 title={declaredBy(node)}>
               <button class="status mono status-focus" class:nameless={spot.status.length === 0}
-                aria-label={`Highlight ${statusLabel(spot.status)} transitions`}
-                onclick={() => highlighted = spot.status}
+                aria-label={`Show transitions from ${statusLabel(spot.status)}`}
+                aria-pressed={!showAll && tracedStatus === spot.status}
+                onclick={() => { selectedTrace = spot.status; showAll = false; }}
                 >{statusLabel(spot.status)}</button
               >
               {#if node.initial}<span class="pill" title="where a new document starts">start</span>
@@ -525,6 +538,9 @@
 
   .types button { cursor: pointer; font: inherit; }
   .types .chosen { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .trace-controls { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+  .trace-controls button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  .node.traced { outline: 1px solid var(--accent); outline-offset: 3px; }
 
   .types .note {
     margin-left: 0.3rem;
