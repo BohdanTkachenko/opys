@@ -38,6 +38,37 @@
  * @typedef {{nodes: PlacedNode[], edges: PlacedEdge[], layers: number, rows: number}} Layout
  */
 
+/** Draw unrestricted workflows honestly, without inventing a preferred sequence. */
+export function workflow(view, typeName) {
+  const types = (view?.types ?? []).filter((type) => !typeName || type.name === typeName);
+  const statuses = new Set(types.flatMap((type) => type.statuses));
+  const nodes = (view?.nodes ?? []).filter((node) => !typeName || statuses.has(node.status));
+  const edges = new Map();
+  for (const edge of view?.edges ?? []) {
+    const owners = edge.types.filter((name) => types.some((type) => type.name === name));
+    if (owners.length) edges.set(JSON.stringify([edge.from, edge.to]), { ...edge, implicit: false });
+  }
+  for (const type of types.filter((type) => !type.has_graph)) {
+    for (const from of type.statuses) {
+      // Terminal work items are deleted by close; they cannot leave that state.
+      if (type.terminal_statuses.includes(from)) continue;
+      for (const to of type.statuses) {
+        if (from === to) continue;
+        const key = JSON.stringify([from, to]);
+        if (!edges.has(key)) edges.set(key, { from, to, implicit: true });
+      }
+    }
+  }
+  return {
+    nodes: nodes.map((node) => ({ ...node,
+      initial: types.some((type) => type.default_status === node.status),
+      terminal: types.some((type) => type.terminal_statuses.includes(node.status)),
+    })),
+    edges: [...edges.values()],
+    unrestricted: types.some((type) => !type.has_graph),
+  };
+}
+
 /**
  * Place a status graph on a grid of layers (columns) and rows.
  *

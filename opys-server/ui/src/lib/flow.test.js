@@ -242,3 +242,30 @@ test("this repo's own lifecycle draws as three readable components", () => {
     assert.ok(at.get(edge.to).layer > at.get(edge.from).layer, `${edge.from} → ${edge.to}`);
   }
 });
+
+test('unrestricted workflows draw allowed arrows without terminal departures', async () => {
+  const { workflow } = await import('./flow.js');
+  const view = {
+    types: [{name: 'task', statuses: ['todo', 'doing', 'done'], default_status: 'todo', terminal_statuses: ['done'], has_graph: false}],
+    nodes: ['todo', 'doing', 'done'].map(status => ({status})), edges: [],
+  };
+  const graph = workflow(view, 'task');
+  assert.equal(graph.edges.length, 4);
+  assert.ok(graph.edges.every(edge => edge.implicit && edge.from !== 'done' && edge.from !== edge.to));
+  assert.ok(graph.edges.some(edge => edge.from === 'doing' && edge.to === 'todo'));
+  assert.equal(layout(graph.nodes, graph.edges).edges.length, 4);
+});
+
+test('declared workflows keep only their configured arrows', async () => {
+  const { workflow } = await import('./flow.js');
+  const view = {
+    types: [{name: 'task', statuses: ['todo', 'done'], default_status: 'todo', terminal_statuses: ['done'], has_graph: true}],
+    nodes: ['todo', 'done', 'accepted'].map(status => ({status})),
+    edges: [{from: 'todo', to: 'done', types: ['task']}],
+  };
+  const graph = workflow(view, 'task');
+  assert.equal(graph.nodes.length, 2);
+  assert.equal(graph.edges.length, 1);
+  assert.equal(graph.edges[0].implicit, false);
+  assert.equal(workflow(view, null).nodes.length, 3, 'all types preserves unowned statuses');
+});

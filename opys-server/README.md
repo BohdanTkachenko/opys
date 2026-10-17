@@ -58,6 +58,13 @@ the real engine fix pass in a disposable store without flushing or syncing.
 fields and other manual-only findings do not enable it; after the fixable
 findings are cleared, the button is disabled even if other problems remain.
 
+The lifecycle view draws directed arrows between status nodes. Use the workflow
+type selector to focus the diagram, or select all types. Explicit transition
+maps produce solid arrows; a type without a map shows its permitted unrestricted
+moves as dashed arrows, with no departures from terminal states. Document counts
+remain merged by status across types. Node item lists expand on demand, and
+return arrows use lanes below the nodes so cycles stay visible.
+
 ## License
 
 Apache-2.0, like the rest of the workspace, permanently (ADR-0033).

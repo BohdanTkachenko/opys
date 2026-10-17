@@ -35,7 +35,7 @@
   import { api } from './lib/api.js';
   import { corpora } from './lib/corpora.svelte.js';
   import { affects, affectsProject, events } from './lib/events.svelte.js';
-  import { layout } from './lib/flow.js';
+  import { layout, workflow } from './lib/flow.js';
   import { priorityChip, statusTone, typeTone } from './lib/format.js';
   import { createResource } from './lib/resource.svelte.js';
   import { docPath, href } from './lib/router.svelte.js';
@@ -49,6 +49,7 @@
     // Reading it inside the async callback instead would subscribe to nothing
     // and leave the graph showing the previous project.
     const wanted = key;
+    selectedType = null;
     graph.run(() => api.flow(wanted));
   });
 
@@ -71,9 +72,12 @@
   const group = $derived(corpora.groups.find((candidate) => candidate.key === key));
   const view = $derived(graph.data);
 
-  const placed = $derived(layout(view?.nodes ?? [], view?.edges ?? []));
+  let selectedType = $state(null);
+  const activeType = $derived(selectedType ?? (view?.types.some((type) => type.name === 'task') ? 'task' : view?.types[0]?.name));
+  const drawing = $derived(workflow(view, activeType === '*' ? null : activeType));
+  const placed = $derived(layout(drawing.nodes, drawing.edges));
   /** status → the node payload, so the grid can render in placement order. */
-  const byStatus = $derived(new Map((view?.nodes ?? []).map((node) => [node.status, node])));
+  const byStatus = $derived(new Map(drawing.nodes.map((node) => [node.status, node])));
   const documents = $derived((view?.nodes ?? []).reduce((n, node) => n + node.total, 0));
 
   // --- edge geometry -------------------------------------------------------
@@ -107,7 +111,7 @@
    * target; a return leaves the left and comes back to the right, bowing below
    * both cards so it never crosses the row it belongs to.
    */
-  function wire(a, b, back) {
+  function wire(a, b, back, lane = 0, bottom = 0, top = 0) {
     if (a === b) {
       const x = a.x + a.w / 2;
       return `M ${x - 16} ${a.y} C ${x - 26} ${a.y - 30}, ${x + 26} ${a.y - 30}, ${x + 16} ${a.y}`;
@@ -117,28 +121,34 @@
       const y1 = a.y + a.h / 2;
       const x2 = b.x;
       const y2 = b.y + b.h / 2;
-      const bend = Math.max(26, (x2 - x1) / 2);
-      return `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
+      const rise = top - 24 - lane * 8;
+      return `M ${x1} ${y1} H ${x1 + 18} V ${rise} H ${x2 - 18} V ${y2} H ${x2}`;
     }
     const x1 = a.x;
     const y1 = a.y + a.h / 2;
     const x2 = b.x + b.w;
     const y2 = b.y + b.h / 2;
-    const dip = Math.max(a.y + a.h, b.y + b.h) + 26;
-    return `M ${x1} ${y1} C ${x1 - 34} ${dip}, ${x2 + 34} ${dip}, ${x2} ${y2}`;
+    const dip = bottom + 24 + lane * 8;
+    return `M ${x1} ${y1} H ${x1 - 18} V ${dip} H ${x2 + 18} V ${y2} H ${x2}`;
   }
 
   function measure() {
     const measured = boxes();
     if (!measured) return;
     const { base, found } = measured;
+    const bottom = Math.max(0, ...[...found.values()].map((box) => box.y + box.h));
+    const top = Math.min(...[...found.values()].map((box) => box.y));
+    let forwardLane = 0;
+    let backLane = 0;
     size = { width: base.width, height: base.height };
     wires = placed.edges
       .map((edge) => {
         const a = found.get(edge.from);
         const b = found.get(edge.to);
         if (!a || !b) return null;
-        return { d: wire(a, b, edge.back), back: edge.back };
+        const source = drawing.edges.find((candidate) => candidate.from === edge.from && candidate.to === edge.to);
+        return { d: wire(a, b, edge.back, edge.back ? backLane++ : forwardLane++, bottom, top), back: edge.back, implicit: source?.implicit,
+          label: `${edge.from} → ${edge.to}${source?.implicit ? ' (unrestricted workflow)' : ''}` };
       })
       .filter(Boolean);
   }
@@ -185,8 +195,8 @@
     {#if view}
       <span class="small muted">
         {placed.nodes.length}
-        {placed.nodes.length === 1 ? 'status' : 'statuses'} · {view.edges.length}
-        {view.edges.length === 1 ? 'transition' : 'transitions'} · {documents}
+        {placed.nodes.length === 1 ? 'status' : 'statuses'} · {drawing.edges.length}
+        {drawing.edges.length === 1 ? 'transition' : 'transitions'} · {documents}
         {documents === 1 ? 'document' : 'documents'}
         {#if graph.loading}· refreshing…{/if}
       </span>
@@ -227,23 +237,31 @@
       </p>
     </div>
   {:else}
-    <p class="types small muted">
+    <div class="types small muted" aria-label="Workflow type">
+      <button class="btn small" class:chosen={activeType === '*'} aria-pressed={activeType === '*'} onclick={() => selectedType = '*'}>All types</button>
       {#each view.types as type (type.name)}
         {@const tone = typeTone(type.name)}
-        <span
+        <button
           class="chip"
+          class:chosen={activeType === type.name}
+          aria-pressed={activeType === type.name}
+          onclick={() => selectedType = type.name}
           style:--tone={tone}
           class:neutral={tone === null}
           title={type.has_graph
             ? `${type.prefix} · ${type.statuses.length} statuses, with a declared transition graph`
-            : `${type.prefix} · ${type.statuses.length} statuses and no transitions map — any status may follow any other, so it draws no edges`}
+            : `${type.prefix} · unrestricted workflow; dashed arrows show permitted moves`}
         >
           {type.name}{#if !type.has_graph}<span class="loose"> ⋯</span>{/if}
-        </span>
+        </button>
       {/each}
       <span class="note">
         listing the top {view.limit} of each status, in <code>opys next</code> order
       </span>
+    </div>
+    <p class="small muted">
+      {#if drawing.unrestricted}Long-dashed arrows show moves allowed without a transitions map.{/if}
+      Counts and cards include all document types sharing each status. Expand a node to inspect its items.
     </p>
 
     <div class="scroll">
@@ -252,6 +270,8 @@
         bind:this={canvas}
         style:--layers={placed.layers}
         style:--rows={placed.rows}
+        style:--return-lanes={placed.edges.filter((edge) => edge.back).length}
+        style:--forward-lanes={placed.edges.filter((edge) => !edge.back).length}
       >
         <!-- Under the cards, and inert: the cards are the links. Drawn from
              measured positions, so it survives cards of different heights. -->
@@ -276,7 +296,7 @@
             </marker>
           </defs>
           {#each wires as edge, index (index)}
-            <path class="wire" class:back={edge.back} d={edge.d} marker-end="url(#flow-arrow)" />
+            <path class="wire" class:back={edge.back} class:implicit={edge.implicit} d={edge.d} marker-end="url(#flow-arrow)"><title>{edge.label}</title></path>
           {/each}
         </svg>
 
@@ -318,6 +338,7 @@
             {/if}
 
             {#if node.items.length > 0}
+              <details><summary class="small">{node.pickable} pickable · show items</summary>
               <ul>
                 {#each node.items as item (item.id)}
                   {@const itemTone = typeTone(item.type)}
@@ -358,6 +379,7 @@
                   and {node.pickable - node.items.length} more pickable
                 </p>
               {/if}
+              </details>
             {:else if node.pickable === 0 && node.total > 0}
               <p class="more small muted">nothing here is pickable</p>
             {:else if node.total === 0}
@@ -400,9 +422,9 @@
       <div>
         <dt><span class="swatch forward"></span> transition</dt>
         <dd>
-          a move some type's <code>transitions</code> map declares. A type that declares
-          none contributes its statuses and no edges — any status may follow any other,
-          which is not the same as every edge
+          an allowed move. Configured forward moves use solid lines;
+          long dashes show unrestricted moves allowed when no map is configured.
+          Moving into a terminal status uses <code>close</code>.
         </dd>
       </div>
       <div>
@@ -463,6 +485,9 @@
     opacity: 0.7;
   }
 
+  .types button { cursor: pointer; font: inherit; }
+  .types .chosen { outline: 2px solid var(--accent); outline-offset: 2px; }
+
   .types .note {
     margin-left: 0.3rem;
   }
@@ -479,12 +504,12 @@
   .canvas {
     position: relative;
     display: grid;
-    grid-template-columns: repeat(var(--layers), minmax(14rem, 1fr));
+    grid-template-columns: repeat(var(--layers), minmax(9.5rem, 1fr));
     grid-auto-rows: min-content;
-    gap: 2.6rem 3.4rem;
+    gap: 2.6rem 2.8rem;
     align-items: start;
     min-width: min-content;
-    padding: 0.2rem 0.2rem 1.6rem;
+    padding: calc(2rem + var(--forward-lanes) * 8px) 1.5rem calc(2rem + var(--return-lanes) * 8px);
   }
 
   .wires {
@@ -492,21 +517,23 @@
     inset: 0;
     pointer-events: none;
     overflow: visible;
-    color: var(--border);
+    color: var(--muted);
   }
 
   .wire {
     fill: none;
     stroke: currentColor;
-    stroke-width: 1.5;
+    stroke-width: 2;
   }
 
   /* A return is the same relation drawn the other way; dashed and dimmer so the
      forward spine of the graph stays the thing you read first. */
   .wire.back {
     stroke-dasharray: 4 4;
-    opacity: 0.55;
+    opacity: 0.8;
   }
+  .wire.implicit { stroke-dasharray: 6 4; }
+  .node summary { cursor: pointer; margin-top: 0.6rem; color: var(--muted); }
 
   .node {
     position: relative;
