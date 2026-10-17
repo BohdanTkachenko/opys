@@ -2,15 +2,14 @@
   import { api } from './lib/api.js';
   import { affects, events } from './lib/events.svelte.js';
   import { createResource } from './lib/resource.svelte.js';
+  import { documentProblems } from './lib/verification.js';
 
-  let { cid, id = null } = $props();
+  let { cid, id = null, path = null } = $props();
   const report = createResource();
   let fixing = $state(false);
   let outcome = $state('');
   let fixError = $state('');
-  const problems = $derived((report.data?.problems ?? []).filter(
-    (problem) => !id || problem.startsWith(`${id}:`),
-  ));
+  const problems = $derived(documentProblems(report.data?.problems ?? [], id, path));
 
   async function fix() {
     fixing = true;

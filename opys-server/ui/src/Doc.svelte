@@ -550,7 +550,7 @@
 
   <div class="page">
     {#key `${cid}:${id}`}
-      <VerifyProblems {cid} {id} />
+      <VerifyProblems {cid} {id} path={d.path} />
     {/key}
   </div>
 
