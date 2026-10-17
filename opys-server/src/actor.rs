@@ -313,6 +313,8 @@ pub struct VerifyStatus {
     /// True only when the corpus loaded and `verify` found nothing.
     pub ok: bool,
     pub problems: Vec<String>,
+    /// Findings removed by a read-only preview of the actual automatic fixes.
+    pub fixable_problems: Vec<String>,
     pub loaded_at: Option<String>,
     /// Why the most recent load attempt failed, if it did. Reads keep answering
     /// from the last good state, so this is how a caller learns the data is
@@ -570,6 +572,7 @@ struct Warm {
     store: Store,
     summaries: Vec<DocSummary>,
     problems: Vec<String>,
+    fixable_problems: Vec<String>,
     loaded_at: String,
 }
 
@@ -652,6 +655,14 @@ impl Actor {
                         .map(|w| w.problems.clone())
                         .unwrap_or_default(),
                     loaded_at: self.warm.as_ref().map(|w| w.loaded_at.clone()),
+                    fixable_problems: if self.load_error.is_none() {
+                        self.warm
+                            .as_ref()
+                            .map(|w| w.fixable_problems.clone())
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    },
                     load_error: self.load_error.clone(),
                 });
             }
@@ -810,6 +821,7 @@ impl Actor {
         // against it too — the dashboard's verify dot then says what `opys
         // verify` says.
         problems.extend(verify::spelling_problems(&docs, self.backend.as_ref()));
+        let fixable_problems = verify::fixable_problems(&prj, &docs)?;
         // One index for the whole board: blocked is derived from the corpus, not
         // from a document on its own (ADR-0050 decision 3).
         let corpus = refs::Corpus::of_docs(&prj.pcfg, &docs);
@@ -822,6 +834,7 @@ impl Actor {
             store,
             summaries,
             problems,
+            fixable_problems,
             loaded_at: now_rfc3339(),
         })
     }

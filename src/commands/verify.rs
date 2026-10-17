@@ -114,6 +114,33 @@ pub fn fix_core(
     Ok(fixes)
 }
 
+/// Preview the real fix pass in a disposable in-memory store. Never flushes or
+/// syncs: reads advertise only findings the pass can remove without writing.
+pub fn fixable_problems(prj: &Project, docs: &[Doc]) -> Result<Vec<String>> {
+    if !prj.pcfg.validate().is_empty() {
+        return Ok(Vec::new());
+    }
+    let loaded = crate::store::LoadedCorpus {
+        docs: docs.iter().cloned().map(|doc| (doc, None)).collect(),
+        errors: Vec::new(),
+        retired: Vec::new(),
+        retired_legacy: false,
+        retired_err: None,
+    };
+    let (mut preview, _) = crate::store::Store::build(prj, loaded)?;
+    fix_core(prj, &mut preview, None)?;
+    let after: Vec<_> = preview
+        .all_docs()?
+        .into_iter()
+        .map(|(_, doc)| doc)
+        .collect();
+    let remaining = collect_problems(prj, &after, Vec::new());
+    Ok(collect_problems(prj, docs, Vec::new())
+        .into_iter()
+        .filter(|problem| !remaining.contains(problem))
+        .collect())
+}
+
 /// Print the outcome and return the exit code: problems first, observations
 /// after them, both on stderr; the clean line on stdout.
 ///

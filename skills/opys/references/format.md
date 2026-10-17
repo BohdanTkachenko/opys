@@ -599,6 +599,8 @@ committed status leaves the document unchanged and is reported as a remaining
 problem; other documents can still be fixed. A repeated pass does not reseed
 existing history. The web UI's **Fix** uses the same engine pass; on a document
 it seeds and transitions only that document, without a corpus-wide sync.
+The UI enables **Fix** only when a read-only preview of the engine pass removes
+at least one displayed finding; manual-only problems do not enable it.
 
 `opys history --seed <id>` also performs this explicitly: it reads the document's real
 status timeline out of git (see `[git]` above) and writes one entry per status it

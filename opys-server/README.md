@@ -52,6 +52,11 @@ that document's findings, and its **Fix** changes only that document (without a
 corpus-wide sync). Existing history is preserved; issues without an automatic
 fix remain visible. The closed action API exposes this as
 `{"action":"verify-fix"}` or `{"action":"verify-fix","id":"ADR-0010"}`.
+The verification response includes `fixable_problems`, computed by previewing
+the real engine fix pass in a disposable store without flushing or syncing.
+**Fix** is enabled only when that list includes a displayed finding. Unknown
+fields and other manual-only findings do not enable it; after the fixable
+findings are cleared, the button is disabled even if other problems remain.
 
 ## License
 

@@ -10,6 +10,9 @@
   let outcome = $state('');
   let fixError = $state('');
   const problems = $derived(documentProblems(report.data?.problems ?? [], id, path));
+  const canFix = $derived(problems.some(
+    (problem) => (report.data?.fixable_problems ?? []).includes(problem),
+  ));
 
   async function fix() {
     fixing = true;
@@ -57,10 +60,12 @@
         {/each}
       </ul>
     </details>
-    <button class="btn small" disabled={fixing} onclick={fix}>
+    <button class="btn small" disabled={fixing || !canFix} onclick={fix}>
       {fixing ? 'Fixing…' : 'Fix'}
     </button>
-    <p class="why">{id ? 'Apply automatic fixes to this document.' : 'Apply automatic fixes to this corpus.'} Some issues may need manual repair.</p>
+    <p class="why">{canFix
+      ? (id ? 'Apply available automatic fixes to this document.' : 'Apply available automatic fixes to this corpus.')
+      : 'These issues require manual repair; no automatic fixes are available.'}</p>
     </section>
   {:else if !id || outcome}
     <p class="why">No verification issues in the latest report.</p>

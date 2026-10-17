@@ -384,3 +384,59 @@ fn a_corpus_without_its_own_config_does_not_serve_its_parent() {
     assert!(status.load_error.is_some(), "{status:#?}");
     handle.shutdown();
 }
+
+#[test]
+fn unknown_frontmatter_is_not_advertised_as_automatically_fixable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let corpus = fixture(&root);
+    let path = root.join("inventory/NOTE-0001.md");
+    let text = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("status: open", "status: open\nblocked_from: review");
+    std::fs::write(&path, &text).unwrap();
+    let (handle, _rx) = spawn(corpus);
+    let status = handle.verify().unwrap();
+    assert!(status.problems.iter().any(|p| p.contains("blocked_from")));
+    assert!(status.fixable_problems.is_empty(), "{status:#?}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn fix_preview_reports_only_repairable_findings_and_never_writes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let corpus = fixture(&root);
+    let path = root.join("inventory/NOTE-0001.md");
+    let mut doc =
+        opys_engine::doc::Doc::parse(path.clone(), &std::fs::read_to_string(&path).unwrap())
+            .unwrap();
+    doc.frontmatter.remove("history");
+    doc.frontmatter.set_str("blocked_from", "review");
+    let original = doc.to_text();
+    std::fs::write(&path, &original).unwrap();
+    let mut repo = opys_engine::git::fixture::Fixture::init(&root);
+    repo.commit("Alice", "legacy note");
+    let (handle, _rx) = spawn(corpus);
+    let status = handle.verify().unwrap();
+    assert_eq!(status.fixable_problems.len(), 1, "{status:#?}");
+    assert!(status.fixable_problems[0].contains("missing history"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    opys_server::action::perform(
+        &root,
+        &MarkdownLocal,
+        &opys_server::action::Action::VerifyFix {
+            id: Some("NOTE-0001".into()),
+        },
+    )
+    .unwrap();
+    let remaining = wait_for_verify(&handle, Duration::from_secs(5), |s| {
+        !s.problems.iter().any(|p| p.contains("missing history"))
+    });
+    assert!(remaining
+        .problems
+        .iter()
+        .any(|p| p.contains("blocked_from")));
+    assert!(remaining.fixable_problems.is_empty(), "{remaining:#?}");
+}
