@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/BohdanTkachenko/opys/compare/opys-server-v0.13.1...opys-server-v0.14.0) - 2026-10-17
+
+### Added
+
+- *(web)* add one-click type isolation to lifecycle graph
+- *(web)* toggle graph types and keep navigation expanded
+- *(web)* show the complete live project lifecycle on one board
+- *(web)* redesign lifecycle as an ELK map with a document inspector
+- *(web)* focus lifecycle arrows on the selected status
+- *(verify)* seed missing history and expose scoped UI fixes
+
+### Fixed
+
+- *(web)* keep lifecycle inspector open and restore navigation toggle
+- *(web)* highlight Only for the sole visible type
+- *(web)* draw reciprocal transitions as one two-way connection
+- *(web)* draw permitted lifecycle transitions as visible arrows
+- *(web)* enable Fix only for repairable verification findings
+- *(web)* highlight card verification problems
+- *(web)* collapse verification issue details by default
+- *(web)* include path-based verification errors on cards
+- *(web)* display verification issue details on corpus boards
+
+### Other
+
+- *(web)* soften lifecycle arrows and highlight connected statuses
+
 ## [0.13.1](https://github.com/BohdanTkachenko/opys/compare/opys-server-v0.13.0...opys-server-v0.13.1) - 2026-10-17
 
 ### Added
