@@ -74,6 +74,7 @@
 
   const group = $derived(corpora.groups.find((candidate) => candidate.key === key));
   const view = $derived(table.data);
+  const rows = $derived((view?.rows ?? []).filter((row) => row.differs));
 
   /** cid → column label, for naming the corpora a row is `only_in`. */
   const labels = $derived(
@@ -88,11 +89,11 @@
     (view?.columns ?? []).filter((column) => column.kind === 'branch').length,
   );
   const occupied = $derived(
-    (view?.rows ?? []).filter((row) => (row.occupants ?? []).length > 0).length,
+    rows.filter((row) => (row.occupants ?? []).length > 0).length,
   );
 
-  const drifted = $derived((view?.rows ?? []).filter((row) => row.differs).length);
-  const collisions = $derived((view?.rows ?? []).filter((row) => row.collision).length);
+  const drifted = $derived(rows.length);
+  const collisions = $derived(rows.filter((row) => row.collision).length);
 
   // The filter inputs follow the route until the reader types, and go back to
   // following it the moment it changes — an overridable `$derived`, the same
@@ -137,8 +138,8 @@
         {worktrees}
         {worktrees === 1 ? 'worktree' : 'worktrees'}
         {#if branches > 0}· {branches} {branches === 1 ? 'branch' : 'branches'}{/if} ·
-        {view.rows.length}
-        {view.rows.length === 1 ? 'document' : 'documents'}
+        {rows.length} of {view.rows.length}
+        {view.rows.length === 1 ? 'document' : 'documents'} drifted
         {#if table.loading}· refreshing…{/if}
       </span>
     {/if}
@@ -214,7 +215,7 @@
         “no drift” below mean <em>did not match here</em>, which is not the same
         as <em>is not here</em>.
       </p>
-      <p><button class="btn small" onclick={clear}>Show everything</button></p>
+      <p><button class="btn small" onclick={clear}>Clear filters</button></p>
     </div>
   {/if}
 
@@ -264,6 +265,12 @@
           : 'No worktree in this group has any documents.'}
       </p>
     </div>
+  {:else if rows.length === 0}
+    <div class="notice">
+      <p>{filtered
+        ? 'No drift among documents matching these filters in the columns that answered.'
+        : 'No drift among the columns that answered.'}</p>
+    </div>
   {:else}
     <p class="tally small muted">
       {#if collisions > 0}
@@ -274,9 +281,6 @@
       {/if}
       {#if occupied > 0}
         <span class="mark occupies">{occupied} in flight</span>
-      {/if}
-      {#if collisions === 0 && drifted === 0}
-        No drift and no id collisions among the columns that answered.
       {/if}
     </p>
 
@@ -303,7 +307,7 @@
           </tr>
         </thead>
         <tbody>
-          {#each view.rows as row (row.id)}
+          {#each rows as row (row.id)}
             <tr class:drift={row.differs} class:collision={row.collision}>
               <th class="doc" scope="row">
                 <span class="mono small">{row.id}</span>
