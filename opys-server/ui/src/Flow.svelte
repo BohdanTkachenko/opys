@@ -1,5 +1,5 @@
 <script>
-  import { untrack } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import Icon from './lib/Icon.svelte';
   import { api } from './lib/api.js';
   import { corpora } from './lib/corpora.svelte.js';
@@ -98,16 +98,37 @@
       return `${from} → ${to}: ${direction.types.join(', ')} (${direction.unrestricted ? 'unrestricted' : 'configured'})${direction.closingTypes.length ? '; close for '+direction.closingTypes.join(', ') : ''}`;
     }).join('\n');
   }
-  function measureViewport(element) {
+  function canvasViewport(element) {
     let frame;
+    let disposed = false;
     const update = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => { viewportWidth = element.clientWidth; viewportHeight = element.clientHeight; });
     };
+    const onwheel = async (event) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? element.clientHeight : 1);
+      const next = Math.max(0.2, Math.min(6, zoom * Math.exp(-delta * 0.002)));
+      const drawing = element.querySelector('.stage');
+      if (next === zoom || !drawing) return;
+      const before = drawing.getBoundingClientRect();
+      const x = (event.clientX - before.left) / scale;
+      const y = (event.clientY - before.top) / scale;
+      zoom = next;
+      await tick();
+      if (disposed) return;
+      // Keep the graph point under the cursor in place as the scrollable
+      // drawing grows. Scroll bounds naturally center it again when it fits.
+      const after = drawing.getBoundingClientRect();
+      element.scrollLeft += after.left + x * scale - event.clientX;
+      element.scrollTop += after.top + y * scale - event.clientY;
+    };
     const observer = new ResizeObserver(update);
     observer.observe(element);
+    element.addEventListener('wheel', onwheel, { passive: false });
     update();
-    return { destroy() { observer.disconnect(); cancelAnimationFrame(frame); } };
+    return { destroy() { disposed = true; observer.disconnect(); cancelAnimationFrame(frame); element.removeEventListener('wheel', onwheel); } };
   }
 </script>
 
@@ -148,7 +169,7 @@
       {:else if !stage || diagram.loading}
         <p class="layout-loading" role="status">Arranging the workflow…</p>
       {:else}
-      <div class="map-viewport" use:measureViewport>
+      <div class="map-viewport" use:canvasViewport>
         <div class="stage" style:width={`${stage.width * scale}px`} style:height={`${stage.height * scale}px`}>
           <svg class="connections" width={stage.width * scale} height={stage.height * scale} viewBox={`0 0 ${stage.width} ${stage.height}`} aria-hidden="true">
             <defs>

@@ -75,6 +75,8 @@ locally and loaded only for this view.
 Type filters sit in the page header above an open graph canvas. The right
 inspector is a full-height pane matching the main navigation, with independently
 scrolling details; graph legend and zoom controls sit along the canvas edge.
+Hold Ctrl and use the mouse wheel over the canvas to zoom around the cursor;
+scrolling without Ctrl pans the canvas normally.
 Reciprocal transitions share one connection with arrowheads at both ends. The
 underlying directions retain their own owning types, restrictions and closing
 semantics; the inspector and transition count still use the directed model.
