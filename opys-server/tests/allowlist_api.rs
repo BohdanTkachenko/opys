@@ -191,11 +191,25 @@ async fn a_project_can_be_added_and_removed_from_the_browser() {
     let written = std::fs::read_to_string(&fx.config).unwrap();
     assert!(written.contains("[[project]]"), "{written}");
 
+    let (status, projects) = fx.get("/api/projects").await;
+    assert_eq!(status, StatusCode::OK, "{projects}");
+    assert_eq!(
+        projects.as_array().unwrap().len(),
+        1,
+        "the roster updates before Add returns: {projects}"
+    );
+    assert_eq!(projects[0]["corpora"][0]["root"], alpha);
+
     let (status, body) = fx
         .post("/api/allowlist", json!({"action": "remove", "path": alpha}))
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["entries"].as_array().unwrap().is_empty(), "{body}");
+    let (_, projects) = fx.get("/api/projects").await;
+    assert!(
+        projects.as_array().unwrap().is_empty(),
+        "Remove also updates the roster immediately: {projects}"
+    );
 }
 
 /// The point of the whole feature: the endpoint cannot be talked into a path

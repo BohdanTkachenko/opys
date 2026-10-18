@@ -23,6 +23,7 @@
   let error = $state(null);
   /** A refusal from the last add, shown against the input that caused it. */
   let refusal = $state(null);
+  let added = $state(null);
   let typed = $state('');
   let busy = $state(null);
 
@@ -51,18 +52,20 @@
     }
   }
 
-  async function add(path) {
+  async function add(path, {suggested = false} = {}) {
     busy = path;
     refusal = null;
+    added = null;
     try {
       setup = await api.allowlist({ action: 'add', path });
-      typed = '';
+      added = {path, suggested};
+      if (!suggested && typed.trim() === path) typed = '';
       await discovery.reload({force:true});
       // The roster changed, so the sidebar's copy is stale. Quiet, because the
       // list on screen is still correct until the new one arrives.
       corpora.reload(true);
     } catch (e) {
-      refusal = e instanceof ApiError ? e.message : String(e);
+      refusal = {path, suggested, message:e instanceof ApiError ? e.message : String(e)};
     } finally {
       busy = null;
     }
@@ -113,7 +116,7 @@
         <button
           class="mode"
           class:on={setup.mode === 'suggest'}
-          disabled={busy === 'mode'}
+          disabled={busy !== null}
           onclick={() => setMode('suggest')}
         >
           <strong>Suggest</strong>
@@ -122,7 +125,7 @@
         <button
           class="mode"
           class:on={setup.mode === 'off'}
-          disabled={busy === 'mode'}
+          disabled={busy !== null}
           onclick={() => setMode('off')}
         >
           <strong>Off</strong>
@@ -140,6 +143,7 @@
       <section>
         <h2>Found {suggestions.length > 0 ? `(${suggestions.length})` : ''}</h2>
         <p class="why">Discovered project directories not registered yet, including worktrees and copies.</p>
+        {#if added?.suggested}<p class="outcome" role="status">Added <code>{added.path}</code> to registered projects.</p>{/if}
         {#if discovery.error}
           <div class="notice warn">
             <p>Could not refresh discovered projects: {discovery.error.message}</p>
@@ -159,8 +163,11 @@
                 <div class="what">
                   <strong>{s.name}</strong>
                   <code>{s.path}</code>
+                  {#if refusal?.suggested && refusal.path === s.path}
+                    <p class="add-error" role="alert">{refusal.message}</p>
+                  {/if}
                 </div>
-                <button class="btn small" disabled={busy === s.path} onclick={() => add(s.path)}>
+                <button class="btn small" disabled={busy !== null} onclick={() => add(s.path, {suggested:true})}>
                   {busy === s.path ? 'Adding…' : 'Add'}
                 </button>
               </li>
@@ -185,12 +192,13 @@
           aria-label="Project directory"
           spellcheck="false"
         />
-        <button class="btn" type="submit" disabled={!typed.trim() || busy === typed.trim()}>Add</button>
+        <button class="btn" type="submit" disabled={!typed.trim() || busy !== null}>Add</button>
       </form>
-      {#if refusal}
+      {#if added && !added.suggested}<p class="outcome" role="status">Added <code>{added.path}</code> to registered projects.</p>{/if}
+      {#if refusal && !refusal.suggested}
         <!-- The node's own words. It knows the rules; this screen does not
              restate them, so the two cannot disagree. -->
-        <div class="notice warn"><p>{refusal}</p></div>
+        <div class="notice warn" role="alert"><p>{refusal.message}</p></div>
       {/if}
       <p class="why">
         Must be inside <code>{setup.home}</code>, and not hidden. Anything
@@ -211,7 +219,7 @@
                 <span class="kind">{e.kind}</span>
                 {#if e.error}<span class="bad">{e.error}</span>{/if}
               </div>
-              <button class="btn small ghost" disabled={busy === e.path} onclick={() => remove(e.path)}>
+              <button class="btn small ghost" disabled={busy !== null} onclick={() => remove(e.path)}>
                 {busy === e.path ? 'Removing…' : 'Remove'}
               </button>
             </li>
@@ -305,6 +313,8 @@
     font-size: 0.78rem;
     color: var(--bad);
   }
+  .add-error { margin:0.35rem 0 0; color:var(--bad); font-size:0.82rem; overflow-wrap:anywhere; }
+  .outcome { padding:0.5rem 0.65rem; border-left:3px solid var(--good); background:color-mix(in srgb,var(--good) 8%,var(--panel)); font-size:0.85rem; overflow-wrap:anywhere; }
   form {
     display: flex;
     gap: 0.5rem;

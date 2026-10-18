@@ -803,6 +803,21 @@ async fn allowlist(
     reg.save()
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     drop(_lock);
+    // Browser additions/removals must update the roster immediately rather
+    // than waiting for the filesystem watcher's next maintenance tick.
+    let manager = Arc::clone(&state.manager);
+    tokio::task::spawn_blocking(move || lock(&manager).rescan())
+        .await
+        .map_err(|e| {
+            ApiError::internal(format!(
+                "allowlist saved, but refreshing projects failed: {e}"
+            ))
+        })?
+        .map_err(|e| {
+            ApiError::internal(format!(
+                "allowlist saved, but refreshing projects failed: {e}"
+            ))
+        })?;
     setup(State(state)).await
 }
 

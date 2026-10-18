@@ -118,6 +118,11 @@ when the tab becomes visible, and once a minute while visible. Failed scans
 retain the last count and show a refresh error rather than claiming nothing
 was found. With no suggestions, the link reads **Manage projects**.
 
+Registration failures appear beside the discovered project whose Add button
+was clicked; successful additions show a confirmation. Adding or removing a
+project refreshes the served roster before the API returns, rather than waiting
+for the periodic registry check.
+
 ## License
 
 Apache-2.0, like the rest of the workspace, permanently (ADR-0033).
