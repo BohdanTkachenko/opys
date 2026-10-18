@@ -1,8 +1,8 @@
 <script>
-  // The app shell: a sidebar, a routed main column, and the two things that are
-  // global to every view — the event stream and the project list.
+  // The app shell: a sidebar, a routed main column, and shared services — the
+  // event stream, project list and discovery scan.
   //
-  // Both are started here and only here. The stream is one WebSocket for the
+  // They are started here and only here. The stream is one WebSocket for the
   // whole page (the node offers no per-corpus subscription), and the project
   // list is the most expensive read the node serves; starting either inside a
   // view would open a second one every time someone navigated.
@@ -16,6 +16,7 @@
   import Sidebar from './Sidebar.svelte';
   import Union from './Union.svelte';
   import { corpora } from './lib/corpora.svelte.js';
+  import { discovery } from './lib/discovery.svelte.js';
   import { events } from './lib/events.svelte.js';
   import { corpusLabel, middlePath } from './lib/format.js';
   import { notice } from './lib/notice.svelte.js';
@@ -50,6 +51,7 @@
   // drops if the app is ever unmounted (a dev-server hot reload, mostly).
   $effect(() => events.start());
   $effect(() => corpora.start());
+  $effect(() => discovery.start());
 
   /** Every corpus the node serves, flattened — the landing page's shortcut. */
   const served = $derived(corpora.groups.flatMap((group) => group.corpora));

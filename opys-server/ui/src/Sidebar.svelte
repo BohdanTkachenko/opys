@@ -11,10 +11,10 @@
   // corpus's cached problem count. Asking `/api/corpus/{cid}/verify` per corpus
   // would be one request per project for a number the list just delivered.
   //
-  // On a narrow screen the shell stacks and this becomes a one-line bar —
-  // wordmark, live dot, a projects toggle — that opens into the list on
-  // demand. A phone that gave a third of every screen to a corpus list would
-  // put the first card of every board below the fold.
+  // On a narrow screen the shell stacks: the header and discovery link stay
+  // visible, and a projects toggle opens the list on demand. A phone that gave
+  // a third of every screen to a corpus list would put the first board card
+  // below the fold.
   //
   // On a wide screen it folds the other way: into a rail (`sidebar.collapsed`,
   // toggled by the button or `[`), which keeps the wordmark, the live dot and
@@ -22,6 +22,7 @@
 
   import Icon from './lib/Icon.svelte';
   import { corpora } from './lib/corpora.svelte.js';
+  import { discovery } from './lib/discovery.svelte.js';
   import { sidebar } from './lib/sidebar.svelte.js';
   import { events } from './lib/events.svelte.js';
   import { corpusLabel, shortTime } from './lib/format.js';
@@ -48,6 +49,9 @@
   });
 
   const served = $derived(corpora.groups.reduce((n, group) => n + group.corpora.length, 0));
+  const discoveryLabel = $derived(discovery.count > 0
+    ? `${discovery.count} more discovered project ${discovery.count === 1 ? 'directory' : 'directories'}. Review projects`
+    : 'Manage projects');
 
   /**
    * How healthy a corpus is, in three states.
@@ -138,6 +142,23 @@
       {/if}
     </button>
   </header>
+
+  <a
+    class="discovery"
+    class:found={discovery.count > 0}
+    class:active={activeView === 'setup'}
+    href={href('/setup')}
+    aria-label={discovery.error ? `${discoveryLabel}. Discovery could not be refreshed.` : discoveryLabel}
+    aria-current={activeView === 'setup' ? 'page' : undefined}
+    title={discovery.error
+      ? `Could not refresh discovery: ${discovery.error.message}`
+      : discoveryLabel}
+  >
+    <Icon name="folder" size={16} />
+    <span class="discovery-label">{discovery.count > 0 ? 'More discovered' : 'Manage projects'}</span>
+    {#if discovery.count > 0}<span class="discovery-count mono">{discovery.count}</span>{/if}
+    {#if discovery.error}<Icon name="alert" size={13} />{/if}
+  </a>
 
   <div class="list" id="projects">
     {#if corpora.error && corpora.groups.length === 0}
@@ -289,6 +310,36 @@
 
   .list {
     display: contents;
+  }
+
+  .discovery {
+    display:flex;
+    align-items:center;
+    gap:0.5rem;
+    padding:0.5rem;
+    border:1px solid var(--border);
+    border-radius:6px;
+    color:var(--muted);
+    text-decoration:none;
+    font-size:0.85rem;
+  }
+
+  .discovery.found {
+    color:var(--accent);
+    border-color:color-mix(in srgb,var(--accent) 35%,var(--border));
+    background:color-mix(in srgb,var(--accent) 7%,var(--panel));
+  }
+
+  .discovery:hover, .discovery.active { background:var(--raised); color:var(--fg); }
+  .discovery-label { min-width:0; overflow-wrap:anywhere; }
+  .discovery-count {
+    margin-left:auto;
+    padding:0.05rem 0.35rem;
+    border-radius:4px;
+    background:color-mix(in srgb,var(--accent) 13%,var(--panel));
+    color:var(--accent);
+    font-size:0.8rem;
+    font-variant-numeric:tabular-nums;
   }
 
   .menu {
@@ -493,8 +544,12 @@
     margin-right: 0;
   }
 
-  /* The bar. Everything but the header folds away until the toggle opens it;
-     the footer (version, last load) is desktop furniture and stays hidden.
+  .sidebar.collapsed .discovery { flex-direction:column; gap:0.3rem; padding:0.4rem 0.15rem; }
+  .sidebar.collapsed .discovery-label { display:none; }
+  .sidebar.collapsed .discovery-count { margin:0; }
+
+  /* The bar keeps the header and discovery link visible; the project list
+     folds away until opened. The footer is desktop furniture and stays hidden.
      Last in the sheet on purpose: these override rules of equal specificity
      above, and the cascade settles ties by order. */
   @media (max-width: 46rem) {
@@ -532,6 +587,10 @@
     .sidebar.collapsed header {
       flex-direction: row;
     }
+
+    .sidebar.collapsed .discovery { flex-direction:row; gap:0.5rem; padding:0.5rem; }
+    .sidebar.collapsed .discovery-label { display:revert; }
+    .sidebar.collapsed .discovery-count { margin-left:auto; }
 
     .sidebar.collapsed .wordmark .grad-text,
     .sidebar.collapsed .wordmark .cursor,

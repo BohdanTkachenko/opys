@@ -110,6 +110,14 @@ Project navigation can collapse into a rail using its toggle or `[`; the
 preference persists across visits. Narrow screens have a separate project-list
 toggle. The lifecycle inspector has no collapse control.
 
+The project sidebar shows **More discovered** with the number of unregistered
+project directories, including worktrees and copies. It remains accessible in
+the collapsed rail and on narrow screens, and opens the setup page for review.
+The sidebar and setup share scan results, refreshed after registration changes,
+when the tab becomes visible, and once a minute while visible. Failed scans
+retain the last count and show a refresh error rather than claiming nothing
+was found. With no suggestions, the link reads **Manage projects**.
+
 ## License
 
 Apache-2.0, like the rest of the workspace, permanently (ADR-0033).

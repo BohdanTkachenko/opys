@@ -242,9 +242,11 @@ async fn the_asset_route_cannot_escape_the_bundle() {
 /// located verification excerpts bring the app itself to ~260 kB. ELK is a
 /// separate, pinned, lazy-loaded ~1.43 MB chunk; budget it independently so it
 /// cannot hide application growth or get pulled into every page load.
+/// The shared discovery scan, sidebar count and scan-error states bring the
+/// application to ~273 KiB; allow 276 KiB for this UI without new dependencies.
 #[test]
 fn the_bundle_stays_small() {
-    const APP_CEILING: usize = 272 * 1024;
+    const APP_CEILING: usize = 276 * 1024;
     const LAYOUT_CEILING: usize = 1450 * 1024;
     let (layout, app): (Vec<_>, Vec<_>) = assets::all().partition(|asset| {
         asset.path.starts_with("ui/elk.bundled-") && asset.path.ends_with(".js")

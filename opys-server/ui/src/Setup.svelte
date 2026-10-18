@@ -15,9 +15,10 @@
 
   import { api, ApiError } from './lib/api.js';
   import { corpora } from './lib/corpora.svelte.js';
+  import { discovery } from './lib/discovery.svelte.js';
 
   let setup = $state(null);
-  let suggestions = $state([]);
+  const suggestions = $derived(discovery.items);
   let loading = $state(true);
   let error = $state(null);
   /** A refusal from the last add, shown against the input that caused it. */
@@ -30,7 +31,7 @@
     error = null;
     try {
       setup = await api.setup();
-      await loadSuggestions();
+      await discovery.reload();
     } catch (e) {
       error = e instanceof ApiError ? e.message : String(e);
     } finally {
@@ -38,25 +39,11 @@
     }
   }
 
-  async function loadSuggestions() {
-    if (setup?.mode === 'off') {
-      suggestions = [];
-      return;
-    }
-    try {
-      suggestions = await api.suggestions();
-    } catch {
-      // A failed scan is not a failed screen: the allowlist below is still
-      // readable and editable without it.
-      suggestions = [];
-    }
-  }
-
   async function setMode(mode) {
     busy = 'mode';
     try {
       setup = await api.saveSetup({ mode });
-      await loadSuggestions();
+      await discovery.reload({force:true});
     } catch (e) {
       error = e instanceof ApiError ? e.message : String(e);
     } finally {
@@ -70,7 +57,7 @@
     try {
       setup = await api.allowlist({ action: 'add', path });
       typed = '';
-      await loadSuggestions();
+      await discovery.reload({force:true});
       // The roster changed, so the sidebar's copy is stale. Quiet, because the
       // list on screen is still correct until the new one arrives.
       corpora.reload(true);
@@ -85,7 +72,7 @@
     busy = path;
     try {
       setup = await api.allowlist({ action: 'remove', path });
-      await loadSuggestions();
+      await discovery.reload({force:true});
       corpora.reload(true);
     } catch (e) {
       error = e instanceof ApiError ? e.message : String(e);
@@ -152,11 +139,20 @@
     {#if setup.mode !== 'off'}
       <section>
         <h2>Found {suggestions.length > 0 ? `(${suggestions.length})` : ''}</h2>
-        {#if suggestions.length === 0}
+        <p class="why">Discovered project directories not registered yet, including worktrees and copies.</p>
+        {#if discovery.error}
+          <div class="notice warn">
+            <p>Could not refresh discovered projects: {discovery.error.message}</p>
+            <button class="btn small" onclick={() => discovery.reload()}>Retry discovery</button>
+          </div>
+        {/if}
+        {#if discovery.loading && suggestions.length === 0}
+          <p class="muted">Looking for projects…</p>
+        {:else if suggestions.length === 0 && !discovery.error}
           <p class="muted">
             Nothing new under <code>{setup.scan_root}</code>.
           </p>
-        {:else}
+        {:else if suggestions.length > 0}
           <ul class="rows">
             {#each suggestions as s (s.path)}
               <li>
