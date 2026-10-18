@@ -1267,6 +1267,14 @@
     margin: 0.3em 0;
   }
 
+  /* Task checkboxes replace the list marker. Match the item's own checkbox
+     so ordinary bullets, including parents of nested task lists, stay intact. */
+  .body :global(li:has(> input[type='checkbox'])),
+  .body :global(li:has(> p:first-child > input[type='checkbox'])) {
+    position: relative;
+    list-style: none;
+  }
+
   .body :global(li > ul),
   .body :global(li > ol) {
     margin: 0.2em 0;
@@ -1323,5 +1331,19 @@
        verify-gated `edit-body` action as any other body edit. */
     cursor: pointer;
     accent-color: var(--good);
+    width: 1em;
+    height: 1em;
+    min-height: 0;
+    padding: 0;
+    margin: 0 0.4em 0 0;
+    vertical-align: -0.1em;
+  }
+
+  .body :global(li > input[type='checkbox']),
+  .body :global(li > p:first-child > input[type='checkbox']) {
+    position: absolute;
+    inset-inline-start: -1.4em;
+    top: 0.34em;
+    margin: 0;
   }
 </style>
