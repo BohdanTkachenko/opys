@@ -84,6 +84,11 @@ walkdir = "2"
 # locks an inventory with, so this adds nothing to the dependency tree.
 fs4 = "0.13"
 
+[target.'cfg(unix)'.dependencies]
+# Non-mutating permission/ACL and read-only-filesystem checks for the registry.
+# Already in the workspace lock through tempfile and the filesystem backends.
+rustix = { version = "1", features = ["fs"] }
+
 [dev-dependencies]
 # `tests/ref_reader.rs` builds its repositories with the engine's gix-only
 # fixture builder, which is not public API: it sits behind the engine's

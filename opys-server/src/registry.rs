@@ -359,7 +359,107 @@ fn check_shape(raw: &toml::Table, path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn writable(path: &Path, directory: bool) -> std::io::Result<()> {
+    if std::fs::metadata(path)?.permissions().readonly() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "read-only permissions",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use rustix::fs::{access, Access};
+        let flags = if directory {
+            Access::WRITE_OK | Access::EXEC_OK
+        } else {
+            Access::WRITE_OK
+        };
+        access(path, flags).map_err(std::io::Error::from)
+    }
+    #[cfg(not(unix))]
+    {
+        if !directory {
+            // Opening without truncate/create does not change the file.
+            std::fs::OpenOptions::new().write(true).open(path)?;
+        }
+        Ok(())
+    }
+}
+
 impl Registry {
+    /// Explain why configuration edits are unavailable, without probing by
+    /// creating or rewriting files. Atomic saves also need a writable parent.
+    pub fn read_only_reason(&self) -> Option<String> {
+        let nix_reason = || {
+            "This configuration is managed by Nix in the read-only Nix store. Update the Nix configuration and rebuild to change registered projects or discovery settings.".to_string()
+        };
+        let resolved = self
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| self.path.clone());
+        if resolved.starts_with("/nix/store") {
+            return Some(nix_reason());
+        }
+        match std::fs::metadata(&self.path) {
+            Ok(_) => {
+                if let Err(error) = writable(&self.path, false) {
+                    return Some(format!(
+                        "The configuration file {} is not writable: {error}.",
+                        self.path.display()
+                    ));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Some(format!(
+                    "Cannot access configuration {}: {error}.",
+                    self.path.display()
+                ))
+            }
+        }
+        let mut dir = self
+            .path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        loop {
+            match std::fs::metadata(dir) {
+                Ok(_) => {
+                    if dir
+                        .canonicalize()
+                        .is_ok_and(|p| p.starts_with("/nix/store"))
+                    {
+                        return Some(nix_reason());
+                    }
+                    return writable(dir, true).err().map(|error| {
+                        format!(
+                            "The configuration directory {} is not writable: {error}.",
+                            dir.display()
+                        )
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    dir = match dir.parent() {
+                        Some(parent) if parent.as_os_str().is_empty() => Path::new("."),
+                        Some(parent) => parent,
+                        None => {
+                            return Some(format!(
+                                "Cannot find a writable parent for {}.",
+                                self.path.display()
+                            ))
+                        }
+                    };
+                }
+                Err(error) => {
+                    return Some(format!(
+                        "Cannot access configuration directory {}: {error}.",
+                        dir.display()
+                    ))
+                }
+            }
+        }
+    }
+
     /// Load from the default config path.
     pub fn load() -> Result<Registry> {
         Self::load_from(&config_path()?)
@@ -582,6 +682,9 @@ impl Registry {
     }
 
     pub fn save(&self) -> Result<()> {
+        if let Some(reason) = self.read_only_reason() {
+            return Err(usage(reason));
+        }
         let text = self.render()?;
         let dir = self.path.parent().unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(dir).map_err(|e| usage(format!("{}: {e}", dir.display())))?;

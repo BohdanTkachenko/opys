@@ -26,6 +26,7 @@
   let added = $state(null);
   let typed = $state('');
   let busy = $state(null);
+  const readOnly = $derived(setup?.writable === false);
 
   async function load() {
     loading = true;
@@ -41,6 +42,7 @@
   }
 
   async function setMode(mode) {
+    if (readOnly || busy !== null) return;
     busy = 'mode';
     try {
       setup = await api.saveSetup({ mode });
@@ -53,6 +55,7 @@
   }
 
   async function add(path, {suggested = false} = {}) {
+    if (readOnly || busy !== null) return;
     busy = path;
     refusal = null;
     added = null;
@@ -72,6 +75,7 @@
   }
 
   async function remove(path) {
+    if (readOnly || busy !== null) return;
     busy = path;
     try {
       setup = await api.allowlist({ action: 'remove', path });
@@ -110,13 +114,21 @@
       </p>
     {/if}
 
+    {#if readOnly}
+      <div class="notice warn" role="note" aria-label="Read-only configuration">
+        <p><strong>Read-only configuration</strong></p>
+        <p>{setup.read_only_reason ?? 'This configuration cannot be modified here.'}</p>
+        <p class="why">Configuration: <code>{setup.path}</code></p>
+      </div>
+    {/if}
+
     <section>
       <h2>Discovery</h2>
       <div class="modes">
         <button
           class="mode"
           class:on={setup.mode === 'suggest'}
-          disabled={busy !== null}
+          disabled={readOnly || busy !== null}
           onclick={() => setMode('suggest')}
         >
           <strong>Suggest</strong>
@@ -125,7 +137,7 @@
         <button
           class="mode"
           class:on={setup.mode === 'off'}
-          disabled={busy !== null}
+          disabled={readOnly || busy !== null}
           onclick={() => setMode('off')}
         >
           <strong>Off</strong>
@@ -167,7 +179,7 @@
                     <p class="add-error" role="alert">{refusal.message}</p>
                   {/if}
                 </div>
-                <button class="btn small" disabled={busy !== null} onclick={() => add(s.path, {suggested:true})}>
+                <button class="btn small" disabled={readOnly || busy !== null} onclick={() => add(s.path, {suggested:true})}>
                   {busy === s.path ? 'Adding…' : 'Add'}
                 </button>
               </li>
@@ -182,17 +194,18 @@
       <form
         onsubmit={(e) => {
           e.preventDefault();
-          if (typed.trim()) add(typed.trim());
+          if (!readOnly && typed.trim()) add(typed.trim());
         }}
       >
         <input
           type="text"
           bind:value={typed}
+          disabled={readOnly}
           placeholder="~/Projects/something"
           aria-label="Project directory"
           spellcheck="false"
         />
-        <button class="btn" type="submit" disabled={!typed.trim() || busy !== null}>Add</button>
+        <button class="btn" type="submit" disabled={readOnly || !typed.trim() || busy !== null}>Add</button>
       </form>
       {#if added && !added.suggested}<p class="outcome" role="status">Added <code>{added.path}</code> to registered projects.</p>{/if}
       {#if refusal && !refusal.suggested}
@@ -200,10 +213,10 @@
              restate them, so the two cannot disagree. -->
         <div class="notice warn" role="alert"><p>{refusal.message}</p></div>
       {/if}
-      <p class="why">
+      {#if !readOnly}<p class="why">
         Must be inside <code>{setup.home}</code>, and not hidden. Anything
         outside it can be added by editing <code>{setup.path}</code> directly.
-      </p>
+      </p>{/if}
     </section>
 
     <section>
@@ -219,7 +232,7 @@
                 <span class="kind">{e.kind}</span>
                 {#if e.error}<span class="bad">{e.error}</span>{/if}
               </div>
-              <button class="btn small ghost" disabled={busy !== null} onclick={() => remove(e.path)}>
+              <button class="btn small ghost" disabled={readOnly || busy !== null} onclick={() => remove(e.path)}>
                 {busy === e.path ? 'Removing…' : 'Remove'}
               </button>
             </li>

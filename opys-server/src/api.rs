@@ -584,6 +584,8 @@ struct Setup {
     /// been asked — which is what triggers onboarding. An *empty* file is a
     /// decision already made, and does not.
     configured: bool,
+    writable: bool,
+    read_only_reason: Option<String>,
     mode: registry::ScanMode,
     /// Where suggestion scans start, resolved: the configured root, else
     /// `~/Projects` when it exists, else `$HOME`.
@@ -635,8 +637,11 @@ fn read_registry(state: &AppState) -> Result<(PathBuf, registry::Registry), ApiE
 async fn setup(State(state): State<AppState>) -> Result<Json<Setup>, ApiError> {
     let (path, reg) = read_registry(&state)?;
     let home = registry::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let read_only_reason = reg.read_only_reason();
     Ok(Json(Setup {
         configured: path.exists(),
+        writable: read_only_reason.is_none(),
+        read_only_reason,
         mode: reg.mode,
         scan_root: default_scan_root(&reg).display().to_string(),
         home: home.display().to_string(),
@@ -689,7 +694,10 @@ async fn save_setup(
         None => None,
     };
 
-    let (path, _) = read_registry(&state)?;
+    let (path, current) = read_registry(&state)?;
+    if let Some(reason) = current.read_only_reason() {
+        return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, reason));
+    }
     let _lock = registry::lock(&path)
         .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
     // Re-read under the lock: another writer may have moved between the check
@@ -765,7 +773,10 @@ async fn allowlist(
     let unprocessable =
         |e: OpysError| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, e.to_string());
 
-    let (path, _) = read_registry(&state)?;
+    let (path, current) = read_registry(&state)?;
+    if let Some(reason) = current.read_only_reason() {
+        return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, reason));
+    }
     let _lock = registry::lock(&path)
         .map_err(|e| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
     let mut reg = registry::Registry::load_from(&path)

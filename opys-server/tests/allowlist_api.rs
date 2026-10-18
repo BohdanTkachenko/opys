@@ -133,6 +133,15 @@ async fn a_missing_allowlist_is_what_triggers_onboarding() {
     let (status, body) = fx.get("/api/setup").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["configured"], false, "{body}");
+    assert_eq!(
+        body["writable"], true,
+        "a missing config can be created in a writable home"
+    );
+    assert_eq!(body["read_only_reason"], Value::Null);
+    assert!(
+        !fx.config.exists(),
+        "checking writability must not create the config"
+    );
     assert_eq!(body["mode"], "suggest", "the default mode");
     assert!(
         body["scan_root"].as_str().unwrap().ends_with("Projects"),
@@ -209,6 +218,73 @@ async fn a_project_can_be_added_and_removed_from_the_browser() {
     assert!(
         projects.as_array().unwrap().is_empty(),
         "Remove also updates the roster immediately: {projects}"
+    );
+}
+
+#[tokio::test]
+async fn read_only_configuration_is_reported_and_all_writes_are_refused() {
+    let h = home_with_projects();
+    let _home = set_home(h.path()).await;
+    let fx = Fx::unconfigured(h.path());
+    std::fs::create_dir_all(fx.config.parent().unwrap()).unwrap();
+    let alpha = h.path().join("Projects/alpha").display().to_string();
+    let text = format!("mode = \"suggest\"\n[[project]]\npath = {alpha:?}\n");
+    std::fs::write(&fx.config, &text).unwrap();
+    let original_permissions = std::fs::metadata(&fx.config).unwrap().permissions();
+    let mut read_only = original_permissions.clone();
+    read_only.set_readonly(true);
+    std::fs::set_permissions(&fx.config, read_only).unwrap();
+
+    let (status, body) = fx.get("/api/setup").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["writable"], false);
+    let reason = body["read_only_reason"].as_str().unwrap();
+    assert!(reason.contains("read-only"), "{reason}");
+    for (url, input) in [
+        ("/api/setup", json!({"mode":"off"})),
+        (
+            "/api/allowlist",
+            json!({"action":"add","path":h.path().join("Projects/beta")}),
+        ),
+        ("/api/allowlist", json!({"action":"remove","path":alpha})),
+    ] {
+        let (status, response) = fx.post(url, input).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{response}");
+        assert_eq!(response["error"], reason);
+    }
+    assert_eq!(std::fs::read_to_string(&fx.config).unwrap(), text);
+    assert_eq!(
+        std::fs::read_dir(fx.config.parent().unwrap())
+            .unwrap()
+            .count(),
+        1,
+        "GET and refused writes must not leave temporary files"
+    );
+    std::fs::set_permissions(&fx.config, original_permissions).unwrap();
+}
+
+#[tokio::test]
+async fn an_unwritable_parent_also_makes_atomic_configuration_edits_read_only() {
+    let h = home_with_projects();
+    let _home = set_home(h.path()).await;
+    let fx = Fx::unconfigured(h.path());
+    let parent = fx.config.parent().unwrap();
+    std::fs::create_dir_all(parent).unwrap();
+    std::fs::write(&fx.config, "mode = \"suggest\"\n").unwrap();
+    let permissions = std::fs::metadata(parent).unwrap().permissions();
+    let mut read_only = permissions.clone();
+    read_only.set_readonly(true);
+    std::fs::set_permissions(parent, read_only).unwrap();
+    let (status, body) = fx.get("/api/setup").await;
+    std::fs::set_permissions(parent, permissions).unwrap();
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["writable"], false);
+    assert!(
+        body["read_only_reason"]
+            .as_str()
+            .unwrap()
+            .contains("directory"),
+        "{body}"
     );
 }
 

@@ -2356,6 +2356,7 @@ dependencies = [
  "notify",
  "opys-backend-markdown-local",
  "opys-engine",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

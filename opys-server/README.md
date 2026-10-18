@@ -123,6 +123,12 @@ was clicked; successful additions show a confirmation. Adding or removing a
 project refreshes the served roster before the API returns, rather than waiting
 for the periodic registry check.
 
+Setup reports whether its configuration is writable and, when it is not, why.
+Read-only configurations show a warning and disable Add, Remove, manual entry
+and discovery-setting controls. Nix-store configurations explicitly direct the
+user to update their Nix configuration and rebuild. The API also refuses these
+configuration writes; document editing remains governed by the corpus itself.
+
 ## License
 
 Apache-2.0, like the rest of the workspace, permanently (ADR-0033).
