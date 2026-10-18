@@ -313,9 +313,9 @@
     return editorDiagnostics(body, result.body_version, result.findings);
   }
 
-  /** Persist the body. `false` tells the editor the node refused it. */
+  /** Persist the body; the editor displays any refusal beside its source. */
   async function saveBody(body) {
-    const outcome = await perform({ action: 'edit-body', id: d.id, body }, 'saving the body');
+    const outcome = await perform({ action: 'edit-body', id: d.id, body }, 'saving the body', true);
     return Boolean(outcome);
   }
 
@@ -394,10 +394,10 @@
   /**
    * Send one action, then reconcile the view with what happened.
    *
-   * Returns the node's outcome, or `null` if it refused — callers use that to
-   * decide whether to clear their inputs.
+   * Returns the node's outcome, or `null` for a page-level refusal. Inline
+   * callers receive the error so they can display it beside the edited source.
    */
-  async function perform(body, label) {
+  async function perform(body, label, inline = false) {
     if (pending) return null;
     pending = label;
     problem = null;
@@ -422,6 +422,9 @@
       await load(cid, id, true);
       return outcome;
     } catch (cause) {
+      // The block editor keeps a refused body beside its source, including
+      // checkbox changes. Other actions still use the page-level notice.
+      if (inline) throw cause;
       problem = cause;
       lastAttempt = { body, label };
       return null;

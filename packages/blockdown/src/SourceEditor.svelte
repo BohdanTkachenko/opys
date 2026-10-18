@@ -5,8 +5,9 @@
 
 <script>
   import { diagnosticPieces } from './diagnostics.js';
+  import SaveError from './SaveError.svelte';
 
-  let { value = $bindable(''), textarea = $bindable(null), diagnostics = [], checking = false, validationError = '', oninput, onkeydown } = $props();
+  let { value = $bindable(''), textarea = $bindable(null), diagnostics = [], checking = false, validationError = '', saveError = '', saving = false, onretry, ondiscard, oninput, onkeydown } = $props();
   const noteId = `bd-source-error-${++nextNoteId}`;
   let backdrop;
   function syncScroll() {
@@ -38,10 +39,13 @@
       autocapitalize="off"
       aria-label="Markdown source of this block"
       aria-invalid={diagnostics.length > 0 ? 'true' : undefined}
-      aria-describedby={messages.length ? noteId : undefined}
+      aria-describedby={[messages.length ? noteId : '', saveError ? `${noteId}-save` : ''].filter(Boolean).join(' ') || undefined}
     ></textarea>
   </div>
   {#if messages.length}<div class="bd-source-diagnostics" id={noteId}>{#each messages as message}<div>{message}</div>{/each}</div>{/if}
+  {#if saveError}
+    <SaveError message={saveError} diagnosed={messages.length > 0} {saving} {onretry} {ondiscard} id={`${noteId}-save`} />
+  {/if}
   {#if validationError}<div class="bd-source-diagnostics" role="alert">{validationError}</div>
   {:else if checking}<div class="bd-source-status" role="status">Checking draft…</div>{/if}
 </div>

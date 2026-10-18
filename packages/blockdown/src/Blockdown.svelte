@@ -18,6 +18,7 @@
   import { renderCache } from './render.svelte.js';
   import { locate, textOffset } from './selection.js';
   import SourceEditor from './SourceEditor.svelte';
+  import SaveError from './SaveError.svelte';
   import { diagnosticsInBlock, draftSnapshot, mapDiagnosticRanges } from './diagnostics.js';
 
   /**
@@ -77,6 +78,13 @@
   let liveReport = $state(null);
   let checking = $state(false);
   let validationError = $state('');
+  let saving = $state(false);
+  let saveFailure = $state(null);
+  // An unchanged, rejected checkbox draft is an inspection, not a new edit.
+  let rejectedDraft = null;
+  const failedBlock = $derived(saveFailure?.source === source && saveFailure.range
+    ? blocks.findIndex((block) => block.start <= saveFailure.range.start && saveFailure.range.start <= block.end)
+    : -1);
 
   $effect(() => {
     const candidate = snapshot;
@@ -148,6 +156,14 @@
   function commit() {
     if (!edit) return null;
     const { start, end, insert } = edit;
+    if (rejectedDraft?.source === source && rejectedDraft.start === start
+      && rejectedDraft.end === end && rejectedDraft.text === draft) {
+      rejectedDraft = null;
+      saveFailure = null;
+      edit = null;
+      return {start, end};
+    }
+    rejectedDraft = null;
     // Inspecting a diagnostic must not trim or save untouched markdown.
     if (!insert && draft === source.slice(start, end)) {
       edit = null;
@@ -245,15 +261,61 @@
 
   /** Close the open box and hand the document to the host if it changed. */
   async function leave() {
-    commit();
-    if (source === saved || source === refused || !onsave) return;
-    const value = source;
-    const ok = await onsave(value);
-    if (ok === false) refused = value;
-    else {
-      saved = value;
+    const range = commit();
+    if (source === saved || source === refused || !onsave || saving) return;
+    const attempted = source;
+    saving = true;
+    saveFailure = null;
+    try {
+      const ok = await onsave(attempted);
+      if (ok === false) throw new Error('This change was not saved.');
+      saved = attempted;
       refused = null;
+      return true;
+    } catch (error) {
+      refused = attempted;
+      saveFailure = {source:attempted, range, message:error.message ?? String(error)};
+      // Keep a refused text edit open at its source. Checkbox changes have
+      // no open range here; toggle() restores the checkbox and opens its draft.
+      if (range && source === attempted && !edit) {
+        const i = blocks.findIndex((block) => block.start <= range.start && range.start <= block.end);
+        if (i >= 0) await open(i);
+      }
+      return false;
+    } finally {
+      saving = false;
     }
+  }
+
+  function discardFailedEdit() {
+    edit = null;
+    rejectedDraft = null;
+    saveFailure = null;
+    refused = null;
+    source = saved;
+    changed();
+  }
+
+  async function retrySave() {
+    const rejected = rejectedDraft;
+    rejectedDraft = null;
+    refused = null;
+    const ok = await leave();
+    if (ok === false && rejected && source === saveFailure?.source) {
+      edit = null;
+      await restoreCheckboxDraft(rejected.slot, rejected.source, rejected.text);
+    }
+    return ok;
+  }
+
+  async function restoreCheckboxDraft(i, prior, text) {
+    source = prior;
+    refused = null;
+    changed();
+    await open(i);
+    draft = text;
+    rejectedDraft = {source:prior, start:edit.start, end:edit.end, text, slot:i};
+    await focusBox('end');
   }
 
   function autosize() {
@@ -354,7 +416,8 @@
   }
 
   /** Tick the clicked checkbox in the source and save straight away. */
-  function toggle(i, box) {
+  async function toggle(i, box) {
+    if (saving) return;
     const el = root.querySelector(`[data-block="${i}"]`);
     const n = [...(el?.querySelectorAll('input[type="checkbox"]') ?? [])].indexOf(box);
     const b = blocks[i];
@@ -366,20 +429,18 @@
     const nb = blocks[i];
     const prior = source;
     source = splice(source, nb.start, nb.end, next);
+    const attempted = source;
     changed();
     // A tick is one complete action: if the host refuses it, untick it
     // rather than leave a box showing a state that was never saved.
-    leave().then(() => {
-      if (refused === source) {
-        source = prior;
-        refused = null;
-        changed();
-      }
-    });
+    const ok = await leave();
+    if (ok === false && source === attempted && !edit) {
+      await restoreCheckboxDraft(i, prior, next);
+    }
   }
 
   async function ondblclick(event, i) {
-    if (readonly) return;
+    if (readonly || saving) return;
     if (event.target instanceof Element && event.target.closest('a, input, button')) return;
     // Put the caret on the word that was double-clicked, then drop the
     // selection the gesture made: it was the gesture, not a selection.
@@ -477,6 +538,7 @@
       <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_click_events_have_key_events -->
       <div
         class="bd-block bd-{block.kind}"
+        class:bd-invalid={failedBlock === i}
         data-block={i}
         tabindex="-1"
         onclick={(e) => onblockclick(e, i)}
@@ -488,10 +550,17 @@
           <div class="bd-pending">{text}</div>
         {/if}
       </div>
+      {#if failedBlock === i}
+        <SaveError message={saveFailure.message} {saving} onretry={async () => { await open(i); return retrySave(); }} ondiscard={discardFailedEdit} onedit={() => open(i)} />
+      {/if}
     {/if}
   {/each}
   {#if edit?.insert && edit.slot >= blocks.length}
     {@render box()}
+  {/if}
+
+  {#if !edit && saveFailure?.source === source && failedBlock < 0}
+    <SaveError message={saveFailure.message} {saving} onretry={retrySave} ondiscard={discardFailedEdit} onedit={startEditing} />
   {/if}
 
   {#if picked && toolbar}
@@ -508,6 +577,10 @@
     diagnostics={editDiagnostics}
     checking={Boolean(validate) && checking}
     {validationError}
+    saveError={saveFailure?.source === snapshot?.source ? saveFailure.message : ''}
+    {saving}
+    onretry={retrySave}
+    ondiscard={discardFailedEdit}
     oninput={autosize}
     onkeydown={keys}
   />
@@ -525,6 +598,11 @@
 
   .bd-block:hover {
     background: var(--bd-hover, transparent);
+  }
+
+  .bd-block.bd-invalid {
+    background:color-mix(in srgb,var(--bd-error,Crimson) 8%,transparent);
+    outline:1px solid var(--bd-error,Crimson);
   }
 
   /* A rendered block is a <div> around the host's HTML: its children keep

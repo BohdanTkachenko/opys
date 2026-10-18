@@ -73,6 +73,13 @@ draft. It never changes files, cached documents, timestamps, or lifecycle
 history. Superseded responses cannot replace newer highlights, and a failed
 check is displayed beside the source field. Saving retains its authoritative
 verification gate.
+
+A refused checkbox save opens the affected item as an unsaved source draft,
+with the failing range marked in red and the refusal beside it. The persisted
+checkbox remains unchanged. Closing the rejected draft untouched discards the
+tick; adding the required reference lets the ordinary save gate accept it.
+Body-save failures stay beside their source, with Retry and Discard controls,
+rather than appearing at the top of the document.
 The API's additive `findings` array
 preserves the existing `problems` messages and automatic-fix behavior.
 

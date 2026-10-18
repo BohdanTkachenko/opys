@@ -62,7 +62,7 @@ own Svelte/Vite setup.
 | `value` | `string` (bindable) | The markdown. Updated on every committed block edit. A new value from outside replaces the document unless a block is open. |
 | `render` | `(sources: string[]) => string[] \| Promise<string[]>` | Renders block sources to HTML, in order. Called only for blocks not rendered yet. **You are responsible for sanitizing** its output: it is inserted with `{@html}`. |
 | `renderFrontmatter` | `(block: string) => string` | Renders a frontmatter block (fences included). Default: a key/value table. |
-| `onsave` | `(value: string) => unknown` | Called when the reader leaves the editor with changes, after a checkbox click, and when the component is destroyed with unsaved changes. Return `false` to refuse: the change stays visible, is not re-sent until it changes again, and a refused checkbox click is reverted. |
+| `onsave` | `(value: string) => unknown` | Called when the reader leaves the editor with changes, after a checkbox click, and when the component is destroyed with unsaved changes. Return `false` or throw to refuse. Refusals appear beside the affected source with Retry and Discard controls. A refused checkbox restores the prior document and opens the attempted item as an unsaved draft; closing that draft unchanged discards the tick without another write. |
 | `onchange` | `(value: string) => void` | Every committed block edit. |
 | `diagnostics` | `{start, end, message?}[]` | End-exclusive UTF-16 source ranges, highlighted in red while editing. Equal endpoints mark insertion positions. |
 | `diagnosticSource` | `string \| null` | Snapshot the diagnostics describe (defaults to `value`). Untouched annotations follow edits; annotations intersecting changed text are suppressed until revalidated. |
