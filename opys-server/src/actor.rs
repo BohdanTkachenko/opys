@@ -237,6 +237,8 @@ pub struct DocView {
     pub log_sections: Vec<String>,
     /// The markdown body, verbatim.
     pub body: String,
+    /// Snapshot identity for source-location consumers; not a security digest.
+    pub body_version: String,
     /// The body rendered. Raw HTML in the source stays escaped — comrak's
     /// `unsafe_` is off, and must stay off: bodies are user content.
     pub body_html: String,
@@ -313,6 +315,8 @@ pub struct VerifyStatus {
     /// True only when the corpus loaded and `verify` found nothing.
     pub ok: bool,
     pub problems: Vec<String>,
+    /// Structured companions to `problems`, in the same order.
+    pub findings: Vec<opys_engine::diagnostics::Finding>,
     /// Findings removed by a read-only preview of the actual automatic fixes.
     pub fixable_problems: Vec<String>,
     pub loaded_at: Option<String>,
@@ -572,6 +576,7 @@ struct Warm {
     store: Store,
     summaries: Vec<DocSummary>,
     problems: Vec<String>,
+    findings: Vec<opys_engine::diagnostics::Finding>,
     fixable_problems: Vec<String>,
     loaded_at: String,
 }
@@ -653,6 +658,11 @@ impl Actor {
                         .warm
                         .as_ref()
                         .map(|w| w.problems.clone())
+                        .unwrap_or_default(),
+                    findings: self
+                        .warm
+                        .as_ref()
+                        .map(|w| w.findings.clone())
                         .unwrap_or_default(),
                     loaded_at: self.warm.as_ref().map(|w| w.loaded_at.clone()),
                     fixable_problems: if self.load_error.is_none() {
@@ -815,12 +825,17 @@ impl Actor {
         // Unparsable documents arrive as `parse_errors` and are already part of
         // what verify reports, so a broken file shows up as a problem rather
         // than taking the corpus down.
-        let mut problems = verify::collect_problems(&prj, &docs, parse_errors);
+        let mut findings = verify::collect_findings(&prj, &docs, parse_errors);
         // The corpus was just read off the medium and nothing has written since,
         // so the spelling checks (format.md's quoted `history` keys) can run
         // against it too — the dashboard's verify dot then says what `opys
         // verify` says.
-        problems.extend(verify::spelling_problems(&docs, self.backend.as_ref()));
+        findings.extend(verify::spelling_findings(&docs, self.backend.as_ref()));
+        opys_engine::diagnostics::resolve(&prj, &docs, &mut findings, self.backend.as_ref());
+        let problems = findings
+            .iter()
+            .map(|finding| finding.message.clone())
+            .collect();
         let fixable_problems = verify::fixable_problems(&prj, &docs)?;
         // One index for the whole board: blocked is derived from the corpus, not
         // from a document on its own (ADR-0050 decision 3).
@@ -834,6 +849,7 @@ impl Actor {
             store,
             summaries,
             problems,
+            findings,
             fixable_problems,
             loaded_at: now_rfc3339(),
         })
@@ -978,6 +994,7 @@ fn view(prj: &Project, doc: &Doc, corpus: &refs::Corpus<'_>) -> DocView {
         fields,
         body_html: render_markdown(&doc.body),
         body: doc.body.clone(),
+        body_version: opys_engine::diagnostics::body_version(&doc.body),
         status,
         id,
     }

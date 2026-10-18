@@ -95,6 +95,41 @@ fn spawn(corpus: Corpus) -> (CorpusHandle, broadcast::Receiver<Event>) {
     (handle, rx)
 }
 
+#[test]
+fn findings_expose_source_ranges_without_changing_legacy_messages() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let corpus = fixture(&root);
+    let path = root.join("inventory/NOTE-0001.md");
+    let source = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, source.replace("status: open", "status: invalid")).unwrap();
+    let (handle, _) = spawn(corpus);
+    let status = handle.verify().unwrap();
+    assert_eq!(status.problems.len(), status.findings.len());
+    for (message, finding) in status.problems.iter().zip(&status.findings) {
+        assert_eq!(message, &finding.message);
+        assert_eq!(finding.doc_id.as_deref(), Some("NOTE-0001"));
+        assert_eq!(
+            finding.path.as_ref().unwrap(),
+            Path::new("inventory/NOTE-0001.md")
+        );
+        assert!(finding.excerpt.is_some());
+    }
+    let invalid = status
+        .findings
+        .iter()
+        .find(|f| f.message.contains("invalid status"))
+        .unwrap();
+    assert_eq!(invalid.range.as_ref().unwrap().start.line, 3);
+    assert_eq!(
+        handle.doc("NOTE-0001").unwrap().unwrap().body_version,
+        opys_engine::diagnostics::body_version(
+            "\n# Note 1\n\nHello <script>alert(1)</script> world.\n"
+        )
+    );
+    handle.shutdown();
+}
+
 /// **The deadlock regression test.** A warm store that keeps the inventory lock
 /// makes every CLI invocation against this project wait out
 /// `OPYS_LOCK_TIMEOUT_MS` and then fail. The actor must release it the instant

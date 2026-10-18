@@ -11,6 +11,7 @@ use comrak::nodes::{AstNode, ListType, NodeValue};
 use comrak::{parse_document, Arena, Options};
 use regex::Regex;
 use serde_json::{Map, Value};
+use std::ops::Range;
 
 impl Schema {
     /// Validate a markdown document's **body** against the schema. An empty
@@ -19,11 +20,19 @@ impl Schema {
         let body = strip_frontmatter(markdown);
         let arena = Arena::new();
         let root = parse_document(&arena, body, &Options::default());
-        let doc = build_blocks(root.children());
+        let starts = line_starts(body);
+        let doc = build_blocks(root.children(), &starts);
 
         let mut problems = Vec::new();
         let mut path = Vec::new();
-        match_nodes(&self.body, &doc, self.opts, &mut path, &mut problems);
+        match_nodes(&self.body, &doc, self.opts, &mut path, &mut problems, None);
+        let offset = markdown.len() - body.len();
+        for problem in &mut problems {
+            if let Some(range) = &mut problem.range {
+                range.start += offset;
+                range.end += offset;
+            }
+        }
         problems
     }
 
@@ -38,7 +47,7 @@ impl Schema {
         let body = strip_frontmatter(markdown);
         let arena = Arena::new();
         let root = parse_document(&arena, body, &Options::default());
-        let doc = build_blocks(root.children());
+        let doc = build_blocks(root.children(), &line_starts(body));
 
         let mut obj = Map::new();
         extract_into(&self.body, &doc, &mut obj);
@@ -54,12 +63,24 @@ enum DocBlock {
         level: u8,
         title: String,
         children: Vec<DocBlock>,
+        range: Range<usize>,
     },
     List {
         ordered: bool,
         items: Vec<DocItem>,
+        range: Range<usize>,
     },
-    Para(String),
+    Para(String, Range<usize>),
+}
+
+impl DocBlock {
+    fn range(&self) -> Range<usize> {
+        match self {
+            Self::Section { range, .. } | Self::List { range, .. } | Self::Para(_, range) => {
+                range.clone()
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -67,25 +88,36 @@ struct DocItem {
     text: String,
     checked: Option<bool>,
     children: Vec<DocBlock>,
+    range: Range<usize>,
 }
 
 /// One flat block before heading-nesting is reconstructed.
 enum Flat {
-    Heading(u8, String),
+    Heading(u8, String, Range<usize>),
     Block(DocBlock),
 }
 
-fn build_blocks<'a>(nodes: impl Iterator<Item = &'a AstNode<'a>>) -> Vec<DocBlock> {
-    let flats: Vec<Flat> = nodes.filter_map(flat_of).collect();
+fn build_blocks<'a>(
+    nodes: impl Iterator<Item = &'a AstNode<'a>>,
+    starts: &[usize],
+) -> Vec<DocBlock> {
+    let flats: Vec<Flat> = nodes.filter_map(|node| flat_of(node, starts)).collect();
     let mut pos = 0;
     nest(&flats, &mut pos, 0)
 }
 
-fn flat_of<'a>(node: &'a AstNode<'a>) -> Option<Flat> {
+fn flat_of<'a>(node: &'a AstNode<'a>, starts: &[usize]) -> Option<Flat> {
     match &node.data.borrow().value {
-        NodeValue::Heading(h) => Some(Flat::Heading(h.level, text_of(node))),
-        NodeValue::List(nl) => Some(Flat::Block(doc_list(node, nl.list_type))),
-        NodeValue::Paragraph => Some(Flat::Block(DocBlock::Para(text_of(node)))),
+        NodeValue::Heading(h) => Some(Flat::Heading(
+            h.level,
+            text_of(node),
+            source_range(node, starts),
+        )),
+        NodeValue::List(nl) => Some(Flat::Block(doc_list(node, nl.list_type, starts))),
+        NodeValue::Paragraph => Some(Flat::Block(DocBlock::Para(
+            text_of(node),
+            source_range(node, starts),
+        ))),
         _ => None,
     }
 }
@@ -96,7 +128,7 @@ fn nest(flats: &[Flat], pos: &mut usize, parent_level: usize) -> Vec<DocBlock> {
     let mut out = Vec::new();
     while *pos < flats.len() {
         match &flats[*pos] {
-            Flat::Heading(level, title) => {
+            Flat::Heading(level, title, range) => {
                 if (*level as usize) <= parent_level {
                     break;
                 }
@@ -107,6 +139,7 @@ fn nest(flats: &[Flat], pos: &mut usize, parent_level: usize) -> Vec<DocBlock> {
                     level,
                     title,
                     children,
+                    range: range.clone(),
                 });
             }
             Flat::Block(b) => {
@@ -118,14 +151,18 @@ fn nest(flats: &[Flat], pos: &mut usize, parent_level: usize) -> Vec<DocBlock> {
     out
 }
 
-fn doc_list<'a>(list: &'a AstNode<'a>, list_type: ListType) -> DocBlock {
+fn doc_list<'a>(list: &'a AstNode<'a>, list_type: ListType, starts: &[usize]) -> DocBlock {
     let mut items = Vec::new();
     for item in list.children() {
         let mut text = String::new();
+        let mut range = source_range(item, starts);
         let mut child_nodes = Vec::new();
         for ch in item.children() {
             match &ch.data.borrow().value {
-                NodeValue::Paragraph if text.is_empty() => text = text_of(ch),
+                NodeValue::Paragraph if text.is_empty() => {
+                    text = text_of(ch);
+                    range = source_range(ch, starts);
+                }
                 NodeValue::List(_) => child_nodes.push(ch),
                 _ => {}
             }
@@ -134,13 +171,36 @@ fn doc_list<'a>(list: &'a AstNode<'a>, list_type: ListType) -> DocBlock {
         items.push(DocItem {
             text,
             checked,
-            children: build_blocks(child_nodes.into_iter()),
+            children: build_blocks(child_nodes.into_iter(), starts),
+            range,
         });
     }
     DocBlock::List {
         ordered: matches!(list_type, ListType::Ordered),
         items,
+        range: source_range(list, starts),
     }
+}
+
+fn line_starts(text: &str) -> Vec<usize> {
+    std::iter::once(0)
+        .chain(text.match_indices('\n').map(|(i, _)| i + 1))
+        .collect()
+}
+
+fn source_range(node: &AstNode<'_>, starts: &[usize]) -> Range<usize> {
+    let pos = node.data.borrow().sourcepos;
+    let start = starts
+        .get(pos.start.line.saturating_sub(1))
+        .copied()
+        .unwrap_or(0)
+        + pos.start.column.saturating_sub(1);
+    let end = starts
+        .get(pos.end.line.saturating_sub(1))
+        .copied()
+        .unwrap_or(0)
+        + pos.end.column;
+    start..end.max(start)
 }
 
 /// Concatenate the inline text of a node (headings, paragraphs, item lines).
@@ -198,6 +258,7 @@ fn match_nodes(
     opts: SchemaOpts,
     path: &mut Vec<String>,
     problems: &mut Vec<Problem>,
+    context: Option<Range<usize>>,
 ) {
     let mut cursor = 0usize;
     for node in schema {
@@ -213,12 +274,19 @@ fn match_nodes(
                     .filter(|&i| is_section(&doc[i], *level, title))
                     .collect();
                 if let Some(msg) = card_problem(head.card, idxs.len(), "section") {
-                    problems.push(problem(path, alias(node), msg));
+                    problems.push(problem(
+                        path,
+                        alias(node),
+                        msg,
+                        idxs.last()
+                            .map(|i| doc[*i].range())
+                            .or_else(|| context.clone()),
+                    ));
                 }
                 for &i in &idxs {
                     if let DocBlock::Section { children: sc, .. } = &doc[i] {
                         path.push(alias(node));
-                        match_nodes(children, sc, opts, path, problems);
+                        match_nodes(children, sc, opts, path, problems, Some(doc[i].range()));
                         path.pop();
                     }
                 }
@@ -246,7 +314,12 @@ fn match_nodes(
                     None => 0,
                 };
                 if let Some(msg) = card_problem(head.card, count, "item") {
-                    problems.push(problem(path, alias(node), msg));
+                    problems.push(problem(
+                        path,
+                        alias(node),
+                        msg,
+                        found.map(|i| doc[i].range()).or_else(|| context.clone()),
+                    ));
                 }
                 if let Some(i) = found {
                     if let DocBlock::List { items, .. } = &doc[i] {
@@ -257,12 +330,20 @@ fn match_nodes(
                                         path,
                                         alias(node),
                                         format!("item does not match {}: {}", describe(m), it.text),
+                                        Some(it.range.clone()),
                                     ));
                                 }
                             }
                             if !children.is_empty() {
                                 path.push(alias(node));
-                                match_nodes(children, &it.children, opts, path, problems);
+                                match_nodes(
+                                    children,
+                                    &it.children,
+                                    opts,
+                                    path,
+                                    problems,
+                                    Some(it.range.clone()),
+                                );
                                 path.pop();
                             }
                         }
@@ -273,15 +354,16 @@ fn match_nodes(
                 }
             }
             Node::Prose { text, head } => {
-                let found = (start..doc.len()).find(|&i| matches!(doc[i], DocBlock::Para(_)));
+                let found = (start..doc.len()).find(|&i| matches!(doc[i], DocBlock::Para(..)));
                 if let Some(i) = found {
-                    if let DocBlock::Para(t) = &doc[i] {
+                    if let DocBlock::Para(t, range) = &doc[i] {
                         if let Some(m) = text {
                             if !matches_text(m, t) {
                                 problems.push(problem(
                                     path,
                                     alias(node),
                                     format!("paragraph does not match {}", describe(m)),
+                                    Some(range.clone()),
                                 ));
                             }
                         }
@@ -294,6 +376,7 @@ fn match_nodes(
                         path,
                         alias(node),
                         "missing required paragraph".into(),
+                        context.clone(),
                     ));
                 }
             }
@@ -306,7 +389,7 @@ fn is_section(b: &DocBlock, level: u8, title: &Match) -> bool {
 }
 
 fn is_list(b: &DocBlock, style: ListStyle) -> bool {
-    let DocBlock::List { ordered, items } = b else {
+    let DocBlock::List { ordered, items, .. } = b else {
         return false;
     };
     match style {
@@ -387,10 +470,19 @@ fn slug(s: &str) -> String {
         .to_string()
 }
 
-fn problem(path: &[String], alias: String, message: String) -> Problem {
+fn problem(
+    path: &[String],
+    alias: String,
+    message: String,
+    range: Option<Range<usize>>,
+) -> Problem {
     let mut p = path.to_vec();
     p.push(alias);
-    Problem { path: p, message }
+    Problem {
+        path: p,
+        message,
+        range,
+    }
 }
 
 // ---- extraction (capture aliases → JSON) ---------------------------------
@@ -484,8 +576,8 @@ fn extract_into(schema: &[Node], doc: &[DocBlock], obj: &mut Map<String, Value>)
                     )
                 }
             }
-            Node::Prose { .. } => match doc.iter().find(|b| matches!(b, DocBlock::Para(_))) {
-                Some(DocBlock::Para(t)) => Value::String(t.clone()),
+            Node::Prose { .. } => match doc.iter().find(|b| matches!(b, DocBlock::Para(..))) {
+                Some(DocBlock::Para(t, _)) => Value::String(t.clone()),
                 _ => Value::Null,
             },
         };

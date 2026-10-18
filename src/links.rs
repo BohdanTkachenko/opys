@@ -471,9 +471,20 @@ fn is_identifier_suffix(after: &str) -> bool {
 /// blocks and inline code spans are skipped, like in [`linkify`]. Returns one
 /// truncated snippet per offending link.
 pub fn nested_links(body: &str) -> Vec<String> {
+    nested_link_spans(body)
+        .into_iter()
+        .map(|(_, snippet)| snippet)
+        .collect()
+}
+
+/// Body byte ranges and snippets for the same nested-link scan.
+pub fn nested_link_spans(body: &str) -> Vec<(std::ops::Range<usize>, String)> {
     let mut found = Vec::new();
     let mut fence: Option<(char, usize)> = None;
+    let mut offset = 0;
     for line in body.split('\n') {
+        let line_start = offset;
+        offset += line.len() + 1;
         if let Some((fc, flen)) = fence {
             if closes_fence(line, fc, flen) {
                 fence = None;
@@ -487,7 +498,8 @@ pub fn nested_links(body: &str) -> Vec<String> {
         for tok in tokens(line) {
             if let Tok::Link { text, label, .. } = tok {
                 if contains_link(label) {
-                    found.push(snippet(text));
+                    let start = line_start + (text.as_ptr() as usize - line.as_ptr() as usize);
+                    found.push((start..start + text.len(), snippet(text)));
                 }
             }
         }

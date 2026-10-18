@@ -10,6 +10,7 @@ pub mod body;
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod diagnostics;
 pub mod doc;
 pub mod error;
 pub mod file_refs;

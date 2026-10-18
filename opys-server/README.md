@@ -58,6 +58,13 @@ the real engine fix pass in a disposable store without flushing or syncing.
 fields and other manual-only findings do not enable it; after the fixable
 findings are cleared, the button is disabled even if other problems remain.
 
+Findings include source locations measured against the original markdown file.
+Click a `path:line:column` location to expand a source excerpt with the offending
+range highlighted. **Show in document** reveals the affected body block; a
+snapshot check prevents old coordinates from highlighting newly edited text.
+Missing content uses an insertion marker. The API's additive `findings` array
+preserves the existing `problems` messages and automatic-fix behavior.
+
 The lifecycle view is one live project-wide graph containing every document
 type, status and permitted transition. Shared status names merge into common
 nodes with combined counts; shared edges retain all owning types and whether

@@ -8,6 +8,7 @@ use walkdir::WalkDir;
 use crate::body;
 use crate::commands::print_lines;
 use crate::config::{FieldSpec, FieldType};
+use crate::diagnostics::{self, Finding, Problems, Target};
 use crate::doc::Doc;
 use crate::error::Result;
 use crate::frontmatter::Frontmatter;
@@ -34,11 +35,11 @@ pub fn run(ctx: &Ctx, fix: bool) -> Result<i32> {
     // byte-identical to the parsed ones (the store round-trip is a fixpoint).
     let (mut store, parse_errors) = ctx.load(&prj)?;
     let mut docs: Vec<Doc> = store.all_docs()?.into_iter().map(|(_, d)| d).collect();
-    let mut errors = collect_problems(&prj, &docs, parse_errors);
+    let mut errors = collect_findings(&prj, &docs, parse_errors);
     // …plus the checks that read the medium's own text (see below). The command
     // has not written anything, so what the backend hands back is still the
     // corpus the store was built from.
-    errors.extend(spelling_problems(&docs, ctx.backend.as_ref()));
+    errors.extend(spelling_findings(&docs, ctx.backend.as_ref()));
     let mut observations = crate::observe::observations(&prj, &docs, crate::observe::now());
 
     // A fix is an ordinary `set-status` along the graph the config declares, and
@@ -63,7 +64,7 @@ pub fn run(ctx: &Ctx, fix: bool) -> Result<i32> {
             // and rewrites every document it touches canonically. Running the
             // pair unconditionally would turn `verify --fix` into a silent
             // `sync` over a corpus it found nothing to fix in.
-            errors.extend(fixes.refused);
+            errors.extend(refused_findings(&docs, fixes.refused));
         } else {
             // Flush, then announce, then sync — the order every mutating
             // command uses: nothing claims a fix the flush did not land, and the
@@ -76,13 +77,14 @@ pub fn run(ctx: &Ctx, fix: bool) -> Result<i32> {
             // `spelling_problems` reads the stored text.
             let (mut store, parse_errors) = ctx.load(&prj)?;
             docs = store.all_docs()?.into_iter().map(|(_, d)| d).collect();
-            errors = collect_problems(&prj, &docs, parse_errors);
-            errors.extend(spelling_problems(&docs, ctx.backend.as_ref()));
-            errors.extend(fixes.refused);
+            errors = collect_findings(&prj, &docs, parse_errors);
+            errors.extend(spelling_findings(&docs, ctx.backend.as_ref()));
+            errors.extend(refused_findings(&docs, fixes.refused));
             observations = crate::observe::observations(&prj, &docs, crate::observe::now());
         }
     }
 
+    diagnostics::resolve(&prj, &docs, &mut errors, ctx.backend.as_ref());
     report(&docs, &errors, &observations)
 }
 
@@ -141,6 +143,22 @@ pub fn fixable_problems(prj: &Project, docs: &[Doc]) -> Result<Vec<String>> {
         .collect())
 }
 
+fn refused_findings(docs: &[Doc], messages: Vec<String>) -> Vec<Finding> {
+    let mut problems = Problems::default();
+    for message in messages {
+        problems.unlocated();
+        if let Some(doc) = docs.iter().find(|doc| {
+            doc.id()
+                .is_some_and(|id| message.starts_with(&format!("{id}:")))
+        }) {
+            problems.document(doc);
+            problems.field("status");
+        }
+        problems.push(message);
+    }
+    problems.items
+}
+
 /// Print the outcome and return the exit code: problems first, observations
 /// after them, both on stderr; the clean line on stdout.
 ///
@@ -152,13 +170,13 @@ pub fn fixable_problems(prj: &Project, docs: &[Doc]) -> Result<Vec<String>> {
 /// with the problems, and the code says which of the two it was.
 fn report(
     docs: &[Doc],
-    errors: &[String],
+    errors: &[Finding],
     observations: &[crate::observe::Observation],
 ) -> Result<i32> {
     if !errors.is_empty() {
         eprintln!("verify: {} problem(s)", errors.len());
         for e in errors {
-            eprintln!("  {e}");
+            eprintln!("  {}", e.display());
         }
     } else if observations.is_empty() {
         print_lines([format!("verify: OK ({} documents)", docs.len())])?;
@@ -189,12 +207,21 @@ fn report(
 /// false verdict. Callers that do read the durable corpus (`verify`, the node's
 /// per-corpus problem list) add this on top.
 pub fn spelling_problems(docs: &[Doc], backend: &dyn crate::backend::Backend) -> Vec<String> {
-    let mut errors = Vec::new();
+    spelling_findings(docs, backend)
+        .into_iter()
+        .map(|finding| finding.message)
+        .collect()
+}
+
+pub fn spelling_findings(docs: &[Doc], backend: &dyn crate::backend::Backend) -> Vec<Finding> {
+    let mut errors = Problems::default();
     for d in docs {
         let (Some(id), Some(stored)) = (d.id(), backend.stored_text(&d.path)) else {
             continue;
         };
+        errors.document(d);
         for key in crate::history::unquoted_keys(&d.frontmatter, &stored) {
+            errors.entry("history", &key);
             errors.push(format!(
                 "{id}: history key '{key}' is written unquoted (a bare RFC3339 \
                  scalar is read as a timestamp, not a string, by a YAML 1.1 \
@@ -202,7 +229,7 @@ pub fn spelling_problems(docs: &[Doc], backend: &dyn crate::backend::Backend) ->
             ));
         }
     }
-    errors
+    errors.items
 }
 
 /// Run every integrity check over `docs`, appending to the parse errors already
@@ -210,7 +237,24 @@ pub fn spelling_problems(docs: &[Doc], backend: &dyn crate::backend::Backend) ->
 /// `commands::edit` (an edit is only flushed if it adds nothing to this list).
 /// Never returns an `OpysError` — content problems are data, not failures.
 pub fn collect_problems(prj: &Project, docs: &[Doc], parse_errors: Vec<String>) -> Vec<String> {
-    let mut errors = parse_errors;
+    collect_findings(prj, docs, parse_errors)
+        .into_iter()
+        .map(|finding| finding.message)
+        .collect()
+}
+
+/// Semantic diagnostics, before source locations are attached by a durable reader.
+pub fn collect_findings(prj: &Project, docs: &[Doc], parse_errors: Vec<String>) -> Vec<Finding> {
+    let mut errors = Problems::default();
+    for message in parse_errors {
+        errors.unlocated();
+        if let Some((path, _)) = message.split_once(": ") {
+            errors.file(path.into());
+            errors.target = Target::Parse;
+        }
+        errors.push(message);
+    }
+    errors.file(prj.root.join("opys.toml"));
     let pcfg = &prj.pcfg;
 
     // Validate opys.toml itself, and the field specs of each type.
@@ -239,6 +283,7 @@ pub fn collect_problems(prj: &Project, docs: &[Doc], parse_errors: Vec<String>) 
     let mut seen: HashMap<String, String> = HashMap::new();
 
     for d in docs {
+        errors.document(d);
         let m = &d.frontmatter;
         let where_ = d.path.display().to_string();
 
@@ -275,6 +320,7 @@ pub fn collect_problems(prj: &Project, docs: &[Doc], parse_errors: Vec<String>) 
             ));
         }
 
+        errors.field("status");
         let status = d.status();
         if !status
             .map(|s| t.statuses.iter().any(|x| x == s))
@@ -284,17 +330,22 @@ pub fn collect_problems(prj: &Project, docs: &[Doc], parse_errors: Vec<String>) 
         }
 
         if t.tags_required || m.contains_key("tags") {
+            errors.field("tags");
             check_tags(m, id, &mut errors);
         }
         if d.title.is_empty() {
+            errors.target = Target::Title;
             errors.push(format!("{id}: missing '# Title' heading"));
         }
 
         check_timestamps(m, id, &mut errors);
+        errors.field("history");
         check_history(m, id, &mut errors);
+        errors.field("history");
         check_transitions(m, id, tname, t, &mut errors);
         check_references(m, id, &doc_ids, &mut errors);
-        for snip in crate::links::nested_links(&d.body) {
+        for (range, snip) in crate::links::nested_link_spans(&d.body) {
+            errors.target = Target::Body(range);
             errors.push(format!(
                 "{id}: nested markdown link in body (fix by hand, keeping the innermost link): {snip}"
             ));
@@ -341,15 +392,16 @@ pub fn collect_problems(prj: &Project, docs: &[Doc], parse_errors: Vec<String>) 
 
     // Each configured `[[stats]]` section must run cleanly against the real
     // corpus (its SQL parses and executes against the corpus view).
+    errors.file(prj.root.join("opys.toml"));
     check_stats(prj, docs, &mut errors);
 
-    errors
+    errors.items
 }
 
 /// Run each configured `[[stats]]` SQL query against the live corpus, reporting
 /// any failure (a query that fails to parse or execute against the corpus view)
 /// as a content problem.
-fn check_stats(prj: &Project, docs: &[Doc], errors: &mut Vec<String>) {
+fn check_stats(prj: &Project, docs: &[Doc], errors: &mut Problems) {
     if prj.pcfg.stats.is_empty() {
         return;
     }
@@ -389,8 +441,9 @@ fn reserved_fields() -> Vec<&'static str> {
 /// The auto-maintained timestamp fields, when present, must be valid RFC3339
 /// datetimes. They are optional: older docs predating the fields are not flagged
 /// for absence (a `sync` pass backfills them).
-fn check_timestamps(m: &Frontmatter, id: &str, errors: &mut Vec<String>) {
+fn check_timestamps(m: &Frontmatter, id: &str, errors: &mut Problems) {
     for key in ["created", "updated"] {
+        errors.field(key);
         if let Some(v) = m.get(key) {
             let ok = v
                 .as_str()
@@ -430,11 +483,20 @@ fn check_timestamps(m: &Frontmatter, id: &str, errors: &mut Vec<String>) {
 ///
 /// Unlike the relation maps, history is never repaired: it cannot be rebuilt
 /// from ground truth, so a botched one is reported and fixed by hand.
-fn check_history(m: &Frontmatter, id: &str, errors: &mut Vec<String>) {
+fn check_history(m: &Frontmatter, id: &str, errors: &mut Problems) {
     // (1a) Present and carrying entries, but not a shape opys can read. Say
     // exactly what is wrong: no append path will write beside this map (and no
     // other path rewrites it) until a human fixes it.
     if let Some(why) = crate::history::botched(m) {
+        if let Some(Value::Mapping(entries)) = m.get(crate::history::FIELD) {
+            if let Some((key, _)) = entries.iter().find(|(key, value)| {
+                !key.as_str().is_some_and(crate::history::is_canonical_key) || !value.is_string()
+            }) {
+                if let Some(key) = key.as_str() {
+                    errors.entry("history", key);
+                }
+            }
+        }
         errors.push(format!(
             "{id}: {why}; opys will not rewrite a lifecycle map it cannot read — \
              repair it by hand"
@@ -453,6 +515,7 @@ fn check_history(m: &Frontmatter, id: &str, errors: &mut Vec<String>) {
     // (2) The last entry is the current status.
     if let (Some(status), Some((_, last))) = (m.status(), entries.last()) {
         if last != status {
+            errors.entry("history", &entries.last().unwrap().0);
             errors.push(format!(
                 "{id}: history's last entry ({last}) does not match status ({status})"
             ));
@@ -465,6 +528,7 @@ fn check_history(m: &Frontmatter, id: &str, errors: &mut Vec<String>) {
         let dt = crate::history::parse(key).expect("is_map checked the key is canonical");
         if let Some((pk, pdt)) = &prev {
             if dt <= *pdt {
+                errors.entry("history", key);
                 errors.push(format!(
                     "{id}: history keys must strictly increase ('{key}' does not follow '{pk}')"
                 ));
@@ -481,6 +545,7 @@ fn check_history(m: &Frontmatter, id: &str, errors: &mut Vec<String>) {
         crate::history::parse(first_key),
     ) {
         if created.unix_timestamp() != first.unix_timestamp() {
+            errors.field("created");
             errors.push(format!(
                 "{id}: 'created' ({}) does not match the first history entry ({first_key})",
                 m.get_str("created").unwrap_or_default()
@@ -513,13 +578,7 @@ fn check_history(m: &Frontmatter, id: &str, errors: &mut Vec<String>) {
 ///
 /// A botched or absent map yields no entries (`check_history` already reported
 /// it), so nothing here fires twice on the same document.
-fn check_transitions(
-    m: &Frontmatter,
-    id: &str,
-    tname: &str,
-    t: &DocType,
-    errors: &mut Vec<String>,
-) {
+fn check_transitions(m: &Frontmatter, id: &str, tname: &str, t: &DocType, errors: &mut Problems) {
     if t.transitions.is_empty() {
         return;
     }
@@ -529,6 +588,7 @@ fn check_transitions(
         if from == to || crate::lifecycle::allows(t, from, to) {
             continue;
         }
+        errors.entry("history", &pair[1].0);
         errors.push(format!(
             "{id}: history records {from} -> {to}, which type '{tname}' does not declare as a \
              transition ({})",
@@ -540,15 +600,11 @@ fn check_transitions(
 /// Every entry in each relation map (`references`, `blocked_by`, `blocks`) must
 /// resolve to an existing doc, unless it is a struck-through tombstone (a closed
 /// document). A blocker map may not list the doc itself.
-fn check_references(
-    m: &Frontmatter,
-    id: &str,
-    doc_ids: &HashSet<String>,
-    errors: &mut Vec<String>,
-) {
+fn check_references(m: &Frontmatter, id: &str, doc_ids: &HashSet<String>, errors: &mut Problems) {
     for field in refs::RELATION_FIELDS {
         let is_blocker = field == refs::BLOCKED_BY || field == refs::BLOCKS;
         for (tid, val) in refs::parse_in(m, field) {
+            errors.entry(field, &tid);
             if is_blocker && tid == id {
                 errors.push(format!("{id}: '{field}' must not list itself"));
                 continue;
@@ -571,14 +627,26 @@ fn check_references(
 /// `[[rules]]`, field-level regex patterns, and required-section presence —
 /// mapping each doc to a type by its ID prefix. Findings are prefixed by the doc
 /// id.
-fn check_rules(prj: &Project, docs: &[Doc], doc_ids: &HashSet<String>, errors: &mut Vec<String>) {
+fn check_rules(prj: &Project, docs: &[Doc], doc_ids: &HashSet<String>, errors: &mut Problems) {
     let pcfg = &prj.pcfg;
-    let mut run = |id: Option<&str>, status: Option<&str>, m: &Frontmatter, body: &str| {
+    let mut run = |d: &Doc| {
+        errors.document(d);
+        let (id, status, m, body) = (d.id(), d.status(), &d.frontmatter, d.body.as_str());
         let Some(id) = id else { return };
         let Some(type_name) = pcfg.type_name_for_id(id) else {
             return;
         };
-        for p in rules::evaluate(pcfg, type_name, status.unwrap_or(""), m, body, doc_ids) {
+        for (target, p) in
+            rules::evaluate_located(pcfg, type_name, status.unwrap_or(""), m, body, doc_ids)
+        {
+            errors.target = match target {
+                rules::RuleTarget::Field(field) => {
+                    errors.field(&field);
+                    errors.target.clone()
+                }
+                rules::RuleTarget::Section(heading) => diagnostics::section_target(d, &heading),
+                rules::RuleTarget::Document => Target::BodyEnd,
+            };
             errors.push(format!("{id}: {p}"));
         }
         if let Some(dt) = pcfg.types.get(type_name) {
@@ -586,6 +654,7 @@ fn check_rules(prj: &Project, docs: &[Doc], doc_ids: &HashSet<String>, errors: &
             for (fname, spec) in &dt.fields {
                 if let (Some(pat), Some(val)) = (&spec.pattern, m.get_str(fname)) {
                     if Regex::new(pat).map(|re| !re.is_match(val)).unwrap_or(false) {
+                        errors.field(fname);
                         errors.push(format!("{id}: field '{fname}' must match /{pat}/"));
                     }
                 }
@@ -593,6 +662,7 @@ fn check_rules(prj: &Project, docs: &[Doc], doc_ids: &HashSet<String>, errors: &
             // Required-section presence.
             for sec in &dt.sections {
                 if sec.required && !body::has_section(body, &sec.heading) {
+                    errors.target = Target::BodyEnd;
                     errors.push(format!(
                         "{id}: missing required '## {}' section",
                         sec.heading
@@ -602,7 +672,7 @@ fn check_rules(prj: &Project, docs: &[Doc], doc_ids: &HashSet<String>, errors: &
         }
     };
     for d in docs {
-        run(d.id(), d.status(), &d.frontmatter, &d.body);
+        run(d);
     }
 }
 
@@ -610,9 +680,11 @@ fn check_rules(prj: &Project, docs: &[Doc], doc_ids: &HashSet<String>, errors: &
 /// live docs. Exact duplicate id strings are already reported by the `seen`
 /// check; this catches a number reused across prefixes (e.g. `FEAT-0003` and
 /// `TASK-0003`).
-fn check_unique_numbers(docs: &[Doc], errors: &mut Vec<String>) {
+fn check_unique_numbers(docs: &[Doc], errors: &mut Problems) {
     let mut by_num: HashMap<u64, String> = HashMap::new();
-    for id in docs.iter().filter_map(|d| d.id()) {
+    for d in docs {
+        let Some(id) = d.id() else { continue };
+        errors.document(d);
         let Some((_, n)) = id.rsplit_once('-') else {
             continue;
         };
@@ -629,7 +701,7 @@ fn check_unique_numbers(docs: &[Doc], errors: &mut Vec<String>) {
     }
 }
 
-fn check_tags(m: &Frontmatter, fid: &str, errors: &mut Vec<String>) {
+fn check_tags(m: &Frontmatter, fid: &str, errors: &mut Problems) {
     if !m.tags_is_nonempty_list() {
         errors.push(format!("{fid}: tags must be a non-empty list"));
         return;
@@ -638,7 +710,8 @@ fn check_tags(m: &Frontmatter, fid: &str, errors: &mut Vec<String>) {
         return;
     };
     let mut keys: Vec<String> = Vec::new();
-    for t in seq {
+    for (index, t) in seq.iter().enumerate() {
+        errors.element("tags", index);
         let display = tag_display(t);
         match validate_tag(&display) {
             Ok(Some(key)) => {
@@ -686,9 +759,10 @@ fn check_custom_fields(
     config_hint: &str,
     m: &Frontmatter,
     id: &str,
-    errors: &mut Vec<String>,
+    errors: &mut Problems,
 ) {
     for (k, spec) in fields {
+        errors.field(k);
         if spec.required && !m.contains_key(k) {
             errors.push(format!("{id}: required field '{k}' missing"));
         }
@@ -712,6 +786,7 @@ fn check_custom_fields(
     }
     for k in m.keys() {
         if !reserved.contains(&k) && !fields.contains_key(k) {
+            errors.field(k);
             errors.push(format!(
                 "{id}: unknown frontmatter field '{k}' (declare it in {config_hint} [fields.{k}])"
             ));
@@ -731,38 +806,39 @@ fn run_check(
     chk: &SectionCheck,
     prj: &Project,
     corpus_cache: &mut HashMap<Vec<String>, String>,
-    errors: &mut Vec<String>,
+    errors: &mut Problems,
 ) {
     // An invalid pattern is already reported by config validation; skip here.
     let Ok(pat) = Regex::new(&chk.pattern) else {
         return;
     };
 
-    match chk.scope {
-        CheckScope::All => {
-            for line in body::section(&d.body, heading).lines() {
-                for caps in pat.captures_iter(line) {
-                    validate_match(id, heading, chk, &caps, prj, corpus_cache, errors);
-                }
-            }
+    let Some(range) = body::section_range(&d.body, heading) else {
+        return;
+    };
+    let mut offset = range.start;
+    for raw in d.body[range].split_inclusive('\n') {
+        let line = raw.trim_end_matches(['\r', '\n']);
+        let start = offset;
+        offset += raw.len();
+        if chk.scope == CheckScope::Checked
+            && !(line.starts_with("- [x] ") || line.starts_with("- [X] "))
+        {
+            continue;
         }
-        CheckScope::Checked => {
-            for item in body::checklist_items(&d.body, heading) {
-                if !item.checked {
-                    continue;
-                }
-                let mut matched = false;
-                for caps in pat.captures_iter(&item.line) {
-                    matched = true;
-                    validate_match(id, heading, chk, &caps, prj, corpus_cache, errors);
-                }
-                if !matched {
-                    errors.push(format!(
-                        "{id}: section '{heading}': checked item has no reference: {}",
-                        item.line.trim()
-                    ));
-                }
-            }
+        let mut matched = false;
+        for caps in pat.captures_iter(line) {
+            matched = true;
+            let capture = caps.get(0).unwrap();
+            errors.target = Target::Body(start + capture.start()..start + capture.end());
+            validate_match(id, heading, chk, &caps, prj, corpus_cache, errors);
+        }
+        if chk.scope == CheckScope::Checked && !matched {
+            errors.target = Target::Body(start..start + line.len());
+            errors.push(format!(
+                "{id}: section '{heading}': checked item has no reference: {}",
+                line.trim()
+            ));
         }
     }
 }
@@ -776,7 +852,7 @@ fn validate_match(
     caps: &regex::Captures,
     prj: &Project,
     corpus_cache: &mut HashMap<Vec<String>, String>,
-    errors: &mut Vec<String>,
+    errors: &mut Problems,
 ) {
     // The text the `must_match` regex searches: a specific file, or the corpus.
     // A missing `file` is a failure in its own right (always the default
@@ -872,7 +948,7 @@ fn resolve_file(prj: &Project, rel: &str, roots: &[String]) -> Option<String> {
 /// A `structured` section: its content must conform to the section's `structure`
 /// (an mdprism schema). When the section is absent, the `required` check (not
 /// this one) is responsible; we only validate present sections.
-fn check_structured(d: &Doc, id: &str, sec: &SectionSpec, errors: &mut Vec<String>) {
+fn check_structured(d: &Doc, id: &str, sec: &SectionSpec, errors: &mut Problems) {
     let Some(src) = &sec.structure else {
         return;
     };
@@ -883,8 +959,15 @@ fn check_structured(d: &Doc, id: &str, sec: &SectionSpec, errors: &mut Vec<Strin
     let Ok(schema) = crate::mdprism::parse_schema(src) else {
         return;
     };
-    let content = body::section(&d.body, &sec.heading);
-    for p in schema.validate(&content) {
+    let Some(range) = body::section_range(&d.body, &sec.heading) else {
+        return;
+    };
+    let content = &d.body[range.clone()];
+    for p in schema.validate(content) {
+        errors.target = p.range.as_ref().map_or_else(
+            || diagnostics::section_target(d, &sec.heading),
+            |span| Target::Body(range.start + span.start..range.start + span.end),
+        );
         errors.push(format!("{id}: section '{}': {p}", sec.heading));
     }
 }
@@ -898,13 +981,28 @@ fn check_structured(d: &Doc, id: &str, sec: &SectionSpec, errors: &mut Vec<Strin
 /// is that a log reads forwards, not that no two entries share a second. (The
 /// `history` map *is* strict, for a different reason: its keys are also its
 /// sort order.)
-fn check_log(d: &Doc, id: &str, sec: &SectionSpec, errors: &mut Vec<String>) {
+fn check_log(d: &Doc, id: &str, sec: &SectionSpec, errors: &mut Problems) {
     if !body::has_section(&d.body, &sec.heading) {
         return;
     }
-    let entries = body::log_entries(&body::section(&d.body, &sec.heading));
+    let Some(range) = body::section_range(&d.body, &sec.heading) else {
+        return;
+    };
+    let content = &d.body[range.clone()];
+    let entries = body::log_entries(content);
+    let mut offset = range.start;
+    let lines: Vec<_> = content
+        .split_inclusive('\n')
+        .filter_map(|line| {
+            let start = offset;
+            offset += line.len();
+            line.starts_with("- ")
+                .then_some(start..start + line.trim_end_matches(['\r', '\n']).len())
+        })
+        .collect();
     let mut prev: Option<(String, OffsetDateTime)> = None;
-    for entry in &entries {
+    for (entry, span) in entries.iter().zip(lines) {
+        errors.target = Target::Body(span);
         let Some(ts) = &entry.ts else {
             errors.push(format!(
                 "{id}: section '{}': undated log entry {} (every entry starts \
@@ -962,7 +1060,7 @@ fn type_ok(v: &Value, want: FieldType) -> bool {
 fn check_field_specs(
     fields: &BTreeMap<String, FieldSpec>,
     config_hint: &str,
-    errors: &mut Vec<String>,
+    errors: &mut Problems,
 ) {
     for (k, spec) in fields {
         if spec.field_type == FieldType::Enum && spec.values.is_empty() {

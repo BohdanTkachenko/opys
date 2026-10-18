@@ -27,23 +27,46 @@ pub fn evaluate(
     body: &str,
     doc_ids: &HashSet<String>,
 ) -> Vec<String> {
+    evaluate_located(prj, type_name, status, fm, body, doc_ids)
+        .into_iter()
+        .map(|(_, message)| message)
+        .collect()
+}
+
+pub(crate) enum RuleTarget {
+    Field(String),
+    Section(String),
+    Document,
+}
+
+pub(crate) fn evaluate_located(
+    prj: &ProjectConfig,
+    type_name: &str,
+    status: &str,
+    fm: &Frontmatter,
+    body: &str,
+    doc_ids: &HashSet<String>,
+) -> Vec<(RuleTarget, String)> {
     let mut out = Vec::new();
     // The type-level `requires_link` shorthand (sugar for an always-on
     // require_link rule on this type).
     if let Some(dt) = prj.types.get(type_name) {
         if let Some(lr) = &dt.requires_link {
             if resolved_links(prj, fm, &lr.to, doc_ids) < lr.min {
-                out.push(format!(
-                    "must reference at least {} doc(s) of type '{}'",
-                    lr.min, lr.to
+                out.push((
+                    RuleTarget::Field("references".into()),
+                    format!(
+                        "must reference at least {} doc(s) of type '{}'",
+                        lr.min, lr.to
+                    ),
                 ));
             }
         }
     }
     for rule in &prj.rules {
         if applies(rule, type_name, status, fm) {
-            if let Some(msg) = check(prj, rule, status, fm, body, doc_ids) {
-                out.push(msg);
+            if let Some(problem) = check(prj, rule, status, fm, body, doc_ids) {
+                out.push(problem);
             }
         }
     }
@@ -68,10 +91,13 @@ fn check(
     fm: &Frontmatter,
     body: &str,
     doc_ids: &HashSet<String>,
-) -> Option<String> {
+) -> Option<(RuleTarget, String)> {
     if let Some(f) = &rule.require_field {
         if !field_present(fm, f) {
-            return Some(format!("field '{f}' is required"));
+            return Some((
+                RuleTarget::Field(f.clone()),
+                format!("field '{f}' is required"),
+            ));
         }
     }
     if let Some(m) = &rule.field_matches {
@@ -81,31 +107,46 @@ fn check(
                 .map(|re| !re.is_match(s))
                 .unwrap_or(false)
             {
-                return Some(format!("field '{}' must match /{}/", m.field, m.pattern));
+                return Some((
+                    RuleTarget::Field(m.field.clone()),
+                    format!("field '{}' must match /{}/", m.field, m.pattern),
+                ));
             }
         }
     }
     if let Some(h) = &rule.require_section {
         if !body::has_section(body, h) {
-            return Some(format!("missing required '## {h}' section"));
+            return Some((
+                RuleTarget::Section(h.clone()),
+                format!("missing required '## {h}' section"),
+            ));
         }
     }
     if let Some(h) = &rule.require_checked_section {
         if !body::checklist_items(body, h).iter().any(|i| i.checked) {
-            return Some(format!("'## {h}' needs at least one checked item"));
+            return Some((
+                RuleTarget::Section(h.clone()),
+                format!("'## {h}' needs at least one checked item"),
+            ));
         }
     }
     if let Some(lr) = &rule.require_link {
         if resolved_links(prj, fm, &lr.to, doc_ids) < lr.min {
-            return Some(format!(
-                "must reference at least {} doc(s) of type '{}'",
-                lr.min, lr.to
+            return Some((
+                RuleTarget::Field("references".into()),
+                format!(
+                    "must reference at least {} doc(s) of type '{}'",
+                    lr.min, lr.to
+                ),
             ));
         }
     }
     if let Some(terms) = &rule.require_any {
         if !terms.iter().any(|t| any_term_holds(t, fm, body)) {
-            return Some(format!("requires one of: {}", describe_any(terms)));
+            return Some((
+                RuleTarget::Document,
+                format!("requires one of: {}", describe_any(terms)),
+            ));
         }
     }
     if let Some(h) = &rule.require_log_since_status {
@@ -118,9 +159,12 @@ fn check(
                 // `set-status` inside one second must pass.
                 .any(|t| t.unix_timestamp() >= since.unix_timestamp());
             if !fresh {
-                return Some(format!(
-                    "'## {h}' has no log entry since the status last changed \
+                return Some((
+                    RuleTarget::Section(h.clone()),
+                    format!(
+                        "'## {h}' has no log entry since the status last changed \
                      (append one with `opys log`)"
+                    ),
                 ));
             }
         }

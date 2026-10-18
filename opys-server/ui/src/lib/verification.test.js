@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { documentProblems } from './verification.js';
+import { documentProblems, verificationFindings, sourceLines, highlightedBlocks } from './verification.js';
 
 test('a card includes ID and path findings, without errors merely referencing it', () => {
   const own = [
@@ -11,4 +11,31 @@ test('a card includes ID and path findings, without errors merely referencing it
   const all = [...own, 'ADR-0011: unresolved reference to ADR-0010', 'opys.toml: invalid config'];
   assert.deepEqual(documentProblems(all, 'ADR-0010', 'inventory/ADR-0010.md'), own);
   assert.deepEqual(documentProblems(all, null, null), all);
+});
+
+test('structured document identity and duplicate messages retain their own ranges', () => {
+  const own = [1, 2].map((line) => ({message:'same message', doc_id:'ADR-0010', range:{start:{line,column:1},end:{line,column:2}}}));
+  const report = {findings:[...own,{message:'mentions ADR-0010',doc_id:'ADR-0011'}]};
+  assert.deepEqual(verificationFindings(report,'ADR-0010','inventory/ADR-0010.md'),own);
+  assert.deepEqual(verificationFindings({problems:['ADR-0010: old server']},'ADR-0010'),[{message:'ADR-0010: old server'}]);
+});
+
+test('source highlighting uses scalar columns and excludes an end at the next line', () => {
+  const finding = {range:{start:{line:4,column:5},end:{line:5,column:1}},excerpt:{first_line:3,text:'context\nλ 🦀 broken\nnext'}};
+  const lines = sourceLines(finding);
+  assert.equal(lines[0].selected,false);
+  assert.equal(lines[1].before,'λ 🦀 ');
+  assert.equal(lines[1].marked,'broken');
+  assert.equal(lines[2].selected,false);
+  const point=sourceLines({...finding,range:{start:{line:4,column:5},end:{line:4,column:5}}})[1];
+  assert.equal(point.point,true);
+  assert.equal(point.after,'broken');
+});
+
+test('rendered block highlighting converts Unicode columns and refuses stale snapshots', () => {
+  const body='# Title\n\nλ 🦀 broken\n\nLast paragraph\n';
+  const finding={body_version:'v1',body_range:{start:{line:3,column:5},end:{line:3,column:11}}};
+  assert.deepEqual(highlightedBlocks(body,'v1',finding),[1]);
+  assert.deepEqual(highlightedBlocks(body,'v2',finding),[]);
+  assert.deepEqual(highlightedBlocks(body,'v1',{...finding,body_range:{start:{line:6,column:1},end:{line:6,column:1}}}),[2]);
 });

@@ -6585,7 +6585,7 @@ fn the_observations_block_is_byte_stable_and_separate_from_the_problems() {
         .clone();
     let out = String::from_utf8(out).unwrap();
     assert!(
-        out.starts_with("verify: 1 problem(s)\n  TASK-0003:"),
+        out.starts_with("verify: 1 problem(s)\n  ") && out.contains("TASK-0003:"),
         "{out}"
     );
     assert!(out.ends_with(&expected), "{out}");

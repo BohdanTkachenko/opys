@@ -1,18 +1,23 @@
 <script>
+  import SourceExcerpt from './SourceExcerpt.svelte';
   import { api } from './lib/api.js';
   import { affects, events } from './lib/events.svelte.js';
   import { createResource } from './lib/resource.svelte.js';
-  import { documentProblems } from './lib/verification.js';
+  import { verificationFindings } from './lib/verification.js';
+  import { docPath, href } from './lib/router.svelte.js';
 
-  let { cid, id = null, path = null } = $props();
+  let { cid, id = null, path = null, onreveal = null } = $props();
   const report = createResource();
   let fixing = $state(false);
   let outcome = $state('');
   let fixError = $state('');
-  const problems = $derived(documentProblems(report.data?.problems ?? [], id, path));
+  let selectedSource = $state(null);
+  const findings = $derived(verificationFindings(report.data, id, path));
+  const problems = $derived(findings.map((finding) => finding.message));
   const canFix = $derived(problems.some(
     (problem) => (report.data?.fixable_problems ?? []).includes(problem),
   ));
+  $effect(() => { void report.data; selectedSource = null; onreveal?.(null); });
 
   async function fix() {
     fixing = true;
@@ -55,8 +60,17 @@
     <details>
       <summary>Issue details ({problems.length})</summary>
       <ul aria-label="Verification issues">
-        {#each problems as problem}
-          <li>{problem}</li>
+        {#each findings as finding, index (index)}
+          <li>
+            <span>{finding.message}</span>
+            {#if finding.range && finding.excerpt}
+              <div class="issue-actions">
+                <button class="source-location" aria-expanded={selectedSource === index} onclick={() => selectedSource = selectedSource === index ? null : index} title="Show highlighted markdown source">{finding.path}:{finding.range.start.line}:{finding.range.start.column}</button>
+                {#if id && onreveal && finding.body_range}<button class="btn small" onclick={() => onreveal(finding)}>Show in document</button>{:else if !id && finding.doc_id}<a href={href(docPath(cid, finding.doc_id))}>Open document</a>{/if}
+              </div>
+              {#if selectedSource === index}<SourceExcerpt {finding} />{/if}
+            {/if}
+          </li>
         {/each}
       </ul>
     </details>
@@ -89,5 +103,9 @@
   summary { cursor: pointer; }
   ul { max-height: 20rem; overflow-y: auto; padding-left: 1.5rem; }
   li { margin: 0.5rem 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .issue-actions { display:flex; flex-wrap:wrap; align-items:center; gap:0.5rem; margin-top:0.35rem; }
+  .source-location { padding:0; min-height:0; border:0; border-radius:2px; background:none; color:var(--accent); cursor:pointer; text-align:left; font:0.78rem var(--font-mono); overflow-wrap:anywhere; }
+  .source-location:hover { text-decoration:underline; }
+  .issue-actions a { font-size:0.78rem; }
   .outcome { white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>

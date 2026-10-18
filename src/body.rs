@@ -20,16 +20,19 @@ pub fn title(body: &str) -> String {
 
 /// Text of the `## <header>` section, up to the next `## ` heading (or EOF).
 pub fn section(body: &str, header: &str) -> String {
+    section_range(body, header)
+        .map(|range| body[range].to_owned())
+        .unwrap_or_default()
+}
+
+/// Source range of the section content, using exactly `section`'s grammar.
+pub fn section_range(body: &str, header: &str) -> Option<Range<usize>> {
     let re = Regex::new(&format!(r"(?m)^## {}\s*$", regex::escape(header))).unwrap();
-    let Some(m) = re.find(body) else {
-        return String::new();
-    };
+    let m = re.find(body)?;
     let rest = &body[m.end()..];
     let next = Regex::new(r"(?m)^## ").unwrap();
-    match next.find(rest) {
-        Some(n) => rest[..n.start()].to_string(),
-        None => rest.to_string(),
-    }
+    let end = next.find(rest).map_or(body.len(), |n| m.end() + n.start());
+    Some(m.end()..end)
 }
 
 #[derive(Debug, Clone)]
@@ -206,7 +209,15 @@ pub fn apply_section_edits(
 
 #[cfg(test)]
 mod tests {
-
+    #[test]
+    fn section_ranges_preserve_the_existing_section_grammar() {
+        let body = "# Title\n\n## Checks\n\n- [x] first\n\n## Checks\n- [x] second\n";
+        let range = section_range(body, "Checks").unwrap();
+        assert_eq!(&body[range], section(body, "Checks"));
+        assert!(section(body, "Checks").contains("first"));
+        assert!(!section(body, "Checks").contains("second"));
+        assert!(section_range("##  Checks\n- [x] ignored\n", "Checks").is_none());
+    }
     #[test]
     fn section_edit_splices_byte_accurately() {
         let body = "# T\n\nintro\n\n## A\nold a\n\n## B\nold b\n";

@@ -217,6 +217,28 @@ mod tests {
     }
 
     #[test]
+    fn validation_ranges_include_frontmatter_and_nested_context() {
+        let schema = parse("## @plan Plan\n  ### @setup Setup\n    - +@items\n");
+        let markdown = "---\nid: NOTE-0001\n---\n\n## Plan\n### Setup\n\nλ 🦀 prose, no list\n";
+        let problems = schema.validate(markdown);
+        assert_eq!(problems.len(), 1);
+        let range = problems[0].range.clone().unwrap();
+        assert_eq!(&markdown[range], "### Setup");
+    }
+
+    #[test]
+    fn validation_ranges_preserve_non_ascii_markdown() {
+        let schema = parse("> @text /^valid$/\n");
+        let markdown = "λ 🦀 invalid\n";
+        let problems = schema.validate(markdown);
+        assert_eq!(problems.len(), 1);
+        assert_eq!(
+            &markdown[problems[0].range.clone().unwrap()],
+            "λ 🦀 invalid"
+        );
+    }
+
+    #[test]
     fn validate_flags_missing_section_and_empty_list() {
         let s = parse(SCHEMA);
         // No "Test plan" section; Setup present but with no items.

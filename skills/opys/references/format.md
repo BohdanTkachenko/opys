@@ -1147,11 +1147,33 @@ Problems and observations are two blocks on **stderr**, problems first:
 
 ```
 verify: 1 problem(s)
-  FEAT-0002: missing required '## Test plan' section
+  inventory/FEAT-0002.md:18:1: FEAT-0002: missing required '## Test plan' section
 verify: 2 observation(s)
   TASK-0001: stuck in in-progress since 2026-01-02T03:04:05.000001Z (ttl 10m) — `--fix` moves it to stuck
   TASK-0002: 3 visits to review reaches its limit of 3 — `--fix` moves it to user-review
 ```
+
+Document problems include `path:line:column` when the stored source is available.
+Lines and columns are **1-based**; columns count Unicode scalar values, not UTF-8
+bytes or UTF-16 code units. Locations refer to the original file, including its
+frontmatter fences, comments and noncanonical YAML formatting. Missing fields
+point to an insertion position before the closing frontmatter fence; missing
+sections point to the end of the body. A problem with no specific source target
+(for example, a corpus-wide configuration/query failure) keeps its message
+without inventing a line number. Observation output and all exit codes are unchanged.
+
+The node's verification payload retains `problems` and `fixable_problems` as
+stable message arrays and adds `findings` in the same order as `problems`.
+Each finding carries `message`, nullable `doc_id`, `path`, `range`, `excerpt`,
+`body_range` and `body_version`. Ranges have `start` and `end` positions
+(`line`, `column`); the end is exclusive, with equal endpoints for insertion
+positions. An excerpt contains `first_line` and original source `text`.
+Body ranges are relative to the body passed to the editor, with a matching
+body snapshot version; consumers must not apply them to a different snapshot.
+The web UI can expand a finding into highlighted markdown source and reveal
+its affected rendered block. Source annotations never participate in the
+"no new problems" write gate: moving an existing error to another line does
+not turn it into a new violation.
 
 `verify: OK (N documents)` is printed on stdout for exit `0` only — a nonzero
 run never claims to be OK. **Gate CI on `1`**: most scripts gate on any nonzero

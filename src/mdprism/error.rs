@@ -25,6 +25,9 @@ impl SchemaError {
 pub struct Problem {
     pub path: Vec<String>,
     pub message: String,
+    /// End-exclusive UTF-8 byte range in the markdown passed to `validate`.
+    /// Missing nodes use the containing heading (or an insertion point).
+    pub range: Option<std::ops::Range<usize>>,
 }
 
 impl std::fmt::Display for Problem {

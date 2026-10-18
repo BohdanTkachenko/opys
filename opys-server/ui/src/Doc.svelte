@@ -30,6 +30,8 @@
   // edited.
 
   import { Blockdown } from 'svelte-blockdown';
+  import { tick } from 'svelte';
+  import { highlightedBlocks } from './lib/verification.js';
   import Icon from './lib/Icon.svelte';
   import { api } from './lib/api.js';
   import { affects, events } from './lib/events.svelte.js';
@@ -50,6 +52,31 @@
   import { boardPath, docPath, go, href } from './lib/router.svelte.js';
 
   let { cid, id } = $props();
+  let highlightedFinding = $state(null);
+  let markdownNode;
+
+  function verificationHighlights(node, value) {
+    markdownNode = node;
+    let current = value;
+    const update = () => {
+      const indexes = node.querySelector('.bd-source') ? [] : highlightedBlocks(current.body, current.version, current.finding);
+      for (const block of node.querySelectorAll('.bd-block')) {
+        block.toggleAttribute('data-verify-highlight', indexes.includes(Number(block.dataset.block)));
+      }
+    };
+    const observer = new MutationObserver(update);
+    observer.observe(node, {childList:true, subtree:true});
+    update();
+    return {update(value) {current = value; update();}, destroy() {observer.disconnect(); markdownNode = null;}};
+  }
+
+  async function revealFinding(finding) {
+    highlightedFinding = finding;
+    await tick();
+    const block = markdownNode?.querySelector('[data-verify-highlight]');
+    block?.scrollIntoView({block:'center'});
+    block?.focus({preventScroll:true});
+  }
 
   const doc = createResource();
 
@@ -550,7 +577,7 @@
 
   <div class="page">
     {#key `${cid}:${id}`}
-      <VerifyProblems {cid} {id} path={d.path} />
+      <VerifyProblems {cid} {id} path={d.path} onreveal={revealFinding} />
     {/key}
   </div>
 
@@ -897,7 +924,7 @@
     </span>
   </div>
 
-  <article class="body page" use:markdownLinks>
+  <article class="body page" use:markdownLinks use:verificationHighlights={{body:d.body, version:d.body_version, finding:highlightedFinding}}>
     <Blockdown value={d.body} render={renderBlocks} onsave={saveBody} bind:this={editor} />
   </article>
 
@@ -1199,6 +1226,12 @@
     font-size: 1.06rem;
     line-height: 1.68;
     padding-bottom: 2rem;
+  }
+
+  .body :global(.bd-block[data-verify-highlight]) {
+    background:color-mix(in srgb,var(--bad) 8%,var(--panel));
+    outline:2px solid color-mix(in srgb,var(--bad) 70%,var(--border));
+    outline-offset:3px;
   }
 
   .body :global(.bd-block:first-child > h1:first-child) {
