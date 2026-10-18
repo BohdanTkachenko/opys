@@ -1,7 +1,13 @@
+<script module>
+  // Source fields mount only when Blockdown opens an edit, after hydration.
+  let nextNoteId = 0;
+</script>
+
 <script>
   import { diagnosticPieces } from './diagnostics.js';
 
   let { value = $bindable(''), textarea = $bindable(null), diagnostics = [], oninput, onkeydown } = $props();
+  const noteId = `bd-source-error-${++nextNoteId}`;
   let backdrop;
   function syncScroll() {
     if (backdrop && textarea) { backdrop.scrollTop = textarea.scrollTop; backdrop.scrollLeft = textarea.scrollLeft; }
@@ -32,10 +38,10 @@
       autocapitalize="off"
       aria-label="Markdown source of this block"
       aria-invalid={diagnostics.length > 0 ? 'true' : undefined}
-      aria-description={messages.length ? messages.join('; ') : undefined}
+      aria-describedby={messages.length ? noteId : undefined}
     ></textarea>
   </div>
-  {#if messages.length}<div class="bd-source-diagnostics">{#each messages as message}<div>{message}</div>{/each}</div>{/if}
+  {#if messages.length}<div class="bd-source-diagnostics" id={noteId}>{#each messages as message}<div>{message}</div>{/each}</div>{/if}
 </div>
 
 <style>
