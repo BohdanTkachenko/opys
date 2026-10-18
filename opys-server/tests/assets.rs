@@ -118,7 +118,11 @@ async fn the_shell_and_its_assets_agree() {
         (".css", "text/css; charset=utf-8"),
     ] {
         let referenced = assets::all()
-            .find(|a| a.path.starts_with("ui/") && a.path.ends_with(marker))
+            .find(|a| {
+                a.path.starts_with("ui/")
+                    && a.path.ends_with(marker)
+                    && html.contains(&format!("./{}", a.path))
+            })
             .unwrap_or_else(|| panic!("the bundle has no {marker}"));
         assert!(
             html.contains(&format!("./{}", referenced.path)),
@@ -234,16 +238,33 @@ async fn the_asset_route_cannot_escape_the_bundle() {
 /// icons, the manifest and the service worker, ~25 kB, of which the 512px
 /// maskable icon is half — the size Android asks for. Raised to 240 kB for the
 /// block editor (svelte-blockdown, ~10 kB), which replaced the source textarea
-/// — the alternative, CodeMirror, was ~300 kB.
+/// — the alternative, CodeMirror, was ~300 kB. The complete lifecycle canvas and
+/// located verification excerpts bring the app itself to ~260 kB. ELK is a
+/// separate, pinned, lazy-loaded ~1.43 MB chunk; budget it independently so it
+/// cannot hide application growth or get pulled into every page load.
 #[test]
 fn the_bundle_stays_small() {
-    const CEILING: usize = 240 * 1024;
-    let total: usize = assets::all().map(|a| a.bytes.len()).sum();
+    const APP_CEILING: usize = 272 * 1024;
+    const LAYOUT_CEILING: usize = 1450 * 1024;
+    let (layout, app): (Vec<_>, Vec<_>) = assets::all().partition(|asset| {
+        asset.path.starts_with("ui/elk.bundled-") && asset.path.ends_with(".js")
+    });
+    let total: usize = app.iter().map(|asset| asset.bytes.len()).sum();
     assert!(
-        total <= CEILING,
-        "the embedded web UI is {total} bytes, over the {CEILING} ceiling — check \
+        total <= APP_CEILING,
+        "the embedded application is {total} bytes, over the {APP_CEILING} ceiling — check \
          for a font, an image or a source map that should not be there, and if \
          the growth is real, raise the ceiling here with the reason",
+    );
+    assert_eq!(layout.len(), 1, "ELK must remain one separate lazy chunk");
+    assert!(
+        layout[0].bytes.len() <= LAYOUT_CEILING,
+        "the layout engine exceeded its separate budget"
+    );
+    let html = std::str::from_utf8(assets::index().unwrap().bytes).unwrap();
+    assert!(
+        !html.contains(layout[0].path),
+        "the shell must not preload ELK"
     );
 }
 

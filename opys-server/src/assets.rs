@@ -139,7 +139,7 @@ const HASH_LEN: usize = 8;
 /// fingerprinted, and quietly serve a content-addressed asset with `no-cache`.
 fn is_fingerprinted(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
-    let stem = name.split_once('.').map(|(s, _)| s).unwrap_or(name);
+    let stem = name.rsplit_once('.').map(|(s, _)| s).unwrap_or(name);
     // Bytes, so a non-ASCII filename cannot split mid-character. The index of
     // the `-`; `> 0` because the name before it must not be empty.
     let bytes = stem.as_bytes();
@@ -205,6 +205,7 @@ mod tests {
         assert!(is_fingerprinted("ui/index-MLss2IHM.js"));
         assert!(is_fingerprinted("ui/style-CHEaQAcd.css"));
         assert!(is_fingerprinted("ui/some-name-A1b2C3d4.css"));
+        assert!(is_fingerprinted("ui/elk.bundled-CAuCmxOS.js"));
         // Not hashed: the shell, a short suffix, a suffix that is not a hash.
         assert!(!is_fingerprinted("index.html"));
         assert!(!is_fingerprinted("ui/index-MLss.js"));
