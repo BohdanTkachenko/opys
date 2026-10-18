@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { documentProblems, verificationFindings, sourceLines, highlightedBlocks } from './verification.js';
+import { documentProblems, verificationFindings, sourceLines, editorDiagnostics } from './verification.js';
 
 test('a card includes ID and path findings, without errors merely referencing it', () => {
   const own = [
@@ -32,10 +32,14 @@ test('source highlighting uses scalar columns and excludes an end at the next li
   assert.equal(point.after,'broken');
 });
 
-test('rendered block highlighting converts Unicode columns and refuses stale snapshots', () => {
+test('editor diagnostics convert Unicode columns to textarea offsets and refuse stale snapshots', () => {
   const body='# Title\n\nλ 🦀 broken\n\nLast paragraph\n';
-  const finding={body_version:'v1',body_range:{start:{line:3,column:5},end:{line:3,column:11}}};
-  assert.deepEqual(highlightedBlocks(body,'v1',finding),[1]);
-  assert.deepEqual(highlightedBlocks(body,'v2',finding),[]);
-  assert.deepEqual(highlightedBlocks(body,'v1',{...finding,body_range:{start:{line:6,column:1},end:{line:6,column:1}}}),[2]);
+  const finding={message:'invalid text',body_version:'v1',body_range:{start:{line:3,column:5},end:{line:3,column:11}}};
+  const [range]=editorDiagnostics(body,'v1',[finding]);
+  assert.equal(body.slice(range.start,range.end),'broken');
+  assert.equal(range.message,'invalid text');
+  assert.deepEqual(editorDiagnostics(body,'v2',[finding]),[]);
+  const [point]=editorDiagnostics(body,'v1',[{...finding,body_range:{start:{line:6,column:1},end:{line:6,column:1}}}]);
+  assert.equal(point.start,body.length);
+  assert.equal(point.end,body.length);
 });

@@ -1,5 +1,3 @@
-import { segment } from 'svelte-blockdown/blocks';
-
 /** Findings name either the document ID or its on-disk path before ': '. */
 export function documentProblems(problems, id, path) {
   if (!id) return problems;
@@ -53,18 +51,12 @@ function positionOffset(text, position) {
   return start + Array.from(content).slice(0, position.column - 1).join('').length;
 }
 
-/** Refuse stale coordinates; block offsets are JS strings, columns are scalars. */
-export function highlightedBlocks(body, version, finding) {
-  if (!finding?.body_range || !version || finding.body_version !== version) return [];
-  const start = positionOffset(body, finding.body_range.start);
-  const end = positionOffset(body, finding.body_range.end);
-  const blocks = segment(body);
-  const matches = blocks.flatMap((block, index) => (
-    start === end ? block.start <= start && start <= block.end : block.start < end && start < block.end
-  ) ? [index] : []);
-  if (!matches.length && start === end && blocks.length) {
-    const next = blocks.findIndex((block) => block.start >= start);
-    return [next < 0 ? blocks.length - 1 : next];
-  }
-  return matches;
+/** Convert verified scalar coordinates to the editor's UTF-16 source offsets. */
+export function editorDiagnostics(body, version, findings) {
+  if (!version) return [];
+  return findings.filter((finding) => finding?.body_range && finding.body_version === version).map((finding) => ({
+    start:positionOffset(body, finding.body_range.start),
+    end:positionOffset(body, finding.body_range.end),
+    message:finding.message,
+  }));
 }

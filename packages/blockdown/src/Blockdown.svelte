@@ -17,6 +17,8 @@
   import { insertBlock, segment, splice, toggleTask } from './blocks.js';
   import { renderCache } from './render.svelte.js';
   import { locate, textOffset } from './selection.js';
+  import SourceEditor from './SourceEditor.svelte';
+  import { diagnosticsInBlock, mapDiagnosticRanges } from './diagnostics.js';
 
   /**
    * @type {{
@@ -27,6 +29,8 @@
    *   placeholder?: string,
    *   onsave?: (value: string) => unknown,
    *   onchange?: (value: string) => void,
+   *   diagnostics?: { start: number, end: number, message?: string }[],
+   *   diagnosticSource?: string | null,
    *   toolbar?: import('svelte').Snippet<[{ text: string, start: number | null, end: number | null, close: () => void }]>,
    *   class?: string,
    * }}
@@ -39,6 +43,8 @@
     placeholder = 'Double-click to write…',
     onsave,
     onchange,
+    diagnostics = [],
+    diagnosticSource = null,
     toolbar,
     class: className = '',
   } = $props();
@@ -65,6 +71,12 @@
   let switching = false;
 
   const blocks = $derived(segment(source));
+  const editDiagnostics = $derived.by(() => {
+    if (!edit || source !== (diagnosticSource ?? value)) return [];
+    const original = source.slice(edit.start, edit.end);
+    const local = diagnosticsInBlock(diagnostics, edit.start, edit.end);
+    return mapDiagnosticRanges(original, draft, local);
+  });
 
   // A new value from the host (a reload after save, a live update elsewhere)
   // replaces the document — unless a block is open: typing is never clobbered.
@@ -105,6 +117,11 @@
   function commit() {
     if (!edit) return null;
     const { start, end, insert } = edit;
+    // Inspecting a diagnostic must not trim or save untouched markdown.
+    if (!insert && draft === source.slice(start, end)) {
+      edit = null;
+      return { start, end };
+    }
     const text = draft.replace(/\s+$/, '');
     const before = source;
     let range;
@@ -164,6 +181,35 @@
       if (el.getClientRects().length > 0) return open(Number(el.getAttribute('data-block')), 'end');
     }
     return blocks.length === 0 ? openNew(0, 0) : open(0, 'end');
+  }
+
+  /** Reveal a verified UTF-16 source range without replacing an unsaved draft. */
+  export async function revealRange(range, expectedSource = value) {
+    if (readonly || source !== expectedSource || !Number.isInteger(range.start)
+      || !Number.isInteger(range.end) || range.start < 0 || range.start > range.end || range.end > source.length) return false;
+    if (edit && draft !== source.slice(edit.start, edit.end)) return false;
+    const point = range.start === range.end;
+    const index = blocks.findIndex((block) => point
+      ? block.start <= range.start && range.start < block.end
+      : block.start < range.end && range.start < block.end);
+    if (index < 0 || (point && range.start === source.length)) {
+      if (!point) return false;
+      const next = blocks.findIndex((block) => block.start >= range.start);
+      await openNew(range.start, next < 0 ? blocks.length : next);
+    } else {
+      await open(index, Math.max(0, range.start - blocks[index].start));
+    }
+    const caret = area?.selectionStart ?? 0;
+    const marker = [...(root.querySelectorAll('.bd-source-highlights mark') ?? [])].find((mark) => {
+      const start = Number(mark.dataset.sourceStart), end = Number(mark.dataset.sourceEnd);
+      return start === end ? caret === start : start <= caret && caret < end;
+    });
+    (marker ?? area)?.scrollIntoView({block:'center'});
+    // scrollIntoView can also scroll the mirror's clipped content. Its text
+    // must keep the textarea's scroll offset, rather than moving independently.
+    const backdrop = root.querySelector('.bd-source-highlights');
+    if (backdrop && area) { backdrop.scrollTop = area.scrollTop; backdrop.scrollLeft = area.scrollLeft; }
+    return true;
   }
 
   /** Close the open box and hand the document to the host if it changed. */
@@ -425,17 +471,13 @@
 </div>
 
 {#snippet box()}
-  <textarea
-    class="bd-source"
-    bind:this={area}
+  <SourceEditor
+    bind:textarea={area}
     bind:value={draft}
+    diagnostics={editDiagnostics}
     oninput={autosize}
     onkeydown={keys}
-    rows="1"
-    spellcheck="false"
-    autocapitalize="off"
-    aria-label="Markdown source of this block"
-  ></textarea>
+  />
 {/snippet}
 
 <style>
@@ -500,31 +542,6 @@
     padding: 0.5em 0;
     cursor: text;
     outline: none;
-  }
-
-  .bd-source {
-    display: block;
-    width: 100%;
-    box-sizing: border-box;
-    margin: 0.4em 0;
-    padding: var(--bd-source-padding, 0.35em 0.5em);
-    font: inherit;
-    font-family: var(--bd-source-font, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
-    font-size: var(--bd-source-size, 0.92em);
-    line-height: 1.55;
-    color: inherit;
-    background: var(--bd-source-bg, transparent);
-    border: 1px solid var(--bd-source-border, currentColor);
-    border-radius: var(--bd-radius, 4px);
-    resize: none;
-    overflow: hidden;
-    white-space: pre-wrap;
-    tab-size: 4;
-  }
-
-  .bd-source:focus {
-    outline: none;
-    border-color: var(--bd-accent, Highlight);
   }
 
   .bd-toolbar {

@@ -64,6 +64,8 @@ own Svelte/Vite setup.
 | `renderFrontmatter` | `(block: string) => string` | Renders a frontmatter block (fences included). Default: a key/value table. |
 | `onsave` | `(value: string) => unknown` | Called when the reader leaves the editor with changes, after a checkbox click, and when the component is destroyed with unsaved changes. Return `false` to refuse: the change stays visible, is not re-sent until it changes again, and a refused checkbox click is reverted. |
 | `onchange` | `(value: string) => void` | Every committed block edit. |
+| `diagnostics` | `{start, end, message?}[]` | End-exclusive UTF-16 source ranges, highlighted in red while editing. Equal endpoints mark insertion positions. |
+| `diagnosticSource` | `string \| null` | Snapshot the diagnostics describe (defaults to `value`). Annotations are suppressed when it differs from the editor's source. |
 | `toolbar` | `Snippet<[{ text, start, end, close }]>` | Shown above a selection inside one rendered block. `start`/`end` are offsets into `value`, or `null` when the selection crosses markup and has no verbatim source. |
 | `readonly` | `boolean` | Rendered only; checkboxes stay disabled. |
 | `placeholder` | `string` | Shown for an empty document. |
@@ -71,6 +73,12 @@ own Svelte/Vite setup.
 
 The component also exports `startEditing()`, which opens the first visible
 block: wire it to an "Edit" button as the keyboard way in.
+
+`await editor.revealRange({start, end}, expectedSource)` opens the affected block
+and places the caret at the diagnostic. It returns `false` for stale coordinates,
+read-only mode, or an unsaved draft it would replace. Opening and closing an
+untouched block does not save or normalize its text. Unchanged annotations shift
+with draft edits before them; editing their text clears them until revalidation.
 
 ### Keys, in an open block
 
@@ -125,6 +133,7 @@ element those styles target. The editor's own pieces take CSS variables:
 |---|---|
 | `--bd-source-font`, `--bd-source-size` | The source box and word diffs. |
 | `--bd-source-bg`, `--bd-source-border`, `--bd-accent` | The source box, and its focus border. |
+| `--bd-error` | Exact source validation highlights and their messages. |
 | `--bd-hover`, `--bd-muted`, `--bd-radius` | Block hover, placeholder and fold text, corners. |
 | `--bd-diff-add`, `--bd-diff-del`, `--bd-diff-change` (+ `-bg`, `-word`) | Diff colours. |
 

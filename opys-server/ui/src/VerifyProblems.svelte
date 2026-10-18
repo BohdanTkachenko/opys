@@ -6,7 +6,7 @@
   import { verificationFindings } from './lib/verification.js';
   import { docPath, href } from './lib/router.svelte.js';
 
-  let { cid, id = null, path = null, onreveal = null } = $props();
+  let { cid, id = null, path = null, onreveal = null, onfindings = null } = $props();
   const report = createResource();
   let fixing = $state(false);
   let outcome = $state('');
@@ -17,7 +17,7 @@
   const canFix = $derived(problems.some(
     (problem) => (report.data?.fixable_problems ?? []).includes(problem),
   ));
-  $effect(() => { void report.data; selectedSource = null; onreveal?.(null); });
+  $effect(() => { void report.data; selectedSource = null; onreveal?.(null); onfindings?.(findings); });
 
   async function fix() {
     fixing = true;
@@ -66,7 +66,7 @@
             {#if finding.range && finding.excerpt}
               <div class="issue-actions">
                 <button class="source-location" aria-expanded={selectedSource === index} onclick={() => selectedSource = selectedSource === index ? null : index} title="Show highlighted markdown source">{finding.path}:{finding.range.start.line}:{finding.range.start.column}</button>
-                {#if id && onreveal && finding.body_range}<button class="btn small" onclick={() => onreveal(finding)}>Show in document</button>{:else if !id && finding.doc_id}<a href={href(docPath(cid, finding.doc_id))}>Open document</a>{/if}
+                {#if id && onreveal && finding.body_range}<button class="btn small" onclick={() => onreveal(finding)}>Show in editor</button>{:else if !id && finding.doc_id}<a href={href(docPath(cid, finding.doc_id))}>Open document</a>{/if}
               </div>
               {#if selectedSource === index}<SourceExcerpt {finding} />{/if}
             {/if}

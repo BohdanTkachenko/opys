@@ -60,9 +60,13 @@ findings are cleared, the button is disabled even if other problems remain.
 
 Findings include source locations measured against the original markdown file.
 Click a `path:line:column` location to expand a source excerpt with the offending
-range highlighted. **Show in document** reveals the affected body block; a
+range highlighted. **Show in editor** opens the affected body block with the
+exact invalid source marked in red inside the editable text; a
 snapshot check prevents old coordinates from highlighting newly edited text.
-Missing content uses an insertion marker. The API's additive `findings` array
+Missing content uses an insertion marker, and ordinary double-click editing
+shows the same validation marks. Marks follow edits before the invalid text and
+clear when that text changes, until verification supplies a fresh diagnosis.
+The API's additive `findings` array
 preserves the existing `problems` messages and automatic-fix behavior.
 
 The lifecycle view is one live project-wide graph containing every document

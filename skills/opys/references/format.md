@@ -1170,8 +1170,8 @@ Each finding carries `message`, nullable `doc_id`, `path`, `range`, `excerpt`,
 positions. An excerpt contains `first_line` and original source `text`.
 Body ranges are relative to the body passed to the editor, with a matching
 body snapshot version; consumers must not apply them to a different snapshot.
-The web UI can expand a finding into highlighted markdown source and reveal
-its affected rendered block. Source annotations never participate in the
+The web UI can expand a finding into highlighted markdown source and open
+its affected editor with the exact source range marked in red. Source annotations never participate in the
 "no new problems" write gate: moving an existing error to another line does
 not turn it into a new violation.
 

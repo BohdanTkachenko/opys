@@ -30,8 +30,7 @@
   // edited.
 
   import { Blockdown } from 'svelte-blockdown';
-  import { tick } from 'svelte';
-  import { highlightedBlocks } from './lib/verification.js';
+  import { editorDiagnostics } from './lib/verification.js';
   import Icon from './lib/Icon.svelte';
   import { api } from './lib/api.js';
   import { affects, events } from './lib/events.svelte.js';
@@ -52,30 +51,15 @@
   import { boardPath, docPath, go, href } from './lib/router.svelte.js';
 
   let { cid, id } = $props();
-  let highlightedFinding = $state(null);
-  let markdownNode;
-
-  function verificationHighlights(node, value) {
-    markdownNode = node;
-    let current = value;
-    const update = () => {
-      const indexes = node.querySelector('.bd-source') ? [] : highlightedBlocks(current.body, current.version, current.finding);
-      for (const block of node.querySelectorAll('.bd-block')) {
-        block.toggleAttribute('data-verify-highlight', indexes.includes(Number(block.dataset.block)));
-      }
-    };
-    const observer = new MutationObserver(update);
-    observer.observe(node, {childList:true, subtree:true});
-    update();
-    return {update(value) {current = value; update();}, destroy() {observer.disconnect(); markdownNode = null;}};
-  }
+  let verificationFindings = $state([]);
+  let revealError = $state('');
+  function receiveFindings(findings) { verificationFindings = findings; revealError = ''; }
 
   async function revealFinding(finding) {
-    highlightedFinding = finding;
-    await tick();
-    const block = markdownNode?.querySelector('[data-verify-highlight]');
-    block?.scrollIntoView({block:'center'});
-    block?.focus({preventScroll:true});
+    if (!finding) return;
+    const range = editorDiagnostics(d.body, d.body_version, [finding])[0];
+    const shown = range && await editor?.revealRange(range, d.body);
+    revealError = shown ? '' : 'The source has changed. Finish the current edit before opening this validation location.';
   }
 
   const doc = createResource();
@@ -142,6 +126,7 @@
   });
 
   const d = $derived(doc.data);
+  const markdownDiagnostics = $derived(editorDiagnostics(d?.body ?? '', d?.body_version, verificationFindings));
   const custom = $derived(
     Object.entries(d?.fields ?? {}).filter(([key]) => !RESERVED.has(key)),
   );
@@ -577,8 +562,9 @@
 
   <div class="page">
     {#key `${cid}:${id}`}
-      <VerifyProblems {cid} {id} path={d.path} onreveal={revealFinding} />
+      <VerifyProblems {cid} {id} path={d.path} onreveal={revealFinding} onfindings={receiveFindings} />
     {/key}
+    {#if revealError}<p class="why" role="status">{revealError}</p>{/if}
   </div>
 
   {#if doc.error}
@@ -924,8 +910,8 @@
     </span>
   </div>
 
-  <article class="body page" use:markdownLinks use:verificationHighlights={{body:d.body, version:d.body_version, finding:highlightedFinding}}>
-    <Blockdown value={d.body} render={renderBlocks} onsave={saveBody} bind:this={editor} />
+  <article class="body page" use:markdownLinks>
+    <Blockdown value={d.body} render={renderBlocks} onsave={saveBody} bind:this={editor} diagnostics={markdownDiagnostics} diagnosticSource={d.body} />
   </article>
 
   <!-- The log box sits after the body rather than inside the section it
@@ -1228,12 +1214,6 @@
     padding-bottom: 2rem;
   }
 
-  .body :global(.bd-block[data-verify-highlight]) {
-    background:color-mix(in srgb,var(--bad) 8%,var(--panel));
-    outline:2px solid color-mix(in srgb,var(--bad) 70%,var(--border));
-    outline-offset:3px;
-  }
-
   .body :global(.bd-block:first-child > h1:first-child) {
     /* The document's own title, already in the header above. */
     display: none;
@@ -1248,6 +1228,7 @@
     --bd-accent: var(--accent);
     --bd-hover: color-mix(in srgb, var(--raised) 60%, transparent);
     --bd-muted: var(--muted);
+    --bd-error: var(--bad);
   }
 
   /* Section headings wear their markdown: a muted `##` marker in front. The
