@@ -1329,14 +1329,7 @@
   .body :global(input[type='checkbox']) {
     /* A click ticks the item in the source and saves it — through the same
        verify-gated `edit-body` action as any other body edit. */
-    cursor: pointer;
-    accent-color: var(--good);
-    width: 1em;
-    height: 1em;
-    min-height: 0;
-    padding: 0;
     margin: 0 0.4em 0 0;
-    vertical-align: -0.1em;
   }
 
   .body :global(li > input[type='checkbox']),

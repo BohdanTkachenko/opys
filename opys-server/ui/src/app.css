@@ -206,6 +206,65 @@ select {
   box-shadow: var(--top-light);
 }
 
+/* Native checkbox semantics, with the same accent and check glyph as the
+   type toggles. Checkboxes keep their own size instead of the text-field row. */
+input[type='checkbox'] {
+  appearance: none;
+  display: inline-grid;
+  place-items: center;
+  width: 1em;
+  height: 1em;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border-color: var(--border-strong);
+  border-radius: 3px;
+  color: var(--accent-fg);
+  vertical-align: -0.1em;
+  cursor: pointer;
+}
+
+input[type='checkbox']::before {
+  content: '';
+  width: 100%;
+  height: 100%;
+  background: currentColor;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='m4.5 12.5 5 5 10-11' fill='none' stroke='black' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  opacity: 0;
+}
+
+input[type='checkbox']:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+input[type='checkbox']:checked::before {
+  opacity: 1;
+}
+
+input[type='checkbox']:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+input[type='checkbox']:hover:not(:checked):not(:disabled) {
+  background: var(--raised);
+}
+
+input[type='checkbox']:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+@media (forced-colors: active) {
+  input[type='checkbox'] {
+    appearance: auto;
+  }
+
+  input[type='checkbox']::before {
+    display: none;
+  }
+}
+
 /* The native select chrome differs per platform; a drawn chevron does not.
    The image is a data: URI (zero external requests) in a neutral gray that
    holds up on both schemes. */
