@@ -65,7 +65,8 @@ own Svelte/Vite setup.
 | `onsave` | `(value: string) => unknown` | Called when the reader leaves the editor with changes, after a checkbox click, and when the component is destroyed with unsaved changes. Return `false` to refuse: the change stays visible, is not re-sent until it changes again, and a refused checkbox click is reverted. |
 | `onchange` | `(value: string) => void` | Every committed block edit. |
 | `diagnostics` | `{start, end, message?}[]` | End-exclusive UTF-16 source ranges, highlighted in red while editing. Equal endpoints mark insertion positions. |
-| `diagnosticSource` | `string \| null` | Snapshot the diagnostics describe (defaults to `value`). Annotations are suppressed when it differs from the editor's source. |
+| `diagnosticSource` | `string \| null` | Snapshot the diagnostics describe (defaults to `value`). Untouched annotations follow edits; annotations intersecting changed text are suppressed until revalidated. |
+| `validate` | `(source, {signal}) => Promise<diagnostic[]>` | Optional live validation of the whole document, including the open draft. Called after a 350 ms typing pause; return UTF-16 ranges as for `diagnostics`. Superseded requests are aborted and their results ignored. Failures are shown beside the source field. |
 | `toolbar` | `Snippet<[{ text, start, end, close }]>` | Shown above a selection inside one rendered block. `start`/`end` are offsets into `value`, or `null` when the selection crosses markup and has no verbatim source. |
 | `readonly` | `boolean` | Rendered only; checkboxes stay disabled. |
 | `placeholder` | `string` | Shown for an empty document. |

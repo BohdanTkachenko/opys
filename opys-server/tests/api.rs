@@ -721,6 +721,100 @@ async fn unknown_routes_and_methods_are_json_errors() {
 }
 
 #[tokio::test]
+async fn draft_verification_locates_new_errors_without_writing_or_changing_cached_reads() {
+    let fx = Fixture::new();
+    let path = fx.root.join("inventory/NOTE-0001.md");
+    let original = std::fs::read(&path).unwrap();
+    let doc_url = format!("/api/corpus/{}/doc/NOTE-0001", fx.cid);
+    let (_, saved) = fx.get(&doc_url).await;
+    let draft = "# Draft\n\nλ 🦀 [outer [inner](NOTE-0001.md)](NOTE-0001.md)\n";
+    let (status, result) = fx
+        .post(&format!("{doc_url}/verify"), json!({"body":draft}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let findings = result["findings"].as_array().unwrap();
+    let nested = findings
+        .iter()
+        .find(|f| {
+            f["message"]
+                .as_str()
+                .unwrap()
+                .contains("nested markdown link")
+        })
+        .unwrap();
+    assert_eq!(nested["body_range"]["start"], json!({"line":3,"column":5}));
+    assert_eq!(nested["body_version"], result["body_version"]);
+    assert_eq!(
+        nested["range"],
+        Value::Null,
+        "drafts have no file coordinates"
+    );
+    assert_ne!(result["body_version"], saved["body_version"]);
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(
+        fx.get(&doc_url).await.1,
+        saved,
+        "the warm store must also remain untouched"
+    );
+    assert_eq!(
+        fx.get(&format!("/api/corpus/{}/verify", fx.cid)).await.1["problems"],
+        json!([])
+    );
+    let (status, result) = fx
+        .post(&format!("{doc_url}/verify"), json!({"body":saved["body"]}))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        result["findings"],
+        json!([]),
+        "correcting the draft clears the error"
+    );
+    let (_, result) = fx
+        .post(
+            &format!("{doc_url}/verify"),
+            json!({"body":"λ 🦀 no heading"}),
+        )
+        .await;
+    assert_eq!(
+        result["findings"][0]["body_range"]["start"],
+        json!({"line":1,"column":1})
+    );
+}
+
+#[tokio::test]
+async fn draft_verification_uses_the_normal_api_error_contract() {
+    let fx = Fixture::new();
+    for (cid, id, expected) in [
+        (fx.cid.as_str(), "NOTE-9999", StatusCode::NOT_FOUND),
+        ("nope", "NOTE-0001", StatusCode::NOT_FOUND),
+        (
+            fx.broken_cid.as_str(),
+            "NOTE-0001",
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+    ] {
+        let (status, result) = fx
+            .post(
+                &format!("/api/corpus/{cid}/doc/{id}/verify"),
+                json!({"body":"# Draft"}),
+            )
+            .await;
+        assert_eq!(status, expected, "{result}");
+        assert!(result["error"].is_string());
+    }
+    let url = format!("/api/corpus/{}/doc/NOTE-0001/verify", fx.cid);
+    for body in [
+        json!({}),
+        json!({"body":4}),
+        json!({"body":"# Draft", "extra":true}),
+    ] {
+        let (status, result) = fx.post(&url, body).await;
+        assert!(status.is_client_error(), "{result}");
+        assert!(result["error"].is_string());
+    }
+}
+
+#[tokio::test]
 async fn verify_reports_problems_and_when_they_were_computed() {
     let fx = Fixture::new();
     let (status, body) = fx.get(&format!("/api/corpus/{}/verify", fx.cid)).await;

@@ -58,8 +58,8 @@ use tokio::sync::broadcast;
 
 use crate::action::{Action, ActionError};
 use crate::actor::{
-    CorpusClient, CorpusHandle, CorpusStats, DocFilter, DocSummary, DocView, Event, QueryResult,
-    VerifyStatus,
+    CorpusClient, CorpusHandle, CorpusStats, DocFilter, DocSummary, DocView, DraftVerification,
+    Event, QueryResult, VerifyStatus,
 };
 use crate::discover::Corpus;
 use crate::flow::{FlowView, DEFAULT_NODE_LIMIT};
@@ -292,6 +292,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/projects/{key}/flow", get(flow))
         .route("/api/corpus/{cid}/docs", get(docs))
         .route("/api/corpus/{cid}/doc/{docid}", get(doc))
+        .route("/api/corpus/{cid}/doc/{docid}/verify", post(verify_body))
         .route("/api/corpus/{cid}/query", post(query))
         .route("/api/corpus/{cid}/verify", get(verify))
         .route("/api/corpus/{cid}/action", post(action))
@@ -1171,6 +1172,29 @@ async fn doc(
         .await?
         .map(Json)
         .ok_or_else(|| ApiError::not_found(format!("no such document: {docid}")))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DraftBody {
+    body: String,
+}
+
+/// The same semantic verifier as the save gate, over a disposable body. This
+/// read does not take the inventory write lock, flush, sync, or publish events.
+async fn verify_body(
+    State(state): State<AppState>,
+    Path((cid, docid)): Path<(String, String)>,
+    body: Result<Json<DraftBody>, JsonRejection>,
+) -> Result<Json<DraftVerification>, ApiError> {
+    let Json(body) = body?;
+    let wanted = docid.clone();
+    with_corpus(&state, &cid, move |client| {
+        client.verify_body(&wanted, &body.body)
+    })
+    .await?
+    .map(Json)
+    .ok_or_else(|| ApiError::not_found(format!("no such document: {docid}")))
 }
 
 /// Markdown blocks to render, in order.

@@ -1,6 +1,18 @@
 // All offsets here are JavaScript string offsets (UTF-16), like textarea
 // selections and block segmentation. Hosts translate their source coordinates.
 
+/** The exact text being typed, plus the open field's range in that snapshot. */
+export function draftSnapshot(source, edit, draft) {
+  if (!edit.insert) return {
+    source:source.slice(0,edit.start) + draft + source.slice(edit.end),
+    start:edit.start, end:edit.start + draft.length,
+  };
+  if (source.trim() === '') return {source:draft + '\n', start:0, end:draft.length};
+  if (edit.start === 0) return {source:draft + '\n\n' + source.replace(/^\n+/,''), start:0, end:draft.length};
+  const start = edit.start + 2;
+  return {source:source.slice(0,edit.start) + '\n\n' + draft + source.slice(edit.start), start, end:start + draft.length};
+}
+
 /** Keep untouched diagnostics aligned with a draft; never guess inside edits. */
 export function mapDiagnosticRanges(original, draft, diagnostics) {
   if (original === draft) return diagnostics;

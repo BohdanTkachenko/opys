@@ -6,7 +6,7 @@
 <script>
   import { diagnosticPieces } from './diagnostics.js';
 
-  let { value = $bindable(''), textarea = $bindable(null), diagnostics = [], oninput, onkeydown } = $props();
+  let { value = $bindable(''), textarea = $bindable(null), diagnostics = [], checking = false, validationError = '', oninput, onkeydown } = $props();
   const noteId = `bd-source-error-${++nextNoteId}`;
   let backdrop;
   function syncScroll() {
@@ -42,6 +42,8 @@
     ></textarea>
   </div>
   {#if messages.length}<div class="bd-source-diagnostics" id={noteId}>{#each messages as message}<div>{message}</div>{/each}</div>{/if}
+  {#if validationError}<div class="bd-source-diagnostics" role="alert">{validationError}</div>
+  {:else if checking}<div class="bd-source-status" role="status">Checking draft…</div>{/if}
 </div>
 
 <style>
@@ -80,5 +82,6 @@
   .bd-source { position:relative; display:block; color:inherit; background:transparent; border-color:var(--bd-source-border,currentColor); border-radius:var(--bd-radius,4px); resize:none; overflow:hidden; }
   .bd-source:focus { outline:none; border-color:var(--bd-accent,Highlight); }
   .bd-source-diagnostics { padding:0.4em 0.1em; color:var(--bd-error,Crimson); font-size:0.8em; line-height:1.5; }
+  .bd-source-status { padding:0.4em 0.1em; color:var(--bd-muted,GrayText); font-size:0.8em; line-height:1.5; }
   @media (forced-colors:active) { mark { background:transparent; text-decoration-color:CanvasText; forced-color-adjust:none; } mark.insertion { border-left-color:CanvasText; } }
 </style>

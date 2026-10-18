@@ -1175,6 +1175,15 @@ its affected editor with the exact source range marked in red. Source annotation
 "no new problems" write gate: moving an existing error to another line does
 not turn it into a new violation.
 
+The editor also validates unsaved text after a short typing pause, through
+`POST /api/corpus/{cid}/doc/{id}/verify` with `{"body":"…"}`. The node runs
+the same semantic verifier against a disposable copy of the corpus and returns
+`body_version` and the document's `findings`. Only body coordinates are attached
+to draft findings; they have no stored-file ranges or excerpts. This read never
+updates the warm store, writes files, touches timestamps/history, or runs sync.
+The UI ignores results from superseded drafts. Saving still uses the normal
+authoritative "no new problems" gate.
+
 `verify: OK (N documents)` is printed on stdout for exit `0` only — a nonzero
 run never claims to be OK. **Gate CI on `1`**: most scripts gate on any nonzero
 code, which trips on `3` as well, and a corpus that only has observations was

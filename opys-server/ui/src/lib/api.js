@@ -111,7 +111,7 @@ function get(path) {
   return request(path, { headers: JSON_HEADERS, credentials: 'same-origin' });
 }
 
-function post(path, body) {
+function post(path, body, signal) {
   return request(path, {
     method: 'POST',
     // The node requires the content type on its POST routes; without it the
@@ -119,6 +119,7 @@ function post(path, body) {
     headers: { ...JSON_HEADERS, 'content-type': 'application/json' },
     credentials: 'same-origin',
     body: JSON.stringify(body),
+    signal,
   });
 }
 
@@ -158,6 +159,9 @@ export const api = {
 
   /** One document: frontmatter, relations, rendered body, status vocabulary. */
   doc: (cid, id) => get(`/api/corpus/${seg(cid)}/doc/${seg(id)}`),
+
+  /** Read-only validation of a body draft; never saves or changes the corpus. */
+  verifyBody: (cid, id, body, signal) => post(`/api/corpus/${seg(cid)}/doc/${seg(id)}/verify`, { body }, signal),
 
   /** Read-only SQL. `params` fills `$1..$n`; every cell comes back a string. */
   query: (cid, sql, params = []) => post(`/api/corpus/${seg(cid)}/query`, { sql, params }),

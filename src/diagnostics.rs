@@ -144,6 +144,31 @@ pub fn body_version(body: &str) -> String {
     format!("{hash:016x}")
 }
 
+/// Locate findings in an unsaved body. File coordinates remain absent: the
+/// draft has no on-disk frontmatter or excerpt to point into.
+pub fn resolve_body(doc: &Doc, findings: &mut [Finding]) {
+    let source = Source::new(doc.body.clone());
+    let version = body_version(&doc.body);
+    for finding in findings {
+        if finding.doc_id.as_deref() != doc.id() || finding.path.as_ref() != Some(&doc.path) {
+            continue;
+        }
+        let bytes = match &finding.target {
+            Target::Body(range) => range.clone(),
+            Target::BodyEnd => doc.body.len()..doc.body.len(),
+            Target::Title => {
+                let start = doc.body.len() - doc.body.trim_start().len();
+                start..start
+            }
+            _ => continue,
+        };
+        if source.valid(&bytes) {
+            finding.body_range = Some(source.range(bytes));
+            finding.body_version = Some(version.clone());
+        }
+    }
+}
+
 pub(crate) fn section_target(doc: &Doc, heading: &str) -> Target {
     let pattern = format!(r"(?m)^## {}\s*$", regex::escape(heading));
     regex::Regex::new(&pattern)

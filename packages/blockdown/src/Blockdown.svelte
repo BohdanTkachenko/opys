@@ -18,7 +18,7 @@
   import { renderCache } from './render.svelte.js';
   import { locate, textOffset } from './selection.js';
   import SourceEditor from './SourceEditor.svelte';
-  import { diagnosticsInBlock, mapDiagnosticRanges } from './diagnostics.js';
+  import { diagnosticsInBlock, draftSnapshot, mapDiagnosticRanges } from './diagnostics.js';
 
   /**
    * @type {{
@@ -31,6 +31,7 @@
    *   onchange?: (value: string) => void,
    *   diagnostics?: { start: number, end: number, message?: string }[],
    *   diagnosticSource?: string | null,
+   *   validate?: (source: string, options: {signal: AbortSignal}) => Promise<{start: number, end: number, message?: string}[]>,
    *   toolbar?: import('svelte').Snippet<[{ text: string, start: number | null, end: number | null, close: () => void }]>,
    *   class?: string,
    * }}
@@ -45,6 +46,7 @@
     onchange,
     diagnostics = [],
     diagnosticSource = null,
+    validate,
     toolbar,
     class: className = '',
   } = $props();
@@ -71,11 +73,40 @@
   let switching = false;
 
   const blocks = $derived(segment(source));
+  const snapshot = $derived(edit ? draftSnapshot(source, edit, draft) : null);
+  let liveReport = $state(null);
+  let checking = $state(false);
+  let validationError = $state('');
+
+  $effect(() => {
+    const candidate = snapshot;
+    const validator = validate;
+    // Recheck when the host refreshes its verification report, including
+    // changes to other files that section checks may refer to.
+    void diagnostics;
+    if (!candidate || !validator || readonly) return;
+    const controller = new AbortController();
+    let cancelled = false;
+    checking = true;
+    validationError = '';
+    const timer = setTimeout(async () => {
+      try {
+        const ranges = await validator(candidate.source, {signal:controller.signal});
+        if (!cancelled) liveReport = {source:candidate.source, diagnostics:ranges};
+      } catch (error) {
+        if (!cancelled) validationError = `Could not check this draft: ${error.message}`;
+      } finally {
+        if (!cancelled) checking = false;
+      }
+    }, 350);
+    return () => { cancelled = true; clearTimeout(timer); controller.abort(); };
+  });
+
   const editDiagnostics = $derived.by(() => {
-    if (!edit || source !== (diagnosticSource ?? value)) return [];
-    const original = source.slice(edit.start, edit.end);
-    const local = diagnosticsInBlock(diagnostics, edit.start, edit.end);
-    return mapDiagnosticRanges(original, draft, local);
+    if (!snapshot) return [];
+    const report = liveReport ?? {source:diagnosticSource ?? value, diagnostics};
+    const ranges = mapDiagnosticRanges(report.source, snapshot.source, report.diagnostics);
+    return diagnosticsInBlock(ranges, snapshot.start, snapshot.end);
   });
 
   // A new value from the host (a reload after save, a live update elsewhere)
@@ -475,6 +506,8 @@
     bind:textarea={area}
     bind:value={draft}
     diagnostics={editDiagnostics}
+    checking={Boolean(validate) && checking}
+    {validationError}
     oninput={autosize}
     onkeydown={keys}
   />

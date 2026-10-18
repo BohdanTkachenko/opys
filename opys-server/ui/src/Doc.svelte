@@ -308,6 +308,11 @@
     return html;
   }
 
+  async function validateBody(body, {signal}) {
+    const result = await api.verifyBody(cid, id, body, signal);
+    return editorDiagnostics(body, result.body_version, result.findings);
+  }
+
   /** Persist the body. `false` tells the editor the node refused it. */
   async function saveBody(body) {
     const outcome = await perform({ action: 'edit-body', id: d.id, body }, 'saving the body');
@@ -911,7 +916,7 @@
   </div>
 
   <article class="body page" use:markdownLinks>
-    <Blockdown value={d.body} render={renderBlocks} onsave={saveBody} bind:this={editor} diagnostics={markdownDiagnostics} diagnosticSource={d.body} />
+    <Blockdown value={d.body} render={renderBlocks} onsave={saveBody} validate={validateBody} bind:this={editor} diagnostics={markdownDiagnostics} diagnosticSource={d.body} />
   </article>
 
   <!-- The log box sits after the body rather than inside the section it

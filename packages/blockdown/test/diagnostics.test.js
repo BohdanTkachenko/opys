@@ -1,6 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mapDiagnosticRanges, diagnosticPieces, diagnosticsInBlock } from '../src/diagnostics.js';
+import { mapDiagnosticRanges, diagnosticPieces, diagnosticsInBlock, draftSnapshot } from '../src/diagnostics.js';
+
+test('draft snapshots preserve typed whitespace and map existing and inserted fields exactly', () => {
+  const source = '# Title\n\nold\n\nTail\n';
+  const snapshot = draftSnapshot(source,{start:9,end:12,insert:false},'λ 🦀 new  \n');
+  assert.equal(snapshot.source, '# Title\n\nλ 🦀 new  \n\n\nTail\n');
+  assert.equal(snapshot.source.slice(snapshot.start,snapshot.end), 'λ 🦀 new  \n');
+  for (const [text, at] of [[source,0],[source,7],['',0],['\n',0]]) {
+    for (const draft of ['', 'λ 🦀 new  \n']) {
+      const snapshot = draftSnapshot(text,{start:at,end:at,insert:true},draft);
+      assert.equal(snapshot.source.slice(snapshot.start,snapshot.end),draft);
+    }
+  }
+});
 
 test('diagnostics follow unchanged text and disappear when its text is edited', () => {
   const source='λ 🦀 broken tail';

@@ -326,6 +326,13 @@ pub struct VerifyStatus {
     pub load_error: Option<String>,
 }
 
+/// Verification of a disposable body snapshot, never written to the store.
+#[derive(Debug, Serialize)]
+pub struct DraftVerification {
+    pub body_version: String,
+    pub findings: Vec<opys_engine::diagnostics::Finding>,
+}
+
 enum Message {
     /// The watcher saw something relevant; start (or extend) the quiet period.
     Fs,
@@ -340,6 +347,11 @@ enum Request {
     // error instead of a misleading 200 or 404.
     Docs(DocFilter, SyncSender<Result<Vec<DocSummary>>>),
     Doc(String, SyncSender<Result<Option<DocView>>>),
+    VerifyBody(
+        String,
+        String,
+        SyncSender<Result<Option<DraftVerification>>>,
+    ),
     Query(
         String,
         Vec<String>,
@@ -414,6 +426,11 @@ impl CorpusClient {
     /// document does not exist.
     pub fn doc(&self, id: &str) -> Result<Option<DocView>> {
         self.ask(|reply| Request::Doc(id.to_string(), reply))?
+    }
+
+    /// Validate an unsaved body against this corpus without changing any state.
+    pub fn verify_body(&self, id: &str, body: &str) -> Result<Option<DraftVerification>> {
+        self.ask(|reply| Request::VerifyBody(id.to_string(), body.to_string(), reply))?
     }
 
     /// Run a user query against the warm store. The inner `Err` is the user's
@@ -641,6 +658,9 @@ impl Actor {
             Request::Doc(id, reply) => {
                 let _ = reply.send(self.doc_view(&id));
             }
+            Request::VerifyBody(id, body, reply) => {
+                let _ = reply.send(self.verify_body(&id, body));
+            }
             Request::Query(sql, params, reply) => {
                 let _ = reply.send(self.run_query(&sql, &params));
             }
@@ -723,6 +743,36 @@ impl Actor {
                 .map(|s| (s.id.as_str(), s.status.as_str())),
         );
         Ok(Some(view(&warm.prj, &doc, &corpus)))
+    }
+
+    fn verify_body(&mut self, id: &str, body: String) -> Result<Option<DraftVerification>> {
+        let warm = self.warm()?;
+        let Some(dkey) = warm.store.dkey_opt(id)? else {
+            return Ok(None);
+        };
+        let mut doc = warm.store.doc(dkey)?;
+        doc.body = body;
+        doc.title = opys_engine::body::title(&doc.body);
+        let mut docs: Vec<Doc> = warm.store.all_docs()?.into_iter().map(|(_, d)| d).collect();
+        for candidate in &mut docs {
+            if candidate.path == doc.path {
+                *candidate = doc.clone();
+            }
+        }
+        let mut findings = verify::collect_findings(&warm.prj, &docs, Vec::new());
+        findings.retain(|finding| finding.doc_id.as_deref() == Some(id));
+        opys_engine::diagnostics::resolve_body(&doc, &mut findings);
+        for finding in &mut findings {
+            finding.path = finding.path.as_ref().map(|path| {
+                path.strip_prefix(&warm.prj.root)
+                    .unwrap_or(path)
+                    .to_path_buf()
+            });
+        }
+        Ok(Some(DraftVerification {
+            body_version: opys_engine::diagnostics::body_version(&doc.body),
+            findings,
+        }))
     }
 
     /// Run user SQL. The outer error is ours (no warm store, projections would

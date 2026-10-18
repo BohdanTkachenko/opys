@@ -66,6 +66,13 @@ snapshot check prevents old coordinates from highlighting newly edited text.
 Missing content uses an insertion marker, and ordinary double-click editing
 shows the same validation marks. Marks follow edits before the invalid text and
 clear when that text changes, until verification supplies a fresh diagnosis.
+While typing, the editor checks the complete unsaved body after a 350 ms pause.
+`POST /api/corpus/{cid}/doc/{id}/verify` accepts `{"body":"…"}` and returns
+the document's `findings` and `body_version`, with body-relative ranges for the
+draft. It never changes files, cached documents, timestamps, or lifecycle
+history. Superseded responses cannot replace newer highlights, and a failed
+check is displayed beside the source field. Saving retains its authoritative
+verification gate.
 The API's additive `findings` array
 preserves the existing `problems` messages and automatic-fix behavior.
 
