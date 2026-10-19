@@ -147,6 +147,15 @@ export const api = {
   /** The allowlisted project groups and their corpora, with cached counts. */
   projects: () => get('/api/projects'),
 
+  /** Declared roles across primary corpora, with per-project totals and errors. */
+  roles: () => get('/api/roles'),
+
+  /** Everything waiting on a role, grouped in the sidebar's project order. */
+  role: (role) => get(`/api/roles/${seg(role)}`),
+
+  /** The engine's queue payload from one project's primary corpus. */
+  queue: (key, role, params) => get(`/api/projects/${seg(key)}/queue/${seg(role)}${qs(params)}`),
+
   /** Cached verification findings, including load errors and freshness. */
   verify: (cid) => get(`/api/corpus/${seg(cid)}/verify`),
 

@@ -191,6 +191,7 @@
               onclick={() => choose(node.id)}>
                 <span class="state-label"><span class="state-dot"></span><span class="mono">{label(node)}</span></span><span class="state-count">{count(node.status)}</span>
                 <span class="state-caption">{node.types.join(' · ') || 'Undeclared status'}</span>
+                {#if node.owners.length}<span class="state-owners">{#each node.owners as owner}<span title={owner}>{owner}</span>{/each}</span>{/if}
             </button>
           {/each}
         </div>
@@ -217,6 +218,7 @@
       <header class="inspector-title"><Icon name="flow" size={17} /><strong>Status details</strong></header>
       <div class="inspector-body">
       {#if active}
+        {#if active.owners.length}<div class="status-owners"><span class="small muted">Waiting on</span>{#each active.owners as owner}<span class="chip">{owner}</span>{/each}</div>{/if}
         <div class="inspector-heading"><span class="inspector-kicker">Status across visible types</span><h2 class="mono">{label(active)}</h2><div class="status-totals"><strong>{currentDocs.length}</strong> {currentDocs.length === 1 ? 'document' : 'documents'}{#if blockers}<span class="blocked-count"><Icon name="lock" size={11} />{blockers} blocked</span>{/if}</div><p class="owner-counts">{#each active.types as name}<span>{name} {currentDocs.filter((doc) => doc.type === name).length}</span>{/each}</p></div>
         <div class="movement"><h3>Next moves</h3>{#if outgoing.length}<div class="next-states">{#each outgoing as edge}{@const target = model.nodes.find((node) => node.id === edge.to)}<button title={`Allowed for ${edge.types.join(', ')}${edge.closingTypes.length ? '; close for '+edge.closingTypes.join(', ') : ''}`} onclick={() => choose(target.id)}>{label(target)}{#if edge.closing}<span>close</span>{/if}</button>{/each}</div>{:else}<p>{active.terminal ? 'Final status. Closed work items leave the inventory.' : 'No outgoing transitions configured.'}</p>{/if}</div>
         {#if nextItems.length}
@@ -274,6 +276,9 @@
   .state-dot { width:6px; height:6px; border-radius:50%; background:hsl(var(--tone) 65% 48%); flex:none; }
   .state-count { font-size:23px; font-weight:500; line-height:1; font-variant-numeric:tabular-nums; grid-row:span 2; align-self:center; }
   .state-caption { font-size:10px; color:var(--muted); padding-left:13px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  .state-owners { display:flex; flex-direction:column; align-items:flex-start; grid-column:1 / -1; gap:3px; overflow:hidden; }
+  .state-owners span { border:1px solid var(--border); border-radius:4px; padding:1px 4px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:9px; color:var(--accent); }
+  .status-owners { display:flex; align-items:center; flex-wrap:wrap; gap:0.3rem; margin-bottom:0.7rem; }
   .state.terminal { border-style:dashed; }
   .state.unknown { border-color:var(--bad); }
   .map-footer { display:flex; flex:none; flex-wrap:wrap; gap:0.6rem 1rem; align-items:center; padding:0.7rem 1.25rem; font-size:0.7rem; color:var(--muted); }

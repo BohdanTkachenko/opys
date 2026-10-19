@@ -5,6 +5,16 @@ import { buildWorkflowMap, fitWorkflowMap, layoutWorkflowMap, mergeReciprocalEdg
 const type = {name:'task',statuses:['todo','doing','review','blocked','done'],default_status:'todo',terminal_statuses:['done'],has_graph:false};
 const view = {types:[type],nodes:[],edges:[]};
 
+test('workflow_status_owner_chips_preserve_node_owners', () => {
+  const owners = ['reviewer', 'agent-code'];
+  const model = buildWorkflowMap({ ...view, nodes: [{ status: 'review', owners }] });
+  const review = model.nodes.find((node) => node.status === 'review');
+  assert.deepEqual(review.owners, owners);
+  assert.ok(review.height > model.nodes.find((node) => node.status === 'todo').height,
+    'owned nodes reserve a row for owner chips');
+  assert.deepEqual(model.nodes.find((node) => node.status === 'todo').owners, []);
+});
+
 test('unrestricted workflows include every individual allowed transition', () => {
   const model = buildWorkflowMap(view, 'task');
   assert.equal(model.nodes.length, 5);

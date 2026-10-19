@@ -12,6 +12,7 @@
   import Flow from './Flow.svelte';
   import Omni from './Omni.svelte';
   import Query from './Query.svelte';
+  import Roles from './Roles.svelte';
   import Setup from './Setup.svelte';
   import Sidebar from './Sidebar.svelte';
   import Union from './Union.svelte';
@@ -22,6 +23,7 @@
   import { notice } from './lib/notice.svelte.js';
   import { omni } from './lib/omni.svelte.js';
   import { sidebar } from './lib/sidebar.svelte.js';
+  import { roles } from './lib/roles.svelte.js';
   import { boardPath, href, nav } from './lib/router.svelte.js';
 
   const route = $derived(nav.route);
@@ -52,6 +54,7 @@
   $effect(() => events.start());
   $effect(() => corpora.start());
   $effect(() => discovery.start());
+  $effect(() => roles.start());
 
   /** Every corpus the node serves, flattened — the landing page's shortcut. */
   const served = $derived(corpora.groups.flatMap((group) => group.corpora));
@@ -113,6 +116,10 @@
            draw one project's statuses under another's name. -->
       {#key route.key}
         <Flow key={route.key} />
+      {/key}
+    {:else if route.view === 'role'}
+      {#key route.role}
+        <Roles role={route.role} />
       {/key}
     {:else if route.view === 'setup'}
       <Setup />

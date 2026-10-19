@@ -5,7 +5,9 @@ export function buildWorkflowMap(view, typeName = null, documents = [], hiddenTy
   if (!types.length) return { nodes: [], edges: [], types: [] };
   const statuses = [...new Set([...types.flatMap((type) => type.statuses), ...documents.filter((doc) => (!typeName || doc.type === typeName) && !hiddenTypes.includes(doc.type)).map((doc) => doc.status)])];
   const nodes = statuses.map((status) => ({
-    id: `state-${encodeURIComponent(status)}`, status, kind: 'status', width: 172, height: 76,
+    id: `state-${encodeURIComponent(status)}`, status, kind: 'status', width: 172,
+    height: 76 + ((view?.nodes ?? []).find((node) => node.status === status)?.owners?.length ?? 0) * 20,
+    owners: (view?.nodes ?? []).find((node) => node.status === status)?.owners ?? [],
     types: types.filter((type) => type.statuses.includes(status)).map((type) => type.name),
     initial: types.some((type) => status === type.default_status),
     terminal: types.some((type) => type.statuses.includes(status)) && types.filter((type) => type.statuses.includes(status)).every((type) => type.terminal_statuses.includes(status)),

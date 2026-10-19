@@ -48,7 +48,7 @@
   import { notice } from './lib/notice.svelte.js';
   import { MOD, omni } from './lib/omni.svelte.js';
   import { createResource } from './lib/resource.svelte.js';
-  import { boardPath, docPath, go, href } from './lib/router.svelte.js';
+  import { boardPath, docPath, go, href, rolePath } from './lib/router.svelte.js';
 
   let { cid, id } = $props();
   let verificationFindings = $state([]);
@@ -350,7 +350,7 @@
 
   function startFieldEdit(key, value) {
     if (pending) return;
-    fieldEdit = { key, text: fieldSource(value) };
+    fieldEdit = { key, text: declared.get(key)?.type === 'role' ? String(value) : fieldSource(value) };
   }
 
   async function saveField() {
@@ -361,7 +361,7 @@
     const body =
       text.trim() === ''
         ? { action: 'remove-field', id: d.id, key }
-        : { action: 'set-field', id: d.id, key, value: text };
+        : { action: 'set-field', id: d.id, key, value: declared.get(key)?.type === 'role' ? fieldSource(text) : text };
     const outcome = await perform(body, 'saving a field');
     if (outcome) fieldEdit = null;
   }
@@ -379,7 +379,7 @@
     const key = newField.key.trim();
     if (!key) return;
     const outcome = await perform(
-      { action: 'set-field', id: d.id, key, value: newField.value },
+      { action: 'set-field', id: d.id, key, value: declared.get(key)?.type === 'role' ? fieldSource(newField.value) : newField.value },
       'adding a field',
     );
     if (outcome) newField = { key: '', value: '' };
@@ -556,6 +556,12 @@
         {@const tone = statusTone(d.status)}
         <span class="chip status" style:--tone={tone} class:neutral={tone === null}>
           {d.status}
+        </span>
+      {/if}
+      {#if d.owners?.length}
+        <span class="waiting-on small muted">Waiting on:
+          {#each d.owners as owner}<a class="chip" href={href(rolePath(owner))}>{owner}</a>{/each}
+          {#if d.owner_override}<span class="chip owner-override" title="Owner overridden for this step">override</span>{/if}
         </span>
       {/if}
       <!-- The only place `updated` is rendered (it is in RESERVED): relative,
@@ -741,7 +747,7 @@
         <span class="label microlabel" title={spec?.description ?? key}>{key.replaceAll('_', ' ')}</span>
         {#if fieldEdit?.key === key}
           <span class="fieldedit">
-            {#if spec?.type === 'enum'}
+            {#if spec?.type === 'enum' || spec?.type === 'role'}
               <!-- The declared vocabulary as a select; a legacy value outside
                    it stays choosable so the row opens showing the truth. -->
               <select
@@ -813,13 +819,20 @@
             <option value={f.name}>{f.description ?? f.type}</option>
           {/each}
         </datalist>
-        <input
-          type="text"
-          placeholder="value"
-          bind:value={newField.value}
-          onkeydown={(e) => e.key === 'Enter' && addField()}
-          aria-label="new field value"
-        />
+        {#if declared.get(newField.key.trim())?.type === 'role'}
+          <select bind:value={newField.value} aria-label="new field value">
+            <option value="" disabled>Choose a role…</option>
+            {#each declared.get(newField.key.trim()).values as role (role)}<option value={role}>{role}</option>{/each}
+          </select>
+        {:else}
+          <input
+            type="text"
+            placeholder="value"
+            bind:value={newField.value}
+            onkeydown={(e) => e.key === 'Enter' && addField()}
+            aria-label="new field value"
+          />
+        {/if}
         <button
           class="btn small"
           disabled={Boolean(pending) || !newField.key.trim()}
@@ -971,6 +984,9 @@
 </div>
 
 <style>
+  .waiting-on { display:inline-flex; align-items:center; flex-wrap:wrap; gap:0.3rem; }
+  .waiting-on a { text-decoration:none; }
+  .owner-override { color:var(--accent-2); }
   /* The reading measure. 50rem ≈ 75ch of body text: the Obsidian/typewriter
      sweet spot. Working views stay fluid; a document is for reading. */
   .docview {

@@ -25,8 +25,9 @@
   import { discovery } from './lib/discovery.svelte.js';
   import { sidebar } from './lib/sidebar.svelte.js';
   import { events } from './lib/events.svelte.js';
+  import { roles } from './lib/roles.svelte.js';
   import { corpusLabel, shortTime } from './lib/format.js';
-  import { boardPath, flowPath, href, unionPath } from './lib/router.svelte.js';
+  import { boardPath, flowPath, href, rolePath, unionPath } from './lib/router.svelte.js';
 
   /**
    * `activeView` as well as `activeKey`: the union and the lifecycle graph are
@@ -159,6 +160,21 @@
     {#if discovery.count > 0}<span class="discovery-count mono">{discovery.count}</span>{/if}
     {#if discovery.error}<Icon name="alert" size={13} />{/if}
   </a>
+
+  {#if roles.all.length > 0 || roles.errors.length > 0 || activeView === 'role'}
+  <a
+    class="discovery role-link"
+    class:active={activeView === 'role'}
+    href={href(rolePath())}
+    aria-current={activeView === 'role' ? 'page' : undefined}
+    title={roles.error ? `Could not refresh role queues: ${roles.error.message}` : roles.remembered ? `Waiting on ${roles.remembered}` : 'Role queues'}
+  >
+    <Icon name="queue" size={16} />
+    <span class="discovery-label">Role queues</span>
+    {#if roles.selected}<span class="discovery-count mono">{roles.selected.total}</span>{/if}
+    {#if roles.error || roles.errors.length}<Icon name="alert" size={13} />{/if}
+  </a>
+  {/if}
 
   <div class="list" id="projects">
     {#if corpora.error && corpora.groups.length === 0}

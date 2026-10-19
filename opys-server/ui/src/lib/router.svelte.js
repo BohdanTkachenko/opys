@@ -9,7 +9,7 @@
 // The whole route vocabulary is [`parse`]. Adding a view is adding a branch
 // there and a branch in `App.svelte`; nothing else in the app inspects the hash.
 
-/** @typedef {{view: string, cid?: string, id?: string, key?: string, path?: string, query: Record<string,string>}} Route */
+/** @typedef {{view: string, cid?: string, id?: string, key?: string, role?: string, path?: string, query: Record<string,string>}} Route */
 
 /**
  * Parse a location hash into a route.
@@ -27,6 +27,10 @@ function parse(hash) {
     .map(decodeSegment);
 
   if (parts.length === 0) return { view: 'home', query };
+
+  if (parts[0] === 'role' && parts.length <= 2) {
+    return { view: 'role', role: parts[1] ?? null, query };
+  }
 
   if (parts[0] === 'corpus' && parts.length === 2) {
     return { view: 'board', cid: parts[1], query };
@@ -140,6 +144,11 @@ export function unionPath(key, filters) {
  */
 export function flowPath(key) {
   return `/group/${seg(key)}/flow`;
+}
+
+/** The cross-project role queue, or the remembered-role picker. */
+export function rolePath(role = null) {
+  return role ? `/role/${seg(role)}` : '/role';
 }
 
 /** An `href` for a route path, so links stay real links — middle-click works. */
