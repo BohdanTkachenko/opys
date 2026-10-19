@@ -14,6 +14,8 @@ pub enum FieldType {
     Int,
     /// A string constrained to the declared `values` set (see [`FieldSpec`]).
     Enum,
+    /// A string naming a role declared in the project config.
+    Role,
 }
 
 impl FieldType {
@@ -24,6 +26,7 @@ impl FieldType {
             FieldType::Bool => "bool",
             FieldType::Int => "int",
             FieldType::Enum => "enum",
+            FieldType::Role => "role",
         }
     }
 }

@@ -351,6 +351,7 @@ pub fn collect_findings(prj: &Project, docs: &[Doc], parse_errors: Vec<String>) 
             ));
         }
         check_custom_fields(
+            pcfg,
             &t.fields,
             &reserved,
             &format!("type '{tname}'"),
@@ -754,6 +755,7 @@ fn validate_tag(s: &str) -> std::result::Result<Option<String>, ()> {
 }
 
 fn check_custom_fields(
+    pcfg: &crate::project_config::ProjectConfig,
     fields: &BTreeMap<String, FieldSpec>,
     reserved: &[&str],
     config_hint: &str,
@@ -775,6 +777,10 @@ fn check_custom_fields(
                         "{id}: field '{k}' value '{s}' is not one of: {allowed}"
                     )),
                     None => errors.push(format!("{id}: field '{k}' should be one of: {allowed}")),
+                }
+            } else if spec.field_type == FieldType::Role {
+                if let Some(problem) = crate::roles::field_problem(pcfg, v) {
+                    errors.push(format!("{id}: field '{k}' {problem}"));
                 }
             } else if !type_ok(v, spec.field_type) {
                 errors.push(format!(
@@ -1051,7 +1057,7 @@ fn type_ok(v: &Value, want: FieldType) -> bool {
         FieldType::Int => matches!(v, Value::Number(n) if n.is_i64() || n.is_u64()),
         // Enum values are strings; membership is checked separately, with access
         // to the declared `values` (see `check_custom_fields`).
-        FieldType::Enum => v.is_string(),
+        FieldType::Enum | FieldType::Role => v.is_string(),
     }
 }
 

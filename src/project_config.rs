@@ -354,6 +354,43 @@ pub struct MaxVisits {
     pub then: String,
 }
 
+/// A role is only a declared name and an optional description (ADR-0068).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoleSpec {
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// Normalize each status's string-or-list value while retaining whether the
+/// owners table was declared, including an explicitly empty table.
+fn deserialize_owners<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<BTreeMap<String, Vec<String>>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    let owners = BTreeMap::<String, OneOrMany>::deserialize(deserializer)?;
+    Ok(Some(
+        owners
+            .into_iter()
+            .map(|(status, roles)| {
+                let roles = match roles {
+                    OneOrMany::One(role) => vec![role],
+                    OneOrMany::Many(roles) => roles,
+                };
+                (status, roles)
+            })
+            .collect(),
+    ))
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct DocType {
     pub prefix: String,
@@ -371,6 +408,10 @@ pub struct DocType {
     pub default_status: String,
     #[serde(default)]
     pub terminal_statuses: Vec<String>,
+    /// Optional status ownership. Read only through [`crate::roles`]. `None`
+    /// differs from an explicitly empty map, which leaves statuses uncovered.
+    #[serde(default, deserialize_with = "deserialize_owners")]
+    pub owners: Option<BTreeMap<String, Vec<String>>>,
     /// `[types.<name>.transitions]` — the legal status moves: a status → the
     /// statuses `set-status` may move it to (ADR-0050 decision 1).
     ///
@@ -712,6 +753,14 @@ pub struct ProjectConfig {
     /// [`Git`].
     #[serde(default)]
     pub git: Git,
+    /// Plain role names and their optional descriptions. Read through
+    /// [`crate::roles`] so every consumer shares ownership semantics.
+    #[serde(default)]
+    pub roles: BTreeMap<String, RoleSpec>,
+    /// Role whose queue includes intervention findings. Read through
+    /// [`crate::roles::escalation_role`].
+    #[serde(default)]
+    pub escalate_to: Option<String>,
     #[serde(default)]
     pub types: TypeMap,
     #[serde(default)]
@@ -1086,6 +1135,7 @@ impl ProjectConfig {
 
         self.validate_file_refs(&mut errs);
         self.validate_stats(&mut errs);
+        errs.extend(crate::roles::config_problems(self));
         errs
     }
 

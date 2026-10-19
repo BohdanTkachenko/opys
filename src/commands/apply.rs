@@ -183,13 +183,27 @@ pub fn core(
         );
     }
     if let Some(status) = spec.status {
-        set_status::core_with(
+        // An explicitly supplied owner is for the visit being entered. Capture
+        // its parsed value after the field writes, and restore it before the
+        // target rules run; the transition clears every previous override.
+        let owner = if spec
+            .set_fields
+            .iter()
+            .any(|(key, _)| key.trim() == crate::roles::OWNER_FIELD)
+        {
+            let key = store.dkey_of(id)?;
+            crate::roles::override_value(&prj.pcfg, &store.doc(key)?).cloned()
+        } else {
+            None
+        };
+        set_status::core_with_override(
             prj,
             store,
             id,
             status,
             spec.reason,
             set_status::Move::Transition,
+            owner.as_ref(),
         )?;
     }
     let mut remove_parts: Vec<String> = Vec::new();

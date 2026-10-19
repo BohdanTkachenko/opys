@@ -222,3 +222,45 @@ fn as_string(v: &Value, field: &str) -> Result<String> {
         .map(str::to_string)
         .ok_or_else(|| usage(format!("\"{field}\" must be a string")))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn import_keeps_a_role_override_for_the_seeded_status() {
+        let pcfg = toml::from_str(
+            r#"
+[roles.agent]
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "review"]
+default_status = "todo"
+[types.task.fields.owner]
+type = "role"
+"#,
+        )
+        .unwrap();
+        let project = Project {
+            root: "/p".into(),
+            base: "/p/opys".into(),
+            pcfg,
+        };
+        let document = build_record(
+            &project,
+            &project.pcfg.types["task"],
+            &project.pcfg,
+            "task",
+            &HashSet::new(),
+            "TASK-0001",
+            r#"{"title":"Review","status":"review","owner":"agent"}"#,
+        )
+        .unwrap();
+        assert_eq!(document.status(), Some("review"));
+        assert!(crate::roles::is_override(&project.pcfg, &document));
+        assert_eq!(
+            crate::roles::effective_owners(&project.pcfg, &document),
+            ["agent"]
+        );
+    }
+}

@@ -35,6 +35,7 @@ pub mod project_config;
 pub mod refs;
 pub mod retired;
 pub mod rules;
+pub mod roles;
 pub mod store;
 pub mod templates;
 

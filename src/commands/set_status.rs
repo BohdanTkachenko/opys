@@ -150,6 +150,21 @@ pub fn core_with(
     reason: Option<&str>,
     mode: Move,
 ) -> Result<()> {
+    core_with_override(prj, store, id, status, reason, mode, None)
+}
+
+/// A composite write can carry an explicitly supplied override into the new
+/// visit. Restore it before the target rules run, so they see the finished
+/// owner just as they see every other field written by the same invocation.
+pub(crate) fn core_with_override(
+    prj: &Project,
+    store: &mut Store,
+    id: &str,
+    status: &str,
+    reason: Option<&str>,
+    mode: Move,
+    retained_owner: Option<&serde_norway::Value>,
+) -> Result<()> {
     let pcfg = &prj.pcfg;
     let (tname, t) = resolve_type(prj, id)?;
     check_status(t, &tname, id, status)?;
@@ -194,6 +209,9 @@ pub fn core_with(
         }
     }
 
+    if current != status {
+        crate::roles::enter_status(pcfg, &mut doc, retained_owner);
+    }
     if let Some(r) = reason {
         // `--reason` writes `<status>_reason`, which must be a declared field for
         // the type or the very next `verify` rejects it as unknown frontmatter.
