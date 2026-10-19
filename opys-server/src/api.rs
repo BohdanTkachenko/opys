@@ -53,18 +53,20 @@ use axum::{Json, Router};
 use opys_engine::commands::now_rfc3339;
 use opys_engine::error::OpysError;
 use opys_engine::next::{PickQuery, PickResult, DEFAULT_LIMIT};
+use opys_engine::queue::{QueueQuery, QueueResult};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use crate::action::{Action, ActionError};
 use crate::actor::{
     CorpusClient, CorpusHandle, CorpusStats, DocFilter, DocSummary, DocView, DraftVerification,
-    Event, QueryResult, VerifyStatus,
+    Event, QueryResult, QueueQueryError, VerifyStatus,
 };
 use crate::discover::Corpus;
 use crate::flow::{FlowView, DEFAULT_NODE_LIMIT};
 use crate::manager::Manager;
 use crate::registry;
+use crate::role_queues::{self, ProjectQueues, RoleView, RolesView};
 use crate::union::{contested_numbers, union, Branches, CorpusDocs, UnionView};
 
 /// How often the server pings an idle WebSocket client.
@@ -290,6 +292,9 @@ pub fn router(state: AppState) -> Router {
         // The lifecycle graph of one project, answered from the same primary
         // corpus and for the same reason (FEAT-0060).
         .route("/api/projects/{key}/flow", get(flow))
+        .route("/api/projects/{key}/queue/{role}", get(queue))
+        .route("/api/roles", get(roles))
+        .route("/api/roles/{role}", get(role))
         .route("/api/corpus/{cid}/docs", get(docs))
         .route("/api/corpus/{cid}/doc/{docid}", get(doc))
         .route("/api/corpus/{cid}/doc/{docid}/verify", post(verify_body))
@@ -1299,6 +1304,7 @@ struct NextQuery {
     status: String,
     #[serde(rename = "type")]
     type_name: Option<String>,
+    role: Option<String>,
     n: Option<usize>,
 }
 
@@ -1329,10 +1335,10 @@ async fn pick(
     let cid = primary_cid(&state, &key).await?;
 
     let q = PickQuery {
-        role: None,
         status: query.status,
         // `?type=` with no value is a cleared dropdown, not the empty type.
         type_filter: query.type_name.filter(|s| !s.is_empty()),
+        role: query.role.filter(|s| !s.is_empty()),
         limit: query.n.unwrap_or(DEFAULT_LIMIT),
     };
     let result = with_corpus(&state, &cid, move |client| client.next(q)).await?;
@@ -1343,7 +1349,7 @@ async fn pick(
 /// worktree, falling back to its first corpus when discovery marked none (which
 /// happens only outside git).
 ///
-/// Shared by the two routes under `/api/projects/{key}/…` so they cannot come
+/// Shared by the routes under `/api/projects/{key}/…` so they cannot come
 /// to disagree about which worktree is the truth — or about the wording of the
 /// 404, which `opys-server/tests/api.rs` asserts on.
 async fn primary_cid(state: &AppState, key: &str) -> Result<String, ApiError> {
@@ -1397,6 +1403,107 @@ async fn flow(
     Ok(Json(
         with_corpus(&state, &cid, move |client| client.flow(limit)).await?,
     ))
+}
+
+#[derive(Debug, Deserialize)]
+struct QueueOptions {
+    #[serde(rename = "type")]
+    type_name: Option<String>,
+    n: Option<usize>,
+}
+
+/// The CLI's exact pretty-printed queue, including its final newline.
+async fn queue(
+    State(state): State<AppState>,
+    Path((key, role)): Path<(String, String)>,
+    query: Result<Query<QueueOptions>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    let Query(query) = query?;
+    let cid = primary_cid(&state, &key).await?;
+    let wanted = role.clone();
+    let result = with_corpus(&state, &cid, move |client| {
+        client.queue(QueueQuery {
+            role: wanted,
+            type_filter: query.type_name.filter(|s| !s.is_empty()),
+            limit: query.n.unwrap_or(DEFAULT_LIMIT),
+        })
+    })
+    .await?;
+    let payload = result.map_err(|error| match error {
+        QueueQueryError::UnknownRole => {
+            ApiError::not_found(format!("project {key} does not declare role {role}"))
+        }
+        QueueQueryError::Invalid(error) => ApiError::bad_request(error),
+    })?;
+    queue_response(&payload)
+}
+
+fn queue_response(payload: &QueueResult) -> Result<Response, ApiError> {
+    let mut body = serde_json::to_string_pretty(payload)
+        .map_err(|error| ApiError::internal(format!("serializing queue failed: {error}")))?;
+    body.push('\n');
+    Ok(([(CONTENT_TYPE, "application/json")], body).into_response())
+}
+
+async fn roles(State(state): State<AppState>) -> Result<Json<RolesView>, ApiError> {
+    Ok(Json(role_queues::roles(gather_role_queues(&state).await?)))
+}
+
+async fn role(
+    State(state): State<AppState>,
+    Path(role): Path<String>,
+) -> Result<Json<RoleView>, ApiError> {
+    Ok(Json(role_queues::role(
+        gather_role_queues(&state).await?,
+        role,
+    )))
+}
+
+/// Clone primary clients under one manager lock, then ask every project under
+/// one deadline. A slow reload cannot delay all other project queues in turn.
+async fn gather_role_queues(state: &AppState) -> Result<Vec<ProjectQueues>, ApiError> {
+    let manager = Arc::clone(&state.manager);
+    let projects = tokio::task::spawn_blocking(move || {
+        let manager = lock(&manager);
+        manager
+            .groups()
+            .iter()
+            .map(|group| {
+                let client = group
+                    .corpora
+                    .iter()
+                    .find(|corpus| corpus.is_primary)
+                    .or_else(|| group.corpora.first())
+                    .and_then(|corpus| manager.get(&corpus.cid))
+                    .map(CorpusHandle::client);
+                (group.key.clone(), group.name.clone(), client)
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("listing role queues failed: {error}")))?;
+    let deadline = tokio::time::Instant::now() + UNION_TIMEOUT;
+    let tasks: Vec<_> = projects
+        .into_iter()
+        .map(|(key, label, client)| {
+            let task = client.map(|client| tokio::task::spawn_blocking(move || client.roles()));
+            (key, label, task)
+        })
+        .collect();
+    let mut projects = Vec::with_capacity(tasks.len());
+    for (key, label, task) in tasks {
+        let queues = match task {
+            None => Err("corpus is not being served".to_string()),
+            Some(task) => match tokio::time::timeout_at(deadline, task).await {
+                Ok(Ok(Ok(queues))) => Ok(queues),
+                Ok(Ok(Err(error))) => Err(error.to_string()),
+                Ok(Err(error)) => Err(format!("corpus task failed: {error}")),
+                Err(_) => Err("corpus is busy".to_string()),
+            },
+        };
+        projects.push(ProjectQueues { key, label, queues });
+    }
+    Ok(projects)
 }
 
 /// The corpus's cached verify problems.

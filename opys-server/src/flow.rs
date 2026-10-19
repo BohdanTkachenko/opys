@@ -104,6 +104,9 @@ pub struct FlowType {
 #[derive(Debug, Clone, Serialize)]
 pub struct FlowNode {
     pub status: String,
+    /// Owners of this status, in type declaration order and without duplicates.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub owners: Vec<String>,
     /// The types that declare this status, in declaration order. Empty for an
     /// undeclared status (see [`FlowNode::declared`]).
     pub types: Vec<String>,
@@ -172,9 +175,9 @@ pub fn flow(prj: &Project, docs: &[Doc], cid: &str, limit: usize) -> FlowView {
             prj,
             docs,
             &PickQuery {
-                role: None,
                 status: status.to_string(),
                 type_filter: None,
+                role: None,
                 limit,
             },
             now,
@@ -357,8 +360,17 @@ fn node(
         }
     }
 
+    let mut owners = Vec::new();
+    for name in &types {
+        for role in opys_engine::roles::status_owners(&prj.pcfg, name, status) {
+            if !owners.contains(&role) {
+                owners.push(role);
+            }
+        }
+    }
     FlowNode {
         status: status.to_string(),
+        owners,
         initial: types.iter().any(|name| {
             prj.pcfg
                 .types
@@ -734,9 +746,9 @@ requires_link = { to = "feature", min = 1 }
                 &prj,
                 &docs,
                 &PickQuery {
-                    role: None,
                     status: "todo".to_string(),
                     type_filter: None,
+                    role: None,
                     limit,
                 },
                 observe::now(),

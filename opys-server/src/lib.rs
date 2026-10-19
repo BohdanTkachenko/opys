@@ -18,6 +18,7 @@ pub mod flow;
 pub mod manager;
 pub mod refreader;
 pub mod registry;
+pub mod role_queues;
 pub mod serve;
 pub mod systemd;
 pub mod union;

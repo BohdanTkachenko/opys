@@ -26,7 +26,9 @@ use opys_engine::lifecycle;
 use opys_engine::next::{self, PickQuery, PickResult};
 use opys_engine::observe;
 use opys_engine::project::Project;
+use opys_engine::queue::{self, QueueQuery, QueueResult};
 use opys_engine::refs;
+use opys_engine::roles;
 use opys_engine::store::Store;
 use serde::Serialize;
 use tokio::sync::broadcast;
@@ -133,6 +135,11 @@ pub struct DocSummary {
 /// this struct and adds nothing.
 #[derive(Debug, Clone, Serialize)]
 pub struct DocView {
+    /// The roles this document currently waits on, interpreted by the engine.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub owners: Vec<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub owner_override: bool,
     pub id: String,
     #[serde(rename = "type")]
     pub type_name: String,
@@ -262,6 +269,22 @@ pub struct FieldView {
     pub pattern: Option<String>,
 }
 
+/// A declared role's metadata and default queue from one corpus snapshot.
+#[derive(Debug, Clone, Serialize)]
+pub struct RoleQueue {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub queue: QueueResult,
+}
+
+/// Role lookup failures are resources missing from this project; other query
+/// validation failures are malformed input.
+pub enum QueueQueryError {
+    UnknownRole,
+    Invalid(String),
+}
+
 /// Which documents a caller wants. Every field is an equality filter; `None`
 /// matches everything.
 #[derive(Debug, Clone, Default)]
@@ -363,6 +386,11 @@ enum Request {
         PickQuery,
         SyncSender<Result<std::result::Result<PickResult, String>>>,
     ),
+    Queue(
+        QueueQuery,
+        SyncSender<Result<std::result::Result<QueueResult, QueueQueryError>>>,
+    ),
+    Roles(SyncSender<Result<Vec<RoleQueue>>>),
     /// The lifecycle graph, with the per-node item cap. A single `Result`,
     /// unlike [`Request::Next`]: the only thing the caller supplies is a
     /// number, and every status in the answer comes from the config itself, so
@@ -450,6 +478,19 @@ impl CorpusClient {
     /// gone, or the corpus never loaded.
     pub fn next(&self, q: PickQuery) -> Result<std::result::Result<PickResult, String>> {
         self.ask(|reply| Request::Next(q, reply))?
+    }
+
+    /// A role queue using the actor's cached verify findings.
+    pub fn queue(
+        &self,
+        q: QueueQuery,
+    ) -> Result<std::result::Result<QueueResult, QueueQueryError>> {
+        self.ask(|reply| Request::Queue(q, reply))?
+    }
+
+    /// Every declared role and its queue, from one warm snapshot.
+    pub fn roles(&self) -> Result<Vec<RoleQueue>> {
+        self.ask(Request::Roles)?
     }
 
     /// The lifecycle graph over the warm store, with `limit` items per node.
@@ -543,6 +584,19 @@ impl CorpusHandle {
     /// query problem (a 4xx for the API); the outer one means the actor is gone.
     pub fn next(&self, q: PickQuery) -> Result<std::result::Result<PickResult, String>> {
         self.client.next(q)
+    }
+
+    /// A role queue over the warm store and cached verification findings.
+    pub fn queue(
+        &self,
+        q: QueueQuery,
+    ) -> Result<std::result::Result<QueueResult, QueueQueryError>> {
+        self.client.queue(q)
+    }
+
+    /// All role declarations and their default queues from one warm snapshot.
+    pub fn roles(&self) -> Result<Vec<RoleQueue>> {
+        self.client.roles()
     }
 
     /// The lifecycle graph over the warm store. The `Err` means the actor is
@@ -666,6 +720,12 @@ impl Actor {
             }
             Request::Next(q, reply) => {
                 let _ = reply.send(self.run_next(&q));
+            }
+            Request::Queue(q, reply) => {
+                let _ = reply.send(self.run_queue(&q));
+            }
+            Request::Roles(reply) => {
+                let _ = reply.send(self.run_roles());
             }
             Request::Flow(limit, reply) => {
                 let _ = reply.send(self.run_flow(limit));
@@ -807,6 +867,51 @@ impl Actor {
         }
         let docs: Vec<Doc> = warm.store.all_docs()?.into_iter().map(|(_, d)| d).collect();
         Ok(Ok(next::pick(&warm.prj, &docs, q, observe::now())))
+    }
+
+    fn run_queue(
+        &mut self,
+        q: &QueueQuery,
+    ) -> Result<std::result::Result<QueueResult, QueueQueryError>> {
+        let warm = self.warm()?;
+        if !roles::declared(&warm.prj.pcfg, &q.role) {
+            return Ok(Err(QueueQueryError::UnknownRole));
+        }
+        if let Err(message) = q.validate(&warm.prj.pcfg) {
+            return Ok(Err(QueueQueryError::Invalid(message)));
+        }
+        let docs: Vec<Doc> = warm.store.all_docs()?.into_iter().map(|(_, d)| d).collect();
+        Ok(Ok(queue::build(
+            &warm.prj,
+            &docs,
+            q,
+            observe::now(),
+            &warm.findings,
+        )))
+    }
+
+    fn run_roles(&mut self) -> Result<Vec<RoleQueue>> {
+        let warm = self.warm()?;
+        let docs: Vec<Doc> = warm.store.all_docs()?.into_iter().map(|(_, d)| d).collect();
+        let now = observe::now();
+        Ok(roles::names(&warm.prj.pcfg)
+            .into_iter()
+            .map(|name| RoleQueue {
+                name: name.to_string(),
+                description: roles::description(&warm.prj.pcfg, name).map(str::to_string),
+                queue: queue::build(
+                    &warm.prj,
+                    &docs,
+                    &QueueQuery {
+                        role: name.to_string(),
+                        type_filter: None,
+                        limit: next::DEFAULT_LIMIT,
+                    },
+                    now,
+                    &warm.findings,
+                ),
+            })
+            .collect())
     }
 
     /// Answer the flow graph from the warm store.
@@ -986,6 +1091,8 @@ fn view(prj: &Project, doc: &Doc, corpus: &refs::Corpus<'_>) -> DocView {
         .map(|(id, _)| id)
         .collect();
     DocView {
+        owners: roles::effective_owners(&prj.pcfg, doc),
+        owner_override: roles::is_override(&prj.pcfg, doc),
         type_name: type_of(prj, &id),
         allowed_statuses: doc_type
             .map(|t| {
@@ -1024,7 +1131,14 @@ fn view(prj: &Project, doc: &Doc, corpus: &refs::Corpus<'_>) -> DocView {
                         name: name.clone(),
                         field_type: spec.field_type.as_str(),
                         required: spec.required,
-                        values: spec.values.clone(),
+                        values: if spec.field_type == opys_engine::config::FieldType::Role {
+                            roles::names(&prj.pcfg)
+                                .into_iter()
+                                .map(str::to_string)
+                                .collect()
+                        } else {
+                            spec.values.clone()
+                        },
                         description: spec.description.clone(),
                         pattern: spec.pattern.clone(),
                     })
