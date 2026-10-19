@@ -172,8 +172,7 @@ impl Node {
 
 fn cli(root: &Path, args: &[&str]) -> Vec<u8> {
     let result = Command::new(assert_cmd::cargo::cargo_bin!("opys"))
-        .arg("--root")
-        .arg(root)
+        .current_dir(root)
         .args(args)
         .env("OPYS_NOW", NOW)
         .output()
@@ -193,6 +192,20 @@ fn project_queue_matches_cli_bytes_and_validates_role_and_options() {
     doc(&root, "TASK-0001", "review", "");
     doc(&root, "TASK-0002", "todo", "owner: human\n");
     doc(&root, "TASK-0003", "review", "owner: agent\nbogus: value\n");
+    // Both raw-medium failures and spelling findings must have the same
+    // messages at the node and under a default-cwd CLI invocation.
+    doc(&root, "TASK-0004", "todo", "");
+    let spelling_path = root.join("inventory/TASK-0004.md");
+    let spelling = std::fs::read_to_string(&spelling_path).unwrap().replace(
+        "\"2026-10-17T12:00:00.000000Z\":",
+        "2026-10-17T12:00:00.000000Z:",
+    );
+    std::fs::write(spelling_path, spelling).unwrap();
+    std::fs::write(
+        root.join("inventory/TASK-0005.md"),
+        "---\ninvalid: [\n---\n",
+    )
+    .unwrap();
     let node = Node::start(tmp.path(), &[&root]);
     let (key, _) = node.project(&root);
     for (query, args) in [

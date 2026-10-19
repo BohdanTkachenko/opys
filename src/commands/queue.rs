@@ -15,7 +15,11 @@ pub fn run(
     limit: usize,
     json: bool,
 ) -> Result<()> {
-    let prj = ctx.open()?;
+    let mut prj = ctx.open()?;
+    // The actor opens the canonical primary root. Use that same spelling for
+    // medium findings too, including parse errors, even when invoked at '.'.
+    prj.root = prj.root.canonicalize()?;
+    prj.base = prj.pcfg.resolve_base(&prj.root)?;
     let env_role = std::env::var("OPYS_ROLE").ok();
     let role = role
         .or(env_role.as_deref())
