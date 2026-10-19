@@ -27,9 +27,10 @@ use gluesql::prelude::{ParamLiteral, Value as GValue};
 use crate::cli::ListFormat;
 use crate::commands::{parse_key_values, print_lines};
 use crate::doc::Doc;
-use crate::error::Result;
+use crate::error::{usage, Result};
 use crate::order;
 use crate::refs;
+use crate::roles;
 use crate::store::{g_i64, g_str, IntoParam};
 use crate::Ctx;
 
@@ -45,9 +46,13 @@ pub fn run(
     field: &[String],
     blocked: Option<bool>,
     sort: bool,
+    waiting_on: Option<&str>,
     format: ListFormat,
 ) -> Result<()> {
     let prj = ctx.open()?;
+    if let Some(role) = waiting_on {
+        roles::validate_role(&prj.pcfg, role).map_err(usage)?;
+    }
     let filters = parse_key_values(field)?;
     let (mut store, _) = ctx.load(&prj)?;
 
@@ -57,9 +62,18 @@ pub fn run(
     // richer index serves the filter too, so nothing is built twice. A plain
     // `list` reconstructs nothing and costs exactly what it did.
     let mut blocked_ids: Option<HashSet<String>> = None;
+    let mut waiting_ids: Option<HashSet<String>> = None;
     let mut sort_rank: Option<HashMap<String, usize>> = None;
-    if blocked.is_some() || sort {
+    if blocked.is_some() || sort || waiting_on.is_some() {
         let docs: Vec<Doc> = store.all_docs()?.into_iter().map(|(_, d)| d).collect();
+        if let Some(role) = waiting_on {
+            waiting_ids = Some(
+                docs.iter()
+                    .filter(|d| roles::waits_on(&prj.pcfg, d, role))
+                    .filter_map(|d| d.id().map(str::to_owned))
+                    .collect(),
+            );
+        }
         let ordered = sort.then(|| order::Corpus::of_docs(&prj.pcfg, &docs));
         if blocked.is_some() {
             // `--blocked` alone needs the id → status index and nothing else:
@@ -172,6 +186,11 @@ pub fn run(
 
     let mut kept: Vec<&Vec<GValue>> = rows
         .iter()
+        .filter(|r| {
+            waiting_ids
+                .as_ref()
+                .is_none_or(|ids| ids.contains(&g_str(&r[1]).unwrap_or_default()))
+        })
         .filter(|r| match (&blocked_ids, blocked) {
             (Some(ids), Some(want)) => {
                 ids.contains(g_str(&r[1]).unwrap_or_default().as_str()) == want

@@ -172,6 +172,7 @@ pub fn flow(prj: &Project, docs: &[Doc], cid: &str, limit: usize) -> FlowView {
             prj,
             docs,
             &PickQuery {
+                role: None,
                 status: status.to_string(),
                 type_filter: None,
                 limit,
@@ -733,6 +734,7 @@ requires_link = { to = "feature", min = 1 }
                 &prj,
                 &docs,
                 &PickQuery {
+                    role: None,
                     status: "todo".to_string(),
                     type_filter: None,
                     limit,

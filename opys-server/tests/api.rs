@@ -1141,6 +1141,7 @@ async fn the_next_endpoint_answers_exactly_what_the_engine_does() {
             &opys_engine::next::PickQuery {
                 status: "open".to_string(),
                 type_filter: None,
+                role: None,
                 limit: 10,
             },
         ),

@@ -1329,6 +1329,7 @@ async fn pick(
     let cid = primary_cid(&state, &key).await?;
 
     let q = PickQuery {
+        role: None,
         status: query.status,
         // `?type=` with no value is a cleared dropdown, not the empty type.
         type_filter: query.type_name.filter(|s| !s.is_empty()),

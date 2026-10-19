@@ -32,10 +32,11 @@ pub mod observe;
 pub mod order;
 pub mod project;
 pub mod project_config;
+pub mod queue;
 pub mod refs;
 pub mod retired;
-pub mod rules;
 pub mod roles;
+pub mod rules;
 pub mod store;
 pub mod templates;
 
@@ -130,6 +131,7 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
             blocked,
             unblocked,
             sort,
+            waiting_on,
             format,
         } => {
             // One tri-state rather than two bools: clap has already refused the
@@ -144,11 +146,13 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
                 &field,
                 blocked,
                 sort,
+                waiting_on.as_deref(),
                 format,
             )?;
             Ok(0)
         }
         Command::Next {
+            role,
             status,
             type_name,
             limit,
@@ -156,11 +160,21 @@ pub fn run(cli: Cli, backend: Box<dyn backend::Backend>) -> Result<i32> {
             explain,
         } => {
             let q = next::PickQuery {
+                role,
                 status,
                 type_filter: type_name,
                 limit,
             };
             commands::next::run(&ctx, &q, json, explain)?;
+            Ok(0)
+        }
+        Command::Queue {
+            role,
+            type_name,
+            limit,
+            json,
+        } => {
+            commands::queue::run(&ctx, role.as_deref(), type_name.as_deref(), limit, json)?;
             Ok(0)
         }
         Command::SetStatus {

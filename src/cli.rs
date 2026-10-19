@@ -120,6 +120,9 @@ pub enum Command {
         /// type's chain.
         #[arg(long)]
         sort: bool,
+        /// Only documents whose effective owners include this declared role.
+        #[arg(long)]
+        waiting_on: Option<String>,
         #[arg(long, value_enum, default_value_t = ListFormat::Table)]
         format: ListFormat,
     },
@@ -135,6 +138,9 @@ pub enum Command {
     /// configured type declares, and an `--explain` id no document answers
     /// to, are usage errors (exit 2).
     Next {
+        /// Only documents waiting on this declared role.
+        #[arg(long)]
+        role: Option<String>,
         /// The status to pick from. Required, and it must be one the named
         /// `--type` declares — or, with no `--type`, one some configured type
         /// does: a typo is refused rather than answered with nothing.
@@ -154,6 +160,18 @@ pub enum Command {
         /// ordered behind the ones that fitted.
         #[arg(long, value_name = "ID", num_args = 0..=1)]
         explain: Option<Option<String>>,
+    },
+
+    /// Everything waiting on a role, with attention for the escalation role.
+    Queue {
+        /// Declared role; defaults to OPYS_ROLE.
+        role: Option<String>,
+        #[arg(long = "type")]
+        type_name: Option<String>,
+        #[arg(short = 'n', long = "limit", default_value_t = crate::next::DEFAULT_LIMIT)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
     },
 
     /// List the distinct tags in the inventory, sorted, one per line.

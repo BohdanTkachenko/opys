@@ -48,6 +48,7 @@ use crate::order;
 use crate::project::Project;
 use crate::project_config::ProjectConfig;
 use crate::refs;
+use crate::roles;
 
 /// The value of the payload's `schema` key: the contract a consumer pins.
 ///
@@ -69,6 +70,7 @@ pub const DEFAULT_LIMIT: usize = 10;
 pub struct PickQuery {
     pub status: String,
     pub type_filter: Option<String>,
+    pub role: Option<String>,
     pub limit: usize,
 }
 
@@ -84,6 +86,9 @@ impl PickQuery {
     /// The `Err` is a plain message so both surfaces can class it themselves: the
     /// CLI raises it as a usage error (exit 2), the node returns it as a 400.
     pub fn validate(&self, pcfg: &ProjectConfig) -> std::result::Result<(), String> {
+        if let Some(role) = &self.role {
+            roles::validate_role(pcfg, role)?;
+        }
         if let Some(name) = &self.type_filter {
             let Some(t) = pcfg.types.get(name) else {
                 let mut names: Vec<&str> = pcfg.types.keys().map(String::as_str).collect();
@@ -152,6 +157,8 @@ pub struct Item {
     /// what a dispatcher needs to see. Reported here; `verify --fix` is what
     /// acts on them.
     pub observations: Vec<Observation>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub owners: Vec<String>,
 }
 
 /// A document at the queried status that will not become pickable on its own:
@@ -179,6 +186,8 @@ pub struct PickResult {
     pub status: String,
     #[serde(rename = "type")]
     pub type_filter: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
     pub limit: usize,
     /// How many documents are pickable in all, before `limit` truncated `items`.
     pub total: usize,
@@ -214,6 +223,11 @@ pub enum Why {
     },
     /// Not at the queried status.
     OtherStatus { status: String },
+    /// Waits on a different role (or nobody).
+    OtherRole {
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        owners: Vec<String>,
+    },
     /// Its `requires_link` no longer holds — see [`Orphan::reason`].
     Orphaned { detail: String },
     /// Something live blocks it.
@@ -226,20 +240,22 @@ pub enum Why {
 
 /// Everything one pass over the corpus produces: the ordering index, the ranked
 /// pickable set (whole, before any limit), the ranked orphans and their reasons.
-struct Selection<'a> {
-    corpus: order::Corpus<'a>,
-    pickable: Vec<&'a Doc>,
-    orphaned: Vec<&'a Doc>,
-    reasons: HashMap<String, String>,
+pub(crate) struct Selection<'a> {
+    pub(crate) corpus: order::Corpus<'a>,
+    pub(crate) pickable: Vec<&'a Doc>,
+    pub(crate) blocked: Vec<&'a Doc>,
+    pub(crate) orphaned: Vec<&'a Doc>,
+    pub(crate) reasons: HashMap<String, String>,
 }
 
 /// Partition the corpus for `q` and rank both halves.
 ///
 /// The ordering corpus is built over `docs` entire — see the module docs — and
 /// the filter runs after it.
-fn select<'a>(pcfg: &'a ProjectConfig, docs: &'a [Doc], q: &PickQuery) -> Selection<'a> {
+pub(crate) fn select<'a>(pcfg: &'a ProjectConfig, docs: &'a [Doc], q: &PickQuery) -> Selection<'a> {
     let corpus = order::Corpus::of_docs(pcfg, docs);
     let mut pickable: Vec<&Doc> = Vec::new();
+    let mut blocked: Vec<&Doc> = Vec::new();
     let mut orphaned: Vec<&Doc> = Vec::new();
     let mut reasons: HashMap<String, String> = HashMap::new();
     for doc in docs {
@@ -254,13 +270,17 @@ fn select<'a>(pcfg: &'a ProjectConfig, docs: &'a [Doc], q: &PickQuery) -> Select
         }
         if refs::live_blockers(doc, corpus.blockers()).is_empty() {
             pickable.push(doc);
+        } else {
+            blocked.push(doc);
         }
     }
     let pickable = corpus.ranked(&pickable);
     let orphaned = corpus.ranked(&orphaned);
+    let blocked = corpus.ranked(&blocked);
     Selection {
         corpus,
         pickable,
+        blocked,
         orphaned,
         reasons,
     }
@@ -269,13 +289,19 @@ fn select<'a>(pcfg: &'a ProjectConfig, docs: &'a [Doc], q: &PickQuery) -> Select
 /// Whether `doc` is in scope for `q` at all: right status, and right type when
 /// one was named.
 fn candidate(pcfg: &ProjectConfig, doc: &Doc, q: &PickQuery) -> bool {
-    doc.status() == Some(q.status.as_str())
+    (doc.status() == Some(q.status.as_str())
+        // A role override still routes malformed documents with no status.
+        // Queue represents that repair group by the empty status name.
+        || (q.role.is_some() && q.status.is_empty() && doc.status().is_none()))
+        && q.role
+            .as_deref()
+            .is_none_or(|r| roles::waits_on(pcfg, doc, r))
         && q.type_filter
             .as_ref()
             .is_none_or(|t| type_of(pcfg, doc).as_deref() == Some(t.as_str()))
 }
 
-fn type_of(pcfg: &ProjectConfig, doc: &Doc) -> Option<String> {
+pub(crate) fn type_of(pcfg: &ProjectConfig, doc: &Doc) -> Option<String> {
     doc.id()
         .and_then(|id| pcfg.type_name_for_id(id))
         .map(str::to_string)
@@ -367,6 +393,7 @@ pub fn pick(prj: &Project, docs: &[Doc], q: &PickQuery, now: OffsetDateTime) -> 
         schema: SCHEMA,
         status: q.status.clone(),
         type_filter: q.type_filter.clone(),
+        role: q.role.clone(),
         limit: q.limit,
         total,
         items,
@@ -375,7 +402,7 @@ pub fn pick(prj: &Project, docs: &[Doc], q: &PickQuery, now: OffsetDateTime) -> 
     }
 }
 
-fn item(
+pub(crate) fn item(
     prj: &Project,
     corpus: &order::Corpus<'_>,
     doc: &Doc,
@@ -405,6 +432,7 @@ fn item(
         blocks: corpus.live_blocks_count(doc),
         position,
         observations,
+        owners: roles::effective_owners(&prj.pcfg, doc),
     }
 }
 
@@ -412,7 +440,7 @@ fn item(
 ///
 /// Absolute paths would make the payload machine-dependent — unpinnable in a
 /// test, and a leak of the operator's directory layout through the node.
-fn rel_path(prj: &Project, doc: &Doc) -> String {
+pub(crate) fn rel_path(prj: &Project, doc: &Doc) -> String {
     doc.path
         .strip_prefix(&prj.root)
         .unwrap_or(&doc.path)
@@ -458,6 +486,22 @@ pub fn explain(
             message: format!("{id}: not listed — it is at {status}, not {}", q.status),
             why: Why::OtherStatus { status },
         });
+    }
+    if let Some(role) = &q.role {
+        if !roles::waits_on(pcfg, doc, role) {
+            let owners = roles::effective_owners(pcfg, doc);
+            let named = if owners.is_empty() {
+                "nobody".to_string()
+            } else {
+                owners.join(", ")
+            };
+            return Ok(Explanation {
+                id: id.to_string(),
+                listed: false,
+                message: format!("{id}: not listed — waits on {named}, not {role}"),
+                why: Why::OtherRole { owners },
+            });
+        }
     }
     let sel = select(pcfg, docs, q);
     if let Some(detail) = sel.reasons.get(id) {
@@ -586,6 +630,7 @@ default_status = "open"
         PickQuery {
             status: status.to_string(),
             type_filter: None,
+            role: None,
             limit: DEFAULT_LIMIT,
         }
     }

@@ -16,6 +16,7 @@ pub mod log;
 pub mod new;
 pub mod next;
 pub mod query;
+pub mod queue;
 pub mod renumber;
 pub mod retire;
 pub mod set_status;
