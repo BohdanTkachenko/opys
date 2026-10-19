@@ -10,6 +10,8 @@ documents: one file per document, with YAML frontmatter (a stable `PREFIX-NNNN`
 id, status, tags, relation maps) and a markdown body. Every write goes through
 the CLI, so invariants hold at write time; reads are plain files. `opys verify`
 is the CI gate. Everything is configured by one `opys.toml` at the project root.
+No sprints; ownership only as opt-in config on statuses. Roles are plain names,
+and a document's optional owner override lasts for one status visit.
 
 The normative spec is [`skills/opys/references/format.md`](skills/opys/references/format.md).
 Read it before changing parsing, serialization or `verify`, and keep it in sync
@@ -26,6 +28,12 @@ A Cargo workspace of four crates, published together under one version:
 - **`opys-server`** — the always-on node behind `opys web`: HTTP/WebSocket API
   and the embedded Svelte web UI (`opys-server/ui/`).
 - **`opys`** — the binary that joins the CLI and `opys web`.
+- **`src/roles.rs`** — the only interpreter of role declarations, status
+  owners, the `owner` override and `escalate_to`. CLI, node and views ask its
+  helpers for effective owners; they never infer workers from status names.
+  `src/queue.rs` builds role queues from `next`'s selection, the shared ranking
+  and observation predicates, and verify findings. The node supplies its cached
+  findings; the CLI collects them fresh.
 
 `packages/blockdown` is the block editor the web UI uses, as a standalone
 Svelte package.
@@ -46,6 +54,7 @@ cargo test --all --all-features
 cargo clippy --workspace --all-targets --no-default-features -- -D warnings
 cargo test --all --no-default-features   # the no-Node path: builds without the UI
 scripts/sync-versions.sh --check
+msrv                               # Rust 1.88 in the devShell
 ```
 
 A fresh checkout does not compile with default features until the UI bundle

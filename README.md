@@ -13,8 +13,8 @@ required sections, and validation rules — are configured in one
 for in-flight work, deleted on `close`. Writes go through the CLI so invariants
 hold at write time and parallel agents don't collide; reads are plain `grep` +
 targeted file reads. A `verify` subcommand is the CI gate. It is deliberately
-*not* a task board — no sprints or assignees; priority exists only as an
-opt-in declared int field (`[types.X.fields.priority]`) that the web UI's
+*not* a task board — no sprints; ownership only as opt-in config on statuses.
+Priority exists only as an opt-in declared int field (`[types.X.fields.priority]`) that the web UI's
 board orders and reorders by, and that a type's `order_by` chain — what
 `opys list --sort` applies — leads with.
 
@@ -326,6 +326,61 @@ Every one of those moves was appended to the document's `history` map — an
 auto-maintained frontmatter map of UTC timestamp → status that nothing
 hand-edits. It is what `verify` re-checks each consecutive pair of against the
 graph, and what the time observations below are measured from.
+
+## Roles and queues
+
+Roles are plain names declared in `opys.toml`, with an optional description.
+A type can map each non-terminal status to one role, several roles (any may
+pick it), or `[]` (deliberately waits on nobody). Nothing changes until a
+project opts in:
+
+```toml
+escalate_to = "human"
+
+[roles.human]
+description = "Sign-offs and decisions"
+[roles.agent]
+
+[types.task.owners]
+todo = "agent"
+review = "human"
+
+[types.task.fields.owner]
+type = "role"
+```
+
+This extends a task type whose statuses are `todo`, `review`, and terminal
+`done`. With one task moved to review, the actual command output is:
+
+```text
+$ opys queue human
+human: 1 waiting
+
+task · review  (human)
+  TASK-0001  Review the release spec  since 2026-10-19
+$ opys list --waiting-on human --format ids
+TASK-0001
+```
+
+Set `OPYS_ROLE=agent` in a harness and start with `opys queue`; `--json`
+returns the stable `opys.queue/1` payload. Groups use the same pickable items
+and ranking as `opys next --status review --type task --role human`, and show
+blocked and orphaned documents separately. The escalation role also receives
+attention for orphans, time observations and verification findings. `-n`
+limits each group's items; attention and the distinct-document total remain
+complete.
+
+An optional `owner` role field overrides a document's status owners for one
+step. Every move to a different status clears it; `opys apply TASK-0001
+--status review --field owner=human` writes the override for the status it
+enters. A same-status `set-status` keeps it. Write overrides only with
+`apply` or the node's set-field action.
+
+The node's **Role queues** page merges matching role names across projects,
+shows attention first, and remembers the role chosen in this browser. Owners
+also appear on flow nodes and beside the document's status. The node serves
+identical per-project queue JSON at `/api/projects/{key}/queue/{role}` and
+cross-project views at `/api/roles` and `/api/roles/{role}`.
 
 ## The pick oracle (`opys next`)
 

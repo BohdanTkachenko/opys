@@ -12,6 +12,16 @@ exists; otherwise ignore it.
   permanent `feature` type plus ephemeral `task`/`bug`/`chore` types that are
   deleted on `close`. Durable knowledge → features; "what I'm doing right now" →
   a task/bug/chore.
+- **Roles are opt-in config.** No sprints; ownership only as opt-in config on
+  statuses. A role is a plain declared name, with no special human/agent kind.
+  When `OPYS_ROLE` is set, start with `opys queue`; `opys next --status S
+  --role R` selects pickable documents waiting on R, and `opys list --waiting-on
+  R --format ids` supports bulk writes. Never set or clear `owner` by hand: use
+  `opys apply --field owner=R` / `--remove-field owner`, or the node's
+  `set-field` action. Every move to a different status clears the override;
+  `apply --status S --field owner=R` writes it for the new visit, and a
+  same-status `set-status` keeps it. `escalate_to` adds intervention reasons to
+  its role's attention queue without changing ordinary ownership.
 - **Reads.** Never bulk-read `opys/`. Use `rg` by tag/status (or `opys list`),
   then open the 2–5 relevant files. There is no generated index.
 - **Writes go through the `opys` CLI** so invariants hold and parallel agents

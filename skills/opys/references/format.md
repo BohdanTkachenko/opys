@@ -155,6 +155,8 @@ sequence, byte-identically, and `OPYS_ID_SLOT` is not read.
 One config declares every document **type** and the rules over them. `opys config
 init` writes the opinionated default (a permanent `feature` type plus ephemeral
 `task`/`bug`/`chore`); `opys config validate` checks it.
+No sprints; ownership only as opt-in config on statuses. Roles and priority are
+both optional, and a project that declares no roles keeps its existing output.
 
 ```toml
 pad = 4                              # zero-padding width for the numeric id part
@@ -195,7 +197,7 @@ partial = { after = "90d", then = "planned" }   # `verify --fix` performs this
 partial = { limit = 8, then = "planned" }
 
 [types.feature.fields.risk]          # custom frontmatter fields (the closed schema)
-type = "enum"                        # string | list | bool | int | enum
+type = "enum"                        # string | list | bool | int | enum | role
 values = ["low", "high"]             # an enum constrains the value
 # pattern = '^JIRA-[0-9]+$'          # a string field may require a regex
 
@@ -231,6 +233,69 @@ assertion set for `[[rules]]` is `require_field`, `field_matches`,
 (whose terms are `{field}`, `{link}`, `{section}`, or `{tag}`), and
 `require_log_since_status` (see [Log sections](#log-sections)).
 `opys list --field <key>=<value>` filters by any custom field (see below).
+
+### Roles and effective owners (optional)
+
+Roles are plain names, with no kind, identity, flag or special literal name.
+Each `[roles.<name>]` accepts only an optional `description`; any other key is
+a TOML parse error (exit 2). Role names must match `^[a-z][a-z0-9-]*$`.
+
+```toml
+escalate_to = "human"                # optional; keep this top-level
+
+[roles.human]
+description = "Reviews and decisions"
+[roles.agent-codex]
+[roles.agent-claude]
+
+[types.task.owners]
+todo = "agent-codex"                 # strings normalize to one-element lists
+ready = ["agent-codex", "agent-claude"]
+review = "human"
+settled = []                        # intentionally waits on nobody
+
+[types.task.fields.owner]
+type = "role"                       # optional override for this status visit
+```
+
+This sketch assumes a task type with those four non-terminal statuses. A type
+without an `owners` table is unowned. Once the table is declared, including an
+explicitly empty table, it must cover **every non-terminal status**. An owner
+list means any listed role may take the document; its order is a hint for a
+runner, and opys never ranks by that order. A terminal status may not be a key:
+`close` deletes the document, leaving nothing that can wait there.
+
+`ProjectConfig::validate` collects every problem: a bad role name; an owners
+key outside the type's statuses or at a terminal status; an undeclared or
+duplicated role in an owners value; a non-terminal status missing from a
+declared map; an undeclared `escalate_to`; a `role` field with no roles declared;
+and a non-`role` field named `owner` on a type that declares `owners`. Messages
+name the type/key and the legal values. `[]` is valid coverage.
+
+A `role` field is a YAML string naming a declared role; `verify` collects a
+finding for an undeclared name or a wrong-shaped value. Any field may have this
+type, but **only** the field named `owner` changes ownership. A document's
+effective owners are its set, role-typed `owner` override, otherwise its type's
+owner list for its current status, otherwise nobody. It **waits on R** exactly
+when R is among those effective owners. A role field named `reviewer`, for
+example, is validated but does not route the document.
+
+Every move to a **different** status clears the previous visit's override:
+`set-status`, `apply --status`, `verify --fix` and the node's status action all
+use the same transition path. A same-status `set-status` keeps it and still
+appends history. `apply --status S --field owner=R` writes R for the **new**
+visit, restoring that explicitly supplied value before the target rules run.
+Thus a target `require_field = "owner"` can be satisfied atomically, while a
+bare move cannot carry the previous visit's override through the rule.
+`import` preserves the override it is given. Set or clear overrides through
+`apply` or the node's existing `set-field` action, never by hand.
+
+The top-level `escalate_to` points at the role whose queue adds **attention**
+for orphaned documents, time observations and verify findings. It changes no
+ordinary ownership, and the documents remain in their status groups. Without
+it, those diagnostics stay in their existing views. The engine's
+`src/roles.rs` is the single interpreter of roles, status owner maps, overrides
+and this escalation pointer; every CLI command and node view uses its helpers.
 
 ### `[git]` — reading branches (optional)
 
@@ -627,6 +692,7 @@ procedure, including the `created` fallback for documents git cannot answer for.
 | `bool` | `true` / `false` | the strings `"true"`/`"false"` |
 | `int` | an integer | floats, booleans |
 | `enum` | a string listed in the field's `values` | any string not in `values`, and non-strings |
+| `role` | a string naming a declared project role | undeclared names and non-strings |
 
 An `enum` field must declare a non-empty `values` array (verify errors on an
 empty one). Reserved keys (`id`, `status`, `tags`, `created`, `updated`,
@@ -651,10 +717,15 @@ opys list --status partial --field area=cli     # combine with status
 opys list --field tag-list=osc --format ids     # list-membership match
 opys list --blocked                             # something live still blocks it
 opys list --unblocked --format ids              # ready to pick up
+opys list --waiting-on human --format ids        # the declared role's documents
 opys list --sort --format ids                   # the type's order_by chain, not load order
 ```
 
 `opys list --type <name>` restricts the listing to one document type.
+`--waiting-on R` keeps documents whose effective owners include the declared
+role R. It combines with every other filter and `--format ids`; attention is
+not part of this filter. An undeclared role is a usage error (exit 2) listing
+the declared roles.
 `--blocked` / `--unblocked` filter on the derived blocked predicate (see
 **Blockers**); they answer opposite questions, so passing both is a usage error.
 `--sort` orders the listing by each type's `order_by` chain (see **Ordering**)
@@ -720,15 +791,19 @@ writes.
 
 ### The pick oracle (`opys next`)
 
-`opys next --status <s> [--type <t>] [-n N] [--json] [--explain [ID]]` answers
+`opys next --status <s> [--type <t>] [--role R] [-n N] [--json] [--explain [ID]]` answers
 one deterministic question: **given a status, which documents are pickable, best
 first**. It is a read — it never syncs, never writes, and exits `0` for every
 answer, an empty one included. It decides nothing about *who* picks the work up:
 concurrency, occupancy, affinity and budgets are policy for whatever wraps it.
+`--role R` narrows the oracle to documents whose effective owners include R;
+`--status` stays required. An undeclared role is a usage error (exit 2) listing
+the declared roles; the node maps that query error to 400.
 
-A document is **pickable** when all three hold:
+A document is **pickable** when all these hold:
 
 - it is at the queried status (and of the queried type, when one is given);
+- it waits on the queried role, when `--role` is given;
 - its type's `requires_link` is still satisfied — see **orphaned** below;
 - nothing live blocks it (the derived predicate under **Blocked is derived**).
 
@@ -776,7 +851,7 @@ document is refused the same way, as `show` refuses one. An oracle that answers
 a status that *exists* is a perfectly good answer.
 
 `--explain` prints one line per listed document after the table, and
-`--explain <ID>` explains that one — the five ways out, in the precedence they
+`--explain <ID>` explains that one — the ways out, in the precedence they
 are decided in (the type line can only appear under `--type`, since a document's
 type is its id prefix):
 
@@ -784,6 +859,7 @@ type is its id prefix):
 TASK-0002: listed 1 of 3 — effective priority 1 (its own 30, inherited), blocks 1 live document
 NOTE-0005: not listed — its type is note, not task
 TASK-0009: not listed — it is at doing, not todo
+TASK-0010: not listed — waits on agent-codex, not human
 TASK-0007: not listed — orphaned: FEAT-0006 is at wontfix, which releases what it blocks; 0/1 required feature links still hold
 TASK-0008: not listed — blocked by TASK-0004
 TASK-0003: not listed — pickable but ordered 2 of 3, behind the 1 listed (limit 1)
@@ -835,8 +911,11 @@ an item's `type` is `null` when its id prefix matches no configured type; and
 integer `priority` and nothing in its `blocks` closure does — the ordinary case,
 since priority is opt-in. A consumer that types those as required numbers or
 strings breaks on the first unprioritised document. Everything else is always
-present: `tags` and `observations` are arrays (empty, never absent), and
-`explain` is the one *omitted* key — it appears only under `--explain <ID>`. So
+present, with three additive exceptions: `role` is omitted unless `--role` was
+given, each item's `owners` is omitted when it has no effective owners, and
+`explain` appears only under `--explain <ID>`. `tags` and `observations` remain
+arrays (empty, never absent). A project without roles therefore gets the same
+bytes as before. So
 the common default-invocation shape is:
 
 ```json
@@ -895,15 +974,160 @@ With `--explain` and no ID the JSON is unchanged (the items already carry
 `--explain <ID>` adds one top-level `explain` object tagged by `reason`
 (`listed`, `other-type`, `other-status`, `orphaned`, `blocked`, `behind`),
 carrying the same `message` the human output prints.
+With `--role`, `other-role` is checked after type and status and before
+orphaned. It carries `owners` when non-empty and the message `waits on X, not
+R` (`nobody` when the effective owner list is empty, with `owners` omitted).
 
 The node serves the same payload from the same function at
-`GET /api/projects/{key}/next?status=&type=&n=`, where `{key}` is a project key
+`GET /api/projects/{key}/next?status=&type=&role=&n=`, where `{key}` is a project key
 from `/api/projects`. A project is a repository and its worktrees, and the answer
 comes from its **main** worktree, because main is the truth for pickability.
 Its sibling `GET /api/projects/{key}/flow?n=` draws the whole lifecycle — one
 node per distinct status, edges from the union of every type's `transitions`,
 and each node's top `n` documents (default 5) taken from this same function, so
 the drawing and the oracle cannot disagree.
+
+### Role queues (`opys queue`)
+
+`opys queue [R] [--type T] [-n N] [--json]` lists everything waiting on one
+role in this project. R comes from the argument, otherwise `OPYS_ROLE`. With
+neither, or with an undeclared role, the command exits 2 and lists the declared
+roles. A bad `--type` is also a usage error. It is a read: no sync, flush or git
+operation, and exit 0 for every valid answer, empty included. `-n` defaults to
+10, limits the **pickable items of each group**, and never truncates attention,
+blocked documents or orphans.
+
+There is one group per `(type, status)` owned by R, in **type declaration
+order**, then each type's `statuses` order. Every owned group appears in JSON
+even when empty. A document whose override names R creates a group at its
+current status even when R does not own that status; that group has
+`owned: false`. The override removes the document from its status owners'
+queues. A group's `owners` is the configured status owner list, not the
+overrides of its documents.
+Malformed documents with role overrides still have a place: a status absent
+from the type's declared list is appended after its declared statuses, in
+corpus order, and a missing status uses a blank status group. Their verify
+findings can also appear in escalation attention.
+
+The partition and ranking are `next`'s: orphaned first, then live-blocked, then
+pickable. An owned group's pickable `items` have exactly the `next --status S
+--type T --role R` fields and order, extended with `since` and the optional
+override mark. Group `total` counts all pickable documents before its limit.
+The text format omits empty groups; when the overall `total` is zero it starts
+with `R: nothing waiting` (a group can still show blocked/orphaned documents).
+
+Only the `escalate_to` role receives attention. Each document appears once,
+with every reason it has: `orphaned` with the oracle's reason; `stuck` or
+`overflowed` with `observe`'s exact verify wording; and one `problem` reason
+for each verify finding carrying its id. Documents retain their ordinary
+groups too. Findings without a document id become `project_problems` messages.
+Attention is ordered by numeric id. `--type` narrows the documents considered,
+while project-wide findings remain project-wide. The overall `total` counts
+**distinct** documents across all groups' pickable documents before the limit
+and the attention list; blocked and orphaned group members alone do not
+increase it.
+
+`--json` prints the stable `opys.queue/1` payload. This example shows the full
+item shape; arrays that have no entries remain arrays:
+
+```json
+{
+  "schema": "opys.queue/1",
+  "role": "human",
+  "type": null,
+  "limit": 10,
+  "total": 1,
+  "groups": [
+    {
+      "type": "task",
+      "status": "review",
+      "owners": ["human"],
+      "owned": true,
+      "total": 1,
+      "items": [
+        {
+          "id": "TASK-0001",
+          "type": "task",
+          "title": "Review the result",
+          "status": "review",
+          "path": "opys/TASK-0001.md",
+          "tags": [],
+          "priority": null,
+          "effective_priority": null,
+          "blocks": 0,
+          "position": 1,
+          "observations": [],
+          "owners": ["human"],
+          "since": "2026-01-02T03:04:05.000000Z",
+          "owner_override": true
+        }
+      ],
+      "blocked": [],
+      "orphaned": []
+    }
+  ],
+  "attention": [],
+  "project_problems": []
+}
+```
+
+The other entry shapes are:
+
+| Array | Entry fields |
+|---|---|
+| `groups[].blocked` | `id`, `title`, project-relative `path`, and `blocked_by` (live blocker ids) |
+| `groups[].orphaned` | The oracle's orphan: `id`, nullable `type`, `title`, `status`, project-relative `path`, `reason` |
+| `attention` | `id`, `type` when recognized, `title`, `status`, project-relative `path`, and `reasons: [{kind, message}]` |
+| `project_problems` | Message strings from findings with no document id |
+
+Top-level `type` is null unless `--type` was given. Next-item nullability is
+unchanged. A group's or item's empty `owners` is omitted. Item `since` is the
+instant of its last history entry, falling back to `created`; it is omitted
+when both are absent. `owner_override` is present only when true, including
+when an override happens to name an ordinary status owner. No comment-thread
+placeholder is reserved in this schema.
+
+### Node role endpoints and views
+
+The per-project endpoint is `GET /api/projects/{key}/queue/{role}?type=&n=`.
+It resolves the project's primary corpus with `api::primary_cid`, like
+`next` and `flow`, and returns the same bytes as `opys queue R --json` in that
+corpus with the same query and clock. A role the project does not declare is
+a 404 naming the project and role. The corpus actor supplies its **cached**
+verify findings to the shared queue builder; the CLI collects findings fresh.
+
+`GET /api/roles` returns `opys.roles/1`:
+
+```json
+{
+  "schema": "opys.roles/1",
+  "roles": [
+    {
+      "name": "human",
+      "total": 1,
+      "projects": [
+        {"key": "project-a", "label": "Project A", "description": "Reviews", "total": 1}
+      ]
+    }
+  ]
+}
+```
+
+Roles merge by **exact name** and sort by name. Each total sums the role's
+per-project totals. A missing description is omitted. A project that could
+not be asked appears in `errors: [{key, label, error}]`; failure is never an
+invented zero. Empty `errors` is omitted. `GET /api/roles/{role}` returns `opys.role/1`, with
+`{schema, role, projects}`. Each project entry is either `{key, label, queue}`
+or `{key, label, error}`; projects that do not declare the role are omitted,
+and the rest retain the sidebar's project order.
+
+The UI opens a role at `#/role/<name>`; `#/role` uses the remembered role or
+shows a picker. It refetches on `corpus-reloaded` for primary corpora. Flow
+nodes carry `owners`: the union of status owners across types in declaration
+order, with duplicates removed and the key omitted when empty. A document
+view carries effective `owners` and a true-only `owner_override`; role fields
+offer the declared role names through the existing set-field action. No new
+write action, identity or event is introduced.
 
 ## Blockers
 
@@ -1560,6 +1784,13 @@ the corpus at that moment, so both steps before it are already visible:
   this very invocation appended — so a move into a status guarded by it is legal
   in one command, where a bare `set-status` is refused for want of a checkpoint.
 
+The `owner` override is the one visit-scoped field: a transition clears the
+previous value. When this invocation also sets `owner`, its parsed value is
+written back for the target visit **before** those target rules run. A bare
+transition therefore cannot reuse the prior override to satisfy an
+owner-required target, while `--status S --field owner=R` can satisfy it in the
+same atomic write.
+
 **The verify gate is taken once around the whole batch**, not once per field.
 The corpus's findings are recorded before the first step and compared after the
 last, so every part of the batch is judged against the document the batch
@@ -1673,6 +1904,11 @@ currently holds it (`claimed_by`), written atomically with the transition that
 takes it (see [Composite writes](#composite-writes-opys-apply)). That is a
 lock, not an assignment: it says who is working on a throwaway document right
 now, and it goes away with the document.
+
+A project may also declare a `role` field named `owner` on any type. This is a
+frontmatter override for one status visit, cleared by the next transition,
+never a standing assignee or prose metadata (see [Roles and effective
+owners](#roles-and-effective-owners-optional)).
 
 Implementation logs, task checklists, and branch/PR links also do not belong
 here — they go in an ephemeral document (a `task`/`bug`/`chore`), which is

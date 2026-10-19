@@ -9,9 +9,9 @@ A version-controlled inventory of typed markdown documents — what a product do
 (permanent `feature` documents and their test coverage) and the in-flight work
 changing it (ephemeral `task`/`bug`/`chore` documents) — one markdown file per
 item, managed by the `opys` CLI, verified in CI. Document types are configured in
-`opys.toml`; projects add their own. Deliberately not a task board (no
-sprints or assignees; a `priority` int field is opt-in config, lower = higher,
-and `list --sort` orders by the type's `order_by` chain over it).
+`opys.toml`; projects add their own. No sprints; ownership only as opt-in config
+on statuses. A `priority` int field is opt-in config, lower = higher,
+and `list --sort` orders by the type's `order_by` chain over it.
 
 Read `references/format.md` before authoring or editing documents or the
 `opys.toml` config — it is the normative file-format spec and design rationale.
@@ -76,8 +76,9 @@ its ID prefix.
 | `config init` / `config validate` | generate / check the universal `opys.toml` |
 | `new --type T --title … [--tags a,b] [--features F1,F2] [--reason R] [--field k=v]` | create a doc of type `T` with the next ID, at the type's initial status — there is no `--status`, `import` is the seam that seeds elsewhere (`--type` defaults to `feature`; auto-syncs) |
 | `import --type T FILE.jsonl` | bulk-create docs of type `T` from JSONL (one ID block, one sync, transactional) |
-| `show ID [--refs]` / `list [--type T] [--tag T] [--status S] [--field k=v]… [--blocked\|--unblocked] [--sort] [--format table\|ids\|paths]` | retrieval; `--field` filters by any custom field (repeatable, ANDed); `--blocked`/`--unblocked` filter on the derived blocked predicate (see `block` below); `--sort` orders by the type's `order_by` chain — effective priority (transitive over live `blocks`, unprioritised last), then blocks count, then id — grouped by type, in config declaration order; `show --refs` appends code mentions of the id (per `[file_refs]`) |
-| `next --status S [--type T] [-n N] [--json] [--explain [ID]]` | the pick oracle: the documents at `S` that are pickable — nothing live blocking them, their type's `requires_link` still satisfied by targets that have not released — ordered by the type's `order_by` chain, the same ranking `list --sort` uses. A task under a `wontfix` (or shipped) feature is reported under `orphaned` with the reason, not dropped. `--explain` says why each one was listed, and `--explain ID` why a named one was not (blocked / other status / other type / orphaned / behind the limit). `--json` is a stable payload (`schema: "opys.next/1"`) carrying each item's priority, effective priority, blocks count, position and time observations. A read: exit 0 for every answer, an empty one included — but a `--type` no type declares, a status the named type does not declare (or, with no `--type`, that no type declares), and an `--explain` id nothing answers to are usage errors (exit 2) |
+| `show ID [--refs]` / `list [--type T] [--tag T] [--status S] [--field k=v]… [--blocked\|--unblocked] [--sort] [--waiting-on R] [--format table\|ids\|paths]` | retrieval; `--field` filters by any custom field (repeatable, ANDed); `--blocked`/`--unblocked` filter on the derived blocked predicate (see `block` below); `--sort` orders by the type's `order_by` chain — effective priority (transitive over live `blocks`, unprioritised last), then blocks count, then id — grouped by type, in config declaration order; `show --refs` appends code mentions of the id (per `[file_refs]`) |
+| `next --status S [--type T] [--role R] [-n N] [--json] [--explain [ID]]` | the pick oracle: the documents at `S` that are pickable — nothing live blocking them, their type's `requires_link` still satisfied by targets that have not released — ordered by the type's `order_by` chain, the same ranking `list --sort` uses. A task under a `wontfix` (or shipped) feature is reported under `orphaned` with the reason, not dropped. `--explain` says why each one was listed, and `--explain ID` why a named one was not (blocked / other status / other type / orphaned / behind the limit). `--json` is a stable payload (`schema: "opys.next/1"`) carrying each item's priority, effective priority, blocks count, position and time observations. A read: exit 0 for every answer, an empty one included — but a `--type` no type declares, a status the named type does not declare (or, with no `--type`, that no type declares), and an `--explain` id nothing answers to are usage errors (exit 2) |
+| `queue [R] [--type T] [-n N] [--json]` | everything waiting on a declared role (argument, else `OPYS_ROLE`): status groups reuse `next`'s pickable/blocked/orphaned partition, and the configured `escalate_to` role also receives attention with orphan, time-observation and verify reasons. `-n` limits each group, never attention; JSON is `opys.queue/1`. Read-only, exit 0 even when empty; a missing or undeclared role exits 2 and lists the legal roles |
 | `set-status IDS… S [--reason R]` | guarded transition against the type's statuses, its declared `[transitions]` edges (when it declares any — the refusal names the legal targets), its `max_visits` budget for the target status (the refusal names the configured `then`) and its rules; a terminal status is reached only via `close`. `IDS` is an id list (see below) |
 | `tag IDS… --add a,b --remove c` | tag maintenance; `IDS` is an id list |
 | `log ID "TEXT"\|- [--section H]` | append a dated entry (`- <UTC ts> text`) to the type's `kind = "log"` section; `-` reads the entry from stdin (continuation lines indent two spaces). Takes **one** id — the second positional is the text. A missing-but-declared section is created; a type with none, or with two and no `--section`, exits 2 |
@@ -110,6 +111,36 @@ empty selection exits 2 (`expected at least one id`) without writing.
 `log` is the exception — one id, because its `-` is the entry text. `apply`
 batches on a second axis as well: several *actions* on one document, likewise
 all-or-nothing.
+
+## Roles and queues
+
+Roles are plain project-declared names under `[roles.<name>]`, optionally with
+`description`. A type opts in through `[types.<name>.owners]`, mapping every
+non-terminal status to a role, a list of roles (any may take it), or `[]`
+(intentionally nobody). `config validate` checks the map and its declared roles.
+No name has special standing, and a project that declares no roles keeps its
+existing output unchanged.
+
+When `OPYS_ROLE` is set, start with `opys queue`. To pick within a status use
+`opys next --status S --role R`; to filter documents for a pipeline use
+`opys list --waiting-on R --format ids`. These read the same effective owners:
+a set, role-typed `owner` field wins over the status's owner list.
+
+Never set or clear `owner` by hand. Use `opys apply ID --field owner=R`,
+`opys apply ID --remove-field owner`, or the node's `set-field` action.
+Every move to a different status clears the previous visit's override, through
+`set-status`, `apply`, `verify --fix` and the node alike. A same-status
+`set-status` keeps it. To hand off with a new override atomically, use
+`opys apply ID --status S --field owner=R`; the target rules see that new owner.
+`import` preserves the override it is given.
+
+The optional top-level `escalate_to` names the role whose queue adds attention
+for orphaned documents, time observations and verify findings. Those documents
+also remain in their ordinary status groups. The node merges queues by exact
+role name across projects at `#/role`, so a runner can use the CLI and a person
+can use the same role's page. This stores no identity, model choice or
+notification policy. See the normative format for `opys.queue/1` and the node's
+role endpoints.
 
 ## Code references to IDs
 
@@ -159,7 +190,8 @@ rules.
 
 ## Workflow: implementing a feature (for coding agents)
 
-1. Locate the feature (`opys list` / `rg` by tag or status), read its file fully.
+1. When `OPYS_ROLE` is set, start with `opys queue`. Locate the feature
+   (`opys list` / `rg` by tag or status), read its file fully.
 2. Implement. Add tests.
 3. In the test plan, check the covered items and append backticked test
    references in the shape the section's check expects — by default
@@ -175,7 +207,8 @@ rules.
 A work item is your scratchpad for one change — a file, so it survives context
 resets and is greppable, deleted when you finish.
 
-1. Identify the feature(s) you will change; read their files.
+1. When `OPYS_ROLE` is set, start with `opys queue`. Identify the feature(s)
+   you will change; read their files.
 2. `opys new --type bug --title "…" --features FEAT-0001` (or `--type task`/
    `chore`). This scaffolds the type's required sections (`## Tasks` / `## Progress`,
    plus `## Reproduction` for a bug) and links the feature(s); the CLI rejects a

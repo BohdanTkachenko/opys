@@ -39,6 +39,14 @@ pub const DEFAULT_OPYS_CONFIG: &str = r##"# opys.toml — the opys document-inve
 base = "opys"                        # inventory dir (relative to this file)
 pad = 4                              # zero-padding width for the numeric id part
 
+# Optional role queues (disabled). No sprints; ownership only as opt-in config
+# on statuses. Keep escalate_to at top level, before any [table]. Then enable
+# the matching task owners/owner example below. Role names have no special kind.
+# escalate_to = "human"
+# [roles.human]
+# description = "Reviews and decisions"
+# [roles.agent-codex]
+
 # Interleaved ids for multi-branch work: with a modulus M each allocator owns a
 # slot in 0..M (OPYS_ID_SLOT, else a stable hash of user@host) and draws only
 # numbers congruent to it, so branches never collide. Absent: dense sequence.
@@ -162,6 +170,18 @@ todo        = ["in-progress"]
 in-progress = ["review", "todo"]
 review      = ["done", "in-progress", "user-review"]
 user-review = ["done", "in-progress"]
+
+# Optional ownership covers every non-terminal status; [] means nobody. A list
+# means any named role may take the item, preserving a runner's preference order.
+# [types.task.owners]
+# todo = "agent-codex"
+# in-progress = "agent-codex"
+# review = ["human", "agent-codex"]
+# user-review = "human"
+# [types.task.fields.owner]
+# type = "role"                      # optional, for one status visit only
+# A move clears owner; `apply --status S --field owner=R` sets the new visit's
+# override. `opys queue human` and `next --status review --role human` read it.
 
 # Who currently holds the document, for a project whose work is picked up by
 # more than one agent. An ordinary declared field: opys stores the name and
