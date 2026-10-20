@@ -139,7 +139,12 @@ pub struct Corpus<'a> {
 impl<'a> Corpus<'a> {
     /// Index documents the caller has already loaded.
     pub fn of_docs(pcfg: &'a ProjectConfig, docs: &'a [Doc]) -> Self {
-        let refs_corpus = refs::Corpus::of_docs(pcfg, docs);
+        Self::with_truth(pcfg, docs, docs)
+    }
+
+    /// Rank effective copies while release decisions still resolve on main.
+    pub fn with_truth(pcfg: &'a ProjectConfig, docs: &'a [Doc], main: &'a [Doc]) -> Self {
+        let refs_corpus = refs::Corpus::of_docs(pcfg, main);
         let by_id: HashMap<&'a str, &'a Doc> =
             docs.iter().filter_map(|d| Some((d.id()?, d))).collect();
         // One parse per document, before any walking: `live_blocks` only keeps

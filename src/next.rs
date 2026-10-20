@@ -28,13 +28,12 @@
 //!   transitive `blocks` closure, and that chain can run through a document the
 //!   status or type filter left out.
 //!
-//! - **Pickability is evaluated on the corpus the command runs in**, which is
-//!   main (ADR-0053). A blocker closed on a branch releases nothing until the
-//!   merge lands, and this module never opens git to find out otherwise.
+//! - **Main supplies release decisions.** Declared work branches supply stage
+//!   copies through [`work::effective`]; a blocker closed on a branch still
+//!   releases nothing until the merge lands. With no declarations no git is read.
 //!
-//! Nothing here writes, loads, or syncs: [`pick`] is a pure function of the
-//! documents it is handed, which is what lets the CLI and the node's endpoint
-//! serialize the very same [`PickResult`] and never drift.
+//! Nothing here writes or syncs. [`pick_effective`] and [`explain_effective`]
+//! share a caller-supplied snapshot; [`pick`] and [`explain`] resolve one first.
 
 use std::collections::HashMap;
 
@@ -49,6 +48,7 @@ use crate::project::Project;
 use crate::project_config::ProjectConfig;
 use crate::refs;
 use crate::roles;
+use crate::work;
 
 /// The value of the payload's `schema` key: the contract a consumer pins.
 ///
@@ -159,6 +159,10 @@ pub struct Item {
     pub observations: Vec<Observation>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub owners: Vec<String>,
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claim: Option<work::Claim>,
 }
 
 /// A document at the queried status that will not become pickable on its own:
@@ -174,6 +178,8 @@ pub struct Orphan {
     /// Why, naming each target and how it failed — released at a status its type
     /// declares in `releases_blocks`, or resolving to no document at all.
     pub reason: String,
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
 }
 
 /// The answer: what to pick, what is stranded, and — with `--explain <ID>` — why
@@ -196,6 +202,9 @@ pub struct PickResult {
     /// Only present when the caller named a document with `--explain <ID>`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub explain: Option<Explanation>,
+    /// Declared occupancy and claims, including for bare `--explain`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unavailable: Vec<Explanation>,
 }
 
 /// Why one named document is, or is not, on the list.
@@ -216,6 +225,15 @@ pub struct Explanation {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "reason", rename_all = "kebab-case")]
 pub enum Why {
+    Occupied {
+        #[serde(rename = "ref")]
+        reference: String,
+    },
+    Claimed {
+        claim: work::Claim,
+        #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+        reference: Option<String>,
+    },
     /// Not of the queried type.
     OtherType {
         #[serde(rename = "type")]
@@ -244,6 +262,7 @@ pub(crate) struct Selection<'a> {
     pub(crate) corpus: order::Corpus<'a>,
     pub(crate) pickable: Vec<&'a Doc>,
     pub(crate) blocked: Vec<&'a Doc>,
+    pub(crate) claimed: Vec<&'a Doc>,
     pub(crate) orphaned: Vec<&'a Doc>,
     pub(crate) reasons: HashMap<String, String>,
 }
@@ -252,8 +271,14 @@ pub(crate) struct Selection<'a> {
 ///
 /// The ordering corpus is built over `docs` entire — see the module docs — and
 /// the filter runs after it.
-pub(crate) fn select<'a>(pcfg: &'a ProjectConfig, docs: &'a [Doc], q: &PickQuery) -> Selection<'a> {
-    let corpus = order::Corpus::of_docs(pcfg, docs);
+pub(crate) fn select<'a>(
+    pcfg: &'a ProjectConfig,
+    docs: &'a [Doc],
+    main: &'a [Doc],
+    q: &PickQuery,
+) -> Selection<'a> {
+    let corpus = order::Corpus::with_truth(pcfg, docs, main);
+    let mut claimed = Vec::new();
     let mut pickable: Vec<&Doc> = Vec::new();
     let mut blocked: Vec<&Doc> = Vec::new();
     let mut orphaned: Vec<&Doc> = Vec::new();
@@ -261,6 +286,14 @@ pub(crate) fn select<'a>(pcfg: &'a ProjectConfig, docs: &'a [Doc], q: &PickQuery
     for doc in docs {
         let Some(id) = doc.id() else { continue };
         if !candidate(pcfg, doc, q) {
+            continue;
+        }
+        if pcfg
+            .type_name_for_id(id)
+            .and_then(|n| pcfg.types[n].claim_field.as_deref())
+            .is_some_and(|field| doc.frontmatter.contains_key(field))
+        {
+            claimed.push(doc);
             continue;
         }
         if let Some(reason) = orphan_reason(pcfg, doc, corpus.blockers()) {
@@ -277,10 +310,12 @@ pub(crate) fn select<'a>(pcfg: &'a ProjectConfig, docs: &'a [Doc], q: &PickQuery
     let pickable = corpus.ranked(&pickable);
     let orphaned = corpus.ranked(&orphaned);
     let blocked = corpus.ranked(&blocked);
+    let claimed = corpus.ranked(&claimed);
     Selection {
         corpus,
         pickable,
         blocked,
+        claimed,
         orphaned,
         reasons,
     }
@@ -361,18 +396,33 @@ pub fn orphan_reason(
 
 /// The pickable documents at `q.status`, best first, plus the orphans.
 ///
-/// Pure: it reads the documents it is handed and nothing else. `now` is the
-/// instant observations are measured against — [`observe::now`] at both call
-/// sites, and a pinned value in tests.
+/// Resolves declared work copies once. `now` is the instant observations are
+/// measured against; projects without declarations never open git.
 pub fn pick(prj: &Project, docs: &[Doc], q: &PickQuery, now: OffsetDateTime) -> PickResult {
-    let sel = select(&prj.pcfg, docs, q);
+    let view = work::effective(prj, docs, now);
+    pick_effective(prj, docs, &view, q, now)
+}
+
+pub fn pick_effective(
+    prj: &Project,
+    main: &[Doc],
+    view: &work::Effective<'_>,
+    q: &PickQuery,
+    now: OffsetDateTime,
+) -> PickResult {
+    let docs = view.docs.as_ref();
+    let sel = select(&prj.pcfg, docs, main, q);
     let total = sel.pickable.len();
     let items = sel
         .pickable
         .iter()
         .take(q.limit)
         .enumerate()
-        .map(|(i, doc)| item(prj, &sel.corpus, doc, i + 1, now))
+        .map(|(i, doc)| {
+            let mut item = item(prj, &sel.corpus, doc, i + 1, now);
+            item.reference = view.reference(doc);
+            item
+        })
         .collect();
     let orphaned = sel
         .orphaned
@@ -386,6 +436,7 @@ pub fn pick(prj: &Project, docs: &[Doc], q: &PickQuery, now: OffsetDateTime) -> 
                 title: doc.title.clone(),
                 status: doc.status().unwrap_or_default().to_string(),
                 path: rel_path(prj, doc),
+                reference: view.reference(doc),
             }
         })
         .collect();
@@ -399,6 +450,20 @@ pub fn pick(prj: &Project, docs: &[Doc], q: &PickQuery, now: OffsetDateTime) -> 
         items,
         orphaned,
         explain: None,
+        unavailable: main
+            .iter()
+            .zip(docs)
+            .filter_map(|(doc, copy)| {
+                let id = doc.id()?;
+                let occupied = view.refs.contains_key(id) && candidate(&prj.pcfg, doc, q);
+                let claimed =
+                    candidate(&prj.pcfg, copy, q) && work::claim(&prj.pcfg, copy, now).is_some();
+                (occupied || claimed)
+                    .then(|| explain_effective(prj, main, view, q, id, now).ok())
+                    .flatten()
+                    .filter(|e| !e.listed)
+            })
+            .collect(),
     }
 }
 
@@ -433,6 +498,8 @@ pub(crate) fn item(
         position,
         observations,
         owners: roles::effective_owners(&prj.pcfg, doc),
+        reference: None,
+        claim: work::claim(&prj.pcfg, doc, now),
     }
 }
 
@@ -462,6 +529,19 @@ pub fn explain(
     id: &str,
     now: OffsetDateTime,
 ) -> Result<Explanation> {
+    let view = work::effective(prj, docs, now);
+    explain_effective(prj, docs, &view, q, id, now)
+}
+
+pub fn explain_effective(
+    prj: &Project,
+    main: &[Doc],
+    view: &work::Effective<'_>,
+    q: &PickQuery,
+    id: &str,
+    now: OffsetDateTime,
+) -> Result<Explanation> {
+    let docs = view.docs.as_ref();
     let doc = prj.find(docs, id)?;
     let pcfg = &prj.pcfg;
     // The precedence, in order. Type and status first: neither is a judgement
@@ -480,6 +560,19 @@ pub fn explain(
     }
     let status = doc.status().unwrap_or_default().to_string();
     if status != q.status {
+        if let Some(reference) = view.refs.get(id).filter(|_| {
+            main.iter()
+                .any(|d| d.id() == Some(id) && d.status() == Some(q.status.as_str()))
+        }) {
+            return Ok(Explanation {
+                id: id.to_string(),
+                listed: false,
+                message: format!("{id}: not listed — occupied by {reference}"),
+                why: Why::Occupied {
+                    reference: reference.clone(),
+                },
+            });
+        }
         return Ok(Explanation {
             id: id.to_string(),
             listed: false,
@@ -503,7 +596,18 @@ pub fn explain(
             });
         }
     }
-    let sel = select(pcfg, docs, q);
+    if let Some(claim) = work::claim(pcfg, doc, now) {
+        return Ok(Explanation {
+            id: id.to_string(),
+            listed: false,
+            message: format!("{id}: not listed — claimed by {}", claim.holder),
+            why: Why::Claimed {
+                claim,
+                reference: view.reference(doc),
+            },
+        });
+    }
+    let sel = select(pcfg, docs, main, q);
     if let Some(detail) = sel.reasons.get(id) {
         return Ok(Explanation {
             id: id.to_string(),

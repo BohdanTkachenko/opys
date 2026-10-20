@@ -542,6 +542,87 @@ pub fn survey(prj: &Project, on_main: &BTreeMap<String, String>) -> Survey {
     survey_with(prj, |_, _| Some(on_main.clone()))
 }
 
+/// Work branches stop being open when their tip is reachable from main, even
+/// if the orchestrator keeps the ref after merging. Reuse the ordinary survey
+/// and walk commit objects in process; never infer a merge from equal statuses.
+pub fn work_survey(prj: &Project, on_main: &BTreeMap<String, String>) -> Survey {
+    let mut out = survey(prj, on_main);
+    if out.refs.is_empty() {
+        return out;
+    }
+    let merged = (|| -> anyhow::Result<BTreeSet<String>> {
+        let Some(repo) = open(prj)? else {
+            return Ok(BTreeSet::new());
+        };
+        let Some((_, main)) = truth_branch(&repo, &prj.pcfg.git) else {
+            return Ok(BTreeSet::new());
+        };
+        let mut commits = BTreeSet::new();
+        for info in repo.rev_walk([main]).all()? {
+            commits.insert(info?.id.to_hex().to_string());
+        }
+        Ok(commits)
+    })();
+    match merged {
+        Ok(commits) => out.refs.retain(|s| !commits.contains(&s.reference.commit)),
+        Err(e) => out
+            .notices
+            .push(format!("git: checking merged work branches: {e}")),
+    }
+    // The normal reader skips equal blobs. A declared branch still needs its
+    // exact copy for shape checks: the caller's main may have uncommitted edits.
+    // Read only a matching declaration's missing blob, through the same parser.
+    if let Ok(Some(repo)) = open(prj) {
+        let base = base_components(prj, &repo);
+        for state in &mut out.refs {
+            let Ok(changed) = &mut state.changed else {
+                continue;
+            };
+            for id in on_main.keys() {
+                let Some(t) = prj.pcfg.type_name_for_id(id).map(|n| &prj.pcfg.types[n]) else {
+                    continue;
+                };
+                if !t
+                    .work_branches
+                    .values()
+                    .any(|w| crate::work::matches_ref(&state.reference, &w.reference, id))
+                    || changed.docs.iter().any(|d| d.id() == Some(id))
+                    || changed.deleted.contains(id)
+                {
+                    continue;
+                }
+                let read = (|| -> anyhow::Result<Option<Doc>> {
+                    let oid = ObjectId::from_hex(state.reference.commit.as_bytes())?;
+                    let basename = format!("{id}.md");
+                    let Some(blob) = find_blob(
+                        &repo,
+                        &repo.find_commit(oid)?.tree()?,
+                        &base,
+                        basename.as_bytes().as_bstr(),
+                    )?
+                    else {
+                        return Ok(None);
+                    };
+                    let blob = repo.find_object(blob)?.into_blob();
+                    Ok(Doc::parse(
+                        prj.base.join(basename),
+                        &String::from_utf8_lossy(&blob.data),
+                    )
+                    .ok())
+                })();
+                match read {
+                    Ok(Some(doc)) => changed.docs.push(doc),
+                    Ok(None) => {}
+                    Err(e) => out
+                        .notices
+                        .push(format!("git: {}: {id}: {e}", state.reference.label)),
+                }
+            }
+        }
+    }
+    out
+}
+
 /// [`survey`] for a caller that cannot say what main *is* until it has been
 /// told which branch is truth and where the repository is checked out.
 ///

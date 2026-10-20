@@ -31,7 +31,11 @@ pub fn run(ctx: &Ctx, q: &PickQuery, json: bool, explain: Option<Option<String>>
     }
     let docs: Vec<Doc> = store.all_docs()?.into_iter().map(|(_, d)| d).collect();
     let now = observe::now();
-    let mut result = next::pick(&prj, &docs, q, now);
+    let view = crate::work::effective(&prj, &docs, now);
+    for notice in &view.notices {
+        eprintln!("warning: {notice}");
+    }
+    let mut result = next::pick_effective(&prj, &docs, &view, q, now);
 
     // The per-item lines only exist for a human: with `--json` the item already
     // carries `priority`, `effective_priority`, `blocks` and `position`, so
@@ -45,10 +49,11 @@ pub fn run(ctx: &Ctx, q: &PickQuery, json: bool, explain: Option<Option<String>>
                 .items
                 .iter()
                 .map(|i| next::listed_line(i, result.total))
+                .chain(result.unavailable.iter().map(|e| e.message.clone()))
                 .collect();
         }
         Some(Some(id)) => {
-            let e = next::explain(&prj, &docs, q, id, now)?;
+            let e = next::explain_effective(&prj, &docs, &view, q, id, now)?;
             lines.push(e.message.clone());
             result.explain = Some(e);
         }
@@ -78,6 +83,7 @@ pub fn run(ctx: &Ctx, q: &PickQuery, json: bool, explain: Option<Option<String>>
                 i.observations
                     .iter()
                     .map(ToString::to_string)
+                    .chain(i.reference.as_ref().map(|r| format!("ref {r}")))
                     .collect::<Vec<_>>()
                     .join("; "),
             ]

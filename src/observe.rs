@@ -121,6 +121,8 @@ pub fn parse_duration(s: &str) -> Option<Duration> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Kind {
+    /// Shape or claim-age observation on a declared work copy; never auto-fixed.
+    WorkBranch { message: String },
     /// The document has held `status` since `since` (a history key), longer than
     /// the type's `ttl` of `after` (the configured spelling, echoed verbatim so
     /// the message never renders a duration back differently than it was
@@ -159,6 +161,7 @@ impl fmt::Display for Observation {
             None => "no ttl target, nothing to fix".to_string(),
         };
         match &self.kind {
+            Kind::WorkBranch { message } => write!(f, "{}: {message}", self.id),
             Kind::Stuck {
                 status,
                 since,
@@ -272,7 +275,7 @@ pub fn visits(doc: &Doc, status: &str) -> usize {
 /// document, an overflow is listed before a stuck — the order `apply_fixes`
 /// resolves them in.
 pub fn observations(prj: &Project, docs: &[Doc], now: OffsetDateTime) -> Vec<Observation> {
-    let mut out = Vec::new();
+    let mut out = crate::work::effective(prj, docs, now).observations;
     for doc in docs {
         let Some(id) = doc.id() else { continue };
         let Some(tname) = prj.pcfg.type_name_for_id(id) else {
@@ -337,6 +340,7 @@ pub fn apply_fixes(prj: &Project, store: &mut Store, obs: &[Observation]) -> Fix
         // budget is spent lands in the refusals instead, naming its own `then`
         // — the next step up the escalation, for a person to take.
         let (from, what) = match &o.kind {
+            Kind::WorkBranch { .. } => continue,
             Kind::Stuck { status, .. } => (status, "stuck"),
             Kind::Overflow { status, .. } => (status, "max_visits"),
         };

@@ -461,6 +461,15 @@ pub struct DocType {
     /// after it cannot order the same corpus two ways.
     #[serde(default)]
     pub order_by: Vec<crate::order::OrderKey>,
+    /// Declared branches carrying this type through their stages.
+    #[serde(default)]
+    pub work_branches: BTreeMap<String, WorkBranch>,
+    /// A declared field whose presence means this copy is claimed.
+    #[serde(default)]
+    pub claim_field: Option<String>,
+    /// Maximum claim age, measured from the copy's `updated` timestamp.
+    #[serde(default)]
+    pub claim_ttl: Option<String>,
     /// `[types.<name>.ttl]` — how long a document may sit in a status before
     /// `verify` calls it **stuck** (ADR-0052 decision 1). A status maps either to
     /// a bare duration (observed only) or to `{ after, then }` (`verify --fix`
@@ -484,6 +493,17 @@ pub struct DocType {
     pub fields: BTreeMap<String, FieldSpec>,
     #[serde(default)]
     pub sections: Vec<SectionSpec>,
+}
+
+/// One unit of work, named by a ref template over the document id.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkBranch {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub from: String,
+    pub stages: Vec<String>,
+    pub merged: String,
 }
 
 impl DocType {
@@ -785,10 +805,15 @@ impl ProjectConfig {
             )));
         }
         let text = std::fs::read_to_string(path)?;
-        toml::from_str(&text).map_err(|source| OpysError::Toml {
+        let config: Self = toml::from_str(&text).map_err(|source| OpysError::Toml {
             path: path.to_path_buf(),
             source,
-        })
+        })?;
+        let errors = config.work_branch_errors();
+        if !errors.is_empty() {
+            return Err(usage(errors.join("; ")));
+        }
+        Ok(config)
     }
 
     /// The distinct directories (under the base) that hold documents — the set
@@ -882,10 +907,63 @@ impl ProjectConfig {
             .map(|(name, _)| name.as_str())
     }
 
+    /// These errors refuse a load: silently selecting main would be unsafe.
+    fn work_branch_errors(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        for (name, t) in &self.types {
+            if !cfg!(feature = "git") && !t.work_branches.is_empty() {
+                errors.push(format!(
+                    "type '{name}': work_branches requires the `git` cargo feature"
+                ));
+            }
+            if let Some(field) = &t.claim_field {
+                if !t.fields.contains_key(field) {
+                    errors.push(format!(
+                        "type '{name}': claim_field '{field}' is not a declared field"
+                    ));
+                }
+            }
+            if let Some(ttl) = &t.claim_ttl {
+                if crate::observe::parse_duration(ttl).is_none() {
+                    errors.push(format!(
+                        "type '{name}': claim_ttl '{ttl}' is not a duration"
+                    ));
+                }
+            }
+            let mut stages = BTreeMap::new();
+            for (branch, w) in &t.work_branches {
+                for status in std::iter::once(&w.from)
+                    .chain(&w.stages)
+                    .chain(std::iter::once(&w.merged))
+                {
+                    if !t.statuses.contains(status) {
+                        errors.push(format!(
+                            "type '{name}': work branch '{branch}': '{status}' is not a status"
+                        ));
+                    }
+                }
+                for stage in &w.stages {
+                    if stages
+                        .insert(stage, branch)
+                        .is_some_and(|previous| previous != branch)
+                    {
+                        errors.push(format!("type '{name}': work branch stage '{stage}' belongs to more than one branch"));
+                    }
+                }
+                if !w.reference.contains("{id}")
+                    || w.reference.replace("{id}", "").contains(['{', '}'])
+                {
+                    errors.push(format!("type '{name}': work branch '{branch}': ref must be a template containing {{id}} only"));
+                }
+            }
+        }
+        errors
+    }
+
     /// Check the config is well-formed, returning all problems (empty == OK).
     /// These are content problems (verify-style), not hard errors.
     pub fn validate(&self) -> Vec<String> {
-        let mut errs = Vec::new();
+        let mut errs = self.work_branch_errors();
         if self.types.is_empty() {
             errs.push("no document types defined ([types.<name>])".into());
         }
@@ -2113,5 +2191,97 @@ default_status = "todo"
         // `init` writes the config before the directory exists.
         let got = cfg.resolve_base(tmp.path()).unwrap();
         assert_eq!(got, tmp.path().join("inventory"));
+    }
+}
+
+#[cfg(test)]
+mod work_branch_tests {
+    use super::*;
+
+    const CONFIG: &str = r#"
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "research", "ready"]
+default_status = "todo"
+claim_field = "claimed_by"
+claim_ttl = "1h30m"
+[types.task.fields.claimed_by]
+type = "string"
+[types.task.work_branches.spec]
+ref = "spec/{id}"
+from = "todo"
+stages = ["research"]
+merged = "ready"
+"#;
+
+    fn load(text: &str) -> Result<ProjectConfig> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("opys.toml");
+        std::fs::write(&path, text).unwrap();
+        ProjectConfig::load(&path)
+    }
+
+    #[test]
+    fn work_branch_config_validates_every_status_claim_and_duration_at_load() {
+        for (old, new, message) in [
+            (
+                "from = \"todo\"",
+                "from = \"absent\"",
+                "'absent' is not a status",
+            ),
+            (
+                "stages = [\"research\"]",
+                "stages = [\"absent\"]",
+                "'absent' is not a status",
+            ),
+            (
+                "merged = \"ready\"",
+                "merged = \"absent\"",
+                "'absent' is not a status",
+            ),
+            (
+                "claim_field = \"claimed_by\"",
+                "claim_field = \"missing\"",
+                "not a declared field",
+            ),
+            (
+                "claim_ttl = \"1h30m\"",
+                "claim_ttl = \"forever\"",
+                "not a duration",
+            ),
+            (
+                "ref = \"spec/{id}\"",
+                "ref = \"spec/{oops}\"",
+                "ref must be a template",
+            ),
+        ] {
+            assert!(load(&CONFIG.replace(old, new))
+                .unwrap_err()
+                .to_string()
+                .contains(message));
+        }
+        let duplicate = format!("{CONFIG}\n[types.task.work_branches.other]\nref = 'other/{{id}}'\nfrom = 'todo'\nstages = ['research']\nmerged = 'ready'\n");
+        assert!(load(&duplicate)
+            .unwrap_err()
+            .to_string()
+            .contains("belongs to more than one branch"));
+    }
+
+    #[test]
+    fn work_branches_require_git_at_config_load() {
+        let result = load(CONFIG);
+        if cfg!(feature = "git") {
+            let config = result.unwrap();
+            assert!(config.validate().is_empty());
+            assert_eq!(
+                config.types["task"].work_branches["spec"].reference,
+                "spec/{id}"
+            );
+        } else {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("requires the `git` cargo feature"));
+        }
     }
 }

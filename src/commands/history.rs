@@ -76,6 +76,25 @@ fn show(ctx: &Ctx, id: &str) -> Result<()> {
             aw = author_w
         )
     }));
+    // A merge commit's first-parent git history omits commits on the work
+    // branch. The lifecycle map is carried by the merged document itself, so
+    // show it separately rather than inventing commit metadata for its stages.
+    if prj
+        .pcfg
+        .type_name_for_id(id)
+        .is_some_and(|n| !prj.pcfg.types[n].work_branches.is_empty())
+    {
+        let entries = crate::history::entries(&doc.frontmatter);
+        if !entries.is_empty() {
+            lines.push("Recorded lifecycle (this copy, newest first):".to_string());
+            lines.extend(
+                entries
+                    .iter()
+                    .rev()
+                    .map(|(since, status)| format!("  {since}  {status}")),
+            );
+        }
+    }
     print_lines(lines)?;
     Ok(())
 }

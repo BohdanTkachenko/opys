@@ -35,6 +35,9 @@ pub fn run(
     let mut findings = verify::collect_findings(&prj, &docs, parse_errors);
     findings.extend(verify::spelling_findings(&docs, ctx.backend.as_ref()));
     let result = queue::build(&prj, &docs, &q, observe::now(), &findings);
+    for notice in &result.notices {
+        eprintln!("warning: {notice}");
+    }
     if json {
         return print_lines([serde_json::to_string_pretty(&result)
             .map_err(|e| OpysError::Store(format!("serializing the queue failed: {e}")))?]);
@@ -49,7 +52,8 @@ pub fn text(q: &QueueResult) -> Vec<String> {
         format!("{}: {} waiting", q.role, q.total)
     }];
     for g in &q.groups {
-        if g.total == 0 && g.blocked.is_empty() && g.orphaned.is_empty() {
+        if g.total == 0 && g.in_progress.is_empty() && g.blocked.is_empty() && g.orphaned.is_empty()
+        {
             continue;
         }
         lines.push(String::new());
@@ -59,7 +63,7 @@ pub fn text(q: &QueueResult) -> Vec<String> {
             g.status,
             g.owners.join(", ")
         ));
-        for i in &g.items {
+        for i in g.items.iter().chain(&g.in_progress) {
             let since = i
                 .since
                 .as_deref()
@@ -71,8 +75,28 @@ pub fn text(q: &QueueResult) -> Vec<String> {
                 .map(|p| format!("  p{p}"))
                 .unwrap_or_default();
             let override_mark = if i.owner_override { "  (override)" } else { "" };
+            let reference = i
+                .item
+                .reference
+                .as_ref()
+                .map(|r| format!("  ref {r}"))
+                .unwrap_or_default();
+            let claim = i
+                .item
+                .claim
+                .as_ref()
+                .map(|c| {
+                    format!(
+                        "  claimed by {} (age {})",
+                        c.holder,
+                        c.age_seconds
+                            .map(|s| format!("{s}s"))
+                            .unwrap_or_else(|| "unknown".into())
+                    )
+                })
+                .unwrap_or_default();
             lines.push(format!(
-                "  {}  {}{since}{priority}{override_mark}",
+                "  {}  {}{since}{priority}{override_mark}{reference}{claim}",
                 i.item.id, i.item.title
             ));
         }

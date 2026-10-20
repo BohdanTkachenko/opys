@@ -39,6 +39,7 @@ pub mod roles;
 pub mod rules;
 pub mod store;
 pub mod templates;
+pub mod work;
 
 pub use error::{OpysError, Result};
 pub use frontmatter::Frontmatter;

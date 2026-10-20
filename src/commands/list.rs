@@ -56,6 +56,26 @@ pub fn run(
     let filters = parse_key_values(field)?;
     let (mut store, _) = ctx.load(&prj)?;
 
+    // Project into the read-only store so every SQL filter (including custom
+    // fields and tags) sees the same effective copy. This store is never flushed.
+    let mut main_docs = None;
+    let mut work_refs = BTreeMap::new();
+    if crate::work::declared(&prj.pcfg) {
+        let loaded = store.all_docs()?;
+        let main: Vec<Doc> = loaded.iter().map(|(_, d)| d.clone()).collect();
+        let view = crate::work::effective(&prj, &main, crate::observe::now());
+        for notice in &view.notices {
+            eprintln!("warning: {notice}");
+        }
+        for ((key, _), doc) in loaded.iter().zip(view.docs.iter()) {
+            if view.reference(doc).is_some() {
+                store.put_doc(&prj.pcfg, Some(*key), doc)?;
+            }
+        }
+        work_refs = view.refs;
+        main_docs = Some(main);
+    }
+
     // Ahead of the SELECT: both want `&mut store`. Each flag pays only for what
     // it reads — `--blocked` for the id → status index, `--sort` for the
     // priority closure on top of it — and when both are passed the sort's
@@ -74,7 +94,9 @@ pub fn run(
                     .collect(),
             );
         }
-        let ordered = sort.then(|| order::Corpus::of_docs(&prj.pcfg, &docs));
+        let ordered = sort.then(|| {
+            order::Corpus::with_truth(&prj.pcfg, &docs, main_docs.as_deref().unwrap_or(&docs))
+        });
         if blocked.is_some() {
             // `--blocked` alone needs the id → status index and nothing else:
             // no closure walk, which is the whole cost of `order::Corpus`. With
@@ -83,7 +105,7 @@ pub fn run(
             let blockers = match &ordered {
                 Some(corpus) => corpus.blockers(),
                 None => {
-                    plain = refs::Corpus::of_docs(&prj.pcfg, &docs);
+                    plain = refs::Corpus::of_docs(&prj.pcfg, main_docs.as_deref().unwrap_or(&docs));
                     &plain
                 }
             };
@@ -224,7 +246,11 @@ pub fn run(
                         .get(&dkey)
                         .map(|ts| ts.join(", "))
                         .unwrap_or_default();
-                    format!("{id}  [{status}]  ({tags})  {title}")
+                    let reference = work_refs
+                        .get(&id)
+                        .map(|r| format!("  [ref {r}]"))
+                        .unwrap_or_default();
+                    format!("{id}  [{status}]  ({tags})  {title}{reference}")
                 }
             }
         })

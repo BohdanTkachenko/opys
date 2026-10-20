@@ -21,7 +21,25 @@ pub fn run(ctx: &Ctx, id: &str, refs: bool) -> Result<()> {
         .and_then(g_str)
         .unwrap_or_default();
     let path = prj.base.join(relpath);
-    let text = std::fs::read_to_string(&path)?;
+    let mut text = std::fs::read_to_string(&path)?;
+    if prj
+        .pcfg
+        .type_name_for_id(id)
+        .is_some_and(|n| !prj.pcfg.types[n].work_branches.is_empty())
+    {
+        let docs: Vec<_> = store.all_docs()?.into_iter().map(|(_, d)| d).collect();
+        let view = crate::work::effective(&prj, &docs, crate::observe::now());
+        for notice in &view.notices {
+            eprintln!("warning: {notice}");
+        }
+        let doc = prj.find(&view.docs, id)?;
+        if let Some(reference) = view.reference(doc) {
+            print_lines([format!("--- work copy from {reference} ---")])?;
+            text = doc.to_text();
+        } else {
+            print_lines(["--- main copy ---"])?;
+        }
+    }
     // Print verbatim, without forcing a trailing newline.
     print_text(&text)?;
 

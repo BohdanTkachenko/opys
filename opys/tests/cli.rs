@@ -9203,3 +9203,340 @@ fn next_refuses_a_status_or_type_the_config_does_not_declare() {
             "unknown status \"planned\" for type 'task' (allowed: todo, doing, done)",
         ));
 }
+
+const WORK_BRANCH_CONFIG: &str = r#"
+[git]
+branches = ["refs/heads/*", "refs/remotes/*"]
+[roles.agent]
+[roles.human]
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "research", "spec-approval", "ready"]
+default_status = "todo"
+claim_field = "claimed_by"
+claim_ttl = "10m"
+[types.task.fields.claimed_by]
+type = "string"
+[types.task.owners]
+todo = "agent"
+research = "agent"
+spec-approval = "human"
+ready = "agent"
+[types.task.work_branches.spec]
+ref = "spec/{id}"
+from = "todo"
+stages = ["research", "spec-approval"]
+merged = "ready"
+"#;
+
+#[cfg(feature = "git")]
+fn work_doc(status: &str, claim: bool) -> String {
+    let history = if status == "todo" {
+        "  \"2026-01-01T00:00:00.000000Z\": todo\n".to_string()
+    } else {
+        format!("  \"2026-01-01T00:00:00.000000Z\": todo\n  \"2026-01-01T00:01:00.000000Z\": {status}\n")
+    };
+    format!("---\nid: TASK-0001\nstatus: {status}\ntags: [work]\ncreated: \"2026-01-01T00:00:00Z\"\nupdated: \"2026-01-01T00:01:00Z\"\nhistory:\n{history}{}---\n\n# Branch task\n\nCopy at {status}.\n", if claim { "claimed_by: agent-7\n" } else { "" })
+}
+
+#[cfg(feature = "git")]
+fn work_project(
+    branch: &str,
+    status: &str,
+    claim: bool,
+) -> (TempDir, opys_engine::git::fixture::Fixture) {
+    let dir = project_with(WORK_BRANCH_CONFIG);
+    let mut fx = opys_engine::git::fixture::Fixture::init(dir.path());
+    fx.set_head("refs/heads/main");
+    fx.write("opys/TASK-0001.md", work_doc("todo", false));
+    let main = fx.commit("Alice", "seed");
+    fx.write("opys/TASK-0001.md", work_doc(status, claim));
+    fx.commit_to(branch, &[main], "Bob", "work");
+    fx.write("opys/TASK-0001.md", work_doc("todo", false));
+    (dir, fx)
+}
+
+#[cfg(feature = "git")]
+fn work_json(dir: &TempDir, args: &[&str]) -> serde_json::Value {
+    let output = opys(dir)
+        .args(args)
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    serde_json::from_slice(&output).unwrap()
+}
+
+#[test]
+#[cfg(feature = "git")]
+fn work_branch_next_list_and_show_use_the_declared_stage_copy() {
+    let (dir, _fx) = work_project("refs/heads/spec/TASK-0001", "research", false);
+    let picked = work_json(&dir, &["next", "--status", "research"]);
+    assert_eq!(picked["items"][0]["id"], "TASK-0001");
+    assert_eq!(picked["items"][0]["ref"], "spec/TASK-0001");
+    let waiting = work_json(
+        &dir,
+        &["next", "--status", "todo", "--explain", "TASK-0001"],
+    );
+    assert_eq!(waiting["total"], 0);
+    assert_eq!(waiting["explain"]["reason"], "occupied");
+    assert_eq!(waiting["explain"]["ref"], "spec/TASK-0001");
+    opys(&dir)
+        .args(["next", "--status", "todo", "--explain"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("occupied by spec/TASK-0001"));
+    opys(&dir)
+        .args(["list", "--status", "research", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout("TASK-0001\n");
+    opys(&dir)
+        .args(["list", "--status", "todo", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout("");
+    opys(&dir)
+        .args(["show", "TASK-0001"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("work copy from spec/TASK-0001")
+                .and(predicate::str::contains("Copy at research.")),
+        );
+    assert!(
+        std::fs::read_to_string(dir.path().join("opys/TASK-0001.md"))
+            .unwrap()
+            .contains("status: todo")
+    );
+}
+
+#[test]
+#[cfg(feature = "git")]
+fn undeclared_branches_do_not_change_work_selection() {
+    let (dir, _fx) = work_project("refs/heads/experiment/TASK-0001", "research", false);
+    assert_eq!(
+        work_json(&dir, &["next", "--status", "research"])["total"],
+        0
+    );
+    assert_eq!(work_json(&dir, &["next", "--status", "todo"])["total"], 1);
+    opys(&dir)
+        .args(["show", "TASK-0001"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("main copy"));
+}
+
+#[test]
+#[cfg(feature = "git")]
+fn claimed_work_copies_are_in_progress_in_queue_and_excluded_by_next() {
+    let (dir, _fx) = work_project("refs/heads/spec/TASK-0001", "research", true);
+    let picked = work_json(
+        &dir,
+        &["next", "--status", "research", "--explain", "TASK-0001"],
+    );
+    assert_eq!(picked["total"], 0);
+    assert_eq!(picked["explain"]["reason"], "claimed");
+    assert_eq!(picked["explain"]["claim"]["holder"], "agent-7");
+    let output = opys(&dir)
+        .env("OPYS_NOW", "2026-01-01T00:06:00Z")
+        .args(["queue", "agent", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let queue: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let group = queue["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["status"] == "research")
+        .unwrap();
+    assert_eq!(group["total"], 0);
+    assert_eq!(group["in_progress"][0]["claim"]["holder"], "agent-7");
+    assert_eq!(
+        group["in_progress"][0]["claim"]["since"],
+        "2026-01-01T00:01:00Z"
+    );
+    assert_eq!(group["in_progress"][0]["claim"]["age_seconds"], 300);
+    assert_eq!(group["in_progress"][0]["ref"], "spec/TASK-0001");
+    opys(&dir)
+        .args(["queue", "agent"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("claimed by agent-7 (age"));
+}
+
+#[test]
+#[cfg(feature = "git")]
+fn human_approval_queue_lists_the_work_ref() {
+    let (dir, _fx) = work_project("refs/heads/spec/TASK-0001", "spec-approval", false);
+    let queue = work_json(&dir, &["queue", "human"]);
+    assert_eq!(queue["total"], 1);
+    assert_eq!(queue["groups"][0]["status"], "spec-approval");
+    assert_eq!(queue["groups"][0]["items"][0]["ref"], "spec/TASK-0001");
+    opys(&dir)
+        .args(["queue", "human"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ref spec/TASK-0001"));
+}
+
+#[test]
+#[cfg(feature = "git")]
+fn verify_observes_work_branch_conflicts_drift_invalid_stages_and_stale_claims() {
+    let (dir, mut fx) = work_project("refs/heads/spec/TASK-0001", "research", true);
+    let main = fx.tip("refs/heads/main").unwrap();
+    fx.write("opys/TASK-0001.md", work_doc("todo", false));
+    fx.commit_to(
+        "refs/remotes/origin/spec/TASK-0001",
+        &[main],
+        "Other",
+        "invalid stage",
+    );
+    fx.write("opys/TASK-0001.md", work_doc("ready", false));
+    opys(&dir)
+        .env("OPYS_NOW", "2026-01-01T00:12:00Z")
+        .args(["verify"])
+        .assert()
+        .code(3)
+        .stderr(
+            predicate::str::contains("two or more open work branches of kind spec")
+                .and(predicate::str::contains("not a declared stage"))
+                .and(predicate::str::contains("expected todo while"))
+                .and(predicate::str::contains("claim by agent-7")),
+        );
+}
+
+#[test]
+#[cfg(feature = "git")]
+fn merged_work_branch_returns_to_main_and_preserves_stage_history() {
+    for fast_forward in [false, true] {
+        let (dir, mut fx) = work_project("refs/heads/spec/TASK-0001", "research", false);
+        let tip = fx.tip("refs/heads/spec/TASK-0001").unwrap();
+        let ready = work_doc("research", false)
+            .replace("status: research", "status: ready")
+            .replace(
+                "---\n\n#",
+                "  \"2026-01-01T00:02:00.000000Z\": ready\n---\n\n#",
+            );
+        fx.write("opys/TASK-0001.md", ready);
+        // A fast-forward merge with a final status commit; keep the old ref to
+        // prove ancestry, not deletion or equal tips, closes occupancy.
+        if fast_forward {
+            fx.write(".git/refs/heads/main", format!("{tip}\n"));
+            fx.commit_to("refs/heads/main", &[tip], "Alice", "merge spec");
+        } else {
+            let main = fx.tip("refs/heads/main").unwrap();
+            fx.commit_to("refs/heads/main", &[main, tip], "Alice", "merge spec");
+        }
+        let picked = work_json(&dir, &["next", "--status", "ready"]);
+        assert_eq!(picked["total"], 1);
+        assert!(picked["items"][0].get("ref").is_none());
+        assert_eq!(
+            work_json(&dir, &["next", "--status", "research"])["total"],
+            0
+        );
+        opys(&dir)
+            .args(["show", "TASK-0001"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("main copy"));
+        opys(&dir)
+            .args(["history", "TASK-0001"])
+            .assert()
+            .success()
+            .stdout(
+                predicate::str::contains("todo")
+                    .and(predicate::str::contains("research"))
+                    .and(predicate::str::contains("ready")),
+            );
+        opys(&dir).args(["verify"]).assert().success();
+    }
+}
+
+#[test]
+fn work_branch_declarations_degrade_without_a_repository_or_refuse_without_git() {
+    let dir = project_with(WORK_BRANCH_CONFIG);
+    #[cfg(feature = "git")]
+    {
+        dir.child("opys/TASK-0001.md")
+            .write_str(&work_doc("todo", false))
+            .unwrap();
+        opys(&dir)
+            .args(["next", "--status", "todo", "--json"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("TASK-0001"))
+            .stderr(predicate::str::contains("not a git repository"));
+    }
+    #[cfg(not(feature = "git"))]
+    opys(&dir)
+        .args(["next", "--status", "todo"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "work_branches requires the `git` cargo feature",
+        ));
+}
+
+#[test]
+#[cfg(feature = "git")]
+fn remote_work_copies_are_opt_in_and_same_commit_refs_count_once() {
+    let (dir, fx) = work_project("refs/remotes/origin/spec/TASK-0001", "research", false);
+    let answer = work_json(&dir, &["next", "--status", "research"]);
+    assert_eq!(answer["items"][0]["ref"], "origin/spec/TASK-0001");
+    fx.write(
+        "opys.toml",
+        WORK_BRANCH_CONFIG.replace(
+            "branches = [\"refs/heads/*\", \"refs/remotes/*\"]",
+            "branches = [\"refs/heads/*\"]",
+        ),
+    );
+    assert_eq!(
+        work_json(&dir, &["next", "--status", "research"])["total"],
+        0
+    );
+    assert_eq!(work_json(&dir, &["next", "--status", "todo"])["total"], 1);
+    fx.write("opys.toml", WORK_BRANCH_CONFIG);
+    let tip = fx.tip("refs/remotes/origin/spec/TASK-0001").unwrap();
+    fx.write(".git/refs/heads/spec/TASK-0001", format!("{tip}\n"));
+    let answer = work_json(&dir, &["next", "--status", "research"]);
+    assert_eq!(answer["items"][0]["ref"], "spec/TASK-0001");
+    opys(&dir).args(["verify"]).assert().success();
+}
+
+#[test]
+#[cfg(feature = "git")]
+fn claimed_work_copy_filters_and_verify_fix_do_not_write_main_or_git() {
+    let (dir, fx) = work_project("refs/heads/spec/TASK-0001", "research", true);
+    let before = std::fs::read(dir.path().join("opys/TASK-0001.md")).unwrap();
+    let tip = fx.tip("refs/heads/spec/TASK-0001").unwrap();
+    opys(&dir)
+        .args([
+            "list",
+            "--status",
+            "research",
+            "--field",
+            "claimed_by=agent-7",
+            "--format",
+            "ids",
+        ])
+        .assert()
+        .success()
+        .stdout("TASK-0001\n");
+    opys(&dir)
+        .env("OPYS_NOW", "2026-01-01T00:12:00Z")
+        .args(["verify", "--fix"])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("claim by agent-7"));
+    assert_eq!(
+        std::fs::read(dir.path().join("opys/TASK-0001.md")).unwrap(),
+        before
+    );
+    assert_eq!(fx.tip("refs/heads/spec/TASK-0001"), Some(tip));
+}

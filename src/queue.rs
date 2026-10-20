@@ -47,6 +47,8 @@ pub struct QueueResult {
     pub groups: Vec<Group>,
     pub attention: Vec<Attention>,
     pub project_problems: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -60,6 +62,8 @@ pub struct Group {
     /// Pickable documents before the limit, as in next.
     pub total: usize,
     pub items: Vec<QueueItem>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub in_progress: Vec<QueueItem>,
     pub blocked: Vec<Blocked>,
     pub orphaned: Vec<next::Orphan>,
 }
@@ -80,6 +84,8 @@ pub struct Blocked {
     pub title: String,
     pub path: String,
     pub blocked_by: Vec<String>,
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -91,6 +97,10 @@ pub struct Attention {
     pub status: String,
     pub path: String,
     pub reasons: Vec<Reason>,
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claim: Option<crate::work::Claim>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -108,6 +118,9 @@ pub fn build(
     now: OffsetDateTime,
     findings: &[Finding],
 ) -> QueueResult {
+    let main = docs;
+    let view = crate::work::effective(prj, main, now);
+    let docs = view.docs.as_ref();
     let mut groups = Vec::new();
     let mut waiting = HashSet::new();
     for name in prj
@@ -139,9 +152,10 @@ pub fn build(
                 role: Some(q.role.clone()),
                 limit: q.limit,
             };
-            let sel = next::select(&prj.pcfg, docs, &query);
+            let sel = next::select(&prj.pcfg, docs, main, &query);
             if !owned
                 && sel.pickable.is_empty()
+                && sel.claimed.is_empty()
                 && sel.blocked.is_empty()
                 && sel.orphaned.is_empty()
             {
@@ -150,22 +164,35 @@ pub fn build(
             waiting.extend(
                 sel.pickable
                     .iter()
+                    .chain(sel.claimed.iter())
                     .filter_map(|d| d.id())
                     .map(str::to_owned),
             );
-            let items = sel
-                .pickable
-                .iter()
-                .take(q.limit)
-                .enumerate()
-                .map(|(i, doc)| QueueItem {
-                    item: next::item(prj, &sel.corpus, doc, i + 1, now),
+            let make_item = |(i, doc): (usize, &&Doc)| {
+                let mut item = next::item(prj, &sel.corpus, doc, i + 1, now);
+                item.reference = view.reference(doc);
+                QueueItem {
+                    item,
                     since: history::entries(&doc.frontmatter)
                         .last()
                         .map(|(key, _)| key.clone())
                         .or_else(|| doc.frontmatter.get_str("created").map(str::to_owned)),
                     owner_override: roles::is_override(&prj.pcfg, doc),
-                })
+                }
+            };
+            let items = sel
+                .pickable
+                .iter()
+                .take(q.limit)
+                .enumerate()
+                .map(make_item)
+                .collect();
+            let in_progress = sel
+                .claimed
+                .iter()
+                .take(q.limit)
+                .enumerate()
+                .map(make_item)
                 .collect();
             let blocked = sel
                 .blocked
@@ -174,6 +201,7 @@ pub fn build(
                     id: doc.id().unwrap_or_default().to_string(),
                     title: doc.title.clone(),
                     path: next::rel_path(prj, doc),
+                    reference: view.reference(doc),
                     blocked_by: refs::live_blockers(doc, sel.corpus.blockers())
                         .into_iter()
                         .map(|(id, _)| id)
@@ -186,6 +214,7 @@ pub fn build(
                 .map(|doc| {
                     let id = doc.id().unwrap_or_default().to_string();
                     next::Orphan {
+                        reference: view.reference(doc),
                         reason: sel.reasons[&id].clone(),
                         id,
                         type_name: next::type_of(&prj.pcfg, doc),
@@ -202,6 +231,7 @@ pub fn build(
                 owned,
                 total: sel.pickable.len(),
                 items,
+                in_progress,
                 blocked,
                 orphaned,
             });
@@ -210,7 +240,7 @@ pub fn build(
     let mut attention = Vec::new();
     let mut project_problems = Vec::new();
     if roles::escalation_role(&prj.pcfg) == Some(q.role.as_str()) {
-        let corpus = refs::Corpus::of_docs(&prj.pcfg, docs);
+        let corpus = refs::Corpus::of_docs(&prj.pcfg, main);
         let mut reasons: BTreeMap<String, Vec<Reason>> = BTreeMap::new();
         for doc in docs.iter().filter(|d| {
             q.type_filter
@@ -238,9 +268,24 @@ pub fn build(
                     let kind = match observation.kind {
                         observe::Kind::Stuck { .. } => "stuck",
                         observe::Kind::Overflow { .. } => "overflowed",
+                        observe::Kind::WorkBranch { .. } => "work-branch",
                     };
                     add(kind, observation.to_string());
                 }
+            }
+        }
+        for observation in &view.observations {
+            if q.type_filter
+                .as_deref()
+                .is_none_or(|t| prj.pcfg.type_name_for_id(&observation.id) == Some(t))
+            {
+                reasons
+                    .entry(observation.id.clone())
+                    .or_default()
+                    .push(Reason {
+                        kind: "work-branch",
+                        message: observation.to_string(),
+                    });
             }
         }
         for finding in findings {
@@ -270,6 +315,8 @@ pub fn build(
                     status: doc.status().unwrap_or_default().to_string(),
                     path: next::rel_path(prj, doc),
                     reasons,
+                    reference: view.reference(doc),
+                    claim: crate::work::claim(&prj.pcfg, doc, now),
                 });
             }
         }
@@ -285,5 +332,6 @@ pub fn build(
         groups,
         attention,
         project_problems,
+        notices: view.notices,
     }
 }
