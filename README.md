@@ -796,6 +796,8 @@ on main. Three blanks mean three
   a status to see all its tickets, including blocked work and progress on other
   branches. The primary working copy stays visible, and **Ready next · primary**
   is still the same pickable list as `opys next --status <status>`.
+  Use the mouse wheel to zoom at the pointer and drag empty canvas with the
+  left mouse button to pan. **Fit** recenters the whole workflow.
   Served worktrees contribute their live files, including uncommitted changes;
   the existing git reader adds configured branch tips that have no checkout.
   A ticket can appear at `todo` on primary, `implementing` on one branch and
