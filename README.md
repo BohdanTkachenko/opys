@@ -778,10 +778,14 @@ another terminal — shows up in the browser without a reload.
 
 The node also watches atomic replacements of `opys.toml`, including checkout
 changes. Expensive pure reads (flow, next and role queues) use immutable cached
-inputs outside the inventory worker, so calculating a graph does not hold up
-cheap counts and document lists. A `corpus is busy` source missed the collection
-request's two-second deadline, usually during a reload or inventory-lock wait.
-It is an unknown result for that request, never evidence that tickets vanished.
+inputs outside the inventory worker. After the first successful load, document
+lists, counts and these calculations keep reading that generation while a
+reload runs; a successful reload publishes its replacement together. A failed
+reload keeps the last good data and exposes the error in the corpus health.
+A `corpus is busy` source missed the collection request's two-second deadline.
+This can happen before the first load finishes, or if a calculation takes too
+long. It is an unknown result for that request, never evidence that tickets
+vanished.
 
 
 The port is **6797**, and the node binds loopback only. There is no

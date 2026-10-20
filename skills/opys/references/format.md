@@ -1019,8 +1019,12 @@ Ref changes and reloads from any member worktree invalidate the page, as do
 membership changes and reconnects. The ref reader retains its configured ref
 scope and backstop; the node does not fetch remotes or merge files. Pure graph,
 next and queue calculations use immutable generation snapshots outside the
-corpus actor. Successful reloads replace the snapshot; failed reloads retain the
-last good generation and expose the load error through normal verification.
+corpus actor. Once a load succeeds, document summaries, corpus statistics and
+these calculation inputs remain readable during reloads without waiting for
+the actor or inventory lock. Successful reloads publish a complete replacement
+generation; failed reloads retain the last good generation and expose the load
+error through normal corpus health and verification. Initial reads still wait
+for the first load attempt, and stopped actors remain unavailable.
 Atomic configuration replacements are watched through the containing directory.
 
 ### Role queues (`opys queue`)

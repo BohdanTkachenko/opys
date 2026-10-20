@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -369,7 +369,6 @@ enum Request {
     // empty list and a missing document are answers; a corpus whose config will
     // not parse has none, and saying so is what lets the API return a server
     // error instead of a misleading 200 or 404.
-    Docs(DocFilter, SyncSender<Result<Vec<DocSummary>>>),
     Doc(String, SyncSender<Result<Option<DocView>>>),
     VerifyBody(
         String,
@@ -381,11 +380,10 @@ enum Request {
         Vec<String>,
         SyncSender<Result<std::result::Result<QueryResult, String>>>,
     ),
-    /// Cheap immutable input for pure builders. Their CPU work runs on the
-    /// caller, so a flow or role queue cannot hold up cached stats/docs reads.
-    Snapshot(SyncSender<Result<ReadSnapshot>>),
+    /// The first cached read waits for the initial load attempt. After that,
+    /// published immutable reads never need to enter the actor's mailbox.
+    Ready(SyncSender<()>),
     Verify(SyncSender<VerifyStatus>),
-    Stats(SyncSender<CorpusStats>),
     /// Reload now and reply when done — the deterministic path for tests and
     /// for the manager after a registry change.
     Reload(SyncSender<()>),
@@ -393,13 +391,12 @@ enum Request {
 }
 
 /// The request-sending half of a corpus actor: `Clone + Send + Sync`, and cheap
-/// (one `String` and one channel sender).
+/// (one `String`, one channel sender and one shared cache pointer).
 ///
 /// This exists so a request handler never holds the manager's lock while it
-/// blocks. Every call below waits on a channel, and the actor may be halfway
-/// through a reload; a handler that kept the lock for that would stall the
-/// periodic passes and every other request behind one slow corpus. The pattern
-/// is: lock, clone the client, drop the lock, then block on the client.
+/// blocks. Store-backed calls wait on a channel, while cached summaries,
+/// health and pure builders read the last published generation immediately,
+/// including during a reload. The manager's lock is dropped before either.
 ///
 /// A client may outlive its [`CorpusHandle`] — a rescan can stop the corpus
 /// while a request is in flight. Calls then fail with "corpus actor stopped"
@@ -409,6 +406,7 @@ pub struct CorpusClient {
     /// Which corpus this talks to, for error messages and log lines.
     pub cid: String,
     tx: mpsc::Sender<Message>,
+    published: Arc<Mutex<PublishedReads>>,
 }
 
 /// A handle to one corpus actor: the thread, the corpus it serves, and the
@@ -430,8 +428,43 @@ struct ReadSnapshot {
     findings: Arc<Vec<opys_engine::diagnostics::Finding>>,
 }
 
+/// A complete successful generation. No store is shared, and every large field
+/// is behind an Arc so obtaining the generation only holds the publication
+/// mutex long enough to clone pointers.
+struct ReadGeneration {
+    snapshot: ReadSnapshot,
+    summaries: Arc<Vec<DocSummary>>,
+    loaded_at: String,
+    verify_problems: usize,
+}
+
+#[derive(Clone, Default)]
+struct PublishedReads {
+    generation: Option<Arc<ReadGeneration>>,
+    load_error: Option<String>,
+    initialized: bool,
+    stopped: bool,
+}
+
+/// Clients can outlive their actor. Clear liveness on every exit, including an
+/// unwind, so a retained cache never makes a stopped corpus look available.
+struct PublishedLifetime(Arc<Mutex<PublishedReads>>);
+
+impl Drop for PublishedLifetime {
+    fn drop(&mut self) {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).stopped = true;
+    }
+}
+
 fn gone() -> OpysError {
     OpysError::Store("corpus actor stopped".to_string())
+}
+
+fn not_loaded(load_error: &Option<String>) -> OpysError {
+    OpysError::Store(match load_error {
+        Some(error) => format!("corpus is not loaded: {error}"),
+        None => "corpus is not loaded".to_string(),
+    })
 }
 
 impl CorpusClient {
@@ -444,7 +477,16 @@ impl CorpusClient {
     /// Filtered document summaries, from the warm cache. Fails if the corpus has
     /// never loaded — an empty list would claim the inventory is empty.
     pub fn docs(&self, filter: DocFilter) -> Result<Vec<DocSummary>> {
-        self.ask(|reply| Request::Docs(filter, reply))?
+        let published = self.read_published()?;
+        let generation = published
+            .generation
+            .ok_or_else(|| not_loaded(&published.load_error))?;
+        Ok(generation
+            .summaries
+            .iter()
+            .filter(|doc| filter.matches(doc))
+            .cloned()
+            .collect())
     }
 
     /// One document with its rendered body, or `None` if this corpus has no
@@ -540,7 +582,41 @@ impl CorpusClient {
     }
 
     fn snapshot(&self) -> Result<ReadSnapshot> {
-        self.ask(Request::Snapshot)?
+        let published = self.read_published()?;
+        published
+            .generation
+            .map(|generation| generation.snapshot.clone())
+            .ok_or_else(|| not_loaded(&published.load_error))
+    }
+
+    fn read_published(&self) -> Result<PublishedReads> {
+        let read = || {
+            self.published
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+        };
+        let mut published = read();
+        if published.stopped {
+            return Err(gone());
+        }
+        if !published.initialized {
+            // Match the old startup contract: the initial actor load finishes
+            // before a caller gets either its data or its load error.
+            self.ask(Request::Ready)?;
+            published = read();
+        }
+        if published.stopped {
+            return Err(gone());
+        }
+        Ok(published)
+    }
+
+    fn mark_stopped(&self) {
+        self.published
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .stopped = true;
     }
 
     /// Cached verify problems and the time they were computed.
@@ -550,7 +626,19 @@ impl CorpusClient {
 
     /// Document count and health in one round trip.
     pub fn stats(&self) -> Result<CorpusStats> {
-        self.ask(Request::Stats)
+        let published = self.read_published()?;
+        Ok(CorpusStats {
+            doc_count: published
+                .generation
+                .as_ref()
+                .map_or(0, |g| g.summaries.len()),
+            verify_problems: published
+                .generation
+                .as_ref()
+                .map_or(0, |g| g.verify_problems),
+            loaded_at: published.generation.as_ref().map(|g| g.loaded_at.clone()),
+            load_error: published.load_error,
+        })
     }
 
     /// Force a reload and wait for it.
@@ -570,9 +658,12 @@ impl CorpusHandle {
         let (tx, rx) = mpsc::channel::<Message>();
         let watch_tx = tx.clone();
         let thread_corpus = corpus.clone();
+        let published = Arc::new(Mutex::new(PublishedReads::default()));
+        let actor_published = Arc::clone(&published);
         let join = std::thread::Builder::new()
             .name(format!("opys-corpus-{}", corpus.cid))
             .spawn(move || {
+                let _lifetime = PublishedLifetime(Arc::clone(&actor_published));
                 // Held for the life of the loop: dropping a notify watcher stops
                 // it delivering.
                 let _watcher = spawn_watcher(&thread_corpus, watch_tx);
@@ -582,6 +673,7 @@ impl CorpusHandle {
                     events,
                     warm: None,
                     load_error: None,
+                    published: actor_published,
                 };
                 actor.reload();
                 actor.run(rx);
@@ -591,6 +683,7 @@ impl CorpusHandle {
             client: CorpusClient {
                 cid: corpus.cid.clone(),
                 tx,
+                published,
             },
             corpus,
             join: Some(join),
@@ -666,6 +759,7 @@ impl CorpusHandle {
 
     /// Stop the actor and wait for its thread.
     pub fn shutdown(mut self) {
+        self.client.mark_stopped();
         let _ = self.client.tx.send(Message::Req(Request::Shutdown));
         if let Some(join) = self.join.take() {
             let _ = join.join();
@@ -680,6 +774,7 @@ impl Drop for CorpusHandle {
         // clients own more, so the receiver never sees a disconnect on its own.
         // Deliberately no join here — a `Drop` that blocks on a reload in
         // progress would be a surprising place to spend 100 ms.
+        self.client.mark_stopped();
         let _ = self.client.tx.send(Message::Req(Request::Shutdown));
     }
 }
@@ -690,7 +785,7 @@ struct Warm {
     prj: Arc<Project>,
     store: Store,
     docs: Arc<Vec<Doc>>,
-    summaries: Vec<DocSummary>,
+    summaries: Arc<Vec<DocSummary>>,
     problems: Vec<String>,
     findings: Arc<Vec<opys_engine::diagnostics::Finding>>,
     fixable_problems: Vec<String>,
@@ -703,6 +798,7 @@ struct Actor {
     events: broadcast::Sender<Event>,
     warm: Option<Warm>,
     load_error: Option<String>,
+    published: Arc<Mutex<PublishedReads>>,
 }
 
 impl Actor {
@@ -744,16 +840,6 @@ impl Actor {
 
     fn handle(&mut self, req: Request) {
         match req {
-            Request::Docs(filter, reply) => {
-                let out = self.warm().map(|w| {
-                    w.summaries
-                        .iter()
-                        .filter(|d| filter.matches(d))
-                        .cloned()
-                        .collect()
-                });
-                let _ = reply.send(out);
-            }
             Request::Doc(id, reply) => {
                 let _ = reply.send(self.doc_view(&id));
             }
@@ -763,12 +849,8 @@ impl Actor {
             Request::Query(sql, params, reply) => {
                 let _ = reply.send(self.run_query(&sql, &params));
             }
-            Request::Snapshot(reply) => {
-                let _ = reply.send(self.warm().map(|warm| ReadSnapshot {
-                    prj: Arc::clone(&warm.prj),
-                    docs: Arc::clone(&warm.docs),
-                    findings: Arc::clone(&warm.findings),
-                }));
+            Request::Ready(reply) => {
+                let _ = reply.send(());
             }
             Request::Verify(reply) => {
                 let _ = reply.send(VerifyStatus {
@@ -796,14 +878,6 @@ impl Actor {
                     load_error: self.load_error.clone(),
                 });
             }
-            Request::Stats(reply) => {
-                let _ = reply.send(CorpusStats {
-                    doc_count: self.warm.as_ref().map_or(0, |w| w.summaries.len()),
-                    verify_problems: self.warm.as_ref().map_or(0, |w| w.problems.len()),
-                    loaded_at: self.warm.as_ref().map(|w| w.loaded_at.clone()),
-                    load_error: self.load_error.clone(),
-                });
-            }
             Request::Reload(reply) => {
                 self.reload();
                 let _ = reply.send(());
@@ -819,11 +893,7 @@ impl Actor {
     /// caller's request, and every read says so the same way.
     fn warm(&mut self) -> Result<&mut Warm> {
         if self.warm.is_none() {
-            let why = match &self.load_error {
-                Some(e) => format!("corpus is not loaded: {e}"),
-                None => "corpus is not loaded".to_string(),
-            };
-            return Err(OpysError::Store(why));
+            return Err(not_loaded(&self.load_error));
         }
         Ok(self.warm.as_mut().expect("checked just above"))
     }
@@ -905,11 +975,40 @@ impl Actor {
                 };
                 self.warm = Some(warm);
                 self.load_error = None;
+                self.publish();
                 // Err just means nobody is subscribed.
                 let _ = self.events.send(event);
             }
-            Err(e) => self.load_error = Some(e.to_string()),
+            Err(e) => {
+                self.load_error = Some(e.to_string());
+                self.publish();
+            }
         }
+    }
+
+    fn publish(&self) {
+        // Build the next publication before locking: the store and all derived
+        // work remain actor-owned, and readers never wait for a reload here.
+        let generation = self.warm.as_ref().map(|warm| {
+            Arc::new(ReadGeneration {
+                snapshot: ReadSnapshot {
+                    prj: Arc::clone(&warm.prj),
+                    docs: Arc::clone(&warm.docs),
+                    findings: Arc::clone(&warm.findings),
+                },
+                summaries: Arc::clone(&warm.summaries),
+                loaded_at: warm.loaded_at.clone(),
+                verify_problems: warm.problems.len(),
+            })
+        });
+        let mut published = self.published.lock().unwrap_or_else(|p| p.into_inner());
+        let previous = std::mem::replace(&mut published.generation, generation);
+        published.load_error = self.load_error.clone();
+        published.initialized = true;
+        drop(published);
+        // This can release the last reference to a whole corpus. Deallocate it
+        // after unlocking, just as the replacement was built before locking.
+        drop(previous);
     }
 
     fn load(&self) -> Result<Warm> {
@@ -973,7 +1072,7 @@ impl Actor {
             prj: Arc::new(prj),
             store,
             docs: Arc::new(docs),
-            summaries,
+            summaries: Arc::new(summaries),
             problems,
             findings: Arc::new(findings),
             fixable_problems,
@@ -1234,6 +1333,12 @@ mod tests {
     use std::path::PathBuf;
 
     fn snapshot_fixture() -> (tempfile::TempDir, CorpusHandle) {
+        snapshot_fixture_with(Box::new(opys_backend_markdown_local::MarkdownLocal))
+    }
+
+    fn snapshot_fixture_with(
+        backend: Box<dyn Backend + Send>,
+    ) -> (tempfile::TempDir, CorpusHandle) {
         let temp = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(temp.path()).unwrap();
         let base = root.join("inventory");
@@ -1252,12 +1357,205 @@ mod tests {
             error: None,
         };
         let (events, _) = broadcast::channel(16);
-        let handle = CorpusHandle::spawn(
-            corpus,
-            Box::new(opys_backend_markdown_local::MarkdownLocal),
-            events,
-        );
+        let handle = CorpusHandle::spawn(corpus, backend, events);
         (temp, handle)
+    }
+
+    #[derive(Default)]
+    struct BackendControl {
+        gate: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
+        extra_doc: bool,
+        fail: bool,
+    }
+
+    struct GatedBackend(Arc<Mutex<BackendControl>>);
+
+    impl Backend for GatedBackend {
+        fn load(&self, prj: &Project) -> Result<(Store, Vec<String>)> {
+            let (gate, extra_doc, fail) = {
+                let mut control = self.0.lock().unwrap();
+                (control.gate.take(), control.extra_doc, control.fail)
+            };
+            if let Some((entered, release)) = gate {
+                entered.send(()).unwrap();
+                release.recv().unwrap();
+            }
+            if fail {
+                return Err(OpysError::Store("test reload failed".into()));
+            }
+            let (mut store, errors) = opys_backend_markdown_local::MarkdownLocal.load(prj)?;
+            if extra_doc {
+                let doc = Doc::parse(prj.base.join("NOTE-0002.md"),
+                    "---\nid: NOTE-0002\nstatus: open\nhistory:\n  \"2026-01-01T00:00:00.000000Z\": open\n---\n\n# Second\n").unwrap();
+                store.put_doc(&prj.pcfg, None, &doc)?;
+            }
+            Ok((store, errors))
+        }
+
+        fn flush(&self, prj: &Project, store: Store) -> Result<()> {
+            opys_backend_markdown_local::MarkdownLocal.flush(prj, store)
+        }
+
+        fn load_docs(&self, prj: &Project) -> (Vec<Doc>, Vec<String>) {
+            opys_backend_markdown_local::MarkdownLocal.load_docs(prj)
+        }
+
+        fn stored_text(&self, path: &Path) -> Option<String> {
+            opys_backend_markdown_local::MarkdownLocal.stored_text(path)
+        }
+    }
+
+    fn gate_reload(
+        control: &Arc<Mutex<BackendControl>>,
+        client: CorpusClient,
+    ) -> (mpsc::Receiver<()>, SyncSender<()>, JoinHandle<Result<()>>) {
+        let (entered, ready) = mpsc::sync_channel(1);
+        let (release, wait) = mpsc::sync_channel(1);
+        control.lock().unwrap().gate = Some((entered, wait));
+        let reloader = std::thread::spawn(move || client.reload());
+        (ready, release, reloader)
+    }
+
+    fn open_query() -> PickQuery {
+        PickQuery {
+            status: "open".into(),
+            type_filter: None,
+            role: None,
+            limit: 10,
+        }
+    }
+
+    #[test]
+    fn cached_reads_answer_during_reload_and_publish_one_complete_generation() {
+        let control = Arc::new(Mutex::new(BackendControl::default()));
+        let (_temp, handle) = snapshot_fixture_with(Box::new(GatedBackend(Arc::clone(&control))));
+        let old = handle.client.snapshot().unwrap();
+        let old_stats = handle.stats().unwrap();
+        control.lock().unwrap().extra_doc = true;
+        let (ready, release, reloader) = gate_reload(&control, handle.client());
+        ready.recv_timeout(Duration::from_secs(3)).unwrap();
+
+        let client = handle.client();
+        let (done, result) = mpsc::sync_channel(1);
+        let reader = std::thread::spawn(move || {
+            let docs = client.docs(DocFilter::default()).unwrap();
+            let stats = client.stats().unwrap();
+            let picked = client.next(open_query()).unwrap().unwrap();
+            let graph = client.flow(5).unwrap();
+            let snapshot = client.snapshot().unwrap();
+            done.send((docs, stats, picked, graph, snapshot)).unwrap();
+        });
+        let during = result.recv_timeout(Duration::from_secs(1));
+        // Release before asserting, so a regression cannot leave the backend
+        // or reader thread waiting forever when the test fails.
+        release.send(()).unwrap();
+        reloader.join().unwrap().unwrap();
+        reader.join().unwrap();
+        let (docs, stats, picked, graph, snapshot) = during.unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(stats.doc_count, 1);
+        assert_eq!(stats.loaded_at, old_stats.loaded_at);
+        assert!(stats.load_error.is_none());
+        assert_eq!(picked.total, 1);
+        assert_eq!(graph.nodes[0].total, 1);
+        assert!(Arc::ptr_eq(&old.docs, &snapshot.docs));
+
+        let fresh = handle.client.snapshot().unwrap();
+        assert!(!Arc::ptr_eq(&old.docs, &fresh.docs));
+        assert_eq!(fresh.docs.len(), 2);
+        assert_eq!(handle.docs(DocFilter::default()).unwrap().len(), 2);
+        assert_eq!(handle.stats().unwrap().doc_count, 2);
+        assert_eq!(handle.next(open_query()).unwrap().unwrap().total, 2);
+
+        // A failed reload only updates health; all data stays at the last good
+        // generation, including while the failing backend is still blocked.
+        control.lock().unwrap().fail = true;
+        let (ready, release, reloader) = gate_reload(&control, handle.client());
+        ready.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(Arc::ptr_eq(
+            &fresh.docs,
+            &handle.client.snapshot().unwrap().docs
+        ));
+        assert_eq!(handle.stats().unwrap().doc_count, 2);
+        release.send(()).unwrap();
+        reloader.join().unwrap().unwrap();
+        let failed = handle.stats().unwrap();
+        assert_eq!(failed.doc_count, 2);
+        assert!(failed.load_error.unwrap().contains("test reload failed"));
+        assert!(Arc::ptr_eq(
+            &fresh.docs,
+            &handle.client.snapshot().unwrap().docs
+        ));
+        assert_eq!(handle.docs(DocFilter::default()).unwrap().len(), 2);
+        assert_eq!(handle.next(open_query()).unwrap().unwrap().total, 2);
+        handle.shutdown();
+    }
+
+    #[test]
+    fn cached_reads_keep_initial_load_errors_and_stopped_client_errors() {
+        let control = Arc::new(Mutex::new(BackendControl {
+            fail: true,
+            ..Default::default()
+        }));
+        let (_temp, handle) = snapshot_fixture_with(Box::new(GatedBackend(control)));
+        let client = handle.client();
+        for error in [
+            client.docs(DocFilter::default()).err().unwrap(),
+            client.snapshot().err().unwrap(),
+            client.next(open_query()).err().unwrap(),
+        ] {
+            assert_eq!(error.to_string(),
+                "internal store error: corpus is not loaded: internal store error: test reload failed");
+        }
+        let stats = client.stats().unwrap();
+        assert_eq!(stats.doc_count, 0);
+        assert!(stats.loaded_at.is_none());
+        assert!(stats.load_error.unwrap().contains("test reload failed"));
+        handle.shutdown();
+        for error in [
+            client.docs(DocFilter::default()).err().unwrap(),
+            client.stats().err().unwrap(),
+            client.snapshot().err().unwrap(),
+            client.next(open_query()).err().unwrap(),
+        ] {
+            assert!(
+                error.to_string().contains("corpus actor stopped"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn dropping_a_handle_invalidates_cached_clients_even_during_reload() {
+        let control = Arc::new(Mutex::new(BackendControl::default()));
+        let (_temp, handle) = snapshot_fixture_with(Box::new(GatedBackend(Arc::clone(&control))));
+        let client = handle.client();
+        assert_eq!(client.docs(DocFilter::default()).unwrap().len(), 1);
+        let (ready, release, reloader) = gate_reload(&control, client.clone());
+        ready.recv_timeout(Duration::from_secs(3)).unwrap();
+
+        // Drop must not join a blocked load, and its cached clients must become
+        // unavailable before the queued Shutdown can reach the actor loop.
+        drop(handle);
+        for error in [
+            client.docs(DocFilter::default()).err().unwrap(),
+            client.stats().err().unwrap(),
+            client.snapshot().err().unwrap(),
+        ] {
+            assert!(
+                error.to_string().contains("corpus actor stopped"),
+                "{error}"
+            );
+        }
+        release.send(()).unwrap();
+        reloader.join().unwrap().unwrap();
+        // The completed reload must preserve the stopped flag while publishing.
+        assert!(client.docs(DocFilter::default()).is_err());
+        assert!(client
+            .reload()
+            .unwrap_err()
+            .to_string()
+            .contains("corpus actor stopped"));
     }
 
     #[test]
