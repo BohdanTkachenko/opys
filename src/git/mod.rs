@@ -185,6 +185,9 @@ impl Checkout {
 pub struct Changed {
     pub docs: Vec<Doc>,
     pub deleted: Vec<String>,
+    /// Unreadable declared work copies, keyed by document id. Only the work
+    /// survey populates this; ordinary progress reads still skip parse errors.
+    pub unreadable: BTreeMap<String, String>,
 }
 
 /// One ref's claim on a document: which column, at what status, since when.

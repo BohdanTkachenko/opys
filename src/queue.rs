@@ -162,7 +162,7 @@ pub fn build_effective(
                 role: Some(q.role.clone()),
                 limit: q.limit,
             };
-            let sel = next::select(&prj.pcfg, docs, main, &query);
+            let sel = next::select(&prj.pcfg, view, &query);
             if !owned
                 && sel.pickable.is_empty()
                 && sel.claimed.is_empty()

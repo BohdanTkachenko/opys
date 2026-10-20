@@ -48,6 +48,7 @@ fn survey(doc: Doc) -> git::Survey {
             changed: Ok(git::Changed {
                 docs: vec![doc],
                 deleted: vec![],
+                ..git::Changed::default()
             }),
             occupied: BTreeMap::new(),
         }],
@@ -106,6 +107,45 @@ fn invalid_and_terminal_stages_leave_main_effective() {
         if status == "ready" {
             assert_eq!(view.observations.len(), 1);
         }
+    }
+}
+
+#[test]
+fn unreadable_work_ref_blocks_only_its_document_even_with_a_valid_copy() {
+    let prj = project();
+    let main = vec![doc("TASK-0001", "todo", ""), doc("TASK-0002", "todo", "")];
+    for failure in [
+        Err("cannot read ref tree".to_string()),
+        Ok(git::Changed {
+            unreadable: BTreeMap::from([("TASK-0001".into(), "invalid YAML".into())]),
+            ..git::Changed::default()
+        }),
+    ] {
+        let mut surveyed = survey(doc("TASK-0001", "research", ""));
+        let mut broken = surveyed.refs[0].clone();
+        broken.reference.name = "refs/remotes/origin/spec/TASK-0001".into();
+        broken.reference.label = "origin/spec/TASK-0001".into();
+        broken.reference.commit = "different-tip".into();
+        broken.changed = failure;
+        surveyed.refs.push(broken);
+        let view = from_survey(&prj, &main, surveyed, now());
+        let waiting = next::pick_effective(&prj, &view, &query("todo"), now());
+        assert_eq!(waiting.total, 1);
+        assert_eq!(waiting.items[0].id, "TASK-0002");
+        assert!(matches!(
+            waiting.unavailable[0].why,
+            next::Why::Unknown { .. }
+        ));
+        assert_eq!(
+            next::pick_effective(&prj, &view, &query("research"), now()).total,
+            0
+        );
+        assert!(view.observations.iter().any(|observation| {
+            observation.id == "TASK-0001"
+                && observation.target.is_none()
+                && observation.to_string().contains("origin/spec/TASK-0001")
+                && observation.to_string().contains("unreadable")
+        }));
     }
 }
 

@@ -368,6 +368,15 @@ is deterministic, not a judgement of freshness. Undeclared branches remain
 progress only. Without declarations no git is opened; without a repository
 the resolver returns the supplied main corpus and the reader's notice.
 
+A matching open work copy that cannot be parsed or read has an **unknown**
+stage. `next` and queue pickable items exclude that document, including its
+main fallback and any other matching copy, until the error is repaired or the
+ref is merged or removed. Notices name the document, ref and read error;
+`verify` reports a nonfixable `work-branch` observation with those details.
+Ordinary ttl/visit-budget fixes also leave that document alone. Other documents
+remain selectable. List and show can still display the readable fallback with
+the notice; the ordinary progress reader continues skipping malformed blobs.
+
 Presence of `claim_field` means the copy is in progress, on main or on a work
 branch. `next` excludes it and explains who holds it. `queue` lists it under
 `in_progress`, with holder and age, separately from pickable `items`. A claim
@@ -397,7 +406,9 @@ JSON additions are conditional, within the existing schemas:
   "age_seconds": 300 }`; absent timestamps/ages are `null`.
 - `next` adds nonempty `unavailable` explanations with `reason: "occupied"`
   and `ref`, or `reason: "claimed"`, `claim` and an optional `ref`. A named
-  `--explain ID` uses the same shape in `explain`.
+  `--explain ID` uses the same shape in `explain`. Unreadable work copies use
+  `reason: "unknown"`, `ref` and `detail` (the read error), for any requested
+  status of the queried type because their stage cannot be determined.
 - Queue groups add nonempty `in_progress` arrays of queue items carrying
   `claim`. Group `total` still counts pickable items; queue `total` includes
   claimed documents. `-n` limits each array, while totals count all entries.

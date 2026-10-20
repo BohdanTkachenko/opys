@@ -286,7 +286,7 @@ pub fn observations(
         let Some(id) = doc.id() else { continue };
         // A main-side timeout/visit budget cannot move a document while its
         // declared branch holds it. Work-copy observations have no fix target.
-        if view.refs.contains_key(id) {
+        if view.refs.contains_key(id) || view.unknown.contains_key(id) {
             continue;
         }
 

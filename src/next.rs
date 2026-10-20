@@ -227,6 +227,11 @@ pub struct Explanation {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "reason", rename_all = "kebab-case")]
 pub enum Why {
+    Unknown {
+        #[serde(rename = "ref")]
+        reference: String,
+        detail: String,
+    },
     Occupied {
         #[serde(rename = "ref")]
         reference: String,
@@ -275,11 +280,11 @@ pub(crate) struct Selection<'a> {
 /// the filter runs after it.
 pub(crate) fn select<'a>(
     pcfg: &'a ProjectConfig,
-    docs: &'a [Doc],
-    main: &'a [Doc],
+    view: &'a work::Effective<'_>,
     q: &PickQuery,
 ) -> Selection<'a> {
-    let corpus = order::Corpus::with_truth(pcfg, docs, main);
+    let docs = view.docs.as_ref();
+    let corpus = order::Corpus::with_truth(pcfg, docs, view.main.as_ref());
     let mut claimed = Vec::new();
     let mut pickable: Vec<&Doc> = Vec::new();
     let mut blocked: Vec<&Doc> = Vec::new();
@@ -287,6 +292,9 @@ pub(crate) fn select<'a>(
     let mut reasons: HashMap<String, String> = HashMap::new();
     for doc in docs {
         let Some(id) = doc.id() else { continue };
+        if view.unknown.contains_key(id) {
+            continue;
+        }
         if !candidate(pcfg, doc, q) {
             continue;
         }
@@ -413,7 +421,7 @@ pub fn pick_effective(
 ) -> PickResult {
     let main = view.main.as_ref();
     let docs = view.docs.as_ref();
-    let sel = select(&prj.pcfg, docs, main, q);
+    let sel = select(&prj.pcfg, view, q);
     let total = sel.pickable.len();
     let items = sel
         .pickable
@@ -461,7 +469,11 @@ pub fn pick_effective(
                 let occupied = view.refs.contains_key(id) && candidate(&prj.pcfg, doc, q);
                 let claimed =
                     candidate(&prj.pcfg, copy, q) && work::claim(&prj.pcfg, copy, now).is_some();
-                (occupied || claimed)
+                let unknown = view.unknown.contains_key(id)
+                    && q.type_filter
+                        .as_deref()
+                        .is_none_or(|t| prj.pcfg.type_name_for_id(id) == Some(t));
+                (occupied || claimed || unknown)
                     .then(|| explain_effective(prj, view, q, id, now).ok())
                     .flatten()
                     .filter(|e| !e.listed)
@@ -562,6 +574,20 @@ pub fn explain_effective(
             });
         }
     }
+    if let Some(unknown) = view.unknown.get(id) {
+        return Ok(Explanation {
+            id: id.to_string(),
+            listed: false,
+            message: format!(
+                "{id}: not listed — work copy on {} is unreadable; stage unknown: {}",
+                unknown.reference, unknown.detail
+            ),
+            why: Why::Unknown {
+                reference: unknown.reference.clone(),
+                detail: unknown.detail.clone(),
+            },
+        });
+    }
     let status = doc.status().unwrap_or_default().to_string();
     if status != q.status {
         if let Some(reference) = view.refs.get(id).filter(|_| {
@@ -611,7 +637,7 @@ pub fn explain_effective(
             },
         });
     }
-    let sel = select(pcfg, docs, main, q);
+    let sel = select(pcfg, view, q);
     if let Some(detail) = sel.reasons.get(id) {
         return Ok(Explanation {
             id: id.to_string(),

@@ -524,7 +524,11 @@ where
         .filter(|name| !mine.contains_key(*name))
         .filter_map(|name| doc_id_of(name).map(str::to_string))
         .collect();
-    Ok(Changed { docs, deleted })
+    Ok(Changed {
+        docs,
+        deleted,
+        ..Changed::default()
+    })
 }
 
 /// What one ref holds that main does not: the documents added or modified under
@@ -715,18 +719,19 @@ pub fn work_survey(prj: &Project, on_main: &BTreeMap<String, String>) -> Survey 
                         return Ok(None);
                     };
                     let blob = repo.find_object(blob)?.into_blob();
-                    Ok(Doc::parse(
+                    Doc::parse(
                         prj.base.join(basename),
                         &String::from_utf8_lossy(&blob.data),
                     )
-                    .ok())
+                    .map(Some)
+                    .map_err(anyhow::Error::msg)
                 })();
                 match read {
                     Ok(Some(doc)) => changed.docs.push(doc),
                     Ok(None) => {}
-                    Err(e) => out
-                        .notices
-                        .push(format!("git: {}: {id}: {e}", state.reference.label)),
+                    Err(e) => {
+                        changed.unreadable.insert(id.clone(), e.to_string());
+                    }
                 }
             }
         }

@@ -9693,3 +9693,102 @@ fn work_selection_refuses_an_unavailable_truth_baseline() {
             .stderr(predicate::str::contains("cannot establish main baseline"));
     }
 }
+
+#[test]
+#[cfg(feature = "git")]
+fn unreadable_work_copy_is_unavailable_and_observed_without_redispatching_main() {
+    let reference = "refs/heads/spec/TASK-0001";
+    let (dir, mut fx) = work_project(reference, "research", false);
+    assert_eq!(
+        work_json(&dir, &["next", "--status", "research"])["total"],
+        1
+    );
+    let valid_tip = fx.tip(reference).unwrap();
+    fx.write(
+        "opys/TASK-0001.md",
+        work_doc("research", false).replace("tags: [work]", "tags: [work"),
+    );
+    let broken_tip = fx.commit_to(reference, &[valid_tip], "Bob", "malformed YAML");
+    fx.write("opys/TASK-0001.md", work_doc("todo", false));
+    // A due automatic fix must not redispatch the unknown copy either.
+    fx.write(
+        "opys.toml",
+        WORK_BRANCH_CONFIG.replace(
+            "claim_ttl = \"10m\"",
+            "claim_ttl = \"10m\"\nttl = { todo = { after = '10m', then = 'ready' } }",
+        ),
+    );
+    let before = std::fs::read(dir.path().join("opys/TASK-0001.md")).unwrap();
+    for status in ["todo", "research"] {
+        let output = opys(&dir)
+            .args([
+                "next",
+                "--status",
+                status,
+                "--explain",
+                "TASK-0001",
+                "--json",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+        let answer: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            answer["total"], 0,
+            "unknown work copy must not be dispatched"
+        );
+        assert_eq!(answer["unavailable"][0]["id"], "TASK-0001");
+        assert_eq!(answer["unavailable"][0]["reason"], "unknown");
+        assert_eq!(answer["unavailable"][0]["ref"], "spec/TASK-0001");
+        assert_eq!(answer["explain"]["reason"], "unknown");
+        assert!(answer["notices"][0].as_str().unwrap().contains("TASK-0001"));
+        let warning = String::from_utf8(output.stderr).unwrap();
+        assert!(warning.contains("spec/TASK-0001") && warning.contains("unreadable"));
+    }
+    let queue = work_json(&dir, &["queue", "agent"]);
+    for group in queue["groups"].as_array().unwrap() {
+        assert_eq!(group["total"], 0);
+        assert!(group["items"].as_array().unwrap().is_empty());
+    }
+    assert!(queue["notices"][0]
+        .as_str()
+        .unwrap()
+        .contains("spec/TASK-0001"));
+    for args in [vec!["verify"], vec!["verify", "--fix"]] {
+        opys(&dir)
+            .env("OPYS_NOW", "2026-01-01T00:20:00Z")
+            .args(args)
+            .assert()
+            .code(3)
+            .stderr(
+                predicate::str::contains("TASK-0001")
+                    .and(predicate::str::contains("spec/TASK-0001"))
+                    .and(predicate::str::contains("unreadable")),
+            );
+    }
+    assert_eq!(
+        std::fs::read(dir.path().join("opys/TASK-0001.md")).unwrap(),
+        before
+    );
+    assert_eq!(fx.tip(reference), Some(broken_tip));
+
+    // Ordinary progress reads still tolerate malformed blobs without failing
+    // the ref or turning them into occupancy.
+    let prj = opys_engine::project::Project::open(dir.path().to_str().unwrap()).unwrap();
+    let progress = opys_engine::git::survey(
+        &prj,
+        &std::collections::BTreeMap::from([("TASK-0001".into(), "todo".into())]),
+    );
+    assert!(progress.notices.is_empty());
+    assert_eq!(progress.refs.len(), 1);
+    assert!(progress.refs[0].changed.as_ref().unwrap().docs.is_empty());
+    assert!(progress.refs[0].occupied.is_empty());
+
+    fx.write("opys/TASK-0001.md", work_doc("research", false));
+    fx.commit_to(reference, &[broken_tip], "Bob", "repair YAML");
+    fx.write("opys/TASK-0001.md", work_doc("todo", false));
+    let repaired = work_json(&dir, &["next", "--status", "research"]);
+    assert_eq!(repaired["total"], 1);
+    assert!(repaired.get("notices").is_none());
+}

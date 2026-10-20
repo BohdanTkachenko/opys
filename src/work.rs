@@ -44,6 +44,13 @@ pub fn declared(pcfg: &ProjectConfig) -> bool {
     pcfg.types.values().any(|t| !t.work_branches.is_empty())
 }
 
+/// A matching open ref whose document cannot be read. Its stage is unknown;
+/// neither the main fallback nor another matching copy can be dispatched.
+pub struct UnknownCopy {
+    pub reference: String,
+    pub detail: String,
+}
+
 /// A snapshot shared by selection, display and verification. Absent declarations
 /// cost no git access and no document clones.
 pub struct Effective<'a> {
@@ -53,6 +60,7 @@ pub struct Effective<'a> {
     pub main_is_current: bool,
     pub baseline_error: Option<String>,
     pub refs: BTreeMap<String, String>,
+    pub unknown: BTreeMap<String, UnknownCopy>,
     pub observations: Vec<observe::Observation>,
     pub notices: Vec<String>,
 }
@@ -72,6 +80,7 @@ impl Effective<'_> {
             main_is_current: self.main_is_current,
             baseline_error: self.baseline_error,
             refs: self.refs,
+            unknown: self.unknown,
             observations: self.observations,
             notices: self.notices,
         }
@@ -96,6 +105,7 @@ pub fn effective<'a>(prj: &Project, current: &'a [Doc], now: OffsetDateTime) -> 
                 main_is_current: false,
                 baseline_error: Some(error.clone()),
                 refs: BTreeMap::new(),
+                unknown: BTreeMap::new(),
                 observations: Vec::new(),
                 notices: vec![error],
             };
@@ -143,6 +153,7 @@ pub fn from_survey<'a>(
         main_is_current: true,
         baseline_error: None,
         refs: BTreeMap::new(),
+        unknown: BTreeMap::new(),
         observations: Vec::new(),
         notices: survey.notices,
     };
@@ -169,14 +180,20 @@ pub fn from_survey<'a>(
                 .iter()
                 .filter(|s| matches_ref(&s.reference, &branch.reference, id))
                 .filter_map(|s| {
-                    let changed = s.changed.as_ref().ok()?;
-                    if changed.deleted.iter().any(|deleted| deleted == id) {
-                        return None;
-                    }
-                    Some((
-                        &s.reference,
-                        changed.docs.iter().find(|d| d.id() == Some(id))?,
-                    ))
+                    let copy = match &s.changed {
+                        Err(error) => Err(error.as_str()),
+                        Ok(changed) => {
+                            if let Some(error) = changed.unreadable.get(id) {
+                                Err(error.as_str())
+                            } else {
+                                if changed.deleted.iter().any(|deleted| deleted == id) {
+                                    return None;
+                                }
+                                Ok(changed.docs.iter().find(|d| d.id() == Some(id))?)
+                            }
+                        }
+                    };
+                    Some((&s.reference, copy))
                 })
                 .collect();
             // Match identities before deduplicating commits. Among matching
@@ -200,6 +217,24 @@ pub fn from_survey<'a>(
                 ));
             }
             for (reference, copy) in copies {
+                let copy = match copy {
+                    Ok(copy) => copy,
+                    Err(error) => {
+                        let message = format!(
+                            "work copy on {} is unreadable; stage unknown: {error}",
+                            reference.label
+                        );
+                        out.notices.push(format!("git: {id}: {message}"));
+                        out.observations.push(observation(id, message));
+                        out.unknown
+                            .entry(id.to_string())
+                            .or_insert_with(|| UnknownCopy {
+                                reference: reference.label.clone(),
+                                detail: error.to_string(),
+                            });
+                        continue;
+                    }
+                };
                 out.observations.extend(claim_observation(
                     &prj.pcfg,
                     copy,

@@ -461,6 +461,8 @@ that same copy and label its ref. A set `claimed_by` excludes the copy from
 `next`; `queue` shows the holder and age since its last `updated` timestamp.
 An edit renews that age. `verify` observes expired claims, duplicate branches,
 invalid stages and main drifting from `from`, without fixing them automatically.
+An unreadable work copy makes the document unavailable to `next` and queue
+selection, with a notice and a verify observation naming the document and ref.
 
 Main still determines blocker release and completion, including when invoked
 from a work checkout: the resolver reads the committed truth ref as its
