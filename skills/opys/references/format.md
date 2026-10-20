@@ -368,8 +368,14 @@ is deterministic, not a judgement of freshness. Undeclared branches remain
 progress only. Without declarations no git is opened; without a repository
 the resolver returns the supplied main corpus and the reader's notice.
 
-A matching open work copy that cannot be parsed or read has an **unknown**
-stage. `next` and queue pickable items exclude that document, including its
+A work copy is accepted only when it parses, its `id` is a string equal to the
+expected filename/ref id, and its `status` is a string. Both changed-blob decoding
+and the reread of an unchanged blob apply this check. Another file claiming the
+expected id cannot substitute for that file.
+
+A matching open copy that fails this check or cannot be read has an **unknown**
+stage, associated with the expected id even if its frontmatter claims another.
+`next` and queue pickable items exclude that document, including its
 main fallback and any other matching copy, until the error is repaired or the
 ref is merged or removed. Notices name the document, ref and read error;
 `verify` reports a nonfixable `work-branch` observation with those details.

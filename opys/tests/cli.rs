@@ -9792,3 +9792,160 @@ fn unreadable_work_copy_is_unavailable_and_observed_without_redispatching_main()
     assert_eq!(repaired["total"], 1);
     assert!(repaired.get("notices").is_none());
 }
+
+#[cfg(feature = "git")]
+fn assert_invalid_work_identity_or_status(line: &str, replacement: &str, reason: &str) {
+    // Exercise both changed-blob decoding and the equal-blob reread. A second
+    // file impersonating the expected id must not bypass either validation.
+    for (unchanged, impersonator) in [(false, false), (false, true), (true, false), (true, true)] {
+        let config = WORK_BRANCH_CONFIG
+            .replace(
+                "[git]\nbranches = [\"refs/heads/*\", \"refs/remotes/*\"]\n",
+                "",
+            )
+            .replace(
+                "claim_ttl = \"10m\"",
+                "claim_ttl = \"10m\"\nttl = { todo = { after = '10m', then = 'ready' } }",
+            );
+        let dir = project_with(&config);
+        let mut fx = opys_engine::git::fixture::Fixture::init(dir.path());
+        fx.set_head("refs/heads/main");
+        let invalid = work_doc("research", false).replace(line, replacement);
+        fx.write(
+            "opys/TASK-0001.md",
+            if unchanged {
+                invalid.clone()
+            } else {
+                work_doc("todo", false)
+            },
+        );
+        let main = fx.commit("Alice", "main baseline");
+        fx.write("opys/TASK-0001.md", &invalid);
+        fx.write(
+            "work.txt",
+            "keep the work tip distinct even for an equal inventory blob",
+        );
+        if impersonator {
+            fx.write("opys/TASK-9999.md", work_doc("research", false));
+        }
+        let reference = "refs/heads/spec/TASK-0001";
+        let tip = fx.commit_to(reference, &[main], "Bob", "invalid work identity or status");
+        // Current main has a valid document even when its committed blob needs
+        // repair. Only committed work copies supply branch stages.
+        fx.write("opys/TASK-0001.md", work_doc("todo", false));
+        if impersonator {
+            fx.remove("opys/TASK-9999.md");
+        }
+        let before = std::fs::read(dir.path().join("opys/TASK-0001.md")).unwrap();
+        for status in ["todo", "research"] {
+            let output = opys(&dir)
+                .args([
+                    "next",
+                    "--status",
+                    status,
+                    "--explain",
+                    "TASK-0001",
+                    "--json",
+                ])
+                .assert()
+                .success()
+                .get_output()
+                .clone();
+            let answer: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(
+                answer["total"], 0,
+                "unchanged={unchanged}, impersonator={impersonator}"
+            );
+            assert_eq!(answer["unavailable"][0]["reason"], "unknown");
+            assert_eq!(answer["unavailable"][0]["id"], "TASK-0001");
+            assert_eq!(answer["unavailable"][0]["ref"], "spec/TASK-0001");
+            assert_eq!(answer["explain"]["reason"], "unknown");
+            assert!(answer["explain"]["detail"]
+                .as_str()
+                .unwrap()
+                .contains(reason));
+            assert!(answer["notices"][0]
+                .as_str()
+                .unwrap()
+                .contains("spec/TASK-0001"));
+            assert!(String::from_utf8(output.stderr).unwrap().contains(reason));
+        }
+        let queue = work_json(&dir, &["queue", "agent"]);
+        for group in queue["groups"].as_array().unwrap() {
+            assert_eq!(group["total"], 0);
+            assert!(group["items"].as_array().unwrap().is_empty());
+        }
+        assert!(queue["notices"][0].as_str().unwrap().contains(reason));
+        for args in [vec!["verify"], vec!["verify", "--fix"]] {
+            opys(&dir)
+                .env("OPYS_NOW", "2026-01-01T00:20:00Z")
+                .args(args)
+                .assert()
+                .code(3)
+                .stderr(
+                    predicate::str::contains("TASK-0001")
+                        .and(predicate::str::contains("spec/TASK-0001"))
+                        .and(predicate::str::contains(reason)),
+                );
+        }
+        assert_eq!(
+            std::fs::read(dir.path().join("opys/TASK-0001.md")).unwrap(),
+            before
+        );
+        assert_eq!(fx.tip(reference), Some(tip));
+        let prj = opys_engine::project::Project::open(dir.path().to_str().unwrap()).unwrap();
+        let progress = opys_engine::git::survey(
+            &prj,
+            &std::collections::BTreeMap::from([("TASK-0001".into(), "todo".into())]),
+        );
+        assert!(progress.notices.is_empty());
+        assert!(progress.refs[0]
+            .changed
+            .as_ref()
+            .unwrap()
+            .unreadable
+            .is_empty());
+    }
+}
+
+#[test]
+#[cfg(feature = "git")]
+fn invalid_work_copy_missing_id_is_unknown() {
+    assert_invalid_work_identity_or_status("id: TASK-0001\n", "", "id must be a string");
+}
+
+#[test]
+#[cfg(feature = "git")]
+fn invalid_work_copy_mismatched_id_is_unknown() {
+    assert_invalid_work_identity_or_status("id: TASK-0001", "id: TASK-9999", "id does not match");
+}
+
+#[test]
+#[cfg(feature = "git")]
+fn invalid_work_copy_non_string_id_is_unknown() {
+    for value in ["[TASK-0001]", "null", "42"] {
+        assert_invalid_work_identity_or_status(
+            "id: TASK-0001",
+            &format!("id: {value}"),
+            "id must be a string",
+        );
+    }
+}
+
+#[test]
+#[cfg(feature = "git")]
+fn invalid_work_copy_missing_status_is_unknown() {
+    assert_invalid_work_identity_or_status("status: research\n", "", "status must be a string");
+}
+
+#[test]
+#[cfg(feature = "git")]
+fn invalid_work_copy_non_string_status_is_unknown() {
+    for value in ["[research]", "null", "42"] {
+        assert_invalid_work_identity_or_status(
+            "status: research",
+            &format!("status: {value}"),
+            "status must be a string",
+        );
+    }
+}

@@ -546,6 +546,50 @@ pub fn docs_changed_vs_main(
     })
 }
 
+/// Work selection needs a document for this exact filename/ref id, not merely
+/// syntactically valid YAML. Both diff decoding and equal-blob rereads use this
+/// gate; ordinary progress decoding intentionally remains tolerant.
+fn parse_work_copy(path: PathBuf, bytes: &[u8], expected_id: &str) -> Result<Doc, String> {
+    let doc = Doc::parse(path, &String::from_utf8_lossy(bytes))?;
+    match doc.id() {
+        Some(id) if id == expected_id => {}
+        Some(id) => {
+            return Err(format!(
+                "id does not match filename/ref: expected {expected_id}, found {id:?}"
+            ));
+        }
+        None => {
+            return Err(format!(
+                "id must be a string equal to {expected_id} (missing or non-string id)"
+            ));
+        }
+    }
+    if doc.status().is_none() {
+        return Err("status must be a string (missing or non-string status)".into());
+    }
+    Ok(doc)
+}
+
+fn work_docs_changed_vs_main(
+    repo: &gix::Repository,
+    prj: &Project,
+    r: &Ref,
+) -> anyhow::Result<Changed> {
+    let mut unreadable = BTreeMap::new();
+    let mut changed = changed_docs_with(repo, prj, r, |path, bytes| {
+        let id = doc_id_of(path.file_name()?.to_str()?)?;
+        match parse_work_copy(prj.base.join(path), bytes, id) {
+            Ok(doc) => Some(doc),
+            Err(error) => {
+                unreadable.insert(id.to_string(), error);
+                None
+            }
+        }
+    })?;
+    changed.unreadable = unreadable;
+    Ok(changed)
+}
+
 /// One pass of the branch reader: every ref, its diff against main, the
 /// documents it occupies, and the git directory to watch.
 ///
@@ -703,6 +747,7 @@ pub fn work_survey(prj: &Project, on_main: &BTreeMap<String, String>) -> Survey 
                     .any(|w| crate::work::matches_ref(&state.reference, &w.reference, id))
                     || changed.docs.iter().any(|d| d.id() == Some(id))
                     || changed.deleted.contains(id)
+                    || changed.unreadable.contains_key(id)
                 {
                     continue;
                 }
@@ -719,12 +764,9 @@ pub fn work_survey(prj: &Project, on_main: &BTreeMap<String, String>) -> Survey 
                         return Ok(None);
                     };
                     let blob = repo.find_object(blob)?.into_blob();
-                    Doc::parse(
-                        prj.base.join(basename),
-                        &String::from_utf8_lossy(&blob.data),
-                    )
-                    .map(Some)
-                    .map_err(anyhow::Error::msg)
+                    parse_work_copy(prj.base.join(basename), &blob.data, id)
+                        .map(Some)
+                        .map_err(anyhow::Error::msg)
                 })();
                 match read {
                     Ok(Some(doc)) => changed.docs.push(doc),
@@ -813,7 +855,16 @@ where
     for r in found {
         let changed = by_commit
             .entry(r.commit.clone())
-            .or_insert_with(|| docs_changed_vs_main(&repo, prj, &r).map_err(|e| e.to_string()))
+            .or_insert_with(|| {
+                // Work surveys preserve both ref and document identities.
+                // Progress surveys retain their historical tolerant decoder.
+                if identities {
+                    work_docs_changed_vs_main(&repo, prj, &r)
+                } else {
+                    docs_changed_vs_main(&repo, prj, &r)
+                }
+                .map_err(|e| e.to_string())
+            })
             .clone();
         let mut occupied = BTreeMap::new();
         if let Ok(changed) = &changed {

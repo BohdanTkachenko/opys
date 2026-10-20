@@ -463,6 +463,8 @@ An edit renews that age. `verify` observes expired claims, duplicate branches,
 invalid stages and main drifting from `from`, without fixing them automatically.
 An unreadable work copy makes the document unavailable to `next` and queue
 selection, with a notice and a verify observation naming the document and ref.
+This includes copies whose parsed id differs from the filename/ref, or whose
+id or status is missing or is not a string.
 
 Main still determines blocker release and completion, including when invoked
 from a work checkout: the resolver reads the committed truth ref as its
