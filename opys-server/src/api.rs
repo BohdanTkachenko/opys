@@ -1084,32 +1084,7 @@ async fn group_union(
 ) -> Result<Json<UnionView>, ApiError> {
     let Query(filters) = filters?;
     let filter = filters.into_filter();
-    let manager = Arc::clone(&state.manager);
-    let wanted = key.clone();
-    // One lock, taken off the reactor, held for the group's clone and a client
-    // per member. `None` means no such group; an inner `None` means that member
-    // stopped between the group being listed and its client being taken.
-    let (members, branches) = tokio::task::spawn_blocking(move || {
-        let manager = lock(&manager);
-        let group = manager.groups().iter().find(|g| g.key == wanted)?;
-        // The reader's last snapshot, shared rather than copied, taken under the
-        // same lock. It is never computed here: the reader owns the git walk.
-        let branches = manager.branches_for(&wanted);
-        let members: Vec<(Corpus, Option<CorpusClient>)> = group
-            .corpora
-            .iter()
-            .map(|c| {
-                let client = manager.get(&c.cid).map(CorpusHandle::client);
-                let mut c = c.clone();
-                freshen_branch(&mut c, &branches);
-                (c, client)
-            })
-            .collect();
-        Some((members, branches))
-    })
-    .await
-    .map_err(|e| ApiError::internal(format!("building the union view failed: {e}")))?
-    .ok_or_else(|| ApiError::not_found(format!("no such project group: {key}")))?;
+    let (members, branches) = group_sources(&state, &key).await?;
 
     // Unfiltered, because the collision warning is derived from every id the
     // corpora and the branches hold; the request's filter is applied below.
@@ -1148,6 +1123,40 @@ async fn group_union(
         branch_of: branches.branch_of.clone(),
     };
     Ok(Json(union(&rows, &branches, &contested)))
+}
+
+/// The union and flow use the same source snapshot and labels. Clone clients
+/// under the manager lock; actor calls and all merging happen after it drops.
+async fn group_sources(
+    state: &AppState,
+    key: &str,
+) -> Result<(Vec<(Corpus, Option<CorpusClient>)>, Arc<Branches>), ApiError> {
+    let manager = Arc::clone(&state.manager);
+    let wanted = key.to_string();
+    // One lock, taken off the reactor, held for the group's clone and a client
+    // per member. `None` means no such group; an inner `None` means that member
+    // stopped between the group being listed and its client being taken.
+    tokio::task::spawn_blocking(move || {
+        let manager = lock(&manager);
+        let group = manager.groups().iter().find(|g| g.key == wanted)?;
+        // The reader's last snapshot, shared rather than copied, taken under the
+        // same lock. It is never computed here: the reader owns the git walk.
+        let branches = manager.branches_for(&wanted);
+        let members: Vec<(Corpus, Option<CorpusClient>)> = group
+            .corpora
+            .iter()
+            .map(|c| {
+                let client = manager.get(&c.cid).map(CorpusHandle::client);
+                let mut c = c.clone();
+                freshen_branch(&mut c, &branches);
+                (c, client)
+            })
+            .collect();
+        Some((members, branches))
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("building the union view failed: {e}")))?
+    .ok_or_else(|| ApiError::not_found(format!("no such project group: {key}")))
 }
 
 /// Every member's summaries — those matching `filter` — gathered in parallel
@@ -1389,6 +1398,11 @@ struct FlowQuery {
 /// because the blocked count a node greys out is not part of a `PickResult` at
 /// all.
 ///
+/// The optional progress overlay is the union's labeled source snapshot,
+/// restricted to differing non-primary states. It includes unchecked-out refs
+/// and the live files in served worktrees, but never changes the primary
+/// graph's items or counts. Source failures stay errors, with unknown cells.
+///
 /// Nothing here can be bad input but a malformed `?n=`, which the
 /// [`QueryRejection`] turns into a 400: every status in the answer comes from
 /// the project's own config.
@@ -1400,9 +1414,15 @@ async fn flow(
     let Query(query) = query?;
     let cid = primary_cid(&state, &key).await?;
     let limit = query.n.unwrap_or(DEFAULT_NODE_LIMIT);
-    Ok(Json(
-        with_corpus(&state, &cid, move |client| client.flow(limit)).await?,
-    ))
+    let (members, branches) = group_sources(&state, &key).await?;
+    let (view, gathered) = tokio::join!(
+        with_corpus(&state, &cid, move |client| client.flow(limit)),
+        gather_docs(members, DocFilter::default()),
+    );
+    let mut view = view?;
+    let contested = contested_numbers(&gathered, &branches);
+    view.progress = crate::flow::progress(union(&gathered, &branches, &contested), &cid);
+    Ok(Json(view))
 }
 
 #[derive(Debug, Deserialize)]

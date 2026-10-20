@@ -52,6 +52,8 @@ use opys_engine::project_config::ProjectConfig;
 use opys_engine::{lifecycle, observe, refs};
 use serde::Serialize;
 
+use crate::union::UnionView;
+
 /// How many items a node lists when the caller names no `?n=`.
 ///
 /// Deliberately smaller than [`next::DEFAULT_LIMIT`]: a graph node is a card
@@ -83,6 +85,10 @@ pub struct FlowView {
     /// The edges, in first-appearance order, merged across the types that
     /// declare them.
     pub edges: Vec<FlowEdge>,
+    /// Labeled branch and worktree states that differ from this corpus. These
+    /// are progress only: node counts, pickability and items remain main's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<UnionView>,
 }
 
 /// One document type, as the graph's legend needs it.
@@ -239,7 +245,34 @@ pub fn flow(prj: &Project, docs: &[Doc], cid: &str, limit: usize) -> FlowView {
         types,
         nodes,
         edges,
+        progress: None,
     }
+}
+
+/// Keep the union's sources and failures intact while narrowing its rows to
+/// states that can add progress to the graph. A branch deletion is not another
+/// place a document stands, and a timestamp-only edit is not a lifecycle move.
+/// Branch-only documents and title changes remain visible, including when the
+/// primary corpus could not answer and its baseline is explicitly unknown.
+pub fn progress(mut view: UnionView, primary_cid: &str) -> Option<UnionView> {
+    let primary = view
+        .columns
+        .iter()
+        .position(|column| column.cid == primary_cid);
+    view.rows.retain(|row| {
+        let main = primary.and_then(|index| row.cells.get(index));
+        row.cells.iter().enumerate().any(|(index, cell)| {
+            Some(index) != primary
+                && !cell.unknown
+                && cell.status.is_some()
+                && main.is_none_or(|main| cell.status != main.status || cell.title != main.title)
+        })
+    });
+    (view.columns.len() > 1
+        || !view.rows.is_empty()
+        || !view.notices.is_empty()
+        || view.columns.iter().any(|column| column.error.is_some()))
+    .then_some(view)
 }
 
 /// The declared types, in declaration order.
