@@ -987,6 +987,42 @@ node per distinct status, edges from the union of every type's `transitions`,
 and each node's top `n` documents (default 5) taken from this same function, so
 the drawing and the oracle cannot disagree.
 
+### Flow progress across branches
+
+`GET /api/projects/{key}/flow?n=` keeps its primary graph and oracle fields:
+`cid`, `limit`, `types`, `nodes` and `edges`. A node's `total`, `pickable`,
+`items`, `blocked` and `orphaned` still describe the primary corpus; `n` limits
+only those pickable items, never the branch progress displayed by the UI.
+
+The optional `progress` field uses the existing union payload shape:
+`{columns, rows, notices}`. Columns identify served worktrees or configured
+unchecked-out refs, with their distinct labels, kind, commit when present and
+error when unreadable. Each row retains the union's id, title, aligned cells,
+comparison flags and occupancy; a cell has its source key, nullable status and
+title, updated stamp and unknown flag. Cells remain positionally aligned with
+all columns. Rows are restricted to present non-primary status/title differences
+and branch-only documents. Absence and an unreadable source remain distinct;
+an unknown primary cell is never rewritten as a deletion. Errors and notices
+remain visible even when no differing rows can be listed. `progress` is omitted
+for a single-source answer with no notices or errors.
+
+The flow UI combines these labelled versions with every primary document. It
+retains simultaneous statuses and title variants, groups identical id/status/
+title versions without losing sources, and counts unique ids separately from
+versions. A worktree source opens its own corpus document. A ref without a
+checkout is read-only; an existing primary copy is a separate, explicit link.
+Branch blocker state is not inferred from primary. A branch-only undeclared
+status still gets a marked node. Primary `next` picks and transition rules
+remain unchanged: branches are progress, main is truth.
+
+Ref changes and reloads from any member worktree invalidate the page, as do
+membership changes and reconnects. The ref reader retains its configured ref
+scope and backstop; the node does not fetch remotes or merge files. Pure graph,
+next and queue calculations use immutable generation snapshots outside the
+corpus actor. Successful reloads replace the snapshot; failed reloads retain the
+last good generation and expose the load error through normal verification.
+Atomic configuration replacements are watched through the containing directory.
+
 ### Role queues (`opys queue`)
 
 `opys queue [R] [--type T] [-n N] [--json]` lists everything waiting on one

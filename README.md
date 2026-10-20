@@ -741,30 +741,22 @@ on main. Three blanks mean three
   shows the drift and nothing else: nothing here merges anything, because git is
   the merger, and a branch cell does not link anywhere because a branch is not a
   directory to open a file in.
-- **the flow view** — the same project drawn as the lifecycle its config
-  declares: a node per distinct status, merged by name across types (`task`,
-  `bug` and `chore` share one `todo`), and an edge wherever some type's
-  `transitions` map declares the move. A type that declares no transitions
-  contributes its statuses and *no* edges — any status may follow any other,
-  which is not the same thing as every edge. The layout is a small layered one:
-  the statuses documents start at sit in the first column, each target one
-  column past its deepest source, the cycles a left-to-right drawing has to
-  break come back as dashed returns, and disconnected components — the shipped
-  config draws two, for work items and features; this repository's own
-  inventory draws two as well, for features and decisions — stack with a gap.
-  Each node lists the top few documents standing on it, in `opys next` order and
-  from the same function, so the view and `opys next --status <status>` cannot
-  disagree; the rest are counted. An item's number is the one that ordered it —
-  the effective priority, with the document's own beside it when it inherited a
-  smaller one from something it blocks, exactly as the `PRIORITY` column of
-  `opys next` reads. Blocked documents are counted and named on hover rather
-  than listed, because they are not pickable, and stranded ones — the links
-  their type requires no longer hold — are counted separately with the reason.
-  A status no type declares gets a node too, marked `undeclared` (the blank one
-  reads `(no status)`): `opys verify` reports it, and hiding the node here would
-  hide the document with it. Clicking an item opens the document. It is answered
-  from the project's **main** worktree, because that is where pickability is
-  decided.
+- **the flow view** — the project's configured lifecycle, with one node per
+  status shared across types and the permitted transitions between them. Select
+  a status to see all its tickets, including blocked work and progress on other
+  branches. The primary working copy stays visible, and **Ready next · primary**
+  is still the same pickable list as `opys next --status <status>`.
+  Served worktrees contribute their live files, including uncommitted changes;
+  the existing git reader adds configured branch tips that have no checkout.
+  A ticket can appear at `todo` on primary, `implementing` on one branch and
+  `review` on another. Each version names its sources. Identical versions are
+  combined without dropping their branch labels, and tickets created only on a
+  branch appear too. Counts distinguish unique tickets, primary copies and
+  branch versions; type filters and search apply to every version. Worktree
+  chips open that working copy. A ref with no checkout is labelled read-only
+  and never links to a fictional corpus. Unreadable sources retain their errors
+  rather than appearing empty. Nothing here merges branch states or treats a
+  branch's completion as completion on main.
 
 **Ctrl+P** (⌘P on a Mac) or `/` opens the omnibox from any view: a fuzzy
 finder over the corpus's tickets — or every served corpus, from the home page
@@ -783,6 +775,14 @@ another address the dashboard works as before but cannot be installed.
 Everything updates live: the node watches each inventory and pushes events over
 a WebSocket, so an edit you make in your editor — or a write from `opys` in
 another terminal — shows up in the browser without a reload.
+
+The node also watches atomic replacements of `opys.toml`, including checkout
+changes. Expensive pure reads (flow, next and role queues) use immutable cached
+inputs outside the inventory worker, so calculating a graph does not hold up
+cheap counts and document lists. A `corpus is busy` source missed the collection
+request's two-second deadline, usually during a reload or inventory-lock wait.
+It is an unknown result for that request, never evidence that tickets vanished.
+
 
 The port is **6797**, and the node binds loopback only. There is no
 authentication, so the bind address *is* the boundary; while it is on loopback
