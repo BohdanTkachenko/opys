@@ -244,10 +244,11 @@ async fn the_asset_route_cannot_escape_the_bundle() {
 /// cannot hide application growth or get pulled into every page load.
 /// The shared discovery scan, sidebar count and scan-error states bring the
 /// application to ~273 KiB; the role queue page, its live picker/badge and
-/// owner displays bring it to ~294 KiB. Allow 300 KiB without new dependencies.
+/// owner displays bring it to ~294 KiB. Branch progress source labels, filters
+/// and version counts bring it to ~301 KiB; allow 304 KiB without new dependencies.
 #[test]
 fn the_bundle_stays_small() {
-    const APP_CEILING: usize = 300 * 1024;
+    const APP_CEILING: usize = 304 * 1024;
     const LAYOUT_CEILING: usize = 1450 * 1024;
     let (layout, app): (Vec<_>, Vec<_>) = assets::all().partition(|asset| {
         asset.path.starts_with("ui/elk.bundled-") && asset.path.ends_with(".js")

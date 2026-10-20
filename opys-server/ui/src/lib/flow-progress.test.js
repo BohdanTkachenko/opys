@@ -1,0 +1,93 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { affectsFlowProgress, buildFlowProgress, filterFlowDocuments, flowDocumentPath, flowProgressCounts } from './flow-progress.js';
+import { buildWorkflowMap } from './workflow-map.js';
+
+const type = { name: 'task', prefix: 'TASK', statuses: ['todo', 'doing', 'review'], terminal_statuses: [], default_status: 'todo', has_graph: true };
+const columns = [
+  { cid: 'main-cid', label: 'main (primary)', kind: 'worktree' },
+  { cid: 'work-cid', label: 'agent-codex', kind: 'worktree' },
+  { cid: 'ref-123', label: 'agent-claude', kind: 'branch', commit: '123' },
+  { cid: 'ref-456', label: 'agent-agy', kind: 'branch', commit: '456' },
+];
+const cell = (index, status, title = 'Ticket', extra = {}) => ({ cid: columns[index].cid, status, title, unknown: false, ...extra });
+const view = (rows = [], extra = {}) => ({ cid: 'main-cid', types: [type], nodes: [], edges: [], progress: { columns, rows, notices: [], ...extra } });
+const main = [{ id: 'TASK-0001', title: 'Ticket', status: 'todo', type: 'task', blocked: true, priority: 10 },
+  { id: 'TASK-0002', title: 'Unchanged', status: 'review', type: 'task', blocked: false }];
+
+test('flow_progress_retains_all_main_documents_and_deduplicates_snapshots', () => {
+  const input = view([{ id: 'TASK-0001', cells: [cell(0, 'todo'), cell(1, 'doing'), cell(2, 'doing'), cell(3, 'todo')] }]);
+  const original = JSON.stringify(input);
+  const result = buildFlowProgress(input, main);
+  assert.equal(result.documents.length, 3);
+  const truth = result.documents.filter((doc) => doc.primary);
+  assert.deepEqual(truth.map((doc) => doc.id), ['TASK-0001', 'TASK-0002'], 'unchanged main rows absent from progress remain visible');
+  assert.equal(truth[0].blocked, true);
+  assert.equal(truth[0].priority, 10);
+  const branch = result.documents.find((doc) => !doc.primary);
+  assert.equal(branch.status, 'doing');
+  assert.deepEqual(branch.sources.map((source) => source.label), ['agent-codex', 'agent-claude']);
+  assert.equal(branch.blocked, null, 'branch blocker state is unknown, never borrowed from main');
+  assert.deepEqual(flowProgressCounts(result.documents), { tickets: 2, primary: 2, progress: 1 });
+  assert.equal(JSON.stringify(input), original);
+});
+
+test('flow_progress_keeps_concurrent_statuses_titles_and_branch_only_documents', () => {
+  const result = buildFlowProgress(view([
+    { id: 'TASK-0001', cells: [cell(0, 'todo'), cell(1, 'doing'), cell(2, 'review'), cell(3, 'review', 'A different approach')] },
+    { id: 'TASK-0003', cells: [cell(0, null), cell(1, 'research', 'New ticket'), cell(2, 'research', 'New ticket'), cell(3, null)] },
+  ]), main);
+  assert.deepEqual(result.documents.filter((doc) => doc.id === 'TASK-0001').map((doc) => [doc.status, doc.title]),
+    [['todo', 'Ticket'], ['doing', 'Ticket'], ['review', 'Ticket'], ['review', 'A different approach']]);
+  const branchOnly = result.documents.find((doc) => doc.id === 'TASK-0003');
+  assert.equal(branchOnly.primary, false);
+  assert.equal(branchOnly.primaryCid, null);
+  assert.equal(branchOnly.type, 'task');
+  assert.equal(branchOnly.sources.length, 2);
+  const model = buildWorkflowMap(view(), null, result.documents);
+  assert.equal(model.nodes.find((node) => node.status === 'research').declared, false);
+  assert.deepEqual(flowProgressCounts(result.documents), { tickets: 3, primary: 2, progress: 4 });
+});
+
+test('flow_progress_unknown_and_failed_sources_remain_errors_not_documents', () => {
+  const failed = { ...columns[3], error: 'cannot read commit' };
+  const result = buildFlowProgress(view([
+    { id: 'TASK-0001', cells: [cell(0, 'todo'), cell(1, null, null, { unknown: true }), cell(2, null), cell(3, 'doing')] },
+  ], { columns: [...columns.slice(0, 3), failed], notices: ['No remote refs configured'] }), main);
+  assert.equal(result.documents.length, main.length);
+  assert.equal(result.errors.length, 2);
+  assert.ok(result.errors.some((error) => error.label === 'agent-agy' && error.error === 'cannot read commit'));
+  assert.ok(result.errors.some((error) => error.label === 'agent-codex' && error.error.includes('unknown')));
+  assert.deepEqual(result.notices, ['No remote refs configured']);
+});
+
+test('flow_progress_links_only_real_worktrees_and_never_ref_keys', () => {
+  const result = buildFlowProgress(view([{ id: 'TASK-0001', cells: [cell(0, 'todo'), cell(1, 'doing'), cell(2, 'doing'), cell(3, 'review')] }]), main);
+  const doing = result.documents.find((doc) => doc.status === 'doing');
+  assert.equal(flowDocumentPath(doing.sources[0], doing.id), '/corpus/work-cid/doc/TASK-0001');
+  assert.equal(flowDocumentPath(doing.sources[1], doing.id), null);
+  assert.equal(doing.sources[1].cid, null);
+  assert.equal(flowDocumentPath({ kind: 'branch', cid: 'ref-123' }, 'TASK-0001'), null);
+  assert.equal(flowDocumentPath({ kind: 'worktree', cid: 'work/tree' }, 'TASK-0001'), '/corpus/work%2Ftree/doc/TASK-0001');
+});
+
+test('flow_progress_filters_apply_to_every_branch_version_and_source_label', () => {
+  const result = buildFlowProgress(view([{ id: 'TASK-0001', cells: [cell(0, 'todo'), cell(1, 'doing'), cell(2, 'review'), cell(3, 'review', 'Alternative')] }]), main);
+  assert.equal(filterFlowDocuments(result.documents, { hiddenTypes: ['task'] }).length, 0);
+  assert.equal(filterFlowDocuments(result.documents, { status: 'review' }).length, 3);
+  assert.equal(filterFlowDocuments(result.documents, { search: 'alternative' })[0].title, 'Alternative');
+  assert.equal(filterFlowDocuments(result.documents, { search: 'agent-codex' })[0].status, 'doing');
+});
+
+test('flow_progress_refreshes_any_group_corpus_refs_roster_and_reconnect', () => {
+  const group = { corpora: [{ cid: 'main-cid' }, { cid: 'work-cid' }] };
+  const batch = (event) => ({ reconnected: false, events: [event] });
+  for (const event of [{ event: 'corpus-reloaded', cid: 'main-cid' },
+    { event: 'corpus-reloaded', cid: 'work-cid' }, { event: 'refs-changed', project: 'project' },
+    { event: 'corpus-added', cid: 'new' }, { event: 'corpus-removed', cid: 'old' }]) {
+    assert.equal(affectsFlowProgress(batch(event), 'project', group, view()), true);
+  }
+  assert.equal(affectsFlowProgress(batch({ event: 'corpus-reloaded', cid: 'another-project' }), 'project', group, view()), false);
+  assert.equal(affectsFlowProgress(batch({ event: 'refs-changed', project: 'another-project' }), 'project', group, view()), false);
+  assert.equal(affectsFlowProgress({ reconnected: true, events: [] }, 'project', group, view()), true);
+});

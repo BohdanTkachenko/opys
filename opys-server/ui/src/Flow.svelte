@@ -3,7 +3,8 @@
   import Icon from './lib/Icon.svelte';
   import { api } from './lib/api.js';
   import { corpora } from './lib/corpora.svelte.js';
-  import { affects, affectsProject, events } from './lib/events.svelte.js';
+  import { events } from './lib/events.svelte.js';
+  import { affectsFlowProgress, buildFlowProgress, filterFlowDocuments, flowDocumentPath, flowProgressCounts } from './lib/flow-progress.js';
   import { statusTone } from './lib/format.js';
   import { createResource } from './lib/resource.svelte.js';
   import { docPath, href } from './lib/router.svelte.js';
@@ -34,14 +35,18 @@
   $effect(() => {
     const wanted = key;
     return events.subscribe((batch) => {
-      if (affectsProject(batch, wanted) || !graph.data?.cid || affects(batch, graph.data.cid)) {
+      const currentGroup = corpora.groups.find((candidate) => candidate.key === wanted);
+      if (affectsFlowProgress(batch, wanted, currentGroup, graph.data)) {
         graph.run(() => load(wanted), { quiet: true });
       }
     });
   });
   const view = $derived(graph.data);
   const group = $derived(corpora.groups.find((candidate) => candidate.key === key));
-  const documents = $derived((view?.documents ?? []).filter((doc) => !hiddenTypes.includes(doc.type)));
+  const progress = $derived(buildFlowProgress(view, view?.documents ?? []));
+  const documents = $derived(filterFlowDocuments(progress.documents, { hiddenTypes }));
+  const totals = $derived(flowProgressCounts(documents));
+  const allTotals = $derived(flowProgressCounts(progress.documents));
   const allTypesVisible = $derived((view?.types ?? []).every((type) => !hiddenTypes.includes(type.name)));
   const model = $derived(buildWorkflowMap(view, null, documents, hiddenTypes));
   const layoutSignature = $derived(JSON.stringify(model));
@@ -49,9 +54,11 @@
     : null);
   const active = $derived(model.nodes.find((node) => node.id === activeId));
   const currentDocs = $derived(active ? documents.filter((doc) => doc.status === active.status) : []);
-  const shownDocs = $derived(currentDocs.filter((doc) => `${doc.id} ${doc.title}`.toLowerCase().includes(search.toLowerCase()))
-    .sort((a, b) => (a.priority ?? Infinity) - (b.priority ?? Infinity) || a.id.localeCompare(b.id)));
-  const blockers = $derived(currentDocs.filter((doc) => doc.blocked).length);
+  const currentTotals = $derived(flowProgressCounts(currentDocs));
+  const shownDocs = $derived(filterFlowDocuments(currentDocs, { search })
+    .sort((a, b) => Number(b.primary) - Number(a.primary) ||
+      (a.priority ?? Infinity) - (b.priority ?? Infinity) || a.id.localeCompare(b.id)));
+  const blockers = $derived(currentDocs.filter((doc) => doc.primary && doc.blocked).length);
   const nextItems = $derived((view?.nodes.find((node) => node.status === active?.status)?.items ?? []).filter((item) => !hiddenTypes.includes(item.type)));
   const outgoing = $derived(model.edges.filter((edge) => edge.from === activeId));
   const stage = $derived(diagram.data);
@@ -82,7 +89,7 @@
     hiddenTypes = allTypesVisible ? (view?.types ?? []).map((type) => type.name) : [];
     zoom = 1;
   }
-  function count(status) { return documents.filter((doc) => doc.status === status).length; }
+  function counts(status) { return flowProgressCounts(documents.filter((doc) => doc.status === status)); }
   function label(node) { return node?.status || '(no status)'; }
   function connected(edge) { return edge.from === activeId || edge.to === activeId; }
   function arrowMarker(edge, reverse = false) {
@@ -136,17 +143,17 @@
 <div class="workflow-main">
 <header class="head topbar">
   <div class="header-summary">
-    <div class="page-title"><span class="map-icon"><Icon name="flow" size={20} /></span><div><h1>{group?.name ?? 'Lifecycle'} <span>lifecycle</span></h1><p>How work can move, and what is waiting at each stage.</p></div></div>
-    {#if view}<span class="document-total small muted">{#if allTypesVisible}{view.documents.length} documents in this project{:else}{documents.length} of {view.documents.length} documents shown{/if}</span>{/if}
+    <div class="page-title"><span class="map-icon"><Icon name="flow" size={20} /></span><div><h1>{group?.name ?? 'Lifecycle'} <span>lifecycle</span></h1><p>Primary is truth. Branches show work in progress.</p></div></div>
+    {#if view}<span class="document-total small muted">{totals.tickets}{#if !allTypesVisible} of {allTotals.tickets}{/if} tickets · {totals.primary} primary{#if totals.progress} · {totals.progress} branch {totals.progress === 1 ? 'version' : 'versions'}{/if}</span>{/if}
   </div>
   {#if view}
   <nav class="workflow-tabs" aria-label="Visible document types">
-    <button class:active={allTypesVisible} aria-pressed={allTypesVisible} onclick={toggleAllTypes}><span class="type-check">{#if allTypesVisible}<Icon name="check" size={11} />{/if}</span>All types<span>{view.documents.length}</span></button>
+    <button class:active={allTypesVisible} aria-pressed={allTypesVisible} onclick={toggleAllTypes}><span class="type-check">{#if allTypesVisible}<Icon name="check" size={11} />{/if}</span>All types<span>{allTotals.tickets}</span></button>
     {#each view.types as type (type.name)}
       {@const visible = !hiddenTypes.includes(type.name)}
       {@const only = visible && model.types.length === 1}
       <div class="type-control">
-        <button class="type-toggle" class:active={visible} aria-pressed={visible} title={`${visible ? 'Hide' : 'Show'} ${type.name}`} onclick={() => toggleType(type.name)}><span class="type-check">{#if visible}<Icon name="check" size={11} />{/if}</span>{type.name}<span>{view.documents.filter((doc) => doc.type === type.name).length}</span></button>
+        <button class="type-toggle" class:active={visible} aria-pressed={visible} title={`${visible ? 'Hide' : 'Show'} ${type.name}`} onclick={() => toggleType(type.name)}><span class="type-check">{#if visible}<Icon name="check" size={11} />{/if}</span>{type.name}<span>{flowProgressCounts(progress.documents.filter((doc) => doc.type === type.name)).tickets}</span></button>
         <button class="type-only" class:active={only} aria-pressed={only} aria-label={`Show only ${type.name}`} title={`Show only ${type.name}`} onclick={() => showOnlyType(type.name)}>Only</button>
       </div>
     {/each}
@@ -160,6 +167,13 @@
 {#if !view && !graph.error}
   <p class="muted">Loading the lifecycle…</p>
 {:else if view}
+
+    {#if progress.notices.length}
+      <div class="progress-notice notice"><ul>{#each progress.notices as message}<li>{message}</li>{/each}</ul></div>
+    {/if}
+    {#if progress.errors.length}
+      <div class="progress-notice notice bad"><p>Some progress sources did not answer. Their documents are unknown, not absent.</p><ul>{#each progress.errors as source (source.key)}<li><strong>{source.label}:</strong> {source.error}</li>{/each}</ul></div>
+    {/if}
 
     {#if model.types.length}
     <section class="map" aria-label="Project lifecycle graph for visible types">
@@ -184,13 +198,15 @@
           </svg>
           {#each stage.nodes as node (node.id)}
             {@const tone = statusTone(node.status)}
+            {@const total = counts(node.status)}
             <button class="state" class:selected={activeId === node.id} class:terminal={node.terminal} class:unknown={node.declared === false}
               style:--tone={tone ?? 210} style:width={`${node.width}px`} style:height={`${node.height}px`}
               style:transform={`translate(${node.x * scale}px, ${node.y * scale}px) scale(${scale})`}
-              title={`${label(node)} · ${node.types.join(', ')}`} aria-pressed={activeId === node.id} aria-label={`Inspect ${label(node)}: ${count(node.status)} documents`}
+              title={`${label(node)} · ${node.types.join(', ')} · ${total.primary} primary, ${total.progress} branch versions`} aria-pressed={activeId === node.id} aria-label={`Inspect ${label(node)}: ${total.tickets} tickets, ${total.primary} primary, ${total.progress} branch versions`}
               onclick={() => choose(node.id)}>
-                <span class="state-label"><span class="state-dot"></span><span class="mono">{label(node)}</span></span><span class="state-count">{count(node.status)}</span>
+                <span class="state-label"><span class="state-dot"></span><span class="mono">{label(node)}</span></span><span class="state-count">{total.tickets}</span>
                 <span class="state-caption">{node.types.join(' · ') || 'Undeclared status'}</span>
+                {#if view.progress}<span class="state-progress">{total.primary} primary · {total.progress} branch {total.progress === 1 ? 'version' : 'versions'}</span>{/if}
                 {#if node.owners.length}<span class="state-owners">{#each node.owners as owner}<span title={owner}>{owner}</span>{/each}</span>{/if}
             </button>
           {/each}
@@ -219,15 +235,30 @@
       <div class="inspector-body">
       {#if active}
         {#if active.owners.length}<div class="status-owners"><span class="small muted">Waiting on</span>{#each active.owners as owner}<span class="chip">{owner}</span>{/each}</div>{/if}
-        <div class="inspector-heading"><span class="inspector-kicker">Status across visible types</span><h2 class="mono">{label(active)}</h2><div class="status-totals"><strong>{currentDocs.length}</strong> {currentDocs.length === 1 ? 'document' : 'documents'}{#if blockers}<span class="blocked-count"><Icon name="lock" size={11} />{blockers} blocked</span>{/if}</div><p class="owner-counts">{#each active.types as name}<span>{name} {currentDocs.filter((doc) => doc.type === name).length}</span>{/each}</p></div>
-        <div class="movement"><h3>Next moves</h3>{#if outgoing.length}<div class="next-states">{#each outgoing as edge}{@const target = model.nodes.find((node) => node.id === edge.to)}<button title={`Allowed for ${edge.types.join(', ')}${edge.closingTypes.length ? '; close for '+edge.closingTypes.join(', ') : ''}`} onclick={() => choose(target.id)}>{label(target)}{#if edge.closing}<span>close</span>{/if}</button>{/each}</div>{:else}<p>{active.terminal ? 'Final status. Closed work items leave the inventory.' : 'No outgoing transitions configured.'}</p>{/if}</div>
+        <div class="inspector-heading"><span class="inspector-kicker">Status across visible types</span><h2 class="mono">{label(active)}</h2><div class="status-totals"><strong>{currentTotals.tickets}</strong> {currentTotals.tickets === 1 ? 'ticket' : 'tickets'}{#if blockers}<span class="blocked-count"><Icon name="lock" size={11} />{blockers} primary blocked</span>{/if}</div><p class="copy-counts">{currentTotals.primary} primary · {currentTotals.progress} branch {currentTotals.progress === 1 ? 'version' : 'versions'}</p><p class="owner-counts">{#each active.types as name}<span>{name} {flowProgressCounts(currentDocs.filter((doc) => doc.type === name)).tickets}</span>{/each}</p></div>
+        <div class="movement"><h3>Primary next moves</h3>{#if outgoing.length}<div class="next-states">{#each outgoing as edge}{@const target = model.nodes.find((node) => node.id === edge.to)}<button title={`Allowed for ${edge.types.join(', ')}${edge.closingTypes.length ? '; close for '+edge.closingTypes.join(', ') : ''}`} onclick={() => choose(target.id)}>{label(target)}{#if edge.closing}<span>close</span>{/if}</button>{/each}</div>{:else}<p>{active.terminal ? 'Final status. Work items leave the primary inventory when closed.' : 'No outgoing transitions configured on primary.'}</p>{/if}</div>
         {#if nextItems.length}
-          <div class="next-picks"><h3>Ready next <span>opys next</span></h3>{#each nextItems as item}<a href={href(docPath(view.cid, item.id))}><span class="mono">{item.id}</span><strong>{item.title}</strong></a>{/each}</div>
+          <div class="next-picks"><h3>Ready next · primary <span>opys next</span></h3>{#each nextItems as item}<a href={href(docPath(view.cid, item.id))}><span class="mono">{item.id}</span><strong>{item.title}</strong></a>{/each}</div>
         {/if}
-        <div class="document-heading"><h3>All documents</h3><span>{currentDocs.length}</span></div>
+        <div class="document-heading"><h3>Documents and progress</h3><span>{currentDocs.length} {currentDocs.length === 1 ? 'version' : 'versions'}</span></div>
         {#if currentDocs.length}
           <label class="document-search"><Icon name="search" size={13} /><input bind:value={search} placeholder="Filter documents…" aria-label="Filter documents at this status" /></label>
-          <div class="document-list">{#each shownDocs as doc (doc.id)}<a href={href(docPath(view.cid, doc.id))}><span class="document-id mono">{doc.id}<span>{doc.type}{#if doc.blocked}<span class="blocked-label"><Icon name="lock" size={10} />blocked</span>{/if}</span></span><span>{doc.title || doc.id}</span></a>{:else}<p class="empty-inspector">No matching documents.</p>{/each}</div>
+          <div class="document-list">
+            {#each shownDocs as doc (doc.key)}
+              <article class="document-entry" class:progress-copy={!doc.primary}>
+                <span class="document-id mono">{doc.id}<span>{doc.type ?? 'unknown type'}{#if doc.primary && doc.blocked}<span class="blocked-label"><Icon name="lock" size={10} />blocked</span>{/if}</span></span>
+                {#if doc.primary}<a class="document-title" href={href(docPath(view.cid, doc.id))}>{doc.title || doc.id}</a>{:else}<span class="document-title">{doc.title || doc.id}</span>{/if}
+                <div class="document-sources">
+                  {#each doc.sources as source (source.key)}
+                    {@const path = flowDocumentPath(source, doc.id)}
+                    {#if path}<a class="source-chip" class:truth={source.primary} href={href(path)} title={source.primary ? 'Primary working copy: truth for pickability and completion' : 'Open this worktree copy'}>{source.label}{#if source.primary}<strong>truth</strong>{/if}</a>
+                    {:else}<span class="source-chip readonly" title={`Branch with no checkout; read-only${source.commit ? ` at ${source.commit}` : ''}`}>{source.label}<span>read-only</span></span>{/if}
+                  {/each}
+                </div>
+                {#if !doc.primary}<p class="progress-copy-note">Branch progress · blockers unknown{#if doc.primaryCid} · <a href={href(docPath(doc.primaryCid, doc.id))}>primary copy</a>{/if}</p>{/if}
+              </article>
+            {:else}<p class="empty-inspector">No matching documents.</p>{/each}
+          </div>
         {:else}<div class="empty-inspector"><Icon name={active.terminal ? 'check' : 'doc'} size={22} /><p>{active.terminal ? 'Completed items are removed when closed.' : 'No documents at this status.'}</p></div>{/if}
       {:else}<div class="empty-inspector"><p>Select a status on the canvas to see its documents and next moves.</p></div>{/if}
       </div>
@@ -276,6 +307,7 @@
   .state-dot { width:6px; height:6px; border-radius:50%; background:hsl(var(--tone) 65% 48%); flex:none; }
   .state-count { font-size:23px; font-weight:500; line-height:1; font-variant-numeric:tabular-nums; grid-row:span 2; align-self:center; }
   .state-caption { font-size:10px; color:var(--muted); padding-left:13px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  .state-progress { grid-column:1 / -1; color:var(--muted); font-size:9px; white-space:nowrap; }
   .state-owners { display:flex; flex-direction:column; align-items:flex-start; grid-column:1 / -1; gap:3px; overflow:hidden; }
   .state-owners span { border:1px solid var(--border); border-radius:4px; padding:1px 4px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:9px; color:var(--accent); }
   .status-owners { display:flex; align-items:center; flex-wrap:wrap; gap:0.3rem; margin-bottom:0.7rem; }
@@ -296,6 +328,7 @@
   .inspector-title :global(svg) { color:var(--muted); }
   .inspector-body { flex:1; min-height:0; overflow-y:auto; }
   .inspector-heading { padding:1rem 0.95rem; border-bottom:1px solid var(--border); }
+  .copy-counts { margin:0.5rem 0 0; font-size:0.73rem; color:var(--muted); }
   .owner-counts { display:flex; flex-wrap:wrap; gap:0.4rem 0.65rem; margin:0.7rem 0 0; color:var(--muted); font-size:0.7rem; }
   .inspector-kicker { color:var(--muted); font-size:0.75rem; }
   .inspector h2 { margin:0.5rem 0 0.7rem; font-size:1.35rem; font-weight:550; overflow-wrap:anywhere; }
@@ -320,8 +353,20 @@
   .document-search { display:flex; gap:0.4rem; align-items:center; margin:0 0.95rem 0.7rem; padding:0.3rem 0.5rem; border:1px solid var(--border); border-radius:6px; color:var(--muted); }
   .document-search input { width:100%; min-width:0; padding:0; border:0; background:transparent; box-shadow:none; font-size:0.75rem; }
   .document-list { padding:0 0.25rem 0.5rem; }
-  .document-list a { display:block; padding:0.7rem; border-radius:7px; color:var(--fg); font-size:0.8rem; line-height:1.45; text-decoration:none; }
-  .document-list a:hover { background:var(--raised); }
+  .document-entry { margin:0.2rem 0; padding:0.7rem; border-radius:7px; font-size:0.8rem; line-height:1.45; }
+  .document-entry.progress-copy { border-left:2px solid color-mix(in srgb,var(--accent-2) 45%,var(--border)); background:color-mix(in srgb,var(--accent-2) 3%,var(--panel)); }
+  .document-title { display:block; color:var(--fg); text-decoration:none; overflow-wrap:anywhere; }
+  a.document-title:hover { color:var(--accent); text-decoration:underline; }
+  .document-sources { display:flex; flex-wrap:wrap; gap:0.3rem; margin-top:0.5rem; }
+  .source-chip { display:inline-flex; align-items:center; gap:0.3rem; max-width:100%; padding:0.12rem 0.35rem; border:1px solid var(--border); border-radius:4px; color:var(--accent-2); font-size:0.65rem; text-decoration:none; overflow-wrap:anywhere; }
+  a.source-chip:hover { background:var(--raised); border-color:var(--accent); }
+  .source-chip.truth { color:var(--accent); }
+  .source-chip strong { font-weight:500; }
+  .source-chip.readonly>span { color:var(--muted); font-size:0.6rem; white-space:nowrap; }
+  .progress-copy-note { margin:0.4rem 0 0; color:var(--muted); font-size:0.65rem; }
+  .progress-copy-note a { color:inherit; }
+  .progress-notice { flex:none; margin:0.7rem 1.25rem 0; max-height:9rem; overflow:auto; font-size:0.8rem; }
+  .progress-notice ul { margin:0.2rem 0; padding-left:1rem; }
   .document-id { display:flex; align-items:center; justify-content:space-between; color:var(--muted); font-size:0.68rem; margin-bottom:0.3rem; }
   .document-id>span { display:flex; align-items:center; gap:0.5rem; }
   .blocked-label { display:flex; gap:0.2rem; align-items:center; color:var(--warn); font-family:inherit; font-size:0.65rem; }
