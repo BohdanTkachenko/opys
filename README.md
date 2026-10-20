@@ -462,7 +462,11 @@ that same copy and label its ref. A set `claimed_by` excludes the copy from
 An edit renews that age. `verify` observes expired claims, duplicate branches,
 invalid stages and main drifting from `from`, without fixing them automatically.
 
-Main still determines blocker release and completion. Once the branch tip is
+Main still determines blocker release and completion, including when invoked
+from a work checkout: the resolver reads the committed truth ref as its
+baseline there. `verify` still checks local content, but `verify --fix` cannot
+advance an occupied document through an ordinary ttl or visit-budget fix.
+Once the branch tip is
 merged, main's copy takes over even if the branch ref remains. The orchestrator
 sets the landing status, merges, and handles any forge or fetch. Work branches
 require the `git` feature; a project without declarations keeps its existing

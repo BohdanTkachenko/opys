@@ -334,9 +334,15 @@ It matches the substituted template against the reader's ref label, exactly:
 `spec/TASK-0001` matches `spec/{id}`. For an opted-in remote ref,
 `origin/spec/TASK-0001` also matches that template after removing the remote
 name; a template may instead explicitly name `origin/spec/{id}`. Remotes still
-require `[git] branches` patterns and an external fetch. Ref tips are deduplicated
-by commit and labelled by the reader's existing rules. Tips reachable from main
-are merged, even if their refs remain, and no longer select work copies.
+require `[git] branches` patterns and an external fetch. Every admitted ref
+identity participates in matching; an unrelated alias cannot hide a matching
+ref. Matching copies are then deduplicated by commit per document/declaration.
+Of matching aliases at one commit, the first fully qualified name in lexical
+order supplies the label (local heads precede remotes). Ordinary progress
+display retains the reader's existing deduplication rules. Tips reachable from
+main are merged, even if their refs remain, and no longer select work copies.
+Reachability is cached per thread for the last repository, main tip and shallow
+boundary, with no history-depth limit. No matching ref means no ancestry walk.
 For these types, `history` also prints the copy's recorded lifecycle map after
 its commit timeline. A merge commit's first-parent walk can omit branch
 commits; the recorded map preserves all stages without inventing commit data.
@@ -347,8 +353,15 @@ stage, that copy supplies its status, body, fields, owners and ranking inputs.
 copy as `occupied by spec/TASK-0001`. `queue` routes the stage's owner, `list`
 filters the effective fields and status, and `show` labels the selected main or
 work copy. `list --format paths` still names the document's inventory path;
-it is not a checkout locator. Branch copies in `show` use canonical serialization.
+it is not a checkout locator. Copies read from git in `show` use canonical serialization.
 Main's status still determines whether a blocker or a required link releases.
+From a work checkout, the resolver reads the committed truth ref for this
+baseline, independently of the current files. From the truth checkout (or a
+detached checkout at the truth tip), the loaded files remain the baseline,
+including uncommitted changes. `verify` still checks the current files for
+content problems. An unreadable or missing truth baseline in a git repository
+is an explicit command error (exit 2); infallible engine selection returns no
+items and a notice instead of selecting against a work checkout.
 An invalid stage falls back to main and is observed. If several valid copies
 match, the first declaration name, then ref label in lexical order wins; this
 is deterministic, not a judgement of freshness. Undeclared branches remain
@@ -369,6 +382,9 @@ remains the orchestrator's responsibility.
 stages, main leaving `from` while a branch is open, and expired claims as
 `work-branch` observations (exit 3 when no content problems remain). They have
 no fix target; `verify --fix` never merges, edits a branch or clears a claim.
+Ordinary `ttl` and `max_visits` observations are suppressed for occupied
+documents, so their automatic fixes cannot advance main while a work copy
+holds the document.
 The `merged` key declares the landing status; this phase does not audit whether
 an orchestrator chose it after merging or reconstruct deleted refs.
 
@@ -376,7 +392,7 @@ JSON additions are conditional, within the existing schemas:
 
 - `next` items and orphans, and queue items/blocked/orphans/attention carry
   `ref` when a work copy is shown. Queue attention also carries `claim` when
-  present; nonempty top-level `notices` preserve reader warnings.
+  present; nonempty top-level `notices` in next and queue preserve reader warnings.
 - A claim is `{ "holder": "agent-7", "since": "2026-01-01T00:01:00Z",
   "age_seconds": 300 }`; absent timestamps/ages are `null`.
 - `next` adds nonempty `unavailable` explanations with `reason: "occupied"`
