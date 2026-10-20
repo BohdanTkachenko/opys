@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/BohdanTkachenko/opys/compare/v0.13.1...v0.14.0) - 2026-10-20
+
+### Added
+
+- *(server)* serve project and cross-project role queues
+- *(queue)* expose role picks and shared attention queues
+- *(verify)* report source ranges and highlight validation failures
+- *(verify)* seed missing history and expose scoped UI fixes
+
+### Fixed
+
+- *(queue)* align malformed-file findings with node paths
+
 ## [0.13.1](https://github.com/BohdanTkachenko/opys/compare/v0.13.0...v0.13.1) - 2026-10-17
 
 ### Other
