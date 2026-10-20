@@ -9540,3 +9540,156 @@ fn claimed_work_copy_filters_and_verify_fix_do_not_write_main_or_git() {
     );
     assert_eq!(fx.tip("refs/heads/spec/TASK-0001"), Some(tip));
 }
+
+#[test]
+#[cfg(feature = "git")]
+fn work_ref_matching_survives_nonmatching_and_explicit_remote_aliases() {
+    for explicit_remote in [false, true] {
+        let (dir, fx) = work_project("refs/heads/spec/TASK-0001", "research", false);
+        let tip = fx.tip("refs/heads/spec/TASK-0001").unwrap();
+        let expected = if explicit_remote {
+            fx.write(
+                ".git/refs/remotes/origin/spec/TASK-0001",
+                format!("{tip}\n"),
+            );
+            fx.write(
+                "opys.toml",
+                WORK_BRANCH_CONFIG.replace("ref = \"spec/{id}\"", "ref = \"origin/spec/{id}\""),
+            );
+            "origin/spec/TASK-0001"
+        } else {
+            fx.write(".git/refs/heads/aaa", format!("{tip}\n"));
+            "spec/TASK-0001"
+        };
+        let answer = work_json(&dir, &["next", "--status", "research"]);
+        assert_eq!(answer["total"], 1, "explicit remote: {explicit_remote}");
+        assert_eq!(answer["items"][0]["ref"], expected);
+        let waiting = work_json(&dir, &["next", "--status", "todo"]);
+        assert_eq!(waiting["total"], 0);
+        assert_eq!(waiting["unavailable"][0]["ref"], expected);
+        opys(&dir).arg("verify").assert().success();
+    }
+}
+
+#[cfg(feature = "git")]
+fn work_blocker_project(extra: &str) -> (TempDir, opys_engine::git::fixture::Fixture) {
+    let dir = project_with(&WORK_BRANCH_CONFIG.replace(
+        "claim_ttl = \"10m\"",
+        &format!("claim_ttl = \"10m\"\nreleases_blocks = [\"research\", \"ready\"]\n{extra}"),
+    ));
+    let mut fx = opys_engine::git::fixture::Fixture::init(dir.path());
+    fx.set_head("refs/heads/main");
+    fx.write("opys/TASK-0001.md", work_blocker_doc("todo"));
+    fx.write(
+        "opys/TASK-0002.md",
+        work_doc("todo", false)
+            .replace("TASK-0001", "TASK-0002")
+            .replace(
+                "tags: [work]",
+                "tags: [work]\nblocked_by:\n  TASK-0001: Branch task",
+            ),
+    );
+    let main = fx.commit("Alice", "blocked task on main");
+    fx.write("opys/TASK-0001.md", work_blocker_doc("research"));
+    fx.commit_to("refs/heads/spec/TASK-0001", &[main], "Bob", "research");
+    fx.write("opys/TASK-0001.md", work_blocker_doc("todo"));
+    (dir, fx)
+}
+
+#[cfg(feature = "git")]
+fn work_blocker_doc(status: &str) -> String {
+    work_doc(status, false).replace(
+        "tags: [work]",
+        "tags: [work]\nblocks:\n  TASK-0002: Branch task",
+    )
+}
+
+#[test]
+#[cfg(feature = "git")]
+fn work_checkout_uses_actual_main_for_release_and_drift_but_verifies_local_content() {
+    let (dir, fx) = work_blocker_project("");
+    fx.set_head("refs/heads/spec/TASK-0001");
+    fx.write("opys/TASK-0001.md", work_blocker_doc("research"));
+    assert_eq!(work_json(&dir, &["next", "--status", "todo"])["total"], 0);
+    let queue = work_json(&dir, &["queue", "agent"]);
+    let todo = queue["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["status"] == "todo")
+        .unwrap();
+    assert_eq!(todo["blocked"][0]["id"], "TASK-0002");
+    opys(&dir)
+        .args(["list", "--status", "todo", "--blocked", "--format", "ids"])
+        .assert()
+        .success()
+        .stdout("TASK-0002\n");
+    opys(&dir).arg("verify").assert().success();
+    fx.write(
+        "opys/TASK-0001.md",
+        work_blocker_doc("research").replace("tags: [work]", "tags: []"),
+    );
+    opys(&dir).arg("verify").assert().code(1).stderr(
+        predicate::str::contains("tags must be a non-empty list")
+            .and(predicate::str::contains("main is at research").not()),
+    );
+}
+
+#[test]
+#[cfg(feature = "git")]
+fn due_lifecycle_fixes_never_move_occupied_main_or_release_its_blockers() {
+    for policy in [
+        "ttl = { todo = { after = '10m', then = 'ready' } }",
+        "max_visits = { todo = { limit = 1, then = 'ready' } }",
+    ] {
+        let (dir, fx) = work_blocker_project(policy);
+        // Only the occupied task is due: the dependent task has no timeline
+        // at todo long enough for ttl, and is at a different status for visits.
+        let dependent = work_doc("spec-approval", false)
+            .replace("TASK-0001", "TASK-0002")
+            .replace(
+                "tags: [work]",
+                "tags: [work]\nblocked_by:\n  TASK-0001: Branch task",
+            );
+        fx.write("opys/TASK-0002.md", dependent);
+        opys(&dir).args(["config", "validate"]).assert().success();
+        let before = std::fs::read(dir.path().join("opys/TASK-0001.md")).unwrap();
+        opys(&dir)
+            .env("OPYS_NOW", "2026-01-01T00:20:00Z")
+            .args(["verify", "--fix"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("fixed TASK-0001").not());
+        assert_eq!(
+            std::fs::read(dir.path().join("opys/TASK-0001.md")).unwrap(),
+            before,
+            "{policy}"
+        );
+        assert_eq!(
+            work_json(&dir, &["next", "--status", "spec-approval"])["total"],
+            0
+        );
+    }
+}
+
+#[test]
+#[cfg(feature = "git")]
+fn work_selection_refuses_an_unavailable_truth_baseline() {
+    let (dir, fx) = work_blocker_project("");
+    fx.set_head("refs/heads/spec/TASK-0001");
+    fx.write("opys/TASK-0001.md", work_blocker_doc("research"));
+    fx.remove(".git/refs/heads/main");
+    for args in [
+        vec!["next", "--status", "todo"],
+        vec!["queue", "agent"],
+        vec!["list", "--status", "todo"],
+        vec!["show", "TASK-0001"],
+        vec!["verify", "--fix"],
+    ] {
+        opys(&dir)
+            .args(args)
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("cannot establish main baseline"));
+    }
+}

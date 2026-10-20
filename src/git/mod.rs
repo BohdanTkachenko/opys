@@ -45,7 +45,7 @@ mod reader;
 #[cfg(feature = "git")]
 pub use reader::{
     docs_changed_vs_main, occupancy, open, refs, survey, survey_with, timeline, truth_branch,
-    work_survey, Rev,
+    work_main, work_survey, Rev,
 };
 
 // Test support, not public API — hence both the `#[doc(hidden)]` and the gate.
@@ -313,3 +313,8 @@ pub fn occupancy(_prj: &crate::project::Project, _on_main: &[Doc]) -> Occupancy 
 
 #[cfg(not(feature = "git"))]
 pub use survey as work_survey;
+
+#[cfg(not(feature = "git"))]
+pub fn work_main(_prj: &crate::project::Project) -> anyhow::Result<Option<Vec<Doc>>> {
+    Ok(None)
+}

@@ -621,3 +621,36 @@ fn a_survey_with_no_baseline_reads_no_refs_and_still_says_where_to_watch() {
     assert!(surveyed.git_dir.is_some(), "still worth watching");
     assert!(!surveyed.checkouts.is_empty(), "and still worth reporting");
 }
+
+#[test]
+fn work_ancestry_skips_unmatched_refs_reuses_main_tip_and_invalidates_on_change() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut fx, tip) = two_docs_and_a_branch(tmp.path(), "refs/heads/other");
+    fx.write("opys.toml", format!("{CONFIG}\n[types.feature.work_branches.spec]\nref = 'spec/{{id}}'\nfrom = 'planned'\nstages = ['partial']\nmerged = 'done'\n"));
+    let prj = project(tmp.path());
+    let docs = on_main(&prj);
+    let before = reader::ancestry_walks();
+    crate::work::effective(&prj, &docs, crate::observe::now());
+    assert_eq!(
+        reader::ancestry_walks(),
+        before,
+        "unrelated refs need no ancestry walk"
+    );
+    fx.write(".git/refs/heads/spec/FEAT-0001", format!("{tip}\n"));
+    for _ in 0..3 {
+        let view = crate::work::effective(&prj, &docs, crate::observe::now());
+        assert_eq!(view.docs[0].status(), Some("partial"));
+    }
+    assert_eq!(
+        reader::ancestry_walks(),
+        before + 1,
+        "same main tip reuses reachability"
+    );
+    fx.commit("Alice", "advance main");
+    crate::work::effective(&prj, &docs, crate::observe::now());
+    assert_eq!(
+        reader::ancestry_walks(),
+        before + 2,
+        "new main tip invalidates reachability"
+    );
+}

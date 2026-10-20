@@ -205,6 +205,8 @@ pub struct PickResult {
     /// Declared occupancy and claims, including for bare `--explain`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unavailable: Vec<Explanation>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<String>,
 }
 
 /// Why one named document is, or is not, on the list.
@@ -400,16 +402,16 @@ pub fn orphan_reason(
 /// measured against; projects without declarations never open git.
 pub fn pick(prj: &Project, docs: &[Doc], q: &PickQuery, now: OffsetDateTime) -> PickResult {
     let view = work::effective(prj, docs, now);
-    pick_effective(prj, docs, &view, q, now)
+    pick_effective(prj, &view, q, now)
 }
 
 pub fn pick_effective(
     prj: &Project,
-    main: &[Doc],
     view: &work::Effective<'_>,
     q: &PickQuery,
     now: OffsetDateTime,
 ) -> PickResult {
+    let main = view.main.as_ref();
     let docs = view.docs.as_ref();
     let sel = select(&prj.pcfg, docs, main, q);
     let total = sel.pickable.len();
@@ -450,6 +452,7 @@ pub fn pick_effective(
         items,
         orphaned,
         explain: None,
+        notices: view.notices.clone(),
         unavailable: main
             .iter()
             .zip(docs)
@@ -459,7 +462,7 @@ pub fn pick_effective(
                 let claimed =
                     candidate(&prj.pcfg, copy, q) && work::claim(&prj.pcfg, copy, now).is_some();
                 (occupied || claimed)
-                    .then(|| explain_effective(prj, main, view, q, id, now).ok())
+                    .then(|| explain_effective(prj, view, q, id, now).ok())
                     .flatten()
                     .filter(|e| !e.listed)
             })
@@ -530,18 +533,19 @@ pub fn explain(
     now: OffsetDateTime,
 ) -> Result<Explanation> {
     let view = work::effective(prj, docs, now);
-    explain_effective(prj, docs, &view, q, id, now)
+    explain_effective(prj, &view, q, id, now)
 }
 
 pub fn explain_effective(
     prj: &Project,
-    main: &[Doc],
     view: &work::Effective<'_>,
     q: &PickQuery,
     id: &str,
     now: OffsetDateTime,
 ) -> Result<Explanation> {
+    let main = view.main.as_ref();
     let docs = view.docs.as_ref();
+    view.ensure_main()?;
     let doc = prj.find(docs, id)?;
     let pcfg = &prj.pcfg;
     // The precedence, in order. Type and status first: neither is a judgement

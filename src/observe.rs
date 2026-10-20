@@ -274,10 +274,22 @@ pub fn visits(doc: &Doc, status: &str) -> usize {
 /// id keeps the block byte-stable across the fix it just performed. Per
 /// document, an overflow is listed before a stuck — the order `apply_fixes`
 /// resolves them in.
-pub fn observations(prj: &Project, docs: &[Doc], now: OffsetDateTime) -> Vec<Observation> {
-    let mut out = crate::work::effective(prj, docs, now).observations;
+pub fn observations(
+    prj: &Project,
+    docs: &[Doc],
+    now: OffsetDateTime,
+) -> crate::error::Result<Vec<Observation>> {
+    let view = crate::work::effective(prj, docs, now);
+    view.ensure_main()?;
+    let mut out = view.observations;
     for doc in docs {
         let Some(id) = doc.id() else { continue };
+        // A main-side timeout/visit budget cannot move a document while its
+        // declared branch holds it. Work-copy observations have no fix target.
+        if view.refs.contains_key(id) {
+            continue;
+        }
+
         let Some(tname) = prj.pcfg.type_name_for_id(id) else {
             continue;
         };
@@ -290,7 +302,7 @@ pub fn observations(prj: &Project, docs: &[Doc], now: OffsetDateTime) -> Vec<Obs
             .cmp(&crate::refs::id_number(&b.id))
             .then_with(|| a.id.cmp(&b.id))
     });
-    out
+    Ok(out)
 }
 
 /// What [`apply_fixes`] did: the transitions it performed, and the ones the
@@ -552,7 +564,7 @@ mod tests {
             docs.iter().map(|d| d.path.as_path()).collect::<Vec<_>>()
         );
 
-        let out = observations(&prj, &docs, at("2026-06-01T00:00:00Z"));
+        let out = observations(&prj, &docs, at("2026-06-01T00:00:00Z")).unwrap();
         assert_eq!(
             out.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(),
             ["T-0001", "T-0001", "T-0002"]

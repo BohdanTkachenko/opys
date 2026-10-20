@@ -34,7 +34,10 @@ pub fn run(
     let docs: Vec<Doc> = store.all_docs()?.into_iter().map(|(_, d)| d).collect();
     let mut findings = verify::collect_findings(&prj, &docs, parse_errors);
     findings.extend(verify::spelling_findings(&docs, ctx.backend.as_ref()));
-    let result = queue::build(&prj, &docs, &q, observe::now(), &findings);
+    let now = observe::now();
+    let view = crate::work::effective(&prj, &docs, now);
+    view.ensure_main()?;
+    let result = queue::build_effective(&prj, &view, &q, now, &findings);
     for notice in &result.notices {
         eprintln!("warning: {notice}");
     }

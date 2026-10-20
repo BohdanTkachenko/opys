@@ -40,7 +40,7 @@ pub fn run(ctx: &Ctx, fix: bool) -> Result<i32> {
     // has not written anything, so what the backend hands back is still the
     // corpus the store was built from.
     errors.extend(spelling_findings(&docs, ctx.backend.as_ref()));
-    let mut observations = crate::observe::observations(&prj, &docs, crate::observe::now());
+    let mut observations = crate::observe::observations(&prj, &docs, crate::observe::now())?;
 
     // A fix is an ordinary `set-status` along the graph the config declares, and
     // `config validate` is what checks that graph leaves a fixed document a way
@@ -80,7 +80,7 @@ pub fn run(ctx: &Ctx, fix: bool) -> Result<i32> {
             errors = collect_findings(&prj, &docs, parse_errors);
             errors.extend(spelling_findings(&docs, ctx.backend.as_ref()));
             errors.extend(refused_findings(&docs, fixes.refused));
-            observations = crate::observe::observations(&prj, &docs, crate::observe::now());
+            observations = crate::observe::observations(&prj, &docs, crate::observe::now())?;
         }
     }
 
@@ -106,7 +106,7 @@ pub fn fix_core(
     let seeded = super::history::seed_missing(prj, store, only)?;
     let docs: Vec<Doc> = store.all_docs()?.into_iter().map(|(_, doc)| doc).collect();
     // Seed first: timing and visit budgets must see the reconstructed history.
-    let observations: Vec<_> = crate::observe::observations(prj, &docs, crate::observe::now())
+    let observations: Vec<_> = crate::observe::observations(prj, &docs, crate::observe::now())?
         .into_iter()
         .filter(|observation| only.is_none_or(|id| observation.id == id))
         .collect();

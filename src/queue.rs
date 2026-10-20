@@ -118,8 +118,18 @@ pub fn build(
     now: OffsetDateTime,
     findings: &[Finding],
 ) -> QueueResult {
-    let main = docs;
-    let view = crate::work::effective(prj, main, now);
+    let view = crate::work::effective(prj, docs, now);
+    build_effective(prj, &view, q, now, findings)
+}
+
+pub fn build_effective(
+    prj: &Project,
+    view: &crate::work::Effective<'_>,
+    q: &QueueQuery,
+    now: OffsetDateTime,
+    findings: &[Finding],
+) -> QueueResult {
+    let main = view.main.as_ref();
     let docs = view.docs.as_ref();
     let mut groups = Vec::new();
     let mut waiting = HashSet::new();
@@ -332,6 +342,6 @@ pub fn build(
         groups,
         attention,
         project_problems,
-        notices: view.notices,
+        notices: view.notices.clone(),
     }
 }

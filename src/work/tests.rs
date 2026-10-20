@@ -82,16 +82,15 @@ fn branch_statuses_never_release_main_blockers() {
     );
     assert_eq!(view.docs[0].status(), Some("research"));
     assert_eq!(
-        next::pick_effective(&prj, &main, &view, &query("research"), now()).total,
+        next::pick_effective(&prj, &view, &query("research"), now()).total,
         1
     );
-    let answer = next::pick_effective(&prj, &main, &view, &query("todo"), now());
+    let answer = next::pick_effective(&prj, &view, &query("todo"), now());
     assert_eq!(answer.total, 0);
-    let why =
-        next::explain_effective(&prj, &main, &view, &query("todo"), "TASK-0002", now()).unwrap();
+    let why = next::explain_effective(&prj, &view, &query("todo"), "TASK-0002", now()).unwrap();
     assert!(matches!(why.why, next::Why::Blocked { .. }));
     assert_eq!(
-        next::pick_effective(&prj, &main, &view, &query("research"), now()).items[0].blocks,
+        next::pick_effective(&prj, &view, &query("research"), now()).items[0].blocks,
         1
     );
 }

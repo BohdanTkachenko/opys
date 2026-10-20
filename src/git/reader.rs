@@ -163,6 +163,12 @@ struct Candidate {
 /// checkout the caller is reading from disk, so reporting it would show every
 /// project as occupying itself.
 pub fn refs(repo: &gix::Repository, cfg: &Git) -> anyhow::Result<Vec<Ref>> {
+    read_refs(repo, cfg, false)
+}
+
+// Work matching needs every admitted identity; display callers keep their
+// traditional one-label-per-commit projection.
+fn read_refs(repo: &gix::Repository, cfg: &Git, identities: bool) -> anyhow::Result<Vec<Ref>> {
     let truth = truth_branch(repo, cfg);
     let truth_name = truth.as_ref().map(|(n, _)| n.clone());
     let truth_commit = truth.as_ref().map(|(_, c)| *c);
@@ -201,7 +207,7 @@ pub fn refs(repo: &gix::Repository, cfg: &Git) -> anyhow::Result<Vec<Ref>> {
     let mut out: Vec<Ref> = found
         .into_iter()
         .filter(|(oid, _)| Some(*oid) != truth_commit)
-        .map(|(oid, mut c)| {
+        .flat_map(|(oid, mut c)| {
             c.refs.sort();
             c.worktrees.sort();
             c.paths.sort();
@@ -214,11 +220,23 @@ pub fn refs(repo: &gix::Repository, cfg: &Git) -> anyhow::Result<Vec<Ref>> {
                 (None, Some(dir)) => format!("worktrees/{dir}"),
                 (None, None) => String::new(),
             };
-            Ref {
-                name,
-                commit: oid.to_hex().to_string(),
-                label,
-                worktrees: c.paths,
+            if identities && !c.refs.is_empty() {
+                c.refs
+                    .iter()
+                    .map(|name| Ref {
+                        name: name.clone(),
+                        label: short_name(name),
+                        commit: oid.to_hex().to_string(),
+                        worktrees: c.paths.clone(),
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                vec![Ref {
+                    name,
+                    commit: oid.to_hex().to_string(),
+                    label,
+                    worktrees: c.paths,
+                }]
             }
         })
         .collect();
@@ -542,26 +560,119 @@ pub fn survey(prj: &Project, on_main: &BTreeMap<String, String>) -> Survey {
     survey_with(prj, |_, _| Some(on_main.clone()))
 }
 
+#[cfg(test)]
+thread_local! { static ANCESTRY_WALKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+pub(crate) fn ancestry_walks() -> usize {
+    ANCESTRY_WALKS.with(|n| n.get())
+}
+
+// One entry per thread bounds memory and avoids a global lock. Commit ancestry
+// is immutable; a changed truth tip, repository or shallow boundary invalidates
+// it. Failed walks are never cached, and there is no history-depth cutoff.
+struct AncestryCache {
+    directory: PathBuf,
+    main: ObjectId,
+    shallow: Option<Vec<u8>>,
+    commits: std::sync::Arc<BTreeSet<String>>,
+}
+thread_local! {
+    static WORK_ANCESTRY: std::cell::RefCell<Option<AncestryCache>> = const { std::cell::RefCell::new(None) };
+}
+
+fn reachable_from_main(
+    repo: &gix::Repository,
+    main: ObjectId,
+) -> anyhow::Result<std::sync::Arc<BTreeSet<String>>> {
+    let directory = repo.common_dir().to_path_buf();
+    let shallow = match std::fs::read(directory.join("shallow")) {
+        Ok(bytes) => Some(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e.into()),
+    };
+    WORK_ANCESTRY.with(|slot| {
+        if let Some(cached) = slot
+            .borrow()
+            .as_ref()
+            .filter(|c| c.directory == directory && c.main == main && c.shallow == shallow)
+        {
+            return Ok(cached.commits.clone());
+        }
+        let mut commits = BTreeSet::new();
+        #[cfg(test)]
+        ANCESTRY_WALKS.with(|n| n.set(n.get() + 1));
+        for info in repo.rev_walk([main]).all()? {
+            commits.insert(info?.id.to_hex().to_string());
+        }
+        let commits = std::sync::Arc::new(commits);
+        *slot.borrow_mut() = Some(AncestryCache {
+            directory,
+            main,
+            shallow,
+            commits: commits.clone(),
+        });
+        Ok(commits)
+    })
+}
+
+/// The actual truth corpus when the invoking checkout is not main. `None`
+/// means its loaded corpus already is main, or there is no repository at all.
+/// Never substitute a work checkout when a repository's baseline is unreadable.
+pub fn work_main(prj: &Project) -> anyhow::Result<Option<Vec<Doc>>> {
+    let Some(repo) = open(prj)? else {
+        return Ok(None);
+    };
+    let Some((name, main)) = truth_branch(&repo, &prj.pcfg.git) else {
+        anyhow::bail!("no truth branch (`[git] main`, or `master`)");
+    };
+    let (head, commit) = head_of(&repo, repo.git_dir());
+    if head.as_deref() == Some(short_name(&name).as_str())
+        || (head.is_none() && commit == Some(main))
+    {
+        return Ok(None);
+    }
+    let base = base_components(prj, &repo);
+    let Some(tree) = base_tree(&repo, &repo.find_commit(main)?.tree()?, &base)? else {
+        return Ok(Some(Vec::new()));
+    };
+    let mut docs = Vec::new();
+    for (_, (path, oid)) in doc_blobs(&repo, tree)? {
+        let blob = repo.find_object(oid)?.into_blob();
+        docs.push(
+            Doc::parse(prj.base.join(path), &String::from_utf8_lossy(&blob.data))
+                .map_err(|e| anyhow::anyhow!("reading the truth ref: {e}"))?,
+        );
+    }
+    Ok(Some(docs))
+}
+
 /// Work branches stop being open when their tip is reachable from main, even
 /// if the orchestrator keeps the ref after merging. Reuse the ordinary survey
 /// and walk commit objects in process; never infer a merge from equal statuses.
 pub fn work_survey(prj: &Project, on_main: &BTreeMap<String, String>) -> Survey {
-    let mut out = survey(prj, on_main);
+    let mut out = survey_with_identities(prj, |_, _| Some(on_main.clone()), true);
+    out.refs.retain(|s| {
+        on_main.keys().any(|id| {
+            prj.pcfg.type_name_for_id(id).is_some_and(|name| {
+                prj.pcfg.types[name]
+                    .work_branches
+                    .values()
+                    .any(|w| crate::work::matches_ref(&s.reference, &w.reference, id))
+            })
+        })
+    });
     if out.refs.is_empty() {
         return out;
     }
-    let merged = (|| -> anyhow::Result<BTreeSet<String>> {
+    let merged = (|| -> anyhow::Result<std::sync::Arc<BTreeSet<String>>> {
         let Some(repo) = open(prj)? else {
-            return Ok(BTreeSet::new());
+            return Ok(Default::default());
         };
         let Some((_, main)) = truth_branch(&repo, &prj.pcfg.git) else {
-            return Ok(BTreeSet::new());
+            return Ok(Default::default());
         };
-        let mut commits = BTreeSet::new();
-        for info in repo.rev_walk([main]).all()? {
-            commits.insert(info?.id.to_hex().to_string());
-        }
-        Ok(commits)
+        reachable_from_main(&repo, main)
     })();
     match merged {
         Ok(commits) => out.refs.retain(|s| !commits.contains(&s.reference.commit)),
@@ -643,6 +754,13 @@ pub fn survey_with<F>(prj: &Project, on_main: F) -> Survey
 where
     F: FnOnce(&Truth, &[Checkout]) -> Option<BTreeMap<String, String>>,
 {
+    survey_with_identities(prj, on_main, false)
+}
+
+fn survey_with_identities<F>(prj: &Project, on_main: F, identities: bool) -> Survey
+where
+    F: FnOnce(&Truth, &[Checkout]) -> Option<BTreeMap<String, String>>,
+{
     let mut out = Survey::default();
     let repo = match open(prj) {
         Ok(Some(repo)) => repo,
@@ -679,15 +797,19 @@ where
         return out;
     };
     let on_main = &on_main;
-    let found = match refs(&repo, &prj.pcfg.git) {
+    let found = match read_refs(&repo, &prj.pcfg.git, identities) {
         Ok(found) => found,
         Err(e) => {
             out.notices.push(format!("git: {e}"));
             return out;
         }
     };
+    let mut by_commit = BTreeMap::new();
     for r in found {
-        let changed = docs_changed_vs_main(&repo, prj, &r).map_err(|e| e.to_string());
+        let changed = by_commit
+            .entry(r.commit.clone())
+            .or_insert_with(|| docs_changed_vs_main(&repo, prj, &r).map_err(|e| e.to_string()))
+            .clone();
         let mut occupied = BTreeMap::new();
         if let Ok(changed) = &changed {
             for doc in &changed.docs {

@@ -2,7 +2,10 @@
 //!
 //! This is a read projection, never a corpus to flush. Main remains the lookup
 //! for blocker release and completion. Undeclared branches are not consulted.
-use std::{borrow::Cow, collections::BTreeMap};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+};
 
 use serde::Serialize;
 use time::OffsetDateTime;
@@ -45,30 +48,74 @@ pub fn declared(pcfg: &ProjectConfig) -> bool {
 /// cost no git access and no document clones.
 pub struct Effective<'a> {
     pub docs: Cow<'a, [Doc]>,
+    /// Release decisions always resolve against this independently established baseline.
+    pub main: Cow<'a, [Doc]>,
+    pub main_is_current: bool,
+    pub baseline_error: Option<String>,
     pub refs: BTreeMap<String, String>,
     pub observations: Vec<observe::Observation>,
     pub notices: Vec<String>,
 }
 
 impl Effective<'_> {
+    pub fn ensure_main(&self) -> crate::error::Result<()> {
+        match &self.baseline_error {
+            Some(error) => Err(crate::error::usage(error.clone())),
+            None => Ok(()),
+        }
+    }
+
+    fn into_owned(self) -> Effective<'static> {
+        Effective {
+            docs: Cow::Owned(self.docs.into_owned()),
+            main: Cow::Owned(self.main.into_owned()),
+            main_is_current: self.main_is_current,
+            baseline_error: self.baseline_error,
+            refs: self.refs,
+            observations: self.observations,
+            notices: self.notices,
+        }
+    }
+
     pub fn reference(&self, doc: &Doc) -> Option<String> {
         self.refs.get(doc.id()?).cloned()
     }
 }
 
-pub fn effective<'a>(prj: &Project, main: &'a [Doc], now: OffsetDateTime) -> Effective<'a> {
-    let survey = if declared(&prj.pcfg) {
-        git::work_survey(
-            prj,
-            &main
-                .iter()
-                .filter_map(|d| Some((d.id()?.to_string(), d.status()?.to_string())))
-                .collect(),
-        )
-    } else {
-        git::Survey::default()
+pub fn effective<'a>(prj: &Project, current: &'a [Doc], now: OffsetDateTime) -> Effective<'a> {
+    if !declared(&prj.pcfg) {
+        return from_survey(prj, current, git::Survey::default(), now);
+    }
+    let baseline = match git::work_main(prj) {
+        Ok(baseline) => baseline,
+        Err(error) => {
+            let error = format!("cannot establish main baseline: {error}");
+            return Effective {
+                docs: Cow::Owned(Vec::new()),
+                main: Cow::Owned(Vec::new()),
+                main_is_current: false,
+                baseline_error: Some(error.clone()),
+                refs: BTreeMap::new(),
+                observations: Vec::new(),
+                notices: vec![error],
+            };
+        }
     };
-    from_survey(prj, main, survey, now)
+    let main = baseline.as_deref().unwrap_or(current);
+    let survey = git::work_survey(
+        prj,
+        &main
+            .iter()
+            .filter_map(|d| Some((d.id()?.to_string(), d.status()?.to_string())))
+            .collect(),
+    );
+    if baseline.is_some() {
+        let mut view = from_survey(prj, main, survey, now).into_owned();
+        view.main_is_current = false;
+        view
+    } else {
+        from_survey(prj, current, survey, now)
+    }
 }
 
 /// Ref labels are the reader's labels: `spec/ID` locally and
@@ -92,6 +139,9 @@ pub fn from_survey<'a>(
 ) -> Effective<'a> {
     let mut out = Effective {
         docs: Cow::Borrowed(main),
+        main: Cow::Borrowed(main),
+        main_is_current: true,
+        baseline_error: None,
         refs: BTreeMap::new(),
         observations: Vec::new(),
         notices: survey.notices,
@@ -114,7 +164,7 @@ pub fn from_survey<'a>(
         };
         let t = &prj.pcfg.types[name];
         for (kind, branch) in &t.work_branches {
-            let copies: Vec<_> = survey
+            let mut copies: Vec<_> = survey
                 .refs
                 .iter()
                 .filter(|s| matches_ref(&s.reference, &branch.reference, id))
@@ -129,6 +179,13 @@ pub fn from_survey<'a>(
                     ))
                 })
                 .collect();
+            // Match identities before deduplicating commits. Among matching
+            // aliases prefer the first fully qualified name (local before
+            // remote); different commits keep the documented label order.
+            copies.sort_by(|(a, _), (b, _)| a.name.cmp(&b.name));
+            let mut seen = BTreeSet::new();
+            copies.retain(|(r, _)| seen.insert(r.commit.clone()));
+            copies.sort_by(|(a, _), (b, _)| a.label.cmp(&b.label));
             if copies.len() > 1 {
                 out.observations.push(observation(
                     id,

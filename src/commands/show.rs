@@ -1,6 +1,6 @@
-//! `opys show` — print a document's file verbatim (contractually the on-disk
-//! bytes, not the canonical reconstruction). The path is resolved through the
-//! corpus store; `--refs` appends code mentions of the id per `[file_refs]`.
+//! `opys show` — print a document's file verbatim, or its canonical effective
+//! copy when read from git for a type with work branches. The path is resolved
+//! through the corpus store; `--refs` appends code mentions per `[file_refs]`.
 
 use crate::commands::{print_lines, print_text};
 use crate::error::Result;
@@ -11,35 +11,41 @@ use crate::Ctx;
 pub fn run(ctx: &Ctx, id: &str, refs: bool) -> Result<()> {
     let prj = ctx.open()?;
     let (mut store, _) = ctx.load(&prj)?;
-    let dkey = store.dkey_of(id)?;
-    let relpath = store
-        .scalar(
-            "SELECT path FROM docs WHERE dkey = $1",
-            vec![dkey.into_param()],
-        )?
-        .as_ref()
-        .and_then(g_str)
-        .unwrap_or_default();
-    let path = prj.base.join(relpath);
-    let mut text = std::fs::read_to_string(&path)?;
-    if prj
+    let text = if prj
         .pcfg
         .type_name_for_id(id)
         .is_some_and(|n| !prj.pcfg.types[n].work_branches.is_empty())
     {
         let docs: Vec<_> = store.all_docs()?.into_iter().map(|(_, d)| d).collect();
         let view = crate::work::effective(&prj, &docs, crate::observe::now());
+        view.ensure_main()?;
         for notice in &view.notices {
             eprintln!("warning: {notice}");
         }
         let doc = prj.find(&view.docs, id)?;
         if let Some(reference) = view.reference(doc) {
             print_lines([format!("--- work copy from {reference} ---")])?;
-            text = doc.to_text();
+            doc.to_text()
         } else {
             print_lines(["--- main copy ---"])?;
+            if view.main_is_current {
+                std::fs::read_to_string(&doc.path)?
+            } else {
+                doc.to_text()
+            }
         }
-    }
+    } else {
+        let dkey = store.dkey_of(id)?;
+        let relpath = store
+            .scalar(
+                "SELECT path FROM docs WHERE dkey = $1",
+                vec![dkey.into_param()],
+            )?
+            .as_ref()
+            .and_then(g_str)
+            .unwrap_or_default();
+        std::fs::read_to_string(prj.base.join(relpath))?
+    };
     // Print verbatim, without forcing a trailing newline.
     print_text(&text)?;
 

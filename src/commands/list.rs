@@ -64,16 +64,27 @@ pub fn run(
         let loaded = store.all_docs()?;
         let main: Vec<Doc> = loaded.iter().map(|(_, d)| d.clone()).collect();
         let view = crate::work::effective(&prj, &main, crate::observe::now());
+        view.ensure_main()?;
         for notice in &view.notices {
             eprintln!("warning: {notice}");
         }
-        for ((key, _), doc) in loaded.iter().zip(view.docs.iter()) {
-            if view.reference(doc).is_some() {
-                store.put_doc(&prj.pcfg, Some(*key), doc)?;
+        // Main may have a different set of ids and paths from this checkout.
+        // Rebuild the read projection by id, never by positional zip.
+        let keys: BTreeMap<_, _> = loaded
+            .iter()
+            .filter_map(|(key, doc)| Some((doc.id()?.to_string(), *key)))
+            .collect();
+        for (key, doc) in &loaded {
+            if !view.docs.iter().any(|copy| copy.id() == doc.id()) {
+                store.delete_doc(*key)?;
             }
         }
+        for doc in view.docs.iter() {
+            let key = doc.id().and_then(|id| keys.get(id)).copied();
+            store.put_doc(&prj.pcfg, key, doc)?;
+        }
         work_refs = view.refs;
-        main_docs = Some(main);
+        main_docs = Some(view.main.into_owned());
     }
 
     // Ahead of the SELECT: both want `&mut store`. Each flag pays only for what

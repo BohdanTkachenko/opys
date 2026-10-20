@@ -461,7 +461,8 @@ type = "role"
 
         let (_dir, project, mut store) = fixture();
         let now = crate::history::parse("2026-01-03T00:00:00Z").unwrap();
-        let observations = crate::observe::observations(&project, &[current(&mut store)], now);
+        let observations =
+            crate::observe::observations(&project, &[current(&mut store)], now).unwrap();
         assert_eq!(observations.len(), 1);
         let fixes = crate::observe::apply_fixes(&project, &mut store, &observations);
         assert!(fixes.refused.is_empty(), "{:?}", fixes.refused);
