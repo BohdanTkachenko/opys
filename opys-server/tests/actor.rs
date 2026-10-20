@@ -284,6 +284,54 @@ fn external_edit_triggers_debounced_reload() {
 }
 
 #[test]
+fn repeated_atomic_config_replacements_reload_the_actual_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let corpus = fixture(&root);
+    let (handle, mut rx) = spawn(corpus);
+    let initial = next_event(&mut rx, Duration::from_secs(3));
+    assert!(
+        matches!(initial, Some(Event::CorpusReloaded { .. })),
+        "initial load event: {initial:?}; state: {:?}",
+        handle.verify()
+    );
+
+    for status in ["pending", "review", "approved"] {
+        let text = CONFIG.replace(
+            "statuses = [\"open\", \"closed\"]",
+            &format!("statuses = [\"open\", \"closed\", \"{status}\"]"),
+        );
+        let staged = root.join("opys.toml.next");
+        std::fs::write(&staged, text).unwrap();
+        std::fs::rename(staged, root.join("opys.toml")).unwrap();
+
+        assert!(
+            matches!(
+                next_event(&mut rx, Duration::from_secs(3)),
+                Some(Event::CorpusReloaded { .. })
+            ),
+            "atomic replacement adding {status} must publish a reload"
+        );
+        let graph = handle.flow(5).unwrap();
+        assert!(
+            graph.types[0].statuses.iter().any(|s| s == status),
+            "the reload must use the replacement config: {graph:?}"
+        );
+        assert!(
+            next_event(&mut rx, Duration::from_millis(500)).is_none(),
+            "an atomic replacement must settle to one reload"
+        );
+    }
+
+    std::fs::write(root.join("README.md"), "# Unrelated root document\n").unwrap();
+    assert!(
+        next_event(&mut rx, Duration::from_millis(800)).is_none(),
+        "the config's parent watch must ignore unrelated root markdown"
+    );
+    handle.shutdown();
+}
+
+#[test]
 fn verify_problems_are_cached_and_refreshed() {
     let tmp = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(tmp.path()).unwrap();

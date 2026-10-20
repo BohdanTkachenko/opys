@@ -14,6 +14,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -380,22 +381,9 @@ enum Request {
         Vec<String>,
         SyncSender<Result<std::result::Result<QueryResult, String>>>,
     ),
-    /// Same double `Result` as [`Request::Query`]: the inner `Err` is the
-    /// caller's bad `status`/`type` (a 400), the outer one is ours (a 500).
-    Next(
-        PickQuery,
-        SyncSender<Result<std::result::Result<PickResult, String>>>,
-    ),
-    Queue(
-        QueueQuery,
-        SyncSender<Result<std::result::Result<QueueResult, QueueQueryError>>>,
-    ),
-    Roles(SyncSender<Result<Vec<RoleQueue>>>),
-    /// The lifecycle graph, with the per-node item cap. A single `Result`,
-    /// unlike [`Request::Next`]: the only thing the caller supplies is a
-    /// number, and every status in the answer comes from the config itself, so
-    /// there is no user vocabulary left to refuse.
-    Flow(usize, SyncSender<Result<FlowView>>),
+    /// Cheap immutable input for pure builders. Their CPU work runs on the
+    /// caller, so a flow or role queue cannot hold up cached stats/docs reads.
+    Snapshot(SyncSender<Result<ReadSnapshot>>),
     Verify(SyncSender<VerifyStatus>),
     Stats(SyncSender<CorpusStats>),
     /// Reload now and reply when done — the deterministic path for tests and
@@ -430,6 +418,16 @@ pub struct CorpusHandle {
     pub corpus: Corpus,
     client: CorpusClient,
     join: Option<JoinHandle<()>>,
+}
+
+/// One successful load's immutable inputs. The store stays on its actor thread;
+/// only config, reconstructed documents and cached findings are shared. A
+/// failed reload retains these exact inputs, just as it retains summaries.
+#[derive(Clone)]
+struct ReadSnapshot {
+    prj: Arc<Project>,
+    docs: Arc<Vec<Doc>>,
+    findings: Arc<Vec<opys_engine::diagnostics::Finding>>,
 }
 
 fn gone() -> OpysError {
@@ -477,7 +475,16 @@ impl CorpusClient {
     /// query problem (a 400 for the API); the outer one is ours — the actor is
     /// gone, or the corpus never loaded.
     pub fn next(&self, q: PickQuery) -> Result<std::result::Result<PickResult, String>> {
-        self.ask(|reply| Request::Next(q, reply))?
+        let snapshot = self.snapshot()?;
+        if let Err(error) = q.validate(&snapshot.prj.pcfg) {
+            return Ok(Err(error));
+        }
+        Ok(Ok(next::pick(
+            &snapshot.prj,
+            &snapshot.docs,
+            &q,
+            observe::now(),
+        )))
     }
 
     /// A role queue using the actor's cached verify findings.
@@ -485,18 +492,55 @@ impl CorpusClient {
         &self,
         q: QueueQuery,
     ) -> Result<std::result::Result<QueueResult, QueueQueryError>> {
-        self.ask(|reply| Request::Queue(q, reply))?
+        let snapshot = self.snapshot()?;
+        if !roles::declared(&snapshot.prj.pcfg, &q.role) {
+            return Ok(Err(QueueQueryError::UnknownRole));
+        }
+        if let Err(message) = q.validate(&snapshot.prj.pcfg) {
+            return Ok(Err(QueueQueryError::Invalid(message)));
+        }
+        Ok(Ok(queue::build(
+            &snapshot.prj,
+            &snapshot.docs,
+            &q,
+            observe::now(),
+            &snapshot.findings,
+        )))
     }
 
     /// Every declared role and its queue, from one warm snapshot.
     pub fn roles(&self) -> Result<Vec<RoleQueue>> {
-        self.ask(Request::Roles)?
+        let snapshot = self.snapshot()?;
+        let now = observe::now();
+        Ok(roles::names(&snapshot.prj.pcfg)
+            .into_iter()
+            .map(|name| RoleQueue {
+                name: name.to_string(),
+                description: roles::description(&snapshot.prj.pcfg, name).map(str::to_string),
+                queue: queue::build(
+                    &snapshot.prj,
+                    &snapshot.docs,
+                    &QueueQuery {
+                        role: name.to_string(),
+                        type_filter: None,
+                        limit: next::DEFAULT_LIMIT,
+                    },
+                    now,
+                    &snapshot.findings,
+                ),
+            })
+            .collect())
     }
 
     /// The lifecycle graph over the warm store, with `limit` items per node.
     /// Fails only if the actor is gone or the corpus never loaded.
     pub fn flow(&self, limit: usize) -> Result<FlowView> {
-        self.ask(|reply| Request::Flow(limit, reply))?
+        let snapshot = self.snapshot()?;
+        Ok(flow::flow(&snapshot.prj, &snapshot.docs, &self.cid, limit))
+    }
+
+    fn snapshot(&self) -> Result<ReadSnapshot> {
+        self.ask(Request::Snapshot)?
     }
 
     /// Cached verify problems and the time they were computed.
@@ -643,11 +687,12 @@ impl Drop for CorpusHandle {
 /// Everything the actor keeps between requests. Replaced wholesale on a
 /// successful reload, never mutated piecemeal.
 struct Warm {
-    prj: Project,
+    prj: Arc<Project>,
     store: Store,
+    docs: Arc<Vec<Doc>>,
     summaries: Vec<DocSummary>,
     problems: Vec<String>,
-    findings: Vec<opys_engine::diagnostics::Finding>,
+    findings: Arc<Vec<opys_engine::diagnostics::Finding>>,
     fixable_problems: Vec<String>,
     loaded_at: String,
 }
@@ -718,17 +763,12 @@ impl Actor {
             Request::Query(sql, params, reply) => {
                 let _ = reply.send(self.run_query(&sql, &params));
             }
-            Request::Next(q, reply) => {
-                let _ = reply.send(self.run_next(&q));
-            }
-            Request::Queue(q, reply) => {
-                let _ = reply.send(self.run_queue(&q));
-            }
-            Request::Roles(reply) => {
-                let _ = reply.send(self.run_roles());
-            }
-            Request::Flow(limit, reply) => {
-                let _ = reply.send(self.run_flow(limit));
+            Request::Snapshot(reply) => {
+                let _ = reply.send(self.warm().map(|warm| ReadSnapshot {
+                    prj: Arc::clone(&warm.prj),
+                    docs: Arc::clone(&warm.docs),
+                    findings: Arc::clone(&warm.findings),
+                }));
             }
             Request::Verify(reply) => {
                 let _ = reply.send(VerifyStatus {
@@ -742,7 +782,7 @@ impl Actor {
                     findings: self
                         .warm
                         .as_ref()
-                        .map(|w| w.findings.clone())
+                        .map(|w| w.findings.as_ref().clone())
                         .unwrap_or_default(),
                     loaded_at: self.warm.as_ref().map(|w| w.loaded_at.clone()),
                     fixable_problems: if self.load_error.is_none() {
@@ -813,7 +853,7 @@ impl Actor {
         let mut doc = warm.store.doc(dkey)?;
         doc.body = body;
         doc.title = opys_engine::body::title(&doc.body);
-        let mut docs: Vec<Doc> = warm.store.all_docs()?.into_iter().map(|(_, d)| d).collect();
+        let mut docs = warm.docs.as_ref().clone();
         for candidate in &mut docs {
             if candidate.path == doc.path {
                 *candidate = doc.clone();
@@ -850,83 +890,6 @@ impl Actor {
             .store
             .run_user_query(sql, params)
             .map(|(columns, rows)| QueryResult { columns, rows }))
-    }
-
-    /// Answer the pick oracle from the warm store.
-    ///
-    /// The documents are reconstructed per request, exactly as [`run_query`]
-    /// rebuilds the projections per request: [`next::pick`] needs whole
-    /// documents (relation maps and all) and the summaries the board is served
-    /// from carry no `blocks` map, so effective priority cannot come from them.
-    ///
-    /// [`run_query`]: Actor::run_query
-    fn run_next(&mut self, q: &PickQuery) -> Result<std::result::Result<PickResult, String>> {
-        let warm = self.warm()?;
-        if let Err(msg) = q.validate(&warm.prj.pcfg) {
-            return Ok(Err(msg));
-        }
-        let docs: Vec<Doc> = warm.store.all_docs()?.into_iter().map(|(_, d)| d).collect();
-        Ok(Ok(next::pick(&warm.prj, &docs, q, observe::now())))
-    }
-
-    fn run_queue(
-        &mut self,
-        q: &QueueQuery,
-    ) -> Result<std::result::Result<QueueResult, QueueQueryError>> {
-        let warm = self.warm()?;
-        if !roles::declared(&warm.prj.pcfg, &q.role) {
-            return Ok(Err(QueueQueryError::UnknownRole));
-        }
-        if let Err(message) = q.validate(&warm.prj.pcfg) {
-            return Ok(Err(QueueQueryError::Invalid(message)));
-        }
-        let docs: Vec<Doc> = warm.store.all_docs()?.into_iter().map(|(_, d)| d).collect();
-        Ok(Ok(queue::build(
-            &warm.prj,
-            &docs,
-            q,
-            observe::now(),
-            &warm.findings,
-        )))
-    }
-
-    fn run_roles(&mut self) -> Result<Vec<RoleQueue>> {
-        let warm = self.warm()?;
-        let docs: Vec<Doc> = warm.store.all_docs()?.into_iter().map(|(_, d)| d).collect();
-        let now = observe::now();
-        Ok(roles::names(&warm.prj.pcfg)
-            .into_iter()
-            .map(|name| RoleQueue {
-                name: name.to_string(),
-                description: roles::description(&warm.prj.pcfg, name).map(str::to_string),
-                queue: queue::build(
-                    &warm.prj,
-                    &docs,
-                    &QueueQuery {
-                        role: name.to_string(),
-                        type_filter: None,
-                        limit: next::DEFAULT_LIMIT,
-                    },
-                    now,
-                    &warm.findings,
-                ),
-            })
-            .collect())
-    }
-
-    /// Answer the flow graph from the warm store.
-    ///
-    /// The documents are reconstructed **once** and every node is computed from
-    /// that one set — the alternative, one `/next` request per status, would
-    /// reconstruct the whole corpus a dozen times over and still could not
-    /// answer the blocked count, which is not part of a [`PickResult`].
-    ///
-    /// The cid is cloned before [`Actor::warm`] borrows `self` mutably.
-    fn run_flow(&mut self, limit: usize) -> Result<FlowView> {
-        let cid = self.corpus.cid.clone();
-        let warm = self.warm()?;
-        let docs: Vec<Doc> = warm.store.all_docs()?.into_iter().map(|(_, d)| d).collect();
-        Ok(flow::flow(&warm.prj, &docs, &cid, limit))
     }
 
     /// Load afresh and swap the cache in. A failure leaves the previous warm
@@ -991,7 +954,14 @@ impl Actor {
             .iter()
             .map(|finding| finding.message.clone())
             .collect();
-        let fixable_problems = verify::fixable_problems(&prj, &docs)?;
+        // No displayed findings means there are no problems a preview could
+        // remove. Avoid building a second store and re-verifying a clean
+        // corpus; time observations are advertised through their own path.
+        let fixable_problems = if findings.is_empty() {
+            Vec::new()
+        } else {
+            verify::fixable_problems(&prj, &docs)?
+        };
         // One index for the whole board: blocked is derived from the corpus, not
         // from a document on its own (ADR-0050 decision 3).
         let corpus = refs::Corpus::of_docs(&prj.pcfg, &docs);
@@ -1000,11 +970,12 @@ impl Actor {
             .filter_map(|d| summary(&prj, d, &corpus))
             .collect();
         Ok(Warm {
-            prj,
+            prj: Arc::new(prj),
             store,
+            docs: Arc::new(docs),
             summaries,
             problems,
-            findings,
+            findings: Arc::new(findings),
             fixable_problems,
             loaded_at: now_rfc3339(),
         })
@@ -1205,19 +1176,27 @@ fn relation(doc: &Doc, field: &str) -> BTreeMap<String, String> {
 /// exhausted inotify watches). That degrades to a corpus that reloads only when
 /// asked, which is worth strictly more than refusing to serve it.
 fn spawn_watcher(corpus: &Corpus, tx: mpsc::Sender<Message>) -> Option<RecommendedWatcher> {
+    let base = corpus.base.clone();
+    let config = corpus.root.join("opys.toml");
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         let Ok(event) = res else { return };
-        if is_change(&event) {
+        if is_change(&event, &base, &config) {
             // The actor debounces; this only has to be cheap and non-blocking.
             let _ = tx.send(Message::Fs);
         }
     })
     .ok()?;
     watcher.watch(&corpus.base, RecursiveMode::Recursive).ok()?;
-    // The config sits outside the inventory directory, so it needs its own
-    // watch. Not fatal if it fails — config edits are rare and the periodic
-    // re-check catches them.
-    let _ = watcher.watch(&corpus.root.join("opys.toml"), RecursiveMode::NonRecursive);
+    // Watch the config's parent, not its inode: editors and checkout tools can
+    // replace the file by rename. A file watch would follow the old inode and
+    // miss every later save. The callback filters this extra watch to the
+    // config itself, so an unrelated markdown file at the root stays quiet.
+    // A root inventory is already covered by the recursive watch above.
+    if corpus.base != corpus.root {
+        // Keep the useful inventory watch if the extra one cannot be installed;
+        // explicit reloads still retry reading the config.
+        let _ = watcher.watch(&corpus.root, RecursiveMode::NonRecursive);
+    }
     Some(watcher)
 }
 
@@ -1227,11 +1206,14 @@ fn spawn_watcher(corpus: &Corpus, tx: mpsc::Sender<Message>) -> Option<Recommend
 /// every document in the corpus — so counting `Access` events as changes makes
 /// the corpus reload itself in a loop, forever, for as long as the server runs.
 /// `a_quiet_corpus_does_not_reload_itself` in `tests/actor.rs` pins this.
-fn is_change(event: &notify::Event) -> bool {
+fn is_change(event: &notify::Event, base: &Path, config: &Path) -> bool {
     if matches!(event.kind, notify::EventKind::Access(_)) {
         return false;
     }
-    event.paths.iter().any(|p| is_relevant(p))
+    event
+        .paths
+        .iter()
+        .any(|p| p == config || (p.starts_with(base) && is_relevant(p)))
 }
 
 /// Whether a changed path should cause a reload. Editors write swap files and
@@ -1250,6 +1232,99 @@ fn is_relevant(path: &Path) -> bool {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn snapshot_fixture() -> (tempfile::TempDir, CorpusHandle) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let base = root.join("inventory");
+        std::fs::create_dir(&base).unwrap();
+        std::fs::write(root.join("opys.toml"),
+            "base = \"inventory\"\n[types.note]\nprefix = \"NOTE\"\nstatuses = [\"open\"]\ndefault_status = \"open\"\n").unwrap();
+        std::fs::write(base.join("NOTE-0001.md"),
+            "---\nid: NOTE-0001\nstatus: open\nhistory:\n  \"2026-01-01T00:00:00.000000Z\": open\n---\n\n# First\n").unwrap();
+        let corpus = Corpus {
+            cid: "snapshot-test".into(),
+            root,
+            base,
+            group: "snapshot-test".into(),
+            branch: None,
+            is_primary: true,
+            error: None,
+        };
+        let (events, _) = broadcast::channel(16);
+        let handle = CorpusHandle::spawn(
+            corpus,
+            Box::new(opys_backend_markdown_local::MarkdownLocal),
+            events,
+        );
+        (temp, handle)
+    }
+
+    #[test]
+    fn read_snapshots_reuse_inputs_and_swap_only_after_a_successful_reload() {
+        let (_temp, handle) = snapshot_fixture();
+        let first = handle.client.snapshot().unwrap();
+        let same = handle.client.snapshot().unwrap();
+        assert!(Arc::ptr_eq(&first.prj, &same.prj));
+        assert!(Arc::ptr_eq(&first.docs, &same.docs));
+        assert!(Arc::ptr_eq(&first.findings, &same.findings));
+        assert_eq!(first.docs[0].title, "First");
+        assert!(handle.verify().unwrap().fixable_problems.is_empty());
+
+        let path = handle.corpus.base.join("NOTE-0001.md");
+        let source = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(path, source.replace("# First", "# Second")).unwrap();
+        handle.reload().unwrap();
+        let fresh = handle.client.snapshot().unwrap();
+        assert!(!Arc::ptr_eq(&first.docs, &fresh.docs));
+        assert!(!Arc::ptr_eq(&first.prj, &fresh.prj));
+        assert!(!Arc::ptr_eq(&first.findings, &fresh.findings));
+        assert_eq!(fresh.docs[0].title, "Second");
+        assert_eq!(
+            first.docs[0].title, "First",
+            "an in-flight read keeps its generation"
+        );
+
+        std::fs::write(handle.corpus.root.join("opys.toml"), "not = = toml").unwrap();
+        handle.reload().unwrap();
+        let last_good = handle.client.snapshot().unwrap();
+        assert!(Arc::ptr_eq(&fresh.docs, &last_good.docs));
+        assert!(Arc::ptr_eq(&fresh.prj, &last_good.prj));
+        assert!(Arc::ptr_eq(&fresh.findings, &last_good.findings));
+        assert!(handle.stats().unwrap().load_error.is_some());
+        handle.shutdown();
+    }
+
+    #[test]
+    fn a_paused_snapshot_consumer_does_not_block_cached_docs_or_stats() {
+        let (_temp, handle) = snapshot_fixture();
+        let client = handle.client();
+        let (started, ready) = mpsc::sync_channel(1);
+        let (release, wait) = mpsc::sync_channel(1);
+        let builder = std::thread::spawn(move || {
+            let snapshot = client.snapshot().unwrap();
+            started.send(()).unwrap();
+            wait.recv().unwrap();
+            flow::flow(&snapshot.prj, &snapshot.docs, &client.cid, 5)
+        });
+        ready.recv_timeout(Duration::from_secs(3)).unwrap();
+
+        let client = handle.client();
+        let (finished, result) = mpsc::sync_channel(1);
+        let reader = std::thread::spawn(move || {
+            let docs = client.docs(DocFilter::default()).unwrap();
+            let stats = client.stats().unwrap();
+            finished.send((docs.len(), stats.doc_count)).unwrap();
+        });
+        let read = result.recv_timeout(Duration::from_secs(1));
+        // Always let the consumer finish, including on a failed assertion.
+        release.send(()).unwrap();
+        let graph = builder.join().unwrap();
+        reader.join().unwrap();
+        assert_eq!(read.unwrap(), (1, 1));
+        assert_eq!(graph.nodes[0].items[0].title, "First");
+        handle.shutdown();
+    }
 
     #[test]
     fn only_documents_and_config_are_relevant() {
@@ -1304,21 +1379,62 @@ mod tests {
         let opened =
             N::new(EventKind::Access(AccessKind::Open(AccessMode::Any))).add_path(doc.clone());
         assert!(
-            !is_change(&opened),
+            !is_change(
+                &opened,
+                Path::new("/p/inventory"),
+                Path::new("/p/opys.toml")
+            ),
             "opening a document is what loading does; it must not trigger another load"
         );
         let read = N::new(EventKind::Access(AccessKind::Read)).add_path(doc.clone());
-        assert!(!is_change(&read));
+        assert!(!is_change(
+            &read,
+            Path::new("/p/inventory"),
+            Path::new("/p/opys.toml")
+        ));
 
         let written =
             N::new(EventKind::Modify(ModifyKind::Data(DataChange::Any))).add_path(doc.clone());
-        assert!(is_change(&written), "a write is a change");
+        assert!(
+            is_change(
+                &written,
+                Path::new("/p/inventory"),
+                Path::new("/p/opys.toml")
+            ),
+            "a write is a change"
+        );
         let created = N::new(EventKind::Create(CreateKind::File)).add_path(doc);
-        assert!(is_change(&created));
+        assert!(is_change(
+            &created,
+            Path::new("/p/inventory"),
+            Path::new("/p/opys.toml")
+        ));
 
         let noise = N::new(EventKind::Modify(ModifyKind::Data(DataChange::Any)))
             .add_path(PathBuf::from("/p/inventory/notes.txt"));
-        assert!(!is_change(&noise), "only documents and the config matter");
+        assert!(
+            !is_change(&noise, Path::new("/p/inventory"), Path::new("/p/opys.toml")),
+            "only documents and the config matter"
+        );
+    }
+
+    #[test]
+    fn root_watch_ignores_unrelated_markdown_and_accepts_config_renames() {
+        use notify::event::{ModifyKind, RenameMode};
+        use notify::{Event as N, EventKind};
+
+        let base = Path::new("/p/inventory");
+        let config = Path::new("/p/opys.toml");
+        let root_markdown =
+            N::new(EventKind::Modify(ModifyKind::Any)).add_path(PathBuf::from("/p/README.md"));
+        assert!(!is_change(&root_markdown, base, config));
+        let staged =
+            N::new(EventKind::Modify(ModifyKind::Any)).add_path(PathBuf::from("/p/opys.toml.next"));
+        assert!(!is_change(&staged, base, config));
+        let renamed = N::new(EventKind::Modify(ModifyKind::Name(RenameMode::Both)))
+            .add_path(PathBuf::from("/p/opys.toml.next"))
+            .add_path(config.to_path_buf());
+        assert!(is_change(&renamed, base, config));
     }
 
     #[test]
