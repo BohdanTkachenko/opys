@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/BohdanTkachenko/opys/compare/v0.13.1...v0.14.0) - 2026-10-20
+
+### Added
+
+- *(queue)* expose role picks and shared attention queues
+- *(roles)* declare status ownership and clear visit overrides
+- *(web)* explain read-only configuration and disable edits
+- *(web)* highlight exact validation ranges in the markdown editor
+- *(verify)* report source ranges and highlight validation failures
+- *(web)* toggle graph types and keep navigation expanded
+- *(web)* redesign lifecycle as an ELK map with a document inspector
+- *(verify)* seed missing history and expose scoped UI fixes
+
+### Fixed
+
+- *(queue)* align malformed-file findings with node paths
+- *(web)* show checkbox save refusals beside the affected source
+- *(web)* validate drafts while editing markdown
+- *(web)* associate editor validation messages with the source field
+- *(web)* keep lifecycle inspector open and restore navigation toggle
+- *(web)* enable Fix only for repairable verification findings
+
+### Other
+
+- *(roles)* specify ownership queues and agent workflow
+
 ## [0.13.1](https://github.com/BohdanTkachenko/opys/compare/v0.13.0...v0.13.1) - 2026-10-17
 
 ### Fixed

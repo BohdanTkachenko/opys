@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/BohdanTkachenko/opys/compare/opys-server-v0.13.1...opys-server-v0.14.0) - 2026-10-20
+
+### Added
+
+- *(ui)* add role queues and status owner views
+- *(server)* serve project and cross-project role queues
+- *(queue)* expose role picks and shared attention queues
+- *(web)* explain read-only configuration and disable edits
+- *(web)* show discovered projects in the sidebar
+- *(web)* highlight exact validation ranges in the markdown editor
+- *(verify)* report source ranges and highlight validation failures
+- *(web)* zoom lifecycle canvas with Ctrl and mouse wheel
+- *(web)* use lifecycle canvas with docked status pane
+- *(web)* streamline lifecycle header and graph footer
+- *(web)* add one-click type isolation to lifecycle graph
+- *(web)* toggle graph types and keep navigation expanded
+- *(web)* show the complete live project lifecycle on one board
+- *(web)* redesign lifecycle as an ELK map with a document inspector
+- *(web)* focus lifecycle arrows on the selected status
+- *(verify)* seed missing history and expose scoped UI fixes
+
+### Fixed
+
+- *(web)* report registration results and refresh projects immediately
+- *(web)* show only drifted entries in project comparisons
+- *(web)* show checkbox save refusals beside the affected source
+- *(web)* validate drafts while editing markdown
+- *(web)* handle lazy layout assets in caching and bundle checks
+- *(web)* align markdown task checkboxes and remove duplicate bullets
+- *(web)* wrap lifecycle type filters onto new lines
+- *(web)* keep lifecycle inspector open and restore navigation toggle
+- *(web)* highlight Only for the sole visible type
+- *(web)* draw reciprocal transitions as one two-way connection
+- *(web)* draw permitted lifecycle transitions as visible arrows
+- *(web)* enable Fix only for repairable verification findings
+- *(web)* highlight card verification problems
+- *(web)* collapse verification issue details by default
+- *(web)* include path-based verification errors on cards
+- *(web)* display verification issue details on corpus boards
+
+### Other
+
+- *(web)* unify checkbox appearance with site controls
+- *(web)* soften lifecycle arrows and highlight connected statuses
+
 ## [0.13.1](https://github.com/BohdanTkachenko/opys/compare/opys-server-v0.13.0...opys-server-v0.13.1) - 2026-10-17
 
 ### Added
