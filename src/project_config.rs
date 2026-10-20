@@ -930,7 +930,6 @@ impl ProjectConfig {
                     ));
                 }
             }
-            let mut stages = BTreeMap::new();
             for (branch, w) in &t.work_branches {
                 for status in std::iter::once(&w.from)
                     .chain(&w.stages)
@@ -940,14 +939,6 @@ impl ProjectConfig {
                         errors.push(format!(
                             "type '{name}': work branch '{branch}': '{status}' is not a status"
                         ));
-                    }
-                }
-                for stage in &w.stages {
-                    if stages
-                        .insert(stage, branch)
-                        .is_some_and(|previous| previous != branch)
-                    {
-                        errors.push(format!("type '{name}': work branch stage '{stage}' belongs to more than one branch"));
                     }
                 }
                 if !w.reference.contains("{id}")
@@ -2260,11 +2251,22 @@ merged = "ready"
                 .to_string()
                 .contains(message));
         }
-        let duplicate = format!("{CONFIG}\n[types.task.work_branches.other]\nref = 'other/{{id}}'\nfrom = 'todo'\nstages = ['research']\nmerged = 'ready'\n");
-        assert!(load(&duplicate)
-            .unwrap_err()
-            .to_string()
-            .contains("belongs to more than one branch"));
+    }
+
+    #[test]
+    #[cfg(feature = "git")]
+    fn work_branch_config_allows_shared_stages() {
+        let config = CONFIG
+            .replace(
+                "\"research\", \"ready\"",
+                "\"research\", \"needs-human\", \"ready\", \"done\"",
+            )
+            .replace(
+                "stages = [\"research\"]",
+                "stages = [\"research\", \"needs-human\"]",
+            );
+        let shared = format!("{config}\n[types.task.work_branches.impl]\nref = 'impl/{{id}}'\nfrom = 'ready'\nstages = ['needs-human']\nmerged = 'done'\n");
+        assert!(load(&shared).unwrap().validate().is_empty());
     }
 
     #[test]

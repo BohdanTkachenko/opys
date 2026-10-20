@@ -466,6 +466,13 @@ selection, with a notice and a verify observation naming the document and ref.
 This includes copies whose parsed id differs from the filename/ref, or whose
 id or status is missing or is not a string.
 
+A stage may belong to several declared branches: for example, both `spec/{id}`
+and `impl/{id}` can include `needs-human`. The only open branch supplies the
+copy. If branches of different kinds are open at once, the document becomes
+unavailable to `next` and queue selection, with a notice and a nonfixable verify
+observation naming the conflicting refs. Ordinary ttl and visit-budget fixes
+leave main untouched until the conflict is resolved.
+
 Main still determines blocker release and completion, including when invoked
 from a work checkout: the resolver reads the committed truth ref as its
 baseline there. `verify` still checks local content, but `verify --fix` cannot

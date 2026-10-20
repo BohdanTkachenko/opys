@@ -44,9 +44,10 @@ pub fn declared(pcfg: &ProjectConfig) -> bool {
     pcfg.types.values().any(|t| !t.work_branches.is_empty())
 }
 
-/// A matching open ref whose document cannot be read. Its stage is unknown;
-/// neither the main fallback nor another matching copy can be dispatched.
+/// Unavailable work: an unreadable copy or open copies of different kinds.
+/// Neither the main fallback nor another matching copy can be dispatched.
 pub struct UnknownCopy {
+    /// One affected ref; `detail` names all refs when kinds conflict.
     pub reference: String,
     pub detail: String,
 }
@@ -174,6 +175,7 @@ pub fn from_survey<'a>(
             continue;
         };
         let t = &prj.pcfg.types[name];
+        let mut kinds = Vec::new();
         for (kind, branch) in &t.work_branches {
             let mut copies: Vec<_> = survey
                 .refs
@@ -203,6 +205,34 @@ pub fn from_survey<'a>(
             let mut seen = BTreeSet::new();
             copies.retain(|(r, _)| seen.insert(r.commit.clone()));
             copies.sort_by(|(a, _), (b, _)| a.label.cmp(&b.label));
+            if !copies.is_empty() {
+                kinds.push((kind, branch, copies));
+            }
+        }
+        // Commit deduplication is per kind: even identical tips on two
+        // declared branches cannot establish which unit of work is active.
+        // Check before stage validation, so an invalid/unreadable copy cannot
+        // let another kind win or expose main to automatic lifecycle fixes.
+        let ambiguous = kinds.len() > 1;
+        if ambiguous {
+            let refs = kinds
+                .iter()
+                .flat_map(|(_, _, copies)| copies.iter().map(|(r, _)| r.label.as_str()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let count = if kinds.len() == 2 { "two" } else { "multiple" };
+            let message = format!("open work branches of {count} kinds: {refs}");
+            out.notices.push(format!("git: {id}: {message}"));
+            out.observations.push(observation(id, message.clone()));
+            out.unknown.insert(
+                id.to_string(),
+                UnknownCopy {
+                    reference: kinds[0].2[0].0.label.clone(),
+                    detail: message,
+                },
+            );
+        }
+        for (kind, branch, copies) in kinds {
             if copies.len() > 1 {
                 out.observations.push(observation(
                     id,
@@ -275,7 +305,7 @@ pub fn from_survey<'a>(
                 {
                     continue;
                 }
-                if !out.refs.contains_key(id) {
+                if !ambiguous && !out.refs.contains_key(id) {
                     out.refs.insert(id.to_string(), reference.label.clone());
                     out.docs.to_mut()[index] = copy.clone();
                 }

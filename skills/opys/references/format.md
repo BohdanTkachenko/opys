@@ -323,7 +323,8 @@ merged = "ready"                     # status the orchestrator puts on main at m
 ```
 
 All `from`, `stages` and `merged` values must be statuses of that type. A stage
-may belong to at most one declaration. `claim_field` must be declared in
+may belong to several declarations (for example `needs-human` on both
+`spec/{id}` and `impl/{id}`). `claim_field` must be declared in
 `fields`, and `claim_ttl` must parse as a duration. These checks run at config
 **load** (exit 2), as does refusal of work branches in a build without the
 `git` cargo feature. The keys are opt-in; existing configurations and JSON
@@ -363,10 +364,20 @@ content problems. An unreadable or missing truth baseline in a git repository
 is an explicit command error (exit 2); infallible engine selection returns no
 items and a notice instead of selecting against a work checkout.
 An invalid stage falls back to main and is observed. If several valid copies
-match, the first declaration name, then ref label in lexical order wins; this
-is deterministic, not a judgement of freshness. Undeclared branches remain
+of one kind match, the first ref label in lexical order wins; this is
+deterministic, not a judgement of freshness. Undeclared branches remain
 progress only. Without declarations no git is opened; without a repository
 the resolver returns the supplied main corpus and the reader's notice.
+
+With only one open kind, a shared stage resolves to that branch's copy.
+Open copies of different declared kinds make the document unavailable, even
+when their tips are identical or a copy is outside its declared stages.
+`next` and queue selection exclude it, and ordinary ttl/visit-budget fixes
+leave main untouched. A notice and a nonfixable `work-branch` observation name
+the conflicting refs, for example `open work branches of two kinds:
+impl/TASK-0001, spec/TASK-0001`. Selection uses the existing `unknown` reason,
+whose detail names all conflicting refs; list and show retain main's copy with
+the notice. Merging or removing the conflicting ref restores normal resolution.
 
 A work copy is accepted only when it parses, its `id` is a string equal to the
 expected filename/ref id, and its `status` is a string. Both changed-blob decoding
@@ -393,8 +404,9 @@ is an observation, never an automatic release. Taking and releasing a claim
 uses `apply --field` / `--remove-field`; atomic coordination across machines
 remains the orchestrator's responsibility.
 
-`verify` reports duplicate open refs of one kind, branch copies outside their
-stages, main leaving `from` while a branch is open, and expired claims as
+`verify` reports open copies of different kinds, duplicate open refs of one
+kind, branch copies outside their stages, main leaving `from` while a branch
+is open, and expired claims as
 `work-branch` observations (exit 3 when no content problems remain). They have
 no fix target; `verify --fix` never merges, edits a branch or clears a claim.
 Ordinary `ttl` and `max_visits` observations are suppressed for occupied

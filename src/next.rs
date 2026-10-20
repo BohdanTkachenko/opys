@@ -579,7 +579,7 @@ pub fn explain_effective(
             id: id.to_string(),
             listed: false,
             message: format!(
-                "{id}: not listed — work copy on {} is unreadable; stage unknown: {}",
+                "{id}: not listed — work copy on {} is unavailable: {}",
                 unknown.reference, unknown.detail
             ),
             why: Why::Unknown {

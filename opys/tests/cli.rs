@@ -9271,6 +9271,166 @@ fn work_json(dir: &TempDir, args: &[&str]) -> serde_json::Value {
 
 #[test]
 #[cfg(feature = "git")]
+fn shared_work_stage_uses_the_only_open_kind_in_next_and_queue() {
+    for (kind, from) in [("spec", "todo"), ("impl", "ready")] {
+        let dir = project_with(&shared_work_stage_config());
+        let mut fx = opys_engine::git::fixture::Fixture::init(dir.path());
+        fx.set_head("refs/heads/main");
+        fx.write("opys/TASK-0001.md", work_doc(from, false));
+        let main = fx.commit("Alice", "seed");
+        if kind == "impl" {
+            // A retained, merged spec ref does not conflict with implementation.
+            fx.write(".git/refs/heads/spec/TASK-0001", format!("{main}\n"));
+        }
+        let reference = format!("{kind}/TASK-0001");
+        fx.write("opys/TASK-0001.md", work_doc("needs-human", false));
+        fx.commit_to(
+            &format!("refs/heads/{reference}"),
+            &[main],
+            "Bob",
+            "question",
+        );
+        fx.write("opys/TASK-0001.md", work_doc(from, false));
+
+        let picked = work_json(&dir, &["next", "--status", "needs-human"]);
+        assert_eq!(picked["total"], 1);
+        assert_eq!(picked["items"][0]["id"], "TASK-0001");
+        assert_eq!(picked["items"][0]["ref"], reference);
+        assert!(picked.get("notices").is_none());
+        assert_eq!(work_json(&dir, &["next", "--status", from])["total"], 0);
+        let queue = work_json(&dir, &["queue", "human"]);
+        let group = queue["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|group| group["status"] == "needs-human")
+            .unwrap();
+        assert_eq!(group["total"], 1);
+        assert_eq!(group["items"][0]["id"], "TASK-0001");
+        assert_eq!(group["items"][0]["ref"], reference);
+        opys(&dir).arg("verify").assert().success();
+    }
+}
+
+#[cfg(feature = "git")]
+fn shared_work_stage_config() -> String {
+    let config = WORK_BRANCH_CONFIG
+        .replace(
+            "\"spec-approval\", \"ready\"]",
+            "\"spec-approval\", \"ready\", \"implement\", \"needs-human\", \"done\"]",
+        )
+        .replace(
+            "ready = \"agent\"",
+            "ready = \"agent\"\nimplement = \"agent\"\nneeds-human = \"human\"\ndone = []",
+        )
+        .replace(
+            "stages = [\"research\", \"spec-approval\"]",
+            "stages = [\"research\", \"spec-approval\", \"needs-human\"]",
+        );
+    format!("{config}\n[types.task.work_branches.impl]\nref = 'impl/{{id}}'\nfrom = 'ready'\nstages = ['implement', 'needs-human']\nmerged = 'done'\n")
+}
+
+#[test]
+#[cfg(feature = "git")]
+fn different_open_work_kinds_are_unavailable_and_never_fix_main() {
+    for policy in [
+        "ttl = { todo = { after = '10m', then = 'ready' } }",
+        "max_visits = { todo = { limit = 1, then = 'ready' } }",
+    ] {
+        let config = shared_work_stage_config().replace(
+            "claim_ttl = \"10m\"",
+            &format!("claim_ttl = \"10m\"\n{policy}"),
+        );
+        let dir = project_with(&config);
+        let mut fx = opys_engine::git::fixture::Fixture::init(dir.path());
+        fx.set_head("refs/heads/main");
+        fx.write("opys/TASK-0001.md", work_doc("todo", false));
+        let main = fx.commit("Alice", "seed");
+        fx.write("opys/TASK-0001.md", work_doc("needs-human", false));
+        let spec = fx.commit_to("refs/heads/spec/TASK-0001", &[main], "Bob", "spec question");
+        let implementation =
+            fx.commit_to("refs/heads/impl/TASK-0001", &[main], "Bob", "impl question");
+        fx.write("opys/TASK-0001.md", work_doc("todo", false));
+        let before = std::fs::read(dir.path().join("opys/TASK-0001.md")).unwrap();
+        let message = "open work branches of two kinds: impl/TASK-0001, spec/TASK-0001";
+        for status in ["todo", "needs-human", "implement", "research"] {
+            let output = opys(&dir)
+                .args([
+                    "next",
+                    "--status",
+                    status,
+                    "--explain",
+                    "TASK-0001",
+                    "--json",
+                ])
+                .assert()
+                .success()
+                .get_output()
+                .clone();
+            let answer: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(answer["total"], 0);
+            assert_eq!(answer["unavailable"][0]["id"], "TASK-0001");
+            assert_eq!(answer["unavailable"][0]["reason"], "unknown");
+            assert_eq!(answer["explain"]["reason"], "unknown");
+            assert!(answer["explain"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(message));
+            assert!(answer["notices"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|notice| notice.as_str().unwrap().contains(message)));
+            assert!(String::from_utf8(output.stderr).unwrap().contains(message));
+        }
+        for role in ["agent", "human"] {
+            let queue = work_json(&dir, &["queue", role]);
+            assert_eq!(queue["total"], 0);
+            for group in queue["groups"].as_array().unwrap() {
+                assert!(group["items"].as_array().unwrap().is_empty());
+                assert!(group.get("in_progress").is_none());
+            }
+            assert!(queue["notices"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|notice| notice.as_str().unwrap().contains(message)));
+        }
+        for args in [vec!["verify"], vec!["verify", "--fix"]] {
+            opys(&dir)
+                .env("OPYS_NOW", "2026-01-01T00:20:00Z")
+                .args(args)
+                .assert()
+                .code(3)
+                .stderr(predicate::str::contains(message))
+                .stdout(predicate::str::contains("fixed TASK-0001").not());
+        }
+        assert_eq!(
+            std::fs::read(dir.path().join("opys/TASK-0001.md")).unwrap(),
+            before
+        );
+        assert_eq!(fx.tip("refs/heads/main"), Some(main));
+        assert_eq!(fx.tip("refs/heads/spec/TASK-0001"), Some(spec));
+        assert_eq!(fx.tip("refs/heads/impl/TASK-0001"), Some(implementation));
+        // Removing the conflicting kind restores selection; removing both
+        // proves that the main-side lifecycle policy really was due.
+        fx.remove(".git/refs/heads/impl/TASK-0001");
+        assert_eq!(
+            work_json(&dir, &["next", "--status", "needs-human"])["total"],
+            1
+        );
+        fx.remove(".git/refs/heads/spec/TASK-0001");
+        opys(&dir)
+            .env("OPYS_NOW", "2026-01-01T00:20:00Z")
+            .args(["verify", "--fix"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("fixed TASK-0001: todo -> ready"));
+    }
+}
+
+#[test]
+#[cfg(feature = "git")]
 fn work_branch_next_list_and_show_use_the_declared_stage_copy() {
     let (dir, _fx) = work_project("refs/heads/spec/TASK-0001", "research", false);
     let picked = work_json(&dir, &["next", "--status", "research"]);

@@ -2,11 +2,16 @@ use super::*;
 use crate::{next, project_config::ProjectConfig};
 
 fn project() -> Project {
+    project_with_branches("")
+}
+
+fn project_with_branches(extra: &str) -> Project {
     Project {
         root: "/no-such-project".into(),
         base: "/no-such-project/opys".into(),
         pcfg: toml::from_str::<ProjectConfig>(
-            r#"
+            &[
+                r#"
 [types.task]
 prefix = "TASK"
 statuses = ["todo", "research", "ready", "done"]
@@ -23,6 +28,9 @@ from = "todo"
 stages = ["research", "done"]
 merged = "ready"
 "#,
+                extra,
+            ]
+            .concat(),
         )
         .unwrap(),
     }
@@ -146,6 +154,59 @@ fn unreadable_work_ref_blocks_only_its_document_even_with_a_valid_copy() {
                 && observation.to_string().contains("origin/spec/TASK-0001")
                 && observation.to_string().contains("unreadable")
         }));
+    }
+}
+
+#[test]
+fn different_open_work_kinds_are_unavailable_regardless_of_stage_or_tip() {
+    let prj = project_with_branches(
+        r#"
+[types.task.work_branches.impl]
+ref = "impl/{id}"
+from = "ready"
+stages = ["research"]
+merged = "done"
+"#,
+    );
+    let main = vec![doc("TASK-0001", "todo", ""), doc("TASK-0002", "todo", "")];
+    for same_tip in [false, true] {
+        for status in ["research", "ready"] {
+            for reversed in [false, true] {
+                let mut surveyed = survey(doc("TASK-0001", "research", ""));
+                let mut other = surveyed.refs[0].clone();
+                other.reference.name = "refs/heads/impl/TASK-0001".into();
+                other.reference.label = "impl/TASK-0001".into();
+                if !same_tip {
+                    other.reference.commit = "different-tip".into();
+                }
+                other.changed.as_mut().unwrap().docs = vec![doc("TASK-0001", status, "")];
+                surveyed.refs.push(other);
+                if reversed {
+                    surveyed.refs.reverse();
+                }
+                let view = from_survey(&prj, &main, surveyed, now());
+                assert!(view.refs.is_empty());
+                assert_eq!(view.docs[0].status(), Some("todo"));
+                let waiting = next::pick_effective(&prj, &view, &query("todo"), now());
+                assert_eq!(waiting.total, 1);
+                assert_eq!(waiting.items[0].id, "TASK-0002");
+                assert!(matches!(
+                    waiting.unavailable[0].why,
+                    next::Why::Unknown { .. }
+                ));
+                assert_eq!(
+                    next::pick_effective(&prj, &view, &query("research"), now()).total,
+                    0
+                );
+                let message = "open work branches of two kinds: impl/TASK-0001, spec/TASK-0001";
+                assert!(view.notices.iter().any(|notice| notice.contains(message)));
+                assert!(view.observations.iter().any(|observation| {
+                    observation.id == "TASK-0001"
+                        && observation.target.is_none()
+                        && observation.to_string().contains(message)
+                }));
+            }
+        }
     }
 }
 
