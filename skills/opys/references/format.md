@@ -297,11 +297,103 @@ it, those diagnostics stay in their existing views. The engine's
 `src/roles.rs` is the single interpreter of roles, status owner maps, overrides
 and this escalation pointer; every CLI command and node view uses its helpers.
 
+### Work branches and claims (optional)
+
+A type may place intermediate stages on named work branches. Main remains the
+truth for completion and blocker release. The engine and CLI use an effective
+copy for selection and display; node flow placement and branch editing are not
+part of this phase.
+
+```toml
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "research", "spec-approval", "ready"]
+default_status = "todo"
+claim_field = "claimed_by"           # optional; must name a declared field
+claim_ttl = "1h30m"                   # optional; same duration syntax as ttl
+
+[types.task.fields.claimed_by]
+type = "string"
+
+[types.task.work_branches.spec]
+ref = "spec/{id}"                    # template containing {id}; no other placeholders
+from = "todo"                        # main waits here while the branch is open
+stages = ["research", "spec-approval"]
+merged = "ready"                     # status the orchestrator puts on main at merge
+```
+
+All `from`, `stages` and `merged` values must be statuses of that type. A stage
+may belong to at most one declaration. `claim_field` must be declared in
+`fields`, and `claim_ttl` must parse as a duration. These checks run at config
+**load** (exit 2), as does refusal of work branches in a build without the
+`git` cargo feature. The keys are opt-in; existing configurations and JSON
+payloads keep their previous bytes.
+
+`work::effective` resolves copies through the existing in-process git reader.
+It matches the substituted template against the reader's ref label, exactly:
+`spec/TASK-0001` matches `spec/{id}`. For an opted-in remote ref,
+`origin/spec/TASK-0001` also matches that template after removing the remote
+name; a template may instead explicitly name `origin/spec/{id}`. Remotes still
+require `[git] branches` patterns and an external fetch. Ref tips are deduplicated
+by commit and labelled by the reader's existing rules. Tips reachable from main
+are merged, even if their refs remain, and no longer select work copies.
+For these types, `history` also prints the copy's recorded lifecycle map after
+its commit timeline. A merge commit's first-parent walk can omit branch
+commits; the recorded map preserves all stages without inventing commit data.
+
+While an open matching ref holds the document at a declared, non-terminal
+stage, that copy supplies its status, body, fields, owners and ranking inputs.
+`next --status research` can pick it; `next --status todo --explain` reports main's
+copy as `occupied by spec/TASK-0001`. `queue` routes the stage's owner, `list`
+filters the effective fields and status, and `show` labels the selected main or
+work copy. `list --format paths` still names the document's inventory path;
+it is not a checkout locator. Branch copies in `show` use canonical serialization.
+Main's status still determines whether a blocker or a required link releases.
+An invalid stage falls back to main and is observed. If several valid copies
+match, the first declaration name, then ref label in lexical order wins; this
+is deterministic, not a judgement of freshness. Undeclared branches remain
+progress only. Without declarations no git is opened; without a repository
+the resolver returns the supplied main corpus and the reader's notice.
+
+Presence of `claim_field` means the copy is in progress, on main or on a work
+branch. `next` excludes it and explains who holds it. `queue` lists it under
+`in_progress`, with holder and age, separately from pickable `items`. A claim
+has no separate timestamp history: `since` is the copy's `updated`, so any edit
+renews its measured age. Missing or unreadable timestamps give unknown age,
+and future timestamps give age zero. An age strictly greater than `claim_ttl`
+is an observation, never an automatic release. Taking and releasing a claim
+uses `apply --field` / `--remove-field`; atomic coordination across machines
+remains the orchestrator's responsibility.
+
+`verify` reports duplicate open refs of one kind, branch copies outside their
+stages, main leaving `from` while a branch is open, and expired claims as
+`work-branch` observations (exit 3 when no content problems remain). They have
+no fix target; `verify --fix` never merges, edits a branch or clears a claim.
+The `merged` key declares the landing status; this phase does not audit whether
+an orchestrator chose it after merging or reconstruct deleted refs.
+
+JSON additions are conditional, within the existing schemas:
+
+- `next` items and orphans, and queue items/blocked/orphans/attention carry
+  `ref` when a work copy is shown. Queue attention also carries `claim` when
+  present; nonempty top-level `notices` preserve reader warnings.
+- A claim is `{ "holder": "agent-7", "since": "2026-01-01T00:01:00Z",
+  "age_seconds": 300 }`; absent timestamps/ages are `null`.
+- `next` adds nonempty `unavailable` explanations with `reason: "occupied"`
+  and `ref`, or `reason: "claimed"`, `claim` and an optional `ref`. A named
+  `--explain ID` uses the same shape in `explain`.
+- Queue groups add nonempty `in_progress` arrays of queue items carrying
+  `claim`. Group `total` still counts pickable items; queue `total` includes
+  claimed documents. `-n` limits each array, while totals count all entries.
+
+No command creates, pushes, merges, deletes or fetches branches.
+
 ### `[git]` — reading branches (optional)
 
 opys reads the inventory as it stands on other branches and worktree heads,
 in-process through gix and never by spawning `git`. **Main is truth** — the
-baseline every other ref is diffed against; everything else is *progress*.
+baseline every other ref is diffed against. Undeclared branches are *progress*;
+declared work branches supply stage copies as described above.
 
 ```toml
 [git]
@@ -795,7 +887,8 @@ writes.
 one deterministic question: **given a status, which documents are pickable, best
 first**. It is a read — it never syncs, never writes, and exits `0` for every
 answer, an empty one included. It decides nothing about *who* picks the work up:
-concurrency, occupancy, affinity and budgets are policy for whatever wraps it.
+concurrency, affinity and budgets are policy for whatever wraps it. Declared
+work branches and claims constrain selection as described above.
 `--role R` narrows the oracle to documents whose effective owners include R;
 `--status` stays required. An undeclared role is a usage error (exit 2) listing
 the declared roles; the node maps that query error to 400.
@@ -804,13 +897,15 @@ A document is **pickable** when all these hold:
 
 - it is at the queried status (and of the queried type, when one is given);
 - it waits on the queried role, when `--role` is given;
+- its configured claim field is absent;
 - its type's `requires_link` is still satisfied — see **orphaned** below;
 - nothing live blocks it (the derived predicate under **Blocked is derived**).
 
 A blocked document is left out silently: a blocker is a normal, temporary state
 of a healthy corpus, and it clears on its own. Pickability is evaluated on the
-corpus the command runs in, which is **main**: a blocker closed on a branch
-releases nothing until the merge lands, and `next` never opens git.
+effective copies of the supplied main corpus and its declared work branches.
+A blocker closed on a branch releases nothing until the merge lands. Without
+work-branch declarations `next` never opens git.
 
 **Orphaned.** A document whose type declares `requires_link = { to, min }` is
 orphaned when fewer than `min` of its `references` entries to that type still
@@ -1900,10 +1995,10 @@ type = "string"
 ```
 
 It filters with `list --field claimed_by=agent-7` and appears in the SQL
-`fields` table, and that is the whole of opys' involvement: it stores who
-claimed a document and knows nothing else about them. Leases, expiry, agent
-identity, and the policy of *which* document to claim belong to whatever
-dispatches the work, not to the tracker.
+`fields` table, and opys knows nothing about the holder's identity. Opting into `claim_field`
+also excludes claimed copies from `next`, exposes them in `queue`, and enables
+`claim_ttl` observations (see **Work branches and claims**). Lease enforcement,
+identity and the policy of which document to claim belong to the dispatcher.
 
 ### Grammar notes
 

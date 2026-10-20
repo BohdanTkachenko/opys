@@ -425,10 +425,52 @@ to a typo cannot be told apart from an empty queue. `--json` is the stable
 `opys.next/1` payload, carrying each item's priority, effective priority, blocks
 count, position and time observations, plus every orphan with its reason.
 
-Pickability is decided on **main**, the corpus the command runs in: a blocker
-closed on a branch releases nothing until the merge lands. And `next` decides
+By default pickability is decided on the corpus the command runs in. Declared
+work branches supply stage copies (below), while a blocker closed on a branch
+releases nothing until the merge lands. And `next` decides
 nothing about *who* picks the work up — concurrency, affinity and budgets are
 the caller's policy, which is why the answer is JSON when you ask for it.
+
+## Work branches
+
+A task can wait at `todo` on main while its own branch carries it through
+research and approval. Declare the stages once on the type:
+
+```toml
+[types.task]
+prefix = "TASK"
+statuses = ["todo", "research", "spec-approval", "ready"]
+default_status = "todo"
+claim_field = "claimed_by"
+claim_ttl = "30m"
+
+[types.task.fields.claimed_by]
+type = "string"
+
+[types.task.work_branches.spec]
+ref = "spec/{id}"
+from = "todo"
+stages = ["research", "spec-approval"]
+merged = "ready"
+```
+
+With `TASK-0042` at `research` on `spec/TASK-0042`, `next --status research`
+picks that copy and `next --status todo --explain` reports it as occupied.
+`list --status research`, `show TASK-0042` and the owning role's `queue` use
+that same copy and label its ref. A set `claimed_by` excludes the copy from
+`next`; `queue` shows the holder and age since its last `updated` timestamp.
+An edit renews that age. `verify` observes expired claims, duplicate branches,
+invalid stages and main drifting from `from`, without fixing them automatically.
+
+Main still determines blocker release and completion. Once the branch tip is
+merged, main's copy takes over even if the branch ref remains. The orchestrator
+sets the landing status, merges, and handles any forge or fetch. Work branches
+require the `git` feature; a project without declarations keeps its existing
+behavior and `next` does not open git. This phase covers the engine and CLI;
+node flow placement and editing branch copies remain pending.
+
+See the [work-branch config and payload reference](skills/opys/references/format.md#work-branches-and-claims-optional)
+for ref matching, observations, and conditional JSON fields.
 
 ## Time-aware verify: stuck and overflowed documents
 
