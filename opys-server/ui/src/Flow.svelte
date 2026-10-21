@@ -1,6 +1,6 @@
 <script>
   import WorkBadge from './WorkBadge.svelte';
-  import { tick, untrack } from 'svelte';
+  import { untrack } from 'svelte';
   import Icon from './lib/Icon.svelte';
   import { api } from './lib/api.js';
   import { corpora } from './lib/corpora.svelte.js';
@@ -17,6 +17,9 @@
   let hiddenTypes = $state([]);
   let selected = $state(null);
   let zoom = $state(1);
+  let panX = $state(0);
+  let panY = $state(0);
+  let panning = $state(false);
   let viewportWidth = $state(620);
   let viewportHeight = $state(560);
   let search = $state('');
@@ -30,7 +33,7 @@
     hiddenTypes = [];
     selected = null;
     search = '';
-    zoom = 1;
+    resetViewport();
     graph.run(() => load(wanted));
   });
   $effect(() => {
@@ -78,17 +81,18 @@
     }
   });
   function choose(id) { selected = id; search = ''; }
+  function resetViewport() { zoom = 1; panX = 0; panY = 0; }
   function toggleType(name) {
     hiddenTypes = hiddenTypes.includes(name) ? hiddenTypes.filter((type) => type !== name) : [...hiddenTypes, name];
-    zoom = 1;
+    resetViewport();
   }
   function showOnlyType(name) {
     hiddenTypes = (view?.types ?? []).map((type) => type.name).filter((type) => type !== name);
-    zoom = 1;
+    resetViewport();
   }
   function toggleAllTypes() {
     hiddenTypes = allTypesVisible ? (view?.types ?? []).map((type) => type.name) : [];
-    zoom = 1;
+    resetViewport();
   }
   function counts(status) { return flowProgressCounts(documents.filter((doc) => doc.status === status)); }
   function label(node) { return node?.status || '(no status)'; }
@@ -108,35 +112,100 @@
   }
   function canvasViewport(element) {
     let frame;
-    let disposed = false;
+    let drag = null;
     const update = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => { viewportWidth = element.clientWidth; viewportHeight = element.clientHeight; });
     };
-    const onwheel = async (event) => {
-      if (!event.ctrlKey) return;
+    const onwheel = (event) => {
+      // Consume every wheel event here, including at the zoom bounds, so the
+      // canvas never hands a scroll or browser zoom to the surrounding page.
       event.preventDefault();
       const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? element.clientHeight : 1);
       const next = Math.max(0.2, Math.min(6, zoom * Math.exp(-delta * 0.002)));
-      const drawing = element.querySelector('.stage');
-      if (next === zoom || !drawing) return;
-      const before = drawing.getBoundingClientRect();
-      const x = (event.clientX - before.left) / scale;
-      const y = (event.clientY - before.top) / scale;
+      if (next === zoom) return;
+      const bounds = element.getBoundingClientRect();
+      const x = event.clientX - bounds.left - element.clientLeft - element.clientWidth / 2;
+      const y = event.clientY - bounds.top - element.clientTop - element.clientHeight / 2;
+      const ratio = next / zoom;
+      // Pan is independent of scroll bounds. Scaling around this cursor keeps
+      // its graph point still, even when the whole graph fits in the viewport.
+      panX = x - (x - panX) * ratio;
+      panY = y - (y - panY) * ratio;
       zoom = next;
-      await tick();
-      if (disposed) return;
-      // Keep the graph point under the cursor in place as the scrollable
-      // drawing grows. Scroll bounds naturally center it again when it fits.
-      const after = drawing.getBoundingClientRect();
-      element.scrollLeft += after.left + x * scale - event.clientX;
-      element.scrollTop += after.top + y * scale - event.clientY;
+    };
+    const endDrag = (event) => {
+      if (!drag || (event?.pointerId !== undefined && event.pointerId !== drag.id)) return;
+      const id = drag.id;
+      drag = null;
+      panning = false;
+      if (element.hasPointerCapture(id)) element.releasePointerCapture(id);
+    };
+    const onpointerdown = (event) => {
+      if (!event.isPrimary || event.button !== 0 || drag) return;
+      if (event.target instanceof Element && event.target.closest('button, a, input, select, textarea, [contenteditable], [role="button"]')) return;
+      event.preventDefault();
+      element.setPointerCapture(event.pointerId);
+      drag = { id: event.pointerId, x: event.clientX, y: event.clientY };
+      panning = true;
+    };
+    const onpointermove = (event) => {
+      if (!drag || event.pointerId !== drag.id) return;
+      if (event.pointerType === 'mouse' && !(event.buttons & 1)) { endDrag(event); return; }
+      panX += event.clientX - drag.x;
+      panY += event.clientY - drag.y;
+      drag.x = event.clientX;
+      drag.y = event.clientY;
+    };
+    const onfocusin = (event) => {
+      const node = event.target instanceof Element ? event.target.closest('.state') : null;
+      // Mouse focus must not move a clipped button between down and up, which
+      // would turn a click on its visible edge into a click on the canvas.
+      if (!node || !element.contains(node) || !node.matches(':focus-visible')) return;
+      endDrag();
+      const bounds = element.getBoundingClientRect();
+      const focused = node.getBoundingClientRect();
+      const left = bounds.left + element.clientLeft;
+      const top = bounds.top + element.clientTop;
+      const right = left + element.clientWidth;
+      const bottom = top + element.clientHeight;
+      // Clipping prevents focus from introducing a second, native scroll
+      // offset. Bring keyboard focus into view with the same pan as the mouse.
+      const reveal = (start, end, min, max) => {
+        if (start >= min && end <= max) return 0;
+        const margin = Math.min(16, (max - min) / 4);
+        min += margin;
+        max -= margin;
+        return end - start > max - min ? (min + max - start - end) / 2
+          : start < min ? min - start : max - end;
+      };
+      panX += reveal(focused.left, focused.right, left, right);
+      panY += reveal(focused.top, focused.bottom, top, bottom);
     };
     const observer = new ResizeObserver(update);
     observer.observe(element);
     element.addEventListener('wheel', onwheel, { passive: false });
+    element.addEventListener('pointerdown', onpointerdown);
+    element.addEventListener('pointermove', onpointermove);
+    element.addEventListener('pointerup', endDrag);
+    element.addEventListener('pointercancel', endDrag);
+    element.addEventListener('lostpointercapture', endDrag);
+    element.addEventListener('focusin', onfocusin);
+    window.addEventListener('blur', endDrag);
     update();
-    return { destroy() { disposed = true; observer.disconnect(); cancelAnimationFrame(frame); element.removeEventListener('wheel', onwheel); } };
+    return { destroy() {
+      endDrag();
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+      element.removeEventListener('wheel', onwheel);
+      element.removeEventListener('pointerdown', onpointerdown);
+      element.removeEventListener('pointermove', onpointermove);
+      element.removeEventListener('pointerup', endDrag);
+      element.removeEventListener('pointercancel', endDrag);
+      element.removeEventListener('lostpointercapture', endDrag);
+      element.removeEventListener('focusin', onfocusin);
+      window.removeEventListener('blur', endDrag);
+    } };
   }
 </script>
 
@@ -184,8 +253,8 @@
       {:else if !stage || diagram.loading}
         <p class="layout-loading" role="status">Arranging the workflow…</p>
       {:else}
-      <div class="map-viewport" use:canvasViewport>
-        <div class="stage" style:width={`${stage.width * scale}px`} style:height={`${stage.height * scale}px`}>
+      <div class="map-viewport" class:panning use:canvasViewport>
+        <div class="stage" style:width={`${stage.width * scale}px`} style:height={`${stage.height * scale}px`} style:left={`calc(50% + ${panX}px)`} style:top={`calc(50% + ${panY}px)`}>
           <svg class="connections" width={stage.width * scale} height={stage.height * scale} viewBox={`0 0 ${stage.width} ${stage.height}`} aria-hidden="true">
             <defs>
               <marker id="workflow-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 1 1 L 7 4 L 1 7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" /></marker>
@@ -220,11 +289,11 @@
           <span title="Dashed connections allow unrestricted transitions"><span class="legend-line dashed" aria-hidden="true"></span>Unrestricted</span>
           <span title="Arrowheads at both ends allow transitions in either direction"><svg class="legend-arrow" width="22" height="12" viewBox="0 0 22 12" aria-hidden="true"><path d="M2 6h18M6 2 2 6l4 4M16 2l4 4-4 4" /></svg>Two-way</span>
         </div>
-        <div class="zoom" role="group" aria-label="Graph zoom"><button aria-label="Zoom out" onclick={() => zoom = Math.max(0.2, zoom - 0.2)}>−</button><button onclick={() => zoom = 1} aria-label="Fit workflow">Fit</button><button aria-label="Zoom in" onclick={() => zoom = Math.min(6, zoom + 0.4)}>+</button></div>
+        <div class="zoom" role="group" aria-label="Graph zoom"><button aria-label="Zoom out" onclick={() => zoom = Math.max(0.2, zoom - 0.2)}>−</button><button onclick={resetViewport} aria-label="Fit workflow">Fit</button><button aria-label="Zoom in" onclick={() => zoom = Math.min(6, zoom + 0.4)}>+</button></div>
       </footer>
     </section>
     {:else if view.types.length}
-      <div class="canvas-notice notice" role="status"><p>No types selected. Enable a type above to show its workflow.</p><button class="btn small" onclick={() => { hiddenTypes = []; zoom = 1; }}>Show all types</button></div>
+      <div class="canvas-notice notice" role="status"><p>No types selected. Enable a type above to show its workflow.</p><button class="btn small" onclick={() => { hiddenTypes = []; resetViewport(); }}>Show all types</button></div>
     {:else}
       <div class="canvas-notice notice"><p>No document workflows are configured for this project.</p></div>
     {/if}
@@ -294,9 +363,10 @@
   .map { display:flex; flex:1; flex-direction:column; min-width:0; min-height:0; background:radial-gradient(circle,var(--grid-dot) 0.8px,transparent 0.9px); background-size:20px 20px; }
   .map-meta { display:flex; flex:none; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0.4rem 0.75rem; padding:0.8rem 1.25rem; color:var(--muted); font-size:0.72rem; }
   .map-count { white-space:nowrap; font-variant-numeric:tabular-nums; }
-  .map-viewport { overflow:auto; padding:20px; display:grid; align-items:center; flex:1; min-height:0; }
+  .map-viewport { position:relative; overflow:clip; flex:1; min-height:0; cursor:grab; touch-action:none; user-select:none; overscroll-behavior:contain; }
+  .map-viewport.panning, .map-viewport.panning .state { cursor:grabbing; }
   .canvas-notice { margin:1.25rem; }
-  .stage { position:relative; margin:auto; flex:none; }
+  .stage { position:absolute; transform:translate(-50%, -50%); }
   .connections { position:absolute; inset:0; overflow:visible; color:var(--border-strong); pointer-events:none; }
   .connection { fill:none; stroke:var(--border-strong); stroke-width:1.4; stroke-linecap:round; stroke-linejoin:round; }
   .connection.unrestricted { stroke-dasharray:3 4; }
