@@ -466,6 +466,15 @@ selection, with a notice and a verify observation naming the document and ref.
 This includes copies whose parsed id differs from the filename/ref, or whose
 id or status is missing or is not a string.
 
+The web flow and role queues show the same stage copies, labelled with the
+work ref and any claim's holder and age. Branch changes refresh a background
+snapshot; page reads remain available during refresh. Opening a queued document reads its
+branch body. If the node serves that branch's checkout, a link opens it for
+editing; otherwise the copy is read-only, with an explanation. The API also
+refuses writes to occupied main copies, including blocker changes that would
+write through to one. Stage edits stay within that work branch; completion
+still goes through the orchestrator's merge.
+
 A stage may belong to several declared branches: for example, both `spec/{id}`
 and `impl/{id}` can include `needs-human`. The only open branch supplies the
 copy. If branches of different kinds are open at once, the document becomes

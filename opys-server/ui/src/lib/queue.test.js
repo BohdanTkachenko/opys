@@ -82,3 +82,16 @@ test('queue_refreshes_only_primary_corpora_and_roster_changes', () => {
   assert.equal(affectsQueues(event({ event: 'corpus-removed', cid: 'main' }), groups), true);
   assert.equal(affectsQueues({ reconnected: true, events: [] }, groups), true);
 });
+
+test('claimed_only_queues_remain_visible_with_ref_holder_and_notices', () => {
+  const claimed = { id: 'TASK-0001', ref: 'spec/TASK-0001', claim: { holder: 'worker-7', since: null, age_seconds: null } };
+  const payload = { ...queue([group('task', 'approval', [], { in_progress: [claimed] })]), notices: ['One branch is unreadable'] };
+  const model = groupRoleQueues({ projects: [{ key: 'repo', queue: payload }] });
+  assert.equal(model.empty, false);
+  assert.equal(model.projects[0].groups[0].total, 0);
+  assert.deepEqual(model.projects[0].groups[0].in_progress, [claimed]);
+  assert.deepEqual(model.projects[0].notices, payload.notices);
+  const groups = [{ key: 'repo', corpora: [{ cid: 'main', is_primary: true }] }];
+  assert.equal(affectsQueues({ events: [{ event: 'refs-changed', project: 'repo' }] }, groups), true);
+  assert.equal(affectsQueues({ events: [{ event: 'refs-changed', project: 'other' }] }, groups), false);
+});

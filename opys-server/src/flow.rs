@@ -5,8 +5,8 @@
 //! on disk. This draws the shape the *config* describes: a node per distinct
 //! status name, an edge wherever some type declares the move, and on each node
 //! the documents an agent at that stage would pick up next. It is one project's
-//! picture, answered from **main** (ADR-0053) — pickability is a property of the
-//! truth branch, not of whichever worktree the reader happens to be looking at.
+//! picture, starting from main (ADR-0053). Declared work branches supply their
+//! stage copies (ADR-0070); main still decides blocker release and completion.
 //!
 //! Three rules carry the module:
 //!
@@ -38,10 +38,9 @@
 //! straight off [`next::PickResult::orphaned`], which is complete before any
 //! limit, because a work item whose parent shipped will never clear on its own.
 //!
-//! [`flow`] is a pure function over the documents it is handed — no manager, no
-//! actor, no filesystem — for the same reason [`crate::union::union`] is: it is
-//! testable without a server, and the actor's only job is to hand it a warm
-//! corpus.
+//! [`flow_effective`] is pure over the engine projection it is handed. The node
+//! supplies its immutable background snapshot, so drawing a graph never walks
+//! git on a request thread. [`flow`] resolves a projection for standalone use.
 
 use std::collections::BTreeMap;
 
@@ -49,7 +48,7 @@ use opys_engine::doc::Doc;
 use opys_engine::next::{self, Item, Orphan, PickQuery};
 use opys_engine::project::Project;
 use opys_engine::project_config::ProjectConfig;
-use opys_engine::{lifecycle, observe, refs};
+use opys_engine::{lifecycle, observe, refs, work};
 use serde::Serialize;
 
 use crate::union::UnionView;
@@ -65,6 +64,13 @@ pub const DEFAULT_NODE_LIMIT: usize = 5;
 /// One project's lifecycle graph, with the documents standing on it.
 #[derive(Debug, Clone, Serialize)]
 pub struct FlowView {
+    /// Authoritative stage copies when work branches are declared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub documents: Option<Vec<StageDoc>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub work_refs: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<String>,
     /// The corpus this was answered from: the project's primary worktree.
     ///
     /// In the payload because every item links to a document, and a document
@@ -86,9 +92,38 @@ pub struct FlowView {
     /// declare them.
     pub edges: Vec<FlowEdge>,
     /// Labeled branch and worktree states that differ from this corpus. These
-    /// are progress only: node counts, pickability and items remain main's.
+    /// are progress only: node counts, pickability and items use effective copies.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<UnionView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StageDoc {
+    #[serde(flatten)]
+    pub doc: crate::actor::DocSummary,
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claim: Option<work::Claim>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
+}
+
+fn stage_doc(
+    prj: &Project,
+    view: &work::Effective<'_>,
+    doc: &Doc,
+    blockers: &refs::Corpus<'_>,
+) -> Option<StageDoc> {
+    Some(StageDoc {
+        doc: crate::actor::summary(prj, doc, blockers)?,
+        reference: view.reference(doc),
+        claim: work::claim(&prj.pcfg, doc, observe::now()),
+        unavailable: doc
+            .id()
+            .and_then(|id| view.unknown.get(id))
+            .map(|u| u.detail.clone()),
+    })
 }
 
 /// One document type, as the graph's legend needs it.
@@ -135,11 +170,15 @@ pub struct FlowNode {
     ///
     /// [`status`]: FlowNode::status
     pub declared: bool,
-    /// Documents at this status, with an id. Equals
-    /// `pickable + blocked.len() + orphaned.len()`.
+    /// Documents at this status, with an id. Equals `pickable + blocked.len()
+    /// + orphaned.len() + in_progress.len() + held.len()`.
     pub total: usize,
     /// How many are pickable, before `limit` truncates `items`.
     pub pickable: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub in_progress: Vec<StageDoc>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub held: Vec<String>,
     /// The first `limit` pickable documents, in `opys next` order.
     pub items: Vec<Item>,
     /// The ids of the documents held by a live blocker: counted and greyed,
@@ -170,16 +209,28 @@ pub struct FlowEdge {
 /// built over every document, because effective priority and liveness run
 /// through documents no status filter would have kept.
 pub fn flow(prj: &Project, docs: &[Doc], cid: &str, limit: usize) -> FlowView {
+    let view = work::effective(prj, docs, observe::now());
+    flow_effective(prj, &view, cid, limit)
+}
+
+/// Use an actor's immutable background projection without reading git.
+pub fn flow_effective(
+    prj: &Project,
+    view: &work::Effective<'_>,
+    cid: &str,
+    limit: usize,
+) -> FlowView {
     // One instant for every node, so two nodes cannot disagree about whether the
     // same document is stuck. `observe::now` honours `OPYS_NOW`, which is what
     // makes the whole payload pinnable in a test. A closure rather than a
     // function so the instant's type is never named: `time` is the engine's
     // dependency, not this crate's.
     let now = observe::now();
+    let docs = view.docs.as_ref();
     let pick_at = |status: &str| {
-        next::pick(
+        next::pick_effective(
             prj,
-            docs,
+            view,
             &PickQuery {
                 status: status.to_string(),
                 type_filter: None,
@@ -190,7 +241,7 @@ pub fn flow(prj: &Project, docs: &[Doc], cid: &str, limit: usize) -> FlowView {
         )
     };
     let pcfg = &prj.pcfg;
-    let blockers = refs::Corpus::of_docs(pcfg, docs);
+    let blockers = refs::Corpus::of_docs(pcfg, view.main.as_ref());
 
     let types = flow_types(pcfg);
     let (statuses, node_types) = declared_statuses(pcfg);
@@ -200,7 +251,7 @@ pub fn flow(prj: &Project, docs: &[Doc], cid: &str, limit: usize) -> FlowView {
     for status in &statuses {
         let owners = node_types.get(status).cloned().unwrap_or_default();
         let picked = pick_at(status);
-        nodes.push(node(prj, docs, &blockers, status, owners, true, picked));
+        nodes.push(node(prj, view, status, owners, true, picked));
     }
     // A status no type declares but some document holds. Appended rather than
     // merged into the declared order: it has no place in the config's sequence,
@@ -228,18 +279,22 @@ pub fn flow(prj: &Project, docs: &[Doc], cid: &str, limit: usize) -> FlowView {
     }
     for status in &stray {
         let picked = pick_at(status);
-        nodes.push(node(
-            prj,
-            docs,
-            &blockers,
-            status,
-            Vec::new(),
-            false,
-            picked,
-        ));
+        nodes.push(node(prj, view, status, Vec::new(), false, picked));
     }
 
     FlowView {
+        documents: work::declared(pcfg).then(|| {
+            docs.iter()
+                .filter_map(|d| stage_doc(prj, view, d, &blockers))
+                .collect()
+        }),
+        work_refs: view
+            .refs
+            .values()
+            .chain(view.unknown.values().map(|u| &u.reference))
+            .cloned()
+            .collect(),
+        notices: view.notices.clone(),
         cid: cid.to_string(),
         limit,
         types,
@@ -365,30 +420,43 @@ fn flow_edges(pcfg: &ProjectConfig) -> Vec<FlowEdge> {
 /// One node: the pick oracle's answer at `status`, plus what it dropped.
 fn node(
     prj: &Project,
-    docs: &[Doc],
-    blockers: &refs::Corpus<'_>,
+    view: &work::Effective<'_>,
     status: &str,
     types: Vec<String>,
     declared: bool,
     picked: next::PickResult,
 ) -> FlowNode {
     // The same partition `next::select` runs, in the same precedence — an
-    // id-less document is skipped, orphaned is decided *before* blocked, so a
+    // id-less document is skipped, held and claimed copies are separated first,
+    // and orphaned is decided *before* blocked, so a
     // document that is both is counted once and as the condition that will not
     // clear by itself. Reverse either and `total` stops equalling the parts,
     // which is what the unit test below pins.
     let mut total = 0usize;
     let mut blocked: Vec<String> = Vec::new();
-    for doc in docs {
+    let mut in_progress = Vec::new();
+    let mut held = Vec::new();
+    let blockers = refs::Corpus::of_docs(&prj.pcfg, view.main.as_ref());
+    for doc in view.docs.iter() {
         let Some(id) = doc.id() else { continue };
         if doc.status() != Some(status) {
             continue;
         }
         total += 1;
-        if next::orphan_reason(&prj.pcfg, doc, blockers).is_some() {
+        if view.unknown.contains_key(id) {
+            held.push(id.to_string());
             continue;
         }
-        if !refs::live_blockers(doc, blockers).is_empty() {
+        if work::claim(&prj.pcfg, doc, observe::now()).is_some() {
+            if let Some(doc) = stage_doc(prj, view, doc, &blockers) {
+                in_progress.push(doc);
+            }
+            continue;
+        }
+        if next::orphan_reason(&prj.pcfg, doc, &blockers).is_some() {
+            continue;
+        }
+        if !refs::live_blockers(doc, &blockers).is_empty() {
             blocked.push(id.to_string());
         }
     }
@@ -420,6 +488,8 @@ fn node(
         declared,
         total,
         pickable: picked.total,
+        in_progress,
+        held,
         items: picked.items,
         blocked,
         orphaned: picked.orphaned,

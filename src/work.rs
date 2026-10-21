@@ -74,7 +74,8 @@ impl Effective<'_> {
         }
     }
 
-    fn into_owned(self) -> Effective<'static> {
+    /// Retain a read projection for a background reader's immutable cache.
+    pub fn into_owned(self) -> Effective<'static> {
         Effective {
             docs: Cow::Owned(self.docs.into_owned()),
             main: Cow::Owned(self.main.into_owned()),

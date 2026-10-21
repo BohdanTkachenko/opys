@@ -136,6 +136,8 @@ pub struct DocSummary {
 /// this struct and adds nothing.
 #[derive(Debug, Clone, Serialize)]
 pub struct DocView {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work: Option<crate::work::WorkCopy>,
     /// The roles this document currently waits on, interpreted by the engine.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub owners: Vec<String>,
@@ -360,6 +362,8 @@ pub struct DraftVerification {
 enum Message {
     /// The watcher saw something relevant; start (or extend) the quiet period.
     Fs,
+    /// A ref-reader pass invalidated declared stage copies. No blocking reply.
+    WorkRefs,
     Req(Request),
 }
 
@@ -426,6 +430,7 @@ struct ReadSnapshot {
     prj: Arc<Project>,
     docs: Arc<Vec<Doc>>,
     findings: Arc<Vec<opys_engine::diagnostics::Finding>>,
+    work: Arc<opys_engine::work::Effective<'static>>,
 }
 
 /// A complete successful generation. No store is shared, and every large field
@@ -493,7 +498,41 @@ impl CorpusClient {
     /// such id. Fails if the corpus has never loaded — `None` would claim the
     /// document does not exist.
     pub fn doc(&self, id: &str) -> Result<Option<DocView>> {
-        self.ask(|reply| Request::Doc(id.to_string(), reply))?
+        let snapshot = self.snapshot()?;
+        if !opys_engine::work::declared(&snapshot.prj.pcfg) {
+            return self.ask(|reply| Request::Doc(id.to_string(), reply))?;
+        }
+        let projection = &snapshot.work;
+        projection.ensure_main()?;
+        let mut work = crate::work::access(&snapshot.prj, projection, id);
+        let docs = if work.as_ref().is_some_and(|w| w.read_only_reason.is_some()) {
+            projection.docs.as_ref()
+        } else {
+            snapshot.docs.as_ref()
+        };
+        let Some(doc) = docs.iter().find(|d| d.id() == Some(id)) else {
+            return Ok(None);
+        };
+        let corpus = refs::Corpus::of_docs(&snapshot.prj.pcfg, projection.main.as_ref());
+        let mut result = view(&snapshot.prj, doc, &corpus);
+        if let Some(copy) = &mut work {
+            copy.claim = opys_engine::work::claim(&snapshot.prj.pcfg, doc, observe::now());
+            result.closable = false;
+            result.allowed_targets = Some(
+                result
+                    .allowed_targets
+                    .take()
+                    .unwrap_or_else(|| result.allowed_statuses.clone())
+                    .into_iter()
+                    .filter(|s| {
+                        crate::work::stages(&snapshot.prj, id, &copy.reference)
+                            .is_some_and(|stages| stages.contains(s))
+                    })
+                    .collect(),
+            );
+        }
+        result.work = work;
+        Ok(Some(result))
     }
 
     /// Validate an unsaved body against this corpus without changing any state.
@@ -521,9 +560,9 @@ impl CorpusClient {
         if let Err(error) = q.validate(&snapshot.prj.pcfg) {
             return Ok(Err(error));
         }
-        Ok(Ok(next::pick(
+        Ok(Ok(next::pick_effective(
             &snapshot.prj,
-            &snapshot.docs,
+            &snapshot.work,
             &q,
             observe::now(),
         )))
@@ -541,9 +580,9 @@ impl CorpusClient {
         if let Err(message) = q.validate(&snapshot.prj.pcfg) {
             return Ok(Err(QueueQueryError::Invalid(message)));
         }
-        Ok(Ok(queue::build(
+        Ok(Ok(queue::build_effective(
             &snapshot.prj,
-            &snapshot.docs,
+            &snapshot.work,
             &q,
             observe::now(),
             &snapshot.findings,
@@ -554,14 +593,15 @@ impl CorpusClient {
     pub fn roles(&self) -> Result<Vec<RoleQueue>> {
         let snapshot = self.snapshot()?;
         let now = observe::now();
+        let projection = &snapshot.work;
         Ok(roles::names(&snapshot.prj.pcfg)
             .into_iter()
             .map(|name| RoleQueue {
                 name: name.to_string(),
                 description: roles::description(&snapshot.prj.pcfg, name).map(str::to_string),
-                queue: queue::build(
+                queue: queue::build_effective(
                     &snapshot.prj,
-                    &snapshot.docs,
+                    projection,
                     &QueueQuery {
                         role: name.to_string(),
                         type_filter: None,
@@ -578,7 +618,26 @@ impl CorpusClient {
     /// Fails only if the actor is gone or the corpus never loaded.
     pub fn flow(&self, limit: usize) -> Result<FlowView> {
         let snapshot = self.snapshot()?;
-        Ok(flow::flow(&snapshot.prj, &snapshot.docs, &self.cid, limit))
+        Ok(flow::flow_effective(
+            &snapshot.prj,
+            &snapshot.work,
+            &self.cid,
+            limit,
+        ))
+    }
+
+    /// Called by the existing ref reader, including its periodic backstop.
+    /// Published generations keep answering while the actor recomputes work.
+    pub(crate) fn refresh_work(&self) {
+        let published = self.published.lock().unwrap_or_else(|p| p.into_inner());
+        if !published.stopped
+            && published
+                .generation
+                .as_ref()
+                .is_some_and(|g| opys_engine::work::declared(&g.snapshot.prj.pcfg))
+        {
+            let _ = self.tx.send(Message::WorkRefs);
+        }
     }
 
     fn snapshot(&self) -> Result<ReadSnapshot> {
@@ -790,6 +849,7 @@ struct Warm {
     findings: Arc<Vec<opys_engine::diagnostics::Finding>>,
     fixable_problems: Vec<String>,
     loaded_at: String,
+    work: Arc<opys_engine::work::Effective<'static>>,
 }
 
 struct Actor {
@@ -832,6 +892,7 @@ impl Actor {
             };
             match msg {
                 Message::Fs => quiet_until = Some(Instant::now() + DEBOUNCE),
+                Message::WorkRefs => quiet_until = Some(Instant::now() + DEBOUNCE),
                 Message::Req(Request::Shutdown) => break,
                 Message::Req(req) => self.handle(req),
             }
@@ -995,6 +1056,7 @@ impl Actor {
                     prj: Arc::clone(&warm.prj),
                     docs: Arc::clone(&warm.docs),
                     findings: Arc::clone(&warm.findings),
+                    work: Arc::clone(&warm.work),
                 },
                 summaries: Arc::clone(&warm.summaries),
                 loaded_at: warm.loaded_at.clone(),
@@ -1068,7 +1130,9 @@ impl Actor {
             .iter()
             .filter_map(|d| summary(&prj, d, &corpus))
             .collect();
+        let work = Arc::new(opys_engine::work::effective(&prj, &docs, observe::now()).into_owned());
         Ok(Warm {
+            work,
             prj: Arc::new(prj),
             store,
             docs: Arc::new(docs),
@@ -1161,6 +1225,7 @@ fn view(prj: &Project, doc: &Doc, corpus: &refs::Corpus<'_>) -> DocView {
         .map(|(id, _)| id)
         .collect();
     DocView {
+        work: None,
         owners: roles::effective_owners(&prj.pcfg, doc),
         owner_override: roles::is_override(&prj.pcfg, doc),
         type_name: type_of(prj, &id),
@@ -1425,6 +1490,74 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "git")]
+    #[test]
+    fn cached_work_reads_do_not_reopen_refs_or_wait_for_a_reload() {
+        let control = Arc::new(Mutex::new(BackendControl::default()));
+        let (_temp, handle) = snapshot_fixture_with(Box::new(GatedBackend(Arc::clone(&control))));
+        handle.client.docs(DocFilter::default()).unwrap();
+        let root = &handle.corpus.root;
+        let config_path = root.join("opys.toml");
+        let config = std::fs::read_to_string(&config_path)
+            .unwrap()
+            .replace("statuses = [\"open\"]", "statuses = [\"open\", \"review\"]");
+        std::fs::write(&config_path, format!("{config}\n[roles.reader]\n[types.note.owners]\nreview = ['reader']\n[types.note.work_branches.spec]\nref = 'spec/{{id}}'\nfrom = 'open'\nstages = ['review']\nmerged = 'open'\n")).unwrap();
+        let mut repo = opys_engine::git::fixture::Fixture::init(root);
+        repo.set_head("refs/heads/main");
+        let original = std::fs::read_to_string(root.join("inventory/NOTE-0001.md")).unwrap();
+        let main = repo.commit("fixture", "main");
+        repo.write(
+            "inventory/NOTE-0001.md",
+            original.replace("status: open", "status: review"),
+        );
+        repo.commit_to("refs/heads/spec/NOTE-0001", &[main], "fixture", "review");
+        repo.write("inventory/NOTE-0001.md", &original);
+        handle.reload().unwrap();
+        let cached = handle.client.snapshot().unwrap();
+        assert_eq!(cached.work.refs["NOTE-0001"], "spec/NOTE-0001");
+        let (ready, release, reloader) = gate_reload(&control, handle.client());
+        ready.recv_timeout(Duration::from_secs(3)).unwrap();
+        // No ref can now be reopened. A request that resolves git again would
+        // fall back to main's open copy instead of the published review copy.
+        std::fs::rename(root.join(".git"), root.join(".git.saved")).unwrap();
+        let client = handle.client();
+        let (finished, result) = mpsc::sync_channel(1);
+        let reader = std::thread::spawn(move || {
+            let picked = client
+                .next(PickQuery {
+                    status: "review".into(),
+                    ..open_query()
+                })
+                .unwrap()
+                .unwrap();
+            let graph = client.flow(5).unwrap();
+            let roles = client.roles().unwrap();
+            let doc = client.doc("NOTE-0001").unwrap().unwrap();
+            finished.send((picked, graph, roles, doc)).unwrap();
+        });
+        let during = result.recv_timeout(Duration::from_secs(1));
+        std::fs::rename(root.join(".git.saved"), root.join(".git")).unwrap();
+        release.send(()).unwrap();
+        reloader.join().unwrap().unwrap();
+        reader.join().unwrap();
+        let (picked, graph, roles, doc) =
+            during.expect("cached work reads waited for the blocked actor");
+        assert_eq!(picked.total, 1);
+        assert_eq!(picked.items[0].reference.as_deref(), Some("spec/NOTE-0001"));
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .find(|n| n.status == "review")
+                .unwrap()
+                .total,
+            1
+        );
+        assert_eq!(roles[0].queue.total, 1);
+        assert_eq!(doc.status, "review");
+        handle.shutdown();
+    }
+
     #[test]
     fn cached_reads_answer_during_reload_and_publish_one_complete_generation() {
         let control = Arc::new(Mutex::new(BackendControl::default()));
@@ -1566,6 +1699,7 @@ mod tests {
         assert!(Arc::ptr_eq(&first.prj, &same.prj));
         assert!(Arc::ptr_eq(&first.docs, &same.docs));
         assert!(Arc::ptr_eq(&first.findings, &same.findings));
+        assert!(Arc::ptr_eq(&first.work, &same.work));
         assert_eq!(first.docs[0].title, "First");
         assert!(handle.verify().unwrap().fixable_problems.is_empty());
 

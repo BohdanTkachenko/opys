@@ -15,6 +15,23 @@ const view = (rows = [], extra = {}) => ({ cid: 'main-cid', types: [type], nodes
 const main = [{ id: 'TASK-0001', title: 'Ticket', status: 'todo', type: 'task', blocked: true, priority: 10 },
   { id: 'TASK-0002', title: 'Unchanged', status: 'review', type: 'task', blocked: false }];
 
+test('declared_work_stages_replace_pool_copies_and_do_not_duplicate_branch_snapshots', () => {
+  const input = view([
+    { id: 'TASK-0001', cells: [cell(0, 'todo'), cell(1, null), cell(2, 'review'), cell(3, null)] },
+    { id: 'TASK-0002', cells: [cell(0, 'review'), cell(1, null), cell(2, 'todo', 'Old pool snapshot'), cell(3, null)] },
+  ]);
+  input.progress.columns = columns.map((column, index) => index === 2 ? { ...column, label: 'spec/TASK-0001' } : column);
+  input.documents = [{ ...main[0], status: 'review', ref: 'spec/TASK-0001', claim: { holder: 'worker-7' } }, main[1]];
+  input.work_refs = ['spec/TASK-0001'];
+  const result = buildFlowProgress(input, main);
+  assert.deepEqual(result.documents.map((doc) => [doc.id, doc.status]), [['TASK-0001', 'review'], ['TASK-0002', 'review']]);
+  assert.equal(result.documents[0].claim.holder, 'worker-7');
+  assert.equal(result.documents[0].sources[0].label, 'spec/TASK-0001');
+  assert.equal(result.documents[0].sources[0].work, true);
+  assert.equal(flowDocumentPath(result.documents[0].sources[0], 'TASK-0001'), '/corpus/main-cid/doc/TASK-0001');
+  assert.deepEqual(flowProgressCounts(result.documents), { tickets: 2, primary: 2, progress: 0 });
+});
+
 test('flow_progress_retains_all_main_documents_and_deduplicates_snapshots', () => {
   const input = view([{ id: 'TASK-0001', cells: [cell(0, 'todo'), cell(1, 'doing'), cell(2, 'doing'), cell(3, 'todo')] }]);
   const original = JSON.stringify(input);

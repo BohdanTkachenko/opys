@@ -1,4 +1,5 @@
 <script>
+  import WorkBadge from './WorkBadge.svelte';
   import Icon from './lib/Icon.svelte';
   import { api } from './lib/api.js';
   import { corpora } from './lib/corpora.svelte.js';
@@ -73,6 +74,7 @@
     <span class="row-id mono">{item.id}</span>
     <span class="row-body">
       <span class="row-title">{item.title || item.id}</span>
+      {#if item.ref || item.claim}<span><WorkBadge reference={item.ref} claim={item.claim} /></span>{/if}
       {#if attention}
         <span class="row-status small muted">{item.type ?? ''} · {item.status}</span>
         <span class="reasons">
@@ -143,14 +145,19 @@
             <h2>{#if project.cid}<a href={href(boardPath(project.cid))}>{project.label}</a>{:else}{project.label}{/if}</h2>
             {#if 'error' in project}<div class="notice bad"><p>{project.error}</p></div>
             {:else}
+              {#each project.notices as message}<p class="notice warn">{message}</p>{/each}
               {#each project.groups as group (`${group.type}/${group.status}`)}
                 <section class="queue-group">
                   <header class="group-head">
                     <h3><span>{group.type}</span> <span class="mono">{group.status}</span></h3>
                     <span class="owners">{#each group.owners as owner}<a class="chip" href={href(rolePath(owner))}>{owner}</a>{/each}</span>
-                    <span class="group-total small muted">{group.total} waiting · {group.blocked.length} blocked</span>
+                    <span class="group-total small muted">{group.total} waiting · {group.in_progress.length} in progress · {group.blocked.length} blocked</span>
                   </header>
                   {#each group.items as item (item.id)}{@render row(item, project.cid)}{/each}
+                  {#if group.in_progress.length}
+                    <div class="small muted progress-label">In progress</div>
+                    {#each group.in_progress as item (item.id)}{@render row(item, project.cid)}{/each}
+                  {/if}
                   {#if group.total > group.items.length}<p class="more small muted">Showing {group.items.length} of {group.total} waiting.</p>{/if}
                   {#if group.blocked.length}
                     <details class="blocked"><summary>{group.blocked.length} blocked</summary>
@@ -174,6 +181,7 @@
 </div>
 
 <style>
+  .progress-label { padding:0.5rem 0.8rem; background:var(--panel); }
   .roles-page { max-width:70rem; margin-inline:auto; }
   .head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:1rem; }
   h1 { margin:0; font-size:1.4rem; }

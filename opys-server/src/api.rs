@@ -1208,10 +1208,32 @@ async fn doc(
     Path((cid, docid)): Path<(String, String)>,
 ) -> Result<Json<DocView>, ApiError> {
     let wanted = docid.clone();
-    with_corpus(&state, &cid, move |client| client.doc(&wanted))
+    let mut view = with_corpus(&state, &cid, move |client| client.doc(&wanted))
         .await?
-        .map(Json)
-        .ok_or_else(|| ApiError::not_found(format!("no such document: {docid}")))
+        .ok_or_else(|| ApiError::not_found(format!("no such document: {docid}")))?;
+    if let Some(work) = view
+        .work
+        .as_mut()
+        .filter(|w| w.read_only_reason.is_some() && !w.unavailable)
+    {
+        let manager = Arc::clone(&state.manager);
+        let reference = work.reference.clone();
+        work.edit_cid = tokio::task::spawn_blocking(move || {
+            let manager = lock(&manager);
+            let group = manager
+                .groups()
+                .iter()
+                .find(|g| g.corpora.iter().any(|c| c.cid == cid))?;
+            group
+                .corpora
+                .iter()
+                .find(|c| c.branch.as_deref() == Some(&reference) && c.error.is_none())
+                .map(|c| c.cid.clone())
+        })
+        .await
+        .map_err(|e| ApiError::internal(format!("resolving the work checkout failed: {e}")))?;
+    }
+    Ok(Json(view))
 }
 
 #[derive(Debug, Deserialize)]

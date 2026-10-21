@@ -169,14 +169,23 @@ impl Manager {
                 .find(|c| c.is_primary)
                 .or_else(|| group.corpora.first());
             let Some(primary) = primary else { continue };
+            let work_clients: Vec<_> = group
+                .corpora
+                .iter()
+                .filter_map(|c| self.corpora.get(&c.cid).map(CorpusHandle::client))
+                .collect();
             let baselines: Vec<Baseline> = group
                 .corpora
                 .iter()
                 .filter_map(|c| {
                     let client = self.corpora.get(&c.cid).map(CorpusHandle::client)?;
+                    let work_clients = work_clients.clone();
                     Some(Baseline {
                         root: c.root.clone(),
                         docs: Box::new(move || {
+                            for client in &work_clients {
+                                client.refresh_work();
+                            }
                             client
                                 .docs(crate::actor::DocFilter::default())
                                 .map_err(|e| e.to_string())

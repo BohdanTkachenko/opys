@@ -1,4 +1,5 @@
 <script>
+  import WorkBadge from './WorkBadge.svelte';
   import { tick, untrack } from 'svelte';
   import Icon from './lib/Icon.svelte';
   import { api } from './lib/api.js';
@@ -22,7 +23,7 @@
 
   async function load(wanted) {
     const view = await api.flow(wanted);
-    return { ...view, documents: await api.docs(view.cid) };
+    return { ...view, documents: view.documents ?? await api.docs(view.cid) };
   }
   $effect(() => {
     const wanted = key;
@@ -144,7 +145,7 @@
 <header class="head topbar">
   <div class="header-summary">
     <div class="page-title"><span class="map-icon"><Icon name="flow" size={20} /></span><div><h1>{group?.name ?? 'Lifecycle'} <span>lifecycle</span></h1><p>Primary is truth. Branches show work in progress.</p></div></div>
-    {#if view}<span class="document-total small muted">{totals.tickets}{#if !allTypesVisible} of {allTotals.tickets}{/if} tickets · {totals.primary} primary{#if totals.progress} · {totals.progress} branch {totals.progress === 1 ? 'version' : 'versions'}{/if}</span>{/if}
+    {#if view}<span class="document-total small muted">{totals.tickets}{#if !allTypesVisible} of {allTotals.tickets}{/if} tickets · {totals.primary} current{#if totals.progress} · {totals.progress} branch {totals.progress === 1 ? 'version' : 'versions'}{/if}</span>{/if}
   </div>
   {#if view}
   <nav class="workflow-tabs" aria-label="Visible document types">
@@ -202,11 +203,11 @@
             <button class="state" class:selected={activeId === node.id} class:terminal={node.terminal} class:unknown={node.declared === false}
               style:--tone={tone ?? 210} style:width={`${node.width}px`} style:height={`${node.height}px`}
               style:transform={`translate(${node.x * scale}px, ${node.y * scale}px) scale(${scale})`}
-              title={`${label(node)} · ${node.types.join(', ')} · ${total.primary} primary, ${total.progress} branch versions`} aria-pressed={activeId === node.id} aria-label={`Inspect ${label(node)}: ${total.tickets} tickets, ${total.primary} primary, ${total.progress} branch versions`}
+              title={`${label(node)} · ${node.types.join(', ')} · ${total.primary} current, ${total.progress} branch versions`} aria-pressed={activeId === node.id} aria-label={`Inspect ${label(node)}: ${total.tickets} tickets, ${total.primary} current, ${total.progress} branch versions`}
               onclick={() => choose(node.id)}>
                 <span class="state-label"><span class="state-dot"></span><span class="mono">{label(node)}</span></span><span class="state-count">{total.tickets}</span>
                 <span class="state-caption">{node.types.join(' · ') || 'Undeclared status'}</span>
-                {#if view.progress}<span class="state-progress">{total.primary} primary · {total.progress} branch {total.progress === 1 ? 'version' : 'versions'}</span>{/if}
+                {#if view.progress}<span class="state-progress">{total.primary} current · {total.progress} branch {total.progress === 1 ? 'version' : 'versions'}</span>{/if}
                 {#if node.owners.length}<span class="state-owners">{#each node.owners as owner}<span title={owner}>{owner}</span>{/each}</span>{/if}
             </button>
           {/each}
@@ -235,10 +236,10 @@
       <div class="inspector-body">
       {#if active}
         {#if active.owners.length}<div class="status-owners"><span class="small muted">Waiting on</span>{#each active.owners as owner}<span class="chip">{owner}</span>{/each}</div>{/if}
-        <div class="inspector-heading"><span class="inspector-kicker">Status across visible types</span><h2 class="mono">{label(active)}</h2><div class="status-totals"><strong>{currentTotals.tickets}</strong> {currentTotals.tickets === 1 ? 'ticket' : 'tickets'}{#if blockers}<span class="blocked-count"><Icon name="lock" size={11} />{blockers} primary blocked</span>{/if}</div><p class="copy-counts">{currentTotals.primary} primary · {currentTotals.progress} branch {currentTotals.progress === 1 ? 'version' : 'versions'}</p><p class="owner-counts">{#each active.types as name}<span>{name} {flowProgressCounts(currentDocs.filter((doc) => doc.type === name)).tickets}</span>{/each}</p></div>
-        <div class="movement"><h3>Primary next moves</h3>{#if outgoing.length}<div class="next-states">{#each outgoing as edge}{@const target = model.nodes.find((node) => node.id === edge.to)}<button title={`Allowed for ${edge.types.join(', ')}${edge.closingTypes.length ? '; close for '+edge.closingTypes.join(', ') : ''}`} onclick={() => choose(target.id)}>{label(target)}{#if edge.closing}<span>close</span>{/if}</button>{/each}</div>{:else}<p>{active.terminal ? 'Final status. Work items leave the primary inventory when closed.' : 'No outgoing transitions configured on primary.'}</p>{/if}</div>
+        <div class="inspector-heading"><span class="inspector-kicker">Status across visible types</span><h2 class="mono">{label(active)}</h2><div class="status-totals"><strong>{currentTotals.tickets}</strong> {currentTotals.tickets === 1 ? 'ticket' : 'tickets'}{#if blockers}<span class="blocked-count"><Icon name="lock" size={11} />{blockers} blocked</span>{/if}</div><p class="copy-counts">{currentTotals.primary} current · {currentTotals.progress} branch {currentTotals.progress === 1 ? 'version' : 'versions'}</p><p class="owner-counts">{#each active.types as name}<span>{name} {flowProgressCounts(currentDocs.filter((doc) => doc.type === name)).tickets}</span>{/each}</p></div>
+        <div class="movement"><h3>Stage transitions</h3>{#if outgoing.length}<div class="next-states">{#each outgoing as edge}{@const target = model.nodes.find((node) => node.id === edge.to)}<button title={`Allowed for ${edge.types.join(', ')}${edge.closingTypes.length ? '; close for '+edge.closingTypes.join(', ') : ''}`} onclick={() => choose(target.id)}>{label(target)}{#if edge.closing}<span>close</span>{/if}</button>{/each}</div>{:else}<p>{active.terminal ? 'Final status. Work items leave the primary inventory when closed.' : 'No outgoing transitions configured.'}</p>{/if}</div>
         {#if nextItems.length}
-          <div class="next-picks"><h3>Ready next · primary <span>opys next</span></h3>{#each nextItems as item}<a href={href(docPath(view.cid, item.id))}><span class="mono">{item.id}</span><strong>{item.title}</strong></a>{/each}</div>
+          <div class="next-picks"><h3>Ready next <span>opys next</span></h3>{#each nextItems as item}<a href={href(docPath(view.cid, item.id))}><span class="mono">{item.id}</span><strong>{item.title}</strong><WorkBadge reference={item.ref} claim={item.claim} /></a>{/each}</div>
         {/if}
         <div class="document-heading"><h3>Documents and progress</h3><span>{currentDocs.length} {currentDocs.length === 1 ? 'version' : 'versions'}</span></div>
         {#if currentDocs.length}
@@ -248,10 +249,12 @@
               <article class="document-entry" class:progress-copy={!doc.primary}>
                 <span class="document-id mono">{doc.id}<span>{doc.type ?? 'unknown type'}{#if doc.primary && doc.blocked}<span class="blocked-label"><Icon name="lock" size={10} />blocked</span>{/if}</span></span>
                 {#if doc.primary}<a class="document-title" href={href(docPath(view.cid, doc.id))}>{doc.title || doc.id}</a>{:else}<span class="document-title">{doc.title || doc.id}</span>{/if}
+                {#if doc.claim}<div class="document-sources"><WorkBadge claim={doc.claim} /></div>{/if}
+                {#if doc.unavailable}<p class="progress-copy-note">Held: {doc.unavailable}</p>{/if}
                 <div class="document-sources">
                   {#each doc.sources as source (source.key)}
                     {@const path = flowDocumentPath(source, doc.id)}
-                    {#if path}<a class="source-chip" class:truth={source.primary} href={href(path)} title={source.primary ? 'Primary working copy: truth for pickability and completion' : 'Open this worktree copy'}>{source.label}{#if source.primary}<strong>truth</strong>{/if}</a>
+                    {#if path}<a class="source-chip" class:truth={source.primary} href={href(path)} title={source.work ? 'Declared work branch: current stage copy' : source.primary ? 'Primary working copy' : 'Open this worktree copy'}>{source.label}{#if source.work}<strong>work</strong>{:else if source.primary}<strong>main</strong>{/if}</a>
                     {:else}<span class="source-chip readonly" title={`Branch with no checkout; read-only${source.commit ? ` at ${source.commit}` : ''}`}>{source.label}<span>read-only</span></span>{/if}
                   {/each}
                 </div>

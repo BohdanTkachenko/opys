@@ -430,6 +430,24 @@ JSON additions are conditional, within the existing schemas:
 - Queue groups add nonempty `in_progress` arrays of queue items carrying
   `claim`. Group `total` still counts pickable items; queue `total` includes
   claimed documents. `-n` limits each array, while totals count all entries.
+- The node's flow resolves the same effective copies once for the whole graph.
+  The actor caches that projection and refreshes it through the ref reader
+  and its periodic backstop, keeping the previous generation readable during
+  refresh. With declarations it adds `documents` (document summaries plus optional
+  `ref`, `claim`, and an `unavailable` reason), `work_refs`, and nonempty
+  `notices`. Node totals include claimed and held documents; nonempty
+  `in_progress` summaries and `held` id arrays complete the partition alongside
+  `pickable`, `blocked`, and `orphaned`.
+- A node document read adds `work: { "ref": "spec/TASK-0001", ... }` for a
+  work copy. It includes an optional `claim`, `read_only_reason` when the
+  requested corpus is not its checkout or the copy is unavailable, and
+  `edit_cid` only when a matching checkout is served. Reads outside the branch
+  use its committed body; reads in its checkout retain local draft edits.
+  The UI offers the checkout link or explains why editing is unavailable.
+  API writes check fresh effective-copy ownership under the inventory lock;
+  a mismatched or unavailable copy is refused with 422 without a flush.
+  Relation changes check both endpoints. Work-copy status targets are limited
+  to that branch's stages, and close is refused until the orchestrator merges.
 
 No command creates, pushes, merges, deletes or fetches branches.
 
@@ -1121,7 +1139,8 @@ R` (`nobody` when the effective owner list is empty, with `owners` omitted).
 The node serves the same payload from the same function at
 `GET /api/projects/{key}/next?status=&type=&role=&n=`, where `{key}` is a project key
 from `/api/projects`. A project is a repository and its worktrees, and the answer
-comes from its **main** worktree, because main is the truth for pickability.
+starts from its **main** worktree, with declared work branches supplying stage
+copies. Main remains the truth for blocker release and completion.
 Its sibling `GET /api/projects/{key}/flow?n=` draws the whole lifecycle — one
 node per distinct status, edges from the union of every type's `transitions`,
 and each node's top `n` documents (default 5) taken from this same function, so
@@ -1131,8 +1150,9 @@ the drawing and the oracle cannot disagree.
 
 `GET /api/projects/{key}/flow?n=` keeps its primary graph and oracle fields:
 `cid`, `limit`, `types`, `nodes` and `edges`. A node's `total`, `pickable`,
-`items`, `blocked` and `orphaned` still describe the primary corpus; `n` limits
-only those pickable items, never the branch progress displayed by the UI.
+`items`, `blocked` and `orphaned` describe the effective stage copies when work
+branches are declared, and the primary corpus otherwise; `n` limits only those
+pickable items, never the branch progress displayed by the UI.
 
 The optional `progress` field uses the existing union payload shape:
 `{columns, rows, notices}`. Columns identify served worktrees or configured
@@ -1146,7 +1166,10 @@ an unknown primary cell is never rewritten as a deletion. Errors and notices
 remain visible even when no differing rows can be listed. `progress` is omitted
 for a single-source answer with no notices or errors.
 
-The flow UI combines these labelled versions with every primary document. It
+The flow UI combines these labelled versions with every effective document
+(every primary document without work declarations). Declared work refs supply
+one effective copy each; their snapshots of other tickets are not additional
+progress versions. It
 retains simultaneous statuses and title variants, groups identical id/status/
 title versions without losing sources, and counts unique ids separately from
 versions. A worktree source opens its own corpus document. A ref without a

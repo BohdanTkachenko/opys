@@ -10,13 +10,16 @@ export function flowDocumentPath(source, id) {
 
 /** Merge identical branch versions while retaining every source and main doc. */
 export function buildFlowProgress(view, primaryDocuments = []) {
+  primaryDocuments = view?.documents ?? primaryDocuments;
+  const workRefs = new Set(view?.work_refs ?? []);
   const columns = view?.progress?.columns ?? [];
   const primaryColumn = columns.find((column) => column.cid === view?.cid);
   const primarySource = { key: view?.cid, cid: view?.cid, label: primaryColumn?.label ?? 'Primary', kind: 'worktree', primary: true };
   const primary = new Map(primaryDocuments.map((doc) => [doc.id, doc]));
   const versions = new Map(primaryDocuments.map((doc) => {
     const key = versionKey(doc);
-    return [key, { ...doc, key, primary: true, sources: [primarySource], primaryCid: view?.cid }];
+    const source = doc.ref ? { ...primarySource, label: doc.ref, work: true, primary: false } : primarySource;
+    return [key, { ...doc, key, primary: true, sources: [source], primaryCid: view?.cid }];
   }));
   const errors = new Map(columns.filter((column) => column.error).map((column) => [column.cid,
     { key: column.cid, label: column.label, error: column.error }]));
@@ -29,6 +32,9 @@ export function buildFlowProgress(view, primaryDocuments = []) {
         continue;
       }
       if (cell.cid === view?.cid || column.error) continue;
+      // A declared branch carries one work copy, already supplied by the
+      // engine. Its older snapshots of every other ticket are not more work.
+      if ([...workRefs].some((ref) => column.label === ref || column.label.startsWith(`${ref} (`))) continue;
       if (cell.unknown) {
         if (!errors.has(column.cid)) errors.set(column.cid, {
           key: column.cid, label: column.label, error: 'Some document states are unknown; no absence or progress is inferred from them.',
@@ -56,7 +62,7 @@ export function buildFlowProgress(view, primaryDocuments = []) {
       if (!version.sources.some((entry) => entry.key === source.key)) version.sources.push(source);
     }
   }
-  return { documents: [...versions.values()], errors: [...errors.values()], notices: view?.progress?.notices ?? [] };
+  return { documents: [...versions.values()], errors: [...errors.values()], notices: [...new Set([...(view?.notices ?? []), ...(view?.progress?.notices ?? [])])] };
 }
 
 /** Count tickets separately from the additional versions shown at branch tips. */

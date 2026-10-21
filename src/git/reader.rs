@@ -667,6 +667,22 @@ fn reachable_from_main(
 /// The actual truth corpus when the invoking checkout is not main. `None`
 /// means its loaded corpus already is main, or there is no repository at all.
 /// Never substitute a work checkout when a repository's baseline is unreadable.
+/// Check a checkout's HEAD without reading any inventory or walking ancestry.
+pub fn work_checkout_matches(prj: &Project, reference: &str) -> anyhow::Result<bool> {
+    let Some(repo) = open(prj)? else {
+        return Ok(false);
+    };
+    let (head, commit) = head_of(&repo, repo.git_dir());
+    if let Some(head) = head {
+        return Ok(head == reference);
+    }
+    let full = format!("refs/heads/{reference}");
+    let tip = repo
+        .try_find_reference(full.as_str())?
+        .and_then(|mut r| r.peel_to_id().ok().map(|id| id.detach()));
+    Ok(commit.is_some() && commit == tip)
+}
+
 pub fn work_main(prj: &Project) -> anyhow::Result<Option<Vec<Doc>>> {
     let Some(repo) = open(prj)? else {
         return Ok(None);

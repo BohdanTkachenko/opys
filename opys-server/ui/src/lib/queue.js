@@ -11,7 +11,7 @@ export function affectsQueues(batch, groups) {
   if (batch.reconnected) return true;
   const primary = new Set(groups.map((group) => primaryCorpus(group)?.cid));
   return batch.events.some((event) => {
-    if (event.event === 'refs-changed') return false;
+    if (event.event === 'refs-changed') return groups.some((group) => group.key === event.project);
     if (event.event === 'corpus-reloaded') return primary.has(event.cid);
     return event.cid === undefined || primary.has(event.cid) ||
       event.event === 'corpus-added' || event.event === 'corpus-removed';
@@ -34,13 +34,13 @@ export function groupRoleQueues(view, groups = []) {
       continue;
     }
     const queue = project.queue;
-    const waiting = (queue.groups ?? []).map((group) => ({ ...group, owners: group.owners ?? [] }))
+    const waiting = (queue.groups ?? []).map((group) => ({ ...group, owners: group.owners ?? [], in_progress: group.in_progress ?? [] }))
       .filter((group) => group.total > 0 || group.items.length > 0 ||
-        group.blocked.length > 0 || group.orphaned.length > 0);
+        group.in_progress.length > 0 || group.blocked.length > 0 || group.orphaned.length > 0);
     if (queue.attention.length > 0 || queue.project_problems.length > 0) {
       attention.push({ ...entry, items: queue.attention, problems: queue.project_problems });
     }
-    if (waiting.length > 0) projects.push({ ...entry, groups: waiting });
+    if (waiting.length > 0 || queue.notices?.length) projects.push({ ...entry, groups: waiting, notices: queue.notices ?? [] });
   }
   return { attention, projects, empty: attention.length === 0 && projects.length === 0 };
 }

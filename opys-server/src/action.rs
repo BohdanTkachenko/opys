@@ -344,6 +344,15 @@ pub fn perform(root: &Path, backend: &dyn Backend, action: &Action) -> Attempt {
     // and the CLI drops them at exactly this point: they are the corpus's
     // problem, reported by `verify`, not this write's.
     let (mut store, parse_errors) = backend.load(&prj).map_err(ActionError::from_load)?;
+    if opys_engine::work::declared(&prj.pcfg) {
+        let docs = store
+            .all_docs()
+            .map_err(ActionError::Refused)?
+            .into_iter()
+            .map(|(_, d)| d)
+            .collect::<Vec<_>>();
+        crate::work::guard(&prj, &docs, action).map_err(ActionError::Refused)?;
+    }
     match action {
         Action::VerifyFix { id } => {
             let fixes = opys_engine::commands::verify::fix_core(&prj, &mut store, id.as_deref())

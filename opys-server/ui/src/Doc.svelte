@@ -1,4 +1,5 @@
 <script>
+  import WorkBadge from './WorkBadge.svelte';
   import VerifyProblems from './VerifyProblems.svelte';
   // View 3: one document — its frontmatter, its rendered body, and the writes
   // the node will accept for it.
@@ -33,6 +34,7 @@
   import { editorDiagnostics } from './lib/verification.js';
   import Icon from './lib/Icon.svelte';
   import { api } from './lib/api.js';
+  import { corpora } from './lib/corpora.svelte.js';
   import { affects, events } from './lib/events.svelte.js';
   import {
     docIdFromHref,
@@ -111,7 +113,8 @@
   $effect(() => {
     const [corpusId, docId] = [cid, id];
     return events.subscribe((batch) => {
-      if (affects(batch, corpusId)) load(corpusId, docId, true);
+      const group = corpora.groups.find((g) => g.corpora.some((c) => c.cid === corpusId));
+      if (affects(batch, corpusId) || batch.events.some((event) => event.event === 'refs-changed' && event.project === group?.key)) load(corpusId, docId, true);
     });
   });
 
@@ -542,6 +545,14 @@
     </p>
   </div>
 
+  {#if d.work}
+    <div class="notice page">
+      <WorkBadge reference={d.work.ref} claim={d.work.claim} />
+      {#if d.work.read_only_reason}<p>{d.work.read_only_reason}</p>{/if}
+      {#if d.work.edit_cid}<a href={href(docPath(d.work.edit_cid, d.id))}>Open branch checkout to edit</a>{/if}
+    </div>
+  {/if}
+  <fieldset class="document-content" disabled={Boolean(d.work?.read_only_reason)}>
   <header class="head page">
     <h1>{d.title || d.id}</h1>
     <div class="chips">
@@ -574,12 +585,12 @@
     </div>
   </header>
 
-  <div class="page">
+  {#if !d.work?.read_only_reason}<div class="page">
     {#key `${cid}:${id}`}
       <VerifyProblems {cid} {id} path={d.path} onreveal={revealFinding} onfindings={receiveFindings} />
     {/key}
     {#if revealError}<p class="why" role="status">{revealError}</p>{/if}
-  </div>
+  </div>{/if}
 
   {#if doc.error}
     <div class="notice warn page"><p>Could not refresh: {doc.error.message}</p></div>
@@ -932,7 +943,8 @@
   </div>
 
   <article class="body page" use:markdownLinks>
-    <Blockdown value={d.body} render={renderBlocks} onsave={saveBody} validate={validateBody} bind:this={editor} diagnostics={markdownDiagnostics} diagnosticSource={d.body} />
+    {#if d.work?.read_only_reason}{@html d.body_html}
+    {:else}<Blockdown value={d.body} render={renderBlocks} onsave={saveBody} validate={validateBody} bind:this={editor} diagnostics={markdownDiagnostics} diagnosticSource={d.body} />{/if}
   </article>
 
   <!-- The log box sits after the body rather than inside the section it
@@ -980,10 +992,12 @@
       </div>
     </div>
   {/if}
+  </fieldset>
 {/if}
 </div>
 
 <style>
+  .document-content { border:0; padding:0; margin:0; min-width:0; }
   .waiting-on { display:inline-flex; align-items:center; flex-wrap:wrap; gap:0.3rem; }
   .waiting-on a { text-decoration:none; }
   .owner-override { color:var(--accent-2); }
