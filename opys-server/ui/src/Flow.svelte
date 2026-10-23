@@ -6,7 +6,7 @@
   import { api } from './lib/api.js';
   import { corpora } from './lib/corpora.svelte.js';
   import { events } from './lib/events.svelte.js';
-  import { affectsFlowProgress, buildFlowProgress, claimedFlowDocuments, filterFlowDocuments, flowDocumentPath, flowProgressCounts } from './lib/flow-progress.js';
+  import { affectsFlowProgress, buildFlowProgress, claimedFlowDocuments, filterFlowDocuments, flowDocumentPath, flowProgressCounts, flowStatusCounts } from './lib/flow-progress.js';
   import { statusTone } from './lib/format.js';
   import { createResource } from './lib/resource.svelte.js';
   import { docPath, href } from './lib/router.svelte.js';
@@ -60,11 +60,10 @@
     : null);
   const active = $derived(model.nodes.find((node) => node.id === activeId));
   const currentDocs = $derived(active ? documents.filter((doc) => doc.status === active.status) : []);
-  const currentTotals = $derived(flowProgressCounts(currentDocs));
+  const currentTotals = $derived(flowStatusCounts(currentDocs));
   const shownDocs = $derived(filterFlowDocuments(currentDocs, { search })
     .sort((a, b) => Number(!!b.claim && b.unavailable == null) - Number(!!a.claim && a.unavailable == null) || Number(b.primary) - Number(a.primary) ||
       (a.priority ?? Infinity) - (b.priority ?? Infinity) || a.id.localeCompare(b.id)));
-  const blockers = $derived(currentDocs.filter((doc) => doc.primary && doc.blocked).length);
   const nextItems = $derived((view?.nodes.find((node) => node.status === active?.status)?.items ?? []).filter((item) => !hiddenTypes.includes(item.type)));
   const outgoing = $derived(model.edges.filter((edge) => edge.from === activeId));
   const stage = $derived(diagram.data);
@@ -96,7 +95,8 @@
     hiddenTypes = allTypesVisible ? (view?.types ?? []).map((type) => type.name) : [];
     resetViewport();
   }
-  function counts(status) { return flowProgressCounts(documents.filter((doc) => doc.status === status)); }
+  function counts(status) { return flowStatusCounts(documents.filter((doc) => doc.status === status)); }
+  function countDescription(total) { return `${total.unblocked} unblocked, ${total.blocked} blocked, ${total.unknown} with unknown blocker state, ${total.tickets} tickets`; }
   function claimedAt(status) { return claims.filter((doc) => doc.status === status).length; }
   function label(node) { return node?.status || '(no status)'; }
   function connected(edge) { return edge.from === activeId || edge.to === activeId; }
@@ -275,9 +275,9 @@
             <button class="state" class:selected={activeId === node.id} class:terminal={node.terminal} class:unknown={node.declared === false} class:claimed={claimedAt(node.status) > 0}
               style:--tone={tone ?? 210} style:width={`${node.width}px`} style:height={`${node.height}px`}
               style:transform={`translate(${node.x * scale}px, ${node.y * scale}px) scale(${scale})`}
-              title={`${label(node)} · ${node.types.join(', ')} · ${total.primary} current, ${total.progress} branch versions · ${claimedAt(node.status)} claimed`} aria-pressed={activeId === node.id} aria-label={`Inspect ${label(node)}: ${total.tickets} tickets, ${total.primary} current, ${total.progress} branch versions, ${claimedAt(node.status)} claimed`}
+              title={`${label(node)} · ${node.types.join(', ')} · ${countDescription(total)} · ${total.primary} current, ${total.progress} branch versions · ${claimedAt(node.status)} claimed`} aria-pressed={activeId === node.id} aria-label={`Inspect ${label(node)}: ${countDescription(total)}, ${total.primary} current, ${total.progress} branch versions, ${claimedAt(node.status)} claimed`}
               onclick={() => choose(node.id)}>
-                <span class="state-label"><span class="state-dot"></span><span class="mono">{label(node)}</span></span><span class="state-count">{total.tickets}</span>
+                <span class="state-label"><span class="state-dot"></span><span class="mono">{label(node)}</span></span><span class="state-count">{total.label}</span>
                 <span class="state-caption">{node.types.join(' · ') || 'Undeclared status'}</span>
                 {#if view.progress}<span class="state-progress">{total.primary} current · {total.progress} branch {total.progress === 1 ? 'version' : 'versions'}</span>{/if}
                 {#if node.owners.length}<span class="state-owners">{#each node.owners as owner}<span title={owner}>{owner}</span>{/each}</span>{/if}
@@ -288,7 +288,8 @@
       </div>
       {/if}
       <footer class="map-footer">
-        <div class="map-legend" aria-label="Connection legend">
+        <div class="map-legend" aria-label="Graph legend">
+          <span title="Counts show unblocked / total tickets. ? means blocker state is unknown.">Unblocked / total</span>
           <span title="Solid connections include configured transitions"><span class="legend-line" aria-hidden="true"></span>Configured</span>
           <span title="Dashed connections allow unrestricted transitions"><span class="legend-line dashed" aria-hidden="true"></span>Unrestricted</span>
           <span title="Arrowheads at both ends allow transitions in either direction"><svg class="legend-arrow" width="22" height="12" viewBox="0 0 22 12" aria-hidden="true"><path d="M2 6h18M6 2 2 6l4 4M16 2l4 4-4 4" /></svg>Two-way</span>
@@ -310,7 +311,7 @@
       <div class="inspector-body">
       {#if active}
         {#if active.owners.length}<div class="status-owners"><span class="small muted">Waiting on</span>{#each active.owners as owner}<span class="chip">{owner}</span>{/each}</div>{/if}
-        <div class="inspector-heading"><span class="inspector-kicker">Status across visible types</span><h2 class="mono">{label(active)}</h2><div class="status-totals"><strong>{currentTotals.tickets}</strong> {currentTotals.tickets === 1 ? 'ticket' : 'tickets'}{#if blockers}<span class="blocked-count"><Icon name="lock" size={11} />{blockers} blocked</span>{/if}</div><p class="copy-counts">{currentTotals.primary} current · {currentTotals.progress} branch {currentTotals.progress === 1 ? 'version' : 'versions'}</p><p class="owner-counts">{#each active.types as name}<span>{name} {flowProgressCounts(currentDocs.filter((doc) => doc.type === name)).tickets}</span>{/each}</p></div>
+        <div class="inspector-heading"><span class="inspector-kicker">Status across visible types</span><h2 class="mono">{label(active)}</h2><div class="status-totals"><strong title={countDescription(currentTotals)}>{currentTotals.label}</strong> unblocked / total{#if currentTotals.blocked}<span class="blocked-count"><Icon name="lock" size={11} />{currentTotals.blocked} blocked</span>{/if}</div>{#if currentTotals.unknown}<p class="copy-counts">Blocker state unknown for {currentTotals.unknown} {currentTotals.unknown === 1 ? 'ticket' : 'tickets'}; {currentTotals.unblocked} known unblocked.</p>{/if}<p class="copy-counts">{currentTotals.primary} current · {currentTotals.progress} branch {currentTotals.progress === 1 ? 'version' : 'versions'}</p><p class="owner-counts">{#each active.types as name}<span>{name} {flowStatusCounts(currentDocs.filter((doc) => doc.type === name)).label}</span>{/each}</p></div>
         <div class="movement"><h3>Stage transitions</h3>{#if outgoing.length}<div class="next-states">{#each outgoing as edge}{@const target = model.nodes.find((node) => node.id === edge.to)}<button title={`Allowed for ${edge.types.join(', ')}${edge.closingTypes.length ? '; close for '+edge.closingTypes.join(', ') : ''}`} onclick={() => choose(target.id)}>{label(target)}{#if edge.closing}<span>close</span>{/if}</button>{/each}</div>{:else}<p>{active.terminal ? 'Final status. Work items leave the primary inventory when closed.' : 'No outgoing transitions configured.'}</p>{/if}</div>
         {#if nextItems.length}
           <div class="next-picks"><h3>Ready next <span>opys next</span></h3>{#each nextItems as item}<a href={href(docPath(view.cid, item.id))}><span class="mono">{item.id}</span><strong>{item.title}</strong><WorkBadge reference={item.ref} claim={item.claim} /></a>{/each}</div>
@@ -383,7 +384,7 @@
   .state-label { display:flex; gap:7px; align-items:center; font-size:13px; white-space:nowrap; }
   .state-label .mono { overflow:hidden; text-overflow:ellipsis; }
   .state-dot { width:6px; height:6px; border-radius:50%; background:hsl(var(--tone) 65% 48%); flex:none; }
-  .state-count { font-size:23px; font-weight:500; line-height:1; font-variant-numeric:tabular-nums; grid-row:span 2; align-self:center; }
+  .state-count { font-size:18px; white-space:nowrap; font-weight:500; line-height:1; font-variant-numeric:tabular-nums; grid-row:span 2; align-self:center; }
   .state-caption { font-size:10px; color:var(--muted); padding-left:13px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
   .state-progress { grid-column:1 / -1; color:var(--muted); font-size:9px; white-space:nowrap; }
   .state-owners { display:flex; flex-direction:column; align-items:flex-start; grid-column:1 / -1; gap:3px; overflow:hidden; }

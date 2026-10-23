@@ -74,6 +74,20 @@ export function flowProgressCounts(documents) {
   };
 }
 
+/** Count blocker states once per ticket, using only authoritative documents. */
+export function flowStatusCounts(documents) {
+  const totals = flowProgressCounts(documents);
+  const states = new Map();
+  for (const doc of documents) {
+    if (!states.has(doc.id)) states.set(doc.id, null);
+    if (doc.primary && typeof doc.blocked === 'boolean') states.set(doc.id, doc.blocked);
+  }
+  const blocked = [...states.values()].filter((state) => state === true).length;
+  const unblocked = [...states.values()].filter((state) => state === false).length;
+  const unknown = totals.tickets - blocked - unblocked;
+  return { ...totals, blocked, unblocked, unknown, label: `${unknown ? '?' : unblocked}/${totals.tickets}` };
+}
+
 /** Explicit claims, not status owners or branch snapshots, identify in-progress work. */
 export function claimedFlowDocuments(documents) {
   const claims = new Map();
