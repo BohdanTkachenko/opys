@@ -1,5 +1,6 @@
 <script>
   import FlowActivity from './FlowActivity.svelte';
+  import FlowBlockers from './FlowBlockers.svelte';
   import WorkBadge from './WorkBadge.svelte';
   import { tick, untrack } from 'svelte';
   import Icon from './lib/Icon.svelte';
@@ -208,10 +209,11 @@
               style:transform={`translate(${node.x * scale}px, ${node.y * scale}px) scale(${scale})`}
               title={`${label(node)} · ${node.types.join(', ')} · ${countDescription(total)} · ${total.primary} current, ${total.progress} branch versions · ${claimedAt(node.status)} claimed`} aria-pressed={activeId === node.id} aria-label={`Inspect ${label(node)}: ${countDescription(total)}, ${total.primary} current, ${total.progress} branch versions, ${claimedAt(node.status)} claimed`}
               onclick={() => choose(node.id)}>
-                <span class="state-label"><span class="state-dot"></span><span class="mono">{label(node)}</span></span><span class="state-count">{total.label}</span>
+                <span class="state-label"><span class="state-dot"></span><span class="mono">{label(node)}</span></span><span class="state-count" class:empty={!total.tickets}>{total.tickets || 'Empty'}</span>
                 <span class="state-caption">{node.types.join(' · ') || 'Undeclared status'}</span>
                 {#if view.progress}<span class="state-progress">{total.primary} current · {total.progress} branch {total.progress === 1 ? 'version' : 'versions'}</span>{/if}
                 {#if node.owners.length}<span class="state-owners">{#each node.owners as owner}<span title={owner}>{owner}</span>{/each}</span>{/if}
+                <span class="state-blockers"><FlowBlockers counts={total} /></span>
                 <span class="state-activity">{#if claimedAt(node.status)}<span class="claim-dot"></span>{claimedAt(node.status)} claimed{/if}</span>
             </button>
           {/each}
@@ -220,7 +222,7 @@
       {/if}
       <footer class="map-footer">
         <div class="map-legend" aria-label="Graph legend">
-          <span title="Counts show unblocked / total tickets. ? means blocker state is unknown.">Unblocked / total</span>
+          <span title="Counts show total cards; badges identify blocked cards and unknown blocker states.">Total cards</span>
           <span title="Solid connections include configured transitions"><span class="legend-line" aria-hidden="true"></span>Configured</span>
           <span title="Dashed connections allow unrestricted transitions"><span class="legend-line dashed" aria-hidden="true"></span>Unrestricted</span>
           <span title="Arrowheads at both ends allow transitions in either direction"><svg class="legend-arrow" width="22" height="12" viewBox="0 0 22 12" aria-hidden="true"><path d="M2 6h18M6 2 2 6l4 4M16 2l4 4-4 4" /></svg>Two-way</span>
@@ -242,7 +244,7 @@
       <div class="inspector-body">
       {#if active}
         {#if active.owners.length}<div class="status-owners"><span class="small muted">Waiting on</span>{#each active.owners as owner}<span class="chip">{owner}</span>{/each}</div>{/if}
-        <div class="inspector-heading"><span class="inspector-kicker">Status across visible types</span><h2 class="mono">{label(active)}</h2><div class="status-totals"><strong title={countDescription(currentTotals)}>{currentTotals.label}</strong> unblocked / total{#if currentTotals.blocked}<span class="blocked-count"><Icon name="lock" size={11} />{currentTotals.blocked} blocked</span>{/if}</div>{#if currentTotals.unknown}<p class="copy-counts">Blocker state unknown for {currentTotals.unknown} {currentTotals.unknown === 1 ? 'ticket' : 'tickets'}; {currentTotals.unblocked} known unblocked.</p>{/if}<p class="copy-counts">{currentTotals.primary} current · {currentTotals.progress} branch {currentTotals.progress === 1 ? 'version' : 'versions'}</p><p class="owner-counts">{#each active.types as name}<span>{name} {flowStatusCounts(currentDocs.filter((doc) => doc.type === name)).label}</span>{/each}</p></div>
+        <div class="inspector-heading"><span class="inspector-kicker">Status across visible types</span><h2 class="mono">{label(active)}</h2><div class="status-totals"><strong title={countDescription(currentTotals)}>{currentTotals.tickets || 'Empty'}</strong>{#if currentTotals.tickets} {currentTotals.tickets === 1 ? 'card' : 'cards'}{/if}<FlowBlockers counts={currentTotals} /></div>{#if currentTotals.unknown}<p class="copy-counts">Blocker state unknown for {currentTotals.unknown} {currentTotals.unknown === 1 ? 'ticket' : 'tickets'}; {currentTotals.unblocked} known unblocked.</p>{/if}<p class="copy-counts">{currentTotals.primary} current · {currentTotals.progress} branch {currentTotals.progress === 1 ? 'version' : 'versions'}</p><p class="owner-counts">{#each active.types as name}<span>{name} {flowStatusCounts(currentDocs.filter((doc) => doc.type === name)).tickets}</span>{/each}</p></div>
         <div class="movement"><h3>Stage transitions</h3>{#if outgoing.length}<div class="next-states">{#each outgoing as edge}{@const target = model.nodes.find((node) => node.id === edge.to)}<button title={`Allowed for ${edge.types.join(', ')}${edge.closingTypes.length ? '; close for '+edge.closingTypes.join(', ') : ''}`} onclick={() => choose(target.id)}>{label(target)}{#if edge.closing}<span>close</span>{/if}</button>{/each}</div>{:else}<p>{active.terminal ? 'Final status. Work items leave the primary inventory when closed.' : 'No outgoing transitions configured.'}</p>{/if}</div>
         {#if nextItems.length}
           <div class="next-picks"><h3>Ready next <span>opys next</span></h3>{#each nextItems as item}<a href={href(docPath(view.cid, item.id))}><span class="mono">{item.id}</span><strong>{item.title}</strong><WorkBadge reference={item.ref} claim={item.claim} /></a>{/each}</div>
@@ -314,7 +316,9 @@
   .state-label { display:flex; gap:7px; align-items:center; font-size:13px; white-space:nowrap; }
   .state-label .mono { overflow:hidden; text-overflow:ellipsis; }
   .state-dot { width:6px; height:6px; border-radius:50%; background:hsl(var(--tone) 65% 48%); flex:none; }
-  .state-count { font-size:18px; white-space:nowrap; font-weight:500; line-height:1; font-variant-numeric:tabular-nums; grid-row:span 2; align-self:center; }
+  .state-count { font-size:23px; white-space:nowrap; font-weight:500; line-height:1; font-variant-numeric:tabular-nums; grid-row:span 2; align-self:center; }
+  .state-count.empty { font-size:12px; color:var(--muted); }
+  .state-blockers { grid-column:1 / -1; min-height:18px; }
   .state-caption { font-size:10px; color:var(--muted); padding-left:13px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
   .state-progress { grid-column:1 / -1; color:var(--muted); font-size:9px; white-space:nowrap; }
   .state-owners { display:flex; flex-direction:column; align-items:flex-start; grid-column:1 / -1; gap:3px; overflow:hidden; }
@@ -344,9 +348,8 @@
   .owner-counts { display:flex; flex-wrap:wrap; gap:0.4rem 0.65rem; margin:0.7rem 0 0; color:var(--muted); font-size:0.7rem; }
   .inspector-kicker { color:var(--muted); font-size:0.75rem; }
   .inspector h2 { margin:0.5rem 0 0.7rem; font-size:1.35rem; font-weight:550; overflow-wrap:anywhere; }
-  .status-totals { display:flex; align-items:center; gap:0.35rem; font-size:0.8rem; color:var(--muted); }
+  .status-totals { display:flex; flex-wrap:wrap; align-items:center; gap:0.35rem; font-size:0.8rem; color:var(--muted); }
   .status-totals strong { color:var(--fg); font-size:1.15rem; font-weight:550; }
-  .blocked-count { margin-left:auto; display:flex; gap:0.25rem; align-items:center; color:var(--warn); font-size:0.75rem; }
   .inspector h3 { font-size:0.75rem; font-weight:600; margin:0 0 0.55rem; }
   .movement { padding:1rem 0.95rem; border-bottom:1px solid var(--border); }
   .movement p { margin:0; font-size:0.8rem; color:var(--muted); line-height:1.5; }
