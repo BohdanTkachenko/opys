@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { affectsFlowProgress, buildFlowProgress, filterFlowDocuments, flowDocumentPath, flowProgressCounts } from './flow-progress.js';
+import { affectsFlowProgress, buildFlowProgress, claimedFlowDocuments, filterFlowDocuments, flowDocumentPath, flowProgressCounts } from './flow-progress.js';
 import { buildWorkflowMap } from './workflow-map.js';
 
 const type = { name: 'task', prefix: 'TASK', statuses: ['todo', 'doing', 'review'], terminal_statuses: [], default_status: 'todo', has_graph: true };
@@ -107,4 +107,45 @@ test('flow_progress_refreshes_any_group_corpus_refs_roster_and_reconnect', () =>
   assert.equal(affectsFlowProgress(batch({ event: 'corpus-reloaded', cid: 'another-project' }), 'project', group, view()), false);
   assert.equal(affectsFlowProgress(batch({ event: 'refs-changed', project: 'another-project' }), 'project', group, view()), false);
   assert.equal(affectsFlowProgress({ reconnected: true, events: [] }, 'project', group, view()), true);
+});
+
+test('flow_activity_uses_explicit_available_claims_not_stage_ownership_or_branch_presence', () => {
+  const claim = { holder: 'worker-7', since: '2026-10-22T18:00:00Z' };
+  const docs = [
+    { id: 'TASK-0001', status: 'doing', claim, unavailable: 'Two work branches are open' },
+    { id: 'TASK-0002', status: 'doing', ref: 'spec/TASK-0002', owners: ['agent-claude'] },
+    { id: 'TASK-0003', status: 'doing', claim },
+    { id: 'TASK-0004', status: 'doing', claim, unavailable: '' },
+  ];
+  assert.deepEqual(claimedFlowDocuments(docs).map((doc) => doc.id), ['TASK-0003']);
+  assert.deepEqual(claimedFlowDocuments(docs.map(({ claim, ...doc }) => doc)), [], 'released cards leave the activity list');
+});
+
+test('flow_activity_respects_type_filters_and_preserves_unknown_claim_ages', () => {
+  const result = buildFlowProgress({ ...view(), documents: [
+    { id: 'TASK-0001', type: 'task', status: 'doing', claim: { holder: 'worker-task' } },
+    { id: 'BUG-0002', type: 'bug', status: 'doing', claim: { holder: 'worker-bug', since: 'invalid' } },
+  ] });
+  const visible = filterFlowDocuments(result.documents, { hiddenTypes: ['bug'] });
+  assert.deepEqual(claimedFlowDocuments(visible).map((doc) => doc.id), ['TASK-0001']);
+  assert.equal(claimedFlowDocuments(visible)[0].claim.since, undefined);
+  assert.equal(claimedFlowDocuments(result.documents).find((doc) => doc.id === 'BUG-0002').claim.since, 'invalid');
+  assert.equal(claimedFlowDocuments(result.documents).find((doc) => doc.id === 'TASK-0001').claim.since, undefined);
+  assert.equal(claimedFlowDocuments(filterFlowDocuments(result.documents, { hiddenTypes: ['bug', 'task'] })).length, 0);
+});
+
+test('flow_activity_deduplicates_copies_preserves_parallel_claims_and_does_not_move_the_graph', () => {
+  const claim = { holder: 'worker-7', since: '2026-10-22T18:00:00Z' };
+  const primary = { id: 'TASK-0001', type: 'task', status: 'doing', ref: 'spec/TASK-0001', claim, primary: true };
+  const docs = [
+    { ...primary, primary: false }, primary,
+    { ...primary, ref: 'impl/TASK-0001', claim: { holder: 'worker-8', since: '2026-10-22T19:00:00Z' } },
+  ];
+  const before = JSON.stringify(docs);
+  const active = claimedFlowDocuments(docs);
+  assert.equal(active.length, 2);
+  assert.equal(active[0], primary, 'prefer the authoritative served copy for its link');
+  assert.equal(JSON.stringify(docs), before);
+  assert.deepEqual(buildWorkflowMap(view(), null, docs), buildWorkflowMap(view(), null, docs.map(({ claim, ...doc }) => doc)),
+    'claim updates preserve graph geometry and the user\'s viewport');
 });

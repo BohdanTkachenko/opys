@@ -1,11 +1,12 @@
 <script>
+  import FlowActivity from './FlowActivity.svelte';
   import WorkBadge from './WorkBadge.svelte';
   import { untrack } from 'svelte';
   import Icon from './lib/Icon.svelte';
   import { api } from './lib/api.js';
   import { corpora } from './lib/corpora.svelte.js';
   import { events } from './lib/events.svelte.js';
-  import { affectsFlowProgress, buildFlowProgress, filterFlowDocuments, flowDocumentPath, flowProgressCounts } from './lib/flow-progress.js';
+  import { affectsFlowProgress, buildFlowProgress, claimedFlowDocuments, filterFlowDocuments, flowDocumentPath, flowProgressCounts } from './lib/flow-progress.js';
   import { statusTone } from './lib/format.js';
   import { createResource } from './lib/resource.svelte.js';
   import { docPath, href } from './lib/router.svelte.js';
@@ -49,6 +50,7 @@
   const group = $derived(corpora.groups.find((candidate) => candidate.key === key));
   const progress = $derived(buildFlowProgress(view, view?.documents ?? []));
   const documents = $derived(filterFlowDocuments(progress.documents, { hiddenTypes }));
+  const claims = $derived(claimedFlowDocuments(documents));
   const totals = $derived(flowProgressCounts(documents));
   const allTotals = $derived(flowProgressCounts(progress.documents));
   const allTypesVisible = $derived((view?.types ?? []).every((type) => !hiddenTypes.includes(type.name)));
@@ -60,7 +62,7 @@
   const currentDocs = $derived(active ? documents.filter((doc) => doc.status === active.status) : []);
   const currentTotals = $derived(flowProgressCounts(currentDocs));
   const shownDocs = $derived(filterFlowDocuments(currentDocs, { search })
-    .sort((a, b) => Number(b.primary) - Number(a.primary) ||
+    .sort((a, b) => Number(!!b.claim && b.unavailable == null) - Number(!!a.claim && a.unavailable == null) || Number(b.primary) - Number(a.primary) ||
       (a.priority ?? Infinity) - (b.priority ?? Infinity) || a.id.localeCompare(b.id)));
   const blockers = $derived(currentDocs.filter((doc) => doc.primary && doc.blocked).length);
   const nextItems = $derived((view?.nodes.find((node) => node.status === active?.status)?.items ?? []).filter((item) => !hiddenTypes.includes(item.type)));
@@ -95,6 +97,7 @@
     resetViewport();
   }
   function counts(status) { return flowProgressCounts(documents.filter((doc) => doc.status === status)); }
+  function claimedAt(status) { return claims.filter((doc) => doc.status === status).length; }
   function label(node) { return node?.status || '(no status)'; }
   function connected(edge) { return edge.from === activeId || edge.to === activeId; }
   function arrowMarker(edge, reverse = false) {
@@ -269,15 +272,16 @@
           {#each stage.nodes as node (node.id)}
             {@const tone = statusTone(node.status)}
             {@const total = counts(node.status)}
-            <button class="state" class:selected={activeId === node.id} class:terminal={node.terminal} class:unknown={node.declared === false}
+            <button class="state" class:selected={activeId === node.id} class:terminal={node.terminal} class:unknown={node.declared === false} class:claimed={claimedAt(node.status) > 0}
               style:--tone={tone ?? 210} style:width={`${node.width}px`} style:height={`${node.height}px`}
               style:transform={`translate(${node.x * scale}px, ${node.y * scale}px) scale(${scale})`}
-              title={`${label(node)} · ${node.types.join(', ')} · ${total.primary} current, ${total.progress} branch versions`} aria-pressed={activeId === node.id} aria-label={`Inspect ${label(node)}: ${total.tickets} tickets, ${total.primary} current, ${total.progress} branch versions`}
+              title={`${label(node)} · ${node.types.join(', ')} · ${total.primary} current, ${total.progress} branch versions · ${claimedAt(node.status)} claimed`} aria-pressed={activeId === node.id} aria-label={`Inspect ${label(node)}: ${total.tickets} tickets, ${total.primary} current, ${total.progress} branch versions, ${claimedAt(node.status)} claimed`}
               onclick={() => choose(node.id)}>
                 <span class="state-label"><span class="state-dot"></span><span class="mono">{label(node)}</span></span><span class="state-count">{total.tickets}</span>
                 <span class="state-caption">{node.types.join(' · ') || 'Undeclared status'}</span>
                 {#if view.progress}<span class="state-progress">{total.primary} current · {total.progress} branch {total.progress === 1 ? 'version' : 'versions'}</span>{/if}
                 {#if node.owners.length}<span class="state-owners">{#each node.owners as owner}<span title={owner}>{owner}</span>{/each}</span>{/if}
+                <span class="state-activity">{#if claimedAt(node.status)}<span class="claim-dot"></span>{claimedAt(node.status)} claimed{/if}</span>
             </button>
           {/each}
         </div>
@@ -301,6 +305,7 @@
 </div>
 
     <aside class="inspector" aria-label="Workflow status details">
+      {#if view}<FlowActivity items={claims} {view} onselect={choose} />{/if}
       <header class="inspector-title"><Icon name="flow" size={17} /><strong>Status details</strong></header>
       <div class="inspector-body">
       {#if active}
@@ -315,7 +320,7 @@
           <label class="document-search"><Icon name="search" size={13} /><input bind:value={search} placeholder="Filter documents…" aria-label="Filter documents at this status" /></label>
           <div class="document-list">
             {#each shownDocs as doc (doc.key)}
-              <article class="document-entry" class:progress-copy={!doc.primary}>
+              <article class="document-entry" class:progress-copy={!doc.primary} class:claimed={!!doc.claim && doc.unavailable == null}>
                 <span class="document-id mono">{doc.id}<span>{doc.type ?? 'unknown type'}{#if doc.primary && doc.blocked}<span class="blocked-label"><Icon name="lock" size={10} />blocked</span>{/if}</span></span>
                 {#if doc.primary}<a class="document-title" href={href(docPath(view.cid, doc.id))}>{doc.title || doc.id}</a>{:else}<span class="document-title">{doc.title || doc.id}</span>{/if}
                 {#if doc.claim}<div class="document-sources"><WorkBadge claim={doc.claim} /></div>{/if}
@@ -383,6 +388,9 @@
   .state-progress { grid-column:1 / -1; color:var(--muted); font-size:9px; white-space:nowrap; }
   .state-owners { display:flex; flex-direction:column; align-items:flex-start; grid-column:1 / -1; gap:3px; overflow:hidden; }
   .state-owners span { border:1px solid var(--border); border-radius:4px; padding:1px 4px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:9px; color:var(--accent); }
+  .state.claimed { border-color:color-mix(in srgb,var(--good) 65%,var(--border)); }
+  .state-activity { display:flex; align-items:center; gap:5px; grid-column:1 / -1; min-height:14px; color:color-mix(in srgb,var(--good) 80%,var(--fg)); font-size:10px; font-weight:600; }
+  .claim-dot { width:5px; height:5px; flex:none; border-radius:50%; background:currentColor; }
   .status-owners { display:flex; align-items:center; flex-wrap:wrap; gap:0.3rem; margin-bottom:0.7rem; }
   .state.terminal { border-style:dashed; }
   .state.unknown { border-color:var(--bad); }
@@ -428,6 +436,7 @@
   .document-list { padding:0 0.25rem 0.5rem; }
   .document-entry { margin:0.2rem 0; padding:0.7rem; border-radius:7px; font-size:0.8rem; line-height:1.45; }
   .document-entry.progress-copy { border-left:2px solid color-mix(in srgb,var(--accent-2) 45%,var(--border)); background:color-mix(in srgb,var(--accent-2) 3%,var(--panel)); }
+  .document-entry.claimed { border-left:2px solid var(--good); background:color-mix(in srgb,var(--good) 4%,var(--panel)); }
   .document-title { display:block; color:var(--fg); text-decoration:none; overflow-wrap:anywhere; }
   a.document-title:hover { color:var(--accent); text-decoration:underline; }
   .document-sources { display:flex; flex-wrap:wrap; gap:0.3rem; margin-top:0.5rem; }
