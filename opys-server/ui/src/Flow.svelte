@@ -273,7 +273,7 @@
           {#each stage.nodes as node (node.id)}
             {@const tone = statusTone(node.status)}
             {@const total = counts(node.status)}
-            <button class="state" class:selected={activeId === node.id} class:terminal={node.terminal} class:unknown={node.declared === false} class:claimed={claimedAt(node.status) > 0}
+            <button class="state" class:empty={!total.tickets} class:all-blocked={total.tickets > 0 && total.blocked === total.tickets} class:selected={activeId === node.id} class:terminal={node.terminal} class:unknown={node.declared === false} class:claimed={claimedAt(node.status) > 0}
               style:--tone={tone ?? 210} style:width={`${node.width}px`} style:height={`${node.height}px`}
               style:transform={`translate(${node.x * scale}px, ${node.y * scale}px) scale(${scale})`}
               title={`${label(node)} · ${node.types.join(', ')} · ${countDescription(total)} · ${total.primary} current, ${total.progress} branch versions · ${claimedAt(node.status)} claimed`} aria-pressed={activeId === node.id} aria-label={`Inspect ${label(node)}: ${countDescription(total)}, ${total.primary} current, ${total.progress} branch versions, ${claimedAt(node.status)} claimed`}
@@ -380,6 +380,8 @@
   .connection.unrestricted { stroke-dasharray:3 4; }
   .connection.related { stroke:var(--accent); stroke-width:1.8; }
   .state { position:absolute; top:0; left:0; transform-origin:top left; display:grid; grid-template-columns:minmax(0,1fr) auto; align-content:center; gap:0.4rem 0.5rem; text-align:left; padding:14px 15px; border:1px solid var(--border-strong); border-radius:10px; background:var(--panel); color:var(--fg); cursor:pointer; box-shadow:0 2px 3px color-mix(in srgb,var(--fg) 4%,transparent); font:inherit; }
+  .state.empty { background:var(--raised); }
+  .state.all-blocked { background:color-mix(in srgb,var(--warn) 14%,var(--panel)); }
   .state:hover { border-color:var(--accent); }
   .state.selected { border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 12%,transparent); }
   .state:focus-visible { outline:2px solid var(--accent); outline-offset:5px; }
