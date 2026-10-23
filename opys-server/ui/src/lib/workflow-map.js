@@ -5,7 +5,7 @@ export function buildWorkflowMap(view, typeName = null, documents = [], hiddenTy
   if (!types.length) return { nodes: [], edges: [], types: [] };
   const statuses = [...new Set([...types.flatMap((type) => type.statuses), ...documents.filter((doc) => (!typeName || doc.type === typeName) && !hiddenTypes.includes(doc.type)).map((doc) => doc.status)])];
   const nodes = statuses.map((status) => ({
-    id: `state-${encodeURIComponent(status)}`, status, kind: 'status', width: 172,
+    id: `state-${encodeURIComponent(status)}`, status, kind: 'status', width: 208,
     // Reserve the claim row even while idle, so claiming/releasing work never moves the graph.
     height: 96 + (view?.progress ? 18 : 0) + ((view?.nodes ?? []).find((node) => node.status === status)?.owners?.length ?? 0) * 20,
     owners: (view?.nodes ?? []).find((node) => node.status === status)?.owners ?? [],
