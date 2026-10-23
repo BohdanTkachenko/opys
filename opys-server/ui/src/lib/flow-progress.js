@@ -74,6 +74,21 @@ export function flowProgressCounts(documents) {
   };
 }
 
+/** Explicit claims, not status owners or branch snapshots, identify in-progress work. */
+export function claimedFlowDocuments(documents) {
+  const claims = new Map();
+  for (const doc of documents) {
+    if (!doc.claim || doc.unavailable != null) continue;
+    const key = JSON.stringify([doc.id, doc.status, doc.ref ?? null, doc.claim.holder]);
+    if (!claims.has(key) || doc.primary) claims.set(key, doc);
+  }
+  const activity = (doc) => {
+    const time = Date.parse(doc.claim.since);
+    return Number.isFinite(time) ? time : Infinity;
+  };
+  return [...claims.values()].sort((a, b) => activity(a) - activity(b) || a.id.localeCompare(b.id));
+}
+
 /** The same filters apply to primary documents and every branch version. */
 export function filterFlowDocuments(documents, { hiddenTypes = [], search = '', status } = {}) {
   const needle = search.trim().toLowerCase();
