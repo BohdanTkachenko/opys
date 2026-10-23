@@ -32,6 +32,10 @@ function parse(hash) {
     return { view: 'role', role: parts[1] ?? null, query };
   }
 
+  if (parts[0] === 'group' && (parts.length === 3 || parts.length === 4) && parts[2] === 'roles') {
+    return { view: 'project-roles', key: parts[1], role: parts[3] ?? null, query };
+  }
+
   if (parts[0] === 'corpus' && parts.length === 2) {
     return { view: 'board', cid: parts[1], query };
   }
@@ -149,6 +153,10 @@ export function flowPath(key) {
 /** The cross-project role queue, or the remembered-role picker. */
 export function rolePath(role = null) {
   return role ? `/role/${seg(role)}` : '/role';
+}
+
+export function projectRolesPath(key, role = null) {
+  return `/group/${seg(key)}/roles${role ? `/${seg(role)}` : ''}`;
 }
 
 /** An `href` for a route path, so links stay real links — middle-click works. */

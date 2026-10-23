@@ -6,16 +6,22 @@
   import { events } from './lib/events.svelte.js';
   import { priorityChip, shortTime } from './lib/format.js';
   import { omni } from './lib/omni.svelte.js';
-  import { affectsQueues, groupRoleQueues, relativeSince } from './lib/queue.js';
+  import { affectsQueues, groupRoleQueues, projectRoles, relativeSince, scopeRoleView } from './lib/queue.js';
   import { createResource } from './lib/resource.svelte.js';
   import { roles } from './lib/roles.svelte.js';
-  import { boardPath, docPath, go, href, rolePath } from './lib/router.svelte.js';
+  import { boardPath, docPath, go, href, projectRolesPath, rolePath } from './lib/router.svelte.js';
 
-  let { role = null } = $props();
+  let { role = null, projectKey = null } = $props();
+  const project = $derived(corpora.groups.find((group) => group.key === projectKey));
+  const available = $derived(projectRoles(roles.all, projectKey));
+  const projectErrors = $derived(roles.errors.filter((entry) => !projectKey || entry.key === projectKey));
+  function queuePath(name) { return projectKey ? projectRolesPath(projectKey, name) : rolePath(name); }
   const resource = createResource();
-  const chosen = $derived(role ?? roles.remembered);
-  const model = $derived(groupRoleQueues(resource.data, corpora.groups));
-  const descriptions = $derived(roles.all.find((entry) => entry.name === chosen)?.projects ?? []);
+  const chosen = $derived(role ?? (projectKey
+    ? available.find((entry) => entry.name === roles.remembered)?.name ?? available[0]?.name ?? null
+    : roles.remembered));
+  const model = $derived(groupRoleQueues(scopeRoleView(resource.data, projectKey), corpora.groups));
+  const descriptions = $derived(available.find((entry) => entry.name === chosen)?.projects ?? []);
   let listEl = $state(null);
   let now = $state(Date.now());
   let cursor = 0;
@@ -42,7 +48,7 @@
 
   function choose(event) {
     const name = event.currentTarget.value;
-    if (name) go(rolePath(name));
+    if (name) go(queuePath(name));
   }
 
   // Like the board, the cursor is real focus on a document link. Enter is
@@ -93,13 +99,13 @@
 
 <div class="roles-page">
   <header class="head topbar">
-    <div><h1>Role queues</h1><p class="muted">Everything waiting on a role, across projects.</p></div>
+    <div><h1>{projectKey ? `Role queues · ${project?.name ?? projectKey}` : 'Role queues'}</h1><p class="muted">{projectKey ? 'Work waiting on a role in this project.' : 'Everything waiting on a role, across projects.'}</p></div>
     <label class="role-picker">
       <span class="small muted">Waiting on</span>
       <select value={chosen ?? ''} onchange={choose} aria-label="Choose a role">
         <option value="" disabled>Choose a role…</option>
-        {#if chosen && !roles.all.some((entry) => entry.name === chosen)}<option value={chosen}>{chosen}</option>{/if}
-        {#each roles.all as entry (entry.name)}
+        {#if chosen && !available.some((entry) => entry.name === chosen)}<option value={chosen}>{chosen}</option>{/if}
+        {#each available as entry (entry.name)}
           <option value={entry.name}>{entry.name} ({entry.total}){entry.projects.some((project) => project.description) ? ` — ${entry.projects.filter((project) => project.description).map((project) => `${project.label}: ${project.description}`).join('; ')}` : ''}</option>
         {/each}
       </select>
@@ -109,13 +115,15 @@
   {#if roles.error}
     <div class="notice bad"><p>Could not load roles: {roles.error.message}</p><button class="btn small" onclick={() => roles.reload()}>Try again</button></div>
   {/if}
-  {#if roles.errors.length}
-    <div class="notice warn"><p>Some projects could not be asked.</p>{#each roles.errors as project (project.key)}<p><strong>{project.label}:</strong> {project.error}</p>{/each}</div>
+  {#if projectErrors.length}
+    <div class="notice warn"><p>Could not load queues for the following projects.</p>{#each projectErrors as project (project.key)}<p><strong>{project.label}:</strong> {project.error}</p>{/each}</div>
   {/if}
 
-  {#if !chosen}
+  {#if projectKey && corpora.settled && !project}
+    <div class="notice bad"><p>This project is no longer served by this node.</p></div>
+  {:else if !chosen}
     {#if !roles.settled}<p class="muted">Loading roles…</p>
-    {:else if !roles.all.length && !roles.error}<p class="muted">No roles are declared by the projects this node serves.</p>
+    {:else if !available.length && !roles.error && !projectErrors.length}<p class="muted">{projectKey ? 'No roles are declared by this project.' : 'No roles are declared by the projects this node serves.'}</p>
     {:else}<p class="muted">Choose a role to see its queues.</p>{/if}
   {:else}
     {#if descriptions.some((project) => project.description)}
@@ -150,7 +158,7 @@
                 <section class="queue-group">
                   <header class="group-head">
                     <h3><span>{group.type}</span> <span class="mono">{group.status}</span></h3>
-                    <span class="owners">{#each group.owners as owner}<a class="chip" href={href(rolePath(owner))}>{owner}</a>{/each}</span>
+                    <span class="owners">{#each group.owners as owner}<a class="chip" href={href(queuePath(owner))}>{owner}</a>{/each}</span>
                     <span class="group-total small muted">{group.total} waiting · {group.in_progress.length} in progress · {group.blocked.length} blocked</span>
                   </header>
                   {#each group.items as item (item.id)}{@render row(item, project.cid)}{/each}
@@ -174,7 +182,7 @@
             {/if}
           </section>
         {/each}
-        {#if model.empty}<p class="empty">Nothing is waiting on <code>{chosen}</code>.</p>{/if}
+        {#if model.empty}<p class="empty">Nothing is waiting on <code>{chosen}</code>{projectKey ? ' in this project' : ''}.</p>{/if}
       </div>
     {/if}
   {/if}

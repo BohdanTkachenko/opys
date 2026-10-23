@@ -1,6 +1,40 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { affectsQueues, groupRoleQueues, primaryCorpus, relativeSince } from './queue.js';
+import { affectsQueues, groupRoleQueues, primaryCorpus, projectRoles, relativeSince, scopeRoleView } from './queue.js';
+
+test('project roles use local counts and declarations without altering the global directory', () => {
+  const entries = [
+    { name: 'reviewer', total: 12, projects: [
+      { key: 'a', total: 2, description: 'Review A' }, { key: 'b', total: 10 },
+    ] },
+    { name: 'planner', total: 3, projects: [{ key: 'b', total: 3 }] },
+    { name: 'owner', total: 0, projects: [{ key: 'a', total: 0 }] },
+  ];
+  const original = JSON.stringify(entries);
+  assert.deepEqual(projectRoles(entries, 'a'), [
+    { name: 'reviewer', total: 2, projects: [entries[0].projects[0]] },
+    { name: 'owner', total: 0, projects: [entries[2].projects[0]] },
+  ]);
+  assert.deepEqual(projectRoles(entries, 'missing'), []);
+  assert.equal(projectRoles(entries, null), entries);
+  assert.equal(JSON.stringify(entries), original);
+});
+
+test('project queue scoping keeps its failures and excludes other projects attention and work', () => {
+  const view = { projects: [
+    { key: 'a', label: 'A', error: 'not loaded' },
+    { key: 'b', queue: queue([group('task', 'review', [{ id: 'TASK-0001' }])], [{ id: 'TASK-0002' }]) },
+  ] };
+  const scoped = scopeRoleView(view, 'a');
+  assert.deepEqual(scoped.projects, [view.projects[0]]);
+  const model = groupRoleQueues(scoped);
+  assert.equal(model.projects[0].error, 'not loaded');
+  assert.deepEqual(model.attention, []);
+  assert.equal(model.empty, false);
+  assert.equal(scopeRoleView(view, null), view);
+  assert.equal(scopeRoleView(null, 'a'), null);
+  assert.equal(view.projects.length, 2);
+});
 
 const group = (type, status, items = [], extra = {}) => ({
   type, status, owners: ['reviewer'], owned: true, total: items.length,

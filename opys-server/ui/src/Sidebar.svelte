@@ -27,7 +27,7 @@
   import { events } from './lib/events.svelte.js';
   import { roles } from './lib/roles.svelte.js';
   import { corpusLabel, shortTime } from './lib/format.js';
-  import { boardPath, flowPath, href, rolePath, unionPath } from './lib/router.svelte.js';
+  import { boardPath, flowPath, href, projectRolesPath, rolePath, unionPath } from './lib/router.svelte.js';
 
   /**
    * `activeView` as well as `activeKey`: the union and the lifecycle graph are
@@ -256,6 +256,14 @@
                 <Icon name="compare" size={13} /> compare {columnCount(group)} columns
               </a>
             {/if}
+            <a
+              class="grouplink"
+              class:active={group.key === activeKey && activeView === 'project-roles'}
+              href={href(projectRolesPath(group.key))}
+              aria-current={group.key === activeKey && activeView === 'project-roles' ? 'page' : undefined}
+            >
+              <Icon name="queue" size={13} /> role queues
+            </a>
             <!-- Ungated, unlike the union link above: a project with one
                  worktree has nothing to compare, but it always has a lifecycle,
                  and the graph is the same picture whatever git is doing. -->

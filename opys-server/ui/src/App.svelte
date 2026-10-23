@@ -117,6 +117,10 @@
       {#key route.key}
         <Flow key={route.key} />
       {/key}
+    {:else if route.view === 'project-roles'}
+      {#key `${route.key}/${route.role}`}
+        <Roles projectKey={route.key} role={route.role} />
+      {/key}
     {:else if route.view === 'role'}
       {#key route.role}
         <Roles role={route.role} />

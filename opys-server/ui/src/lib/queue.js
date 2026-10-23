@@ -6,6 +6,21 @@ export function primaryCorpus(group) {
   return group?.corpora?.find((corpus) => corpus.is_primary) ?? group?.corpora?.[0];
 }
 
+/** Project counts and descriptions come from that project's declaration. */
+export function projectRoles(entries, key) {
+  if (!key) return entries;
+  return entries.flatMap((role) => {
+    const project = role.projects.find((project) => project.key === key);
+    return project ? [{ ...role, total: project.total, projects: [project] }] : [];
+  });
+}
+
+/** Filter before grouping, including errors and attention. */
+export function scopeRoleView(view, key) {
+  if (!view || !key) return view;
+  return { ...view, projects: view.projects.filter((project) => project.key === key) };
+}
+
 /** Whether a coalesced event batch can change any primary role queue. */
 export function affectsQueues(batch, groups) {
   if (batch.reconnected) return true;

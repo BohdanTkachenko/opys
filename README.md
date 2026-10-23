@@ -377,8 +377,11 @@ enters. A same-status `set-status` keeps it. Write overrides only with
 `apply` or the node's set-field action.
 
 The node's **Role queues** page merges matching role names across projects,
-shows attention first, and remembers the role chosen in this browser. Owners
-also appear on flow nodes and beside the document's status. The node serves
+shows attention first, and remembers the role chosen in this browser.
+Each project's sidebar also links to **role queues** at
+`#/group/{key}/roles`: the role picker, counts, attention, and work rows there
+are limited to that project. Role links keep that scope while switching roles.
+Owners also appear on flow nodes and beside the document's status. The node serves
 identical per-project queue JSON at `/api/projects/{key}/queue/{role}` and
 cross-project views at `/api/roles` and `/api/roles/{role}`.
 
