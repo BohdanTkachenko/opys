@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/BohdanTkachenko/opys/compare/v0.14.0...v0.15.0) - 2026-10-23
+
+### Added
+
+- *(core)* allow shared work stages and reject conflicting branch kinds
+- *(core)* resolve declared work branches and claims in engine and CLI
+
+### Fixed
+
+- *(core)* validate work copy identity and status
+- *(core)* hold unreadable work copies as unavailable
+- *(core)* preserve work occupancy across aliases and checkouts
+
 ## [0.14.0](https://github.com/BohdanTkachenko/opys/compare/v0.13.1...v0.14.0) - 2026-10-20
 
 ### Added

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/BohdanTkachenko/opys/compare/opys-server-v0.14.0...opys-server-v0.15.0) - 2026-10-23
+
+### Added
+
+- *(web)* distinguish empty and blocked lifecycle backgrounds
+- *(web)* show lifecycle totals with blocked badges
+- *(web)* show unblocked over total lifecycle counts
+- *(web)* show claimed cards on the lifecycle
+- *(web)* display claimed work branches and protect branch edits
+- *(ui)* show branch ticket versions in the lifecycle view
+- *(flow)* expose labelled progress from branches and worktrees
+
+### Fixed
+
+- *(server)* serve cached reads while inventories reload
+- *(server)* keep inventory reads responsive and config watches current
+
+### Other
+
+- *(web)* budget lifecycle claim activity in the bundle
+
 ## [0.14.0](https://github.com/BohdanTkachenko/opys/compare/opys-server-v0.13.1...opys-server-v0.14.0) - 2026-10-20
 
 ### Added
