@@ -85,7 +85,8 @@ export function flowStatusCounts(documents) {
   const blocked = [...states.values()].filter((state) => state === true).length;
   const unblocked = [...states.values()].filter((state) => state === false).length;
   const unknown = totals.tickets - blocked - unblocked;
-  return { ...totals, blocked, unblocked, unknown, label: `${unknown ? '?' : unblocked}/${totals.tickets}` };
+  const blockedLabel = blocked ? blocked === totals.tickets ? 'All blocked' : `${blocked} blocked` : null;
+  return { ...totals, blocked, unblocked, unknown, blockedLabel };
 }
 
 /** Explicit claims, not status owners or branch snapshots, identify in-progress work. */

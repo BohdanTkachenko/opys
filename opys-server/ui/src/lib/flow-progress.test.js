@@ -15,29 +15,31 @@ const view = (rows = [], extra = {}) => ({ cid: 'main-cid', types: [type], nodes
 const main = [{ id: 'TASK-0001', title: 'Ticket', status: 'todo', type: 'task', blocked: true, priority: 10 },
   { id: 'TASK-0002', title: 'Unchanged', status: 'review', type: 'task', blocked: false }];
 
-test('flow_status_ratios_count_unique_unblocked_tickets_and_follow_type_filters', () => {
+test('flow_status_badges_count_unique_blocked_tickets_and_follow_type_filters', () => {
   const docs = [
     ...Array.from({ length: 15 }, (_, index) => ({ id: `TASK-${index}`, type: 'task', primary: true, blocked: true })),
     { id: 'BUG-0001', type: 'bug', primary: true, blocked: false, claim: { holder: 'worker' } },
   ];
-  assert.equal(flowStatusCounts(docs).label, '1/16', 'claims have a separate badge and do not imply dependency blocking');
+  assert.equal(flowStatusCounts(docs).blockedLabel, '15 blocked', 'claims have a separate badge and do not imply dependency blocking');
   const filtered = filterFlowDocuments(docs, { hiddenTypes: ['bug'] });
-  assert.equal(flowStatusCounts(filtered).label, '0/15');
+  assert.equal(flowStatusCounts(filtered).blockedLabel, 'All blocked');
   assert.equal(flowStatusCounts(filtered).blocked, 15);
-  assert.equal(flowStatusCounts([]).label, '0/0');
-  assert.equal(flowStatusCounts(docs.map((doc) => ({ ...doc, blocked: false }))).label, '16/16');
+  assert.equal(flowStatusCounts([]).blockedLabel, null);
+  assert.equal(flowStatusCounts(docs.map((doc) => ({ ...doc, blocked: false }))).blockedLabel, null);
 });
 
-test('flow_status_ratios_preserve_unknown_branch_blockers_without_double_counting_tickets', () => {
+test('flow_status_badges_preserve_unknown_branch_blockers_without_double_counting_tickets', () => {
   const primary = { id: 'TASK-0001', primary: true, blocked: false };
   const branch = { id: 'TASK-0001', primary: false, blocked: null };
-  assert.equal(flowStatusCounts([branch, primary, branch]).label, '1/1');
+  assert.equal(flowStatusCounts([branch, primary, branch]).tickets, 1);
   assert.equal(flowStatusCounts([primary, branch]).progress, 1);
   const unknown = flowStatusCounts([primary, { id: 'TASK-0002', primary: false, blocked: null }]);
-  assert.equal(unknown.label, '?/2');
+  assert.equal(unknown.blockedLabel, null);
   assert.equal(unknown.unblocked, 1);
   assert.equal(unknown.unknown, 1);
-  assert.equal(flowStatusCounts([{ id: 'TASK-0003', primary: true }]).label, '?/1');
+  assert.equal(flowStatusCounts([{ ...primary, blocked: true }, { id: 'TASK-0002', primary: false }]).blockedLabel,
+    '1 blocked', 'unknown tickets must not produce an all-blocked badge');
+  assert.equal(flowStatusCounts([{ id: 'TASK-0003', primary: true }]).unknown, 1);
 });
 
 test('declared_work_stages_replace_pool_copies_and_do_not_duplicate_branch_snapshots', () => {
