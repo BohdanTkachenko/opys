@@ -377,7 +377,8 @@ enters. A same-status `set-status` keeps it. Write overrides only with
 `apply` or the node's set-field action.
 
 The node's **Role queues** page merges matching role names across projects,
-shows attention first, and remembers the last role you picked in this browser.
+shows attention first, and remembers the last role you picked per project in this browser. The
+cross-project page has its own saved choice.
 Links to a specific role select it directly. Otherwise the page uses the saved
 role if available, then the first human role, then the first available role.
 Role names have no special meaning. Declare optional `kind = "human"`,

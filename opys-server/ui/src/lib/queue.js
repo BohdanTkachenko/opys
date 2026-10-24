@@ -82,3 +82,15 @@ export function relativeSince(iso, now = Date.now()) {
   const days = Math.floor(hours / 24);
   return `${days} ${days === 1 ? 'day' : 'days'}`;
 }
+
+/** Native option groups retain engine name order within each worker kind. */
+export function groupRoles(entries) {
+  return [
+    ['human', 'Human roles'],
+    ['agent', 'Agent roles'],
+    ['automation', 'Automation roles'],
+    [null, 'Unspecified roles'],
+  ].map(([kind, label]) => ({
+    kind, label, entries: entries.filter((entry) => (entry.kind ?? null) === kind),
+  })).filter((group) => group.entries.length > 0);
+}

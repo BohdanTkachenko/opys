@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { affectsQueues, groupRoleQueues, primaryCorpus, projectRoles, relativeSince, scopeRoleView, selectRole } from './queue.js';
+import { affectsQueues, groupRoles, groupRoleQueues, primaryCorpus, projectRoles, relativeSince, scopeRoleView, selectRole } from './queue.js';
 
 test('project roles use local counts and declarations without altering the global directory', () => {
   const entries = [
@@ -144,4 +144,19 @@ test('role selection prefers explicit and remembered choices, then the first hum
   assert.equal(selectRole([{ name: 'human' }, { name: 'dan' }], null, null), 'human');
   assert.equal(selectRole([{ name: 'bot', kind: 'agent' }], null, null), 'bot');
   assert.equal(selectRole([], null, null), null);
+});
+
+test('role option groups put all humans first and preserve name order within each kind', () => {
+  const entries = [
+    { name: 'a-script', kind: 'automation' },
+    { name: 'b-agent', kind: 'agent' },
+    { name: 'c-human', kind: 'human' },
+    { name: 'd-legacy' },
+    { name: 'e-human', kind: 'human' },
+  ];
+  const groups = groupRoles(entries);
+  assert.deepEqual(groups.map((group) => group.label), ['Human roles', 'Agent roles', 'Automation roles', 'Unspecified roles']);
+  assert.deepEqual(groups[0].entries.map((entry) => entry.name), ['c-human', 'e-human']);
+  assert.deepEqual(groupRoles([]), []);
+  assert.deepEqual(groupRoles([{ name: 'reviewer', kind: 'human' }]).map((group) => group.label), ['Human roles']);
 });

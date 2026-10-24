@@ -6,7 +6,7 @@
   import { events } from './lib/events.svelte.js';
   import { priorityChip, shortTime } from './lib/format.js';
   import { omni } from './lib/omni.svelte.js';
-  import { affectsQueues, groupRoleQueues, projectRoles, relativeSince, scopeRoleView, selectRole } from './lib/queue.js';
+  import { affectsQueues, groupRoles, groupRoleQueues, projectRoles, relativeSince, scopeRoleView, selectRole } from './lib/queue.js';
   import { createResource } from './lib/resource.svelte.js';
   import { roles } from './lib/roles.svelte.js';
   import { boardPath, docPath, go, href, projectRolesPath, rolePath } from './lib/router.svelte.js';
@@ -17,7 +17,7 @@
   const projectErrors = $derived(roles.errors.filter((entry) => !projectKey || entry.key === projectKey));
   function queuePath(name) { return projectKey ? projectRolesPath(projectKey, name) : rolePath(name); }
   const resource = createResource();
-  const chosen = $derived(selectRole(available, role, roles.remembered));
+  const chosen = $derived(selectRole(available, role, roles.rememberedFor(projectKey)));
   const model = $derived(groupRoleQueues(scopeRoleView(resource.data, projectKey), corpora.groups));
   const descriptions = $derived(available.find((entry) => entry.name === chosen)?.projects ?? []);
   let listEl = $state(null);
@@ -25,7 +25,7 @@
   let cursor = 0;
 
   $effect(() => {
-    if (role) roles.remember(role);
+    if (role) roles.remember(role, projectKey);
   });
   $effect(() => {
     const wanted = chosen;
@@ -103,8 +103,12 @@
       <select value={chosen ?? ''} onchange={choose} aria-label="Choose a role">
         <option value="" disabled>Choose a role…</option>
         {#if chosen && !available.some((entry) => entry.name === chosen)}<option value={chosen}>{chosen}</option>{/if}
-        {#each available as entry (entry.name)}
-          <option value={entry.name}>{entry.name}{entry.kind ? ` · ${entry.kind}` : ''} ({entry.total}){entry.projects.some((project) => project.description) ? ` — ${entry.projects.filter((project) => project.description).map((project) => `${project.label}: ${project.description}`).join('; ')}` : ''}</option>
+        {#each groupRoles(available) as group (group.label)}
+          <optgroup label={group.label}>
+            {#each group.entries as entry (entry.name)}
+              <option value={entry.name}>{entry.name} ({entry.total}){entry.projects.some((project) => project.description) ? ` — ${entry.projects.filter((project) => project.description).map((project) => `${project.label}: ${project.description}`).join('; ')}` : ''}</option>
+            {/each}
+          </optgroup>
         {/each}
       </select>
     </label>

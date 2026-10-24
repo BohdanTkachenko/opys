@@ -5,19 +5,12 @@ import { corpora } from './corpora.svelte.js';
 import { events } from './events.svelte.js';
 import { affectsQueues } from './queue.js';
 import { createResource } from './resource.svelte.js';
-
-const ROLE_KEY = 'opys:role';
-function readRole() {
-  try {
-    return localStorage.getItem(ROLE_KEY) || null;
-  } catch {
-    return null;
-  }
-}
+import { readRole, writeRole } from './role-memory.js';
 
 function createRoles() {
   const resource = createResource();
   let remembered = $state(readRole());
+  let projectChoices = $state({});
   return {
     get all() { return resource.data?.roles ?? []; },
     get errors() { return resource.data?.errors ?? []; },
@@ -25,13 +18,14 @@ function createRoles() {
     get settled() { return resource.settled; },
     get remembered() { return remembered; },
     get selected() { return this.all.find((role) => role.name === remembered); },
-    remember(role) {
-      remembered = role;
-      try {
-        localStorage.setItem(ROLE_KEY, role);
-      } catch {
-        // Keep the choice for this page's life when persistence is unavailable.
-      }
+    rememberedFor(projectKey = null) {
+      if (projectKey == null) return remembered;
+      return Object.hasOwn(projectChoices, projectKey) ? projectChoices[projectKey] : readRole(projectKey);
+    },
+    remember(role, projectKey = null) {
+      if (projectKey == null) remembered = role;
+      else projectChoices = { ...projectChoices, [projectKey]: role };
+      writeRole(role, projectKey);
     },
     reload(quiet = false) { return resource.run(() => api.roles(), { quiet }); },
     start() {

@@ -1341,7 +1341,9 @@ The UI opens a role at `#/role/<name>`; project pages use
 `#/group/<key>/roles[/<name>]`. Without an explicit role, it selects the last
 remembered role available in that scope, otherwise the first `human` role in
 name order, otherwise the first available role. An empty directory shows the
-picker. Selection is remembered in browser storage; no name is special. It refetches on `corpus-reloaded` for primary corpora. Flow
+picker. Selection is remembered per project in browser storage, separately from the
+cross-project choice; no name is special. The dropdown groups human roles
+first, followed by agents, automation, and unspecified roles. It refetches on `corpus-reloaded` for primary corpora. Flow
 nodes carry `owners`: the union of status owners across types in declaration
 order, with duplicates removed and the key omitted when empty. A document
 view carries effective `owners` and a true-only `owner_override`; role fields
