@@ -11,12 +11,17 @@
   let root = $state(null);
   let trigger = $state(null);
   let list = $state(null);
+  let listHeight = $state(500);
   let typed = '';
   let typedAt = 0;
 
   function options() { return [...(list?.querySelectorAll('[role="option"]') ?? [])]; }
+  function size() {
+    if (open && trigger) listHeight = Math.max(100, window.innerHeight - trigger.getBoundingClientRect().bottom - 65);
+  }
   async function show(last = false) {
     open = true;
+    size();
     await tick();
     const rows = options();
     (rows.find((row) => row.dataset.name === value) ?? rows[last ? rows.length - 1 : 0])?.focus();
@@ -68,7 +73,7 @@
   }
 </script>
 
-<svelte:window onpointerdown={outside} />
+<svelte:window onpointerdown={outside} onresize={size} onscroll={size} />
 
 <div class="picker" bind:this={root} onfocusout={blur} role="group" aria-label="Role selection">
   <span class="caption small muted" id={`${id}-label`}>Waiting on</span>
@@ -83,7 +88,7 @@
   {#if open}
     <div class="menu">
       <div class="menu-head"><span>Roles</span><span>Tickets</span></div>
-      <div class="list" bind:this={list} id={`${id}-list`} role="listbox" onkeydown={keydown} aria-labelledby={`${id}-label`} tabindex="-1">
+      <div class="list" style:max-height={`min(34rem, ${listHeight}px)`} bind:this={list} id={`${id}-list`} role="listbox" onkeydown={keydown} aria-labelledby={`${id}-label`} tabindex="-1">
         {#each groups as group (group.label)}
           <div class="kind-group" role="group" aria-label={group.label}>
             <div class="kind" aria-hidden="true"><span class="kind-dot" class:human={group.kind === 'human'} class:agent={group.kind === 'agent'}></span>{group.label}</div>
