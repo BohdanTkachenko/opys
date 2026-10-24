@@ -277,6 +277,8 @@ pub struct FieldView {
 pub struct RoleQueue {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<opys_engine::project_config::RoleKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub queue: QueueResult,
 }
@@ -598,6 +600,7 @@ impl CorpusClient {
             .into_iter()
             .map(|name| RoleQueue {
                 name: name.to_string(),
+                kind: roles::kind(&snapshot.prj.pcfg, name),
                 description: roles::description(&snapshot.prj.pcfg, name).map(str::to_string),
                 queue: queue::build_effective(
                     &snapshot.prj,

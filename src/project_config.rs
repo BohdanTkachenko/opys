@@ -354,10 +354,21 @@ pub struct MaxVisits {
     pub then: String,
 }
 
-/// A role is only a declared name and an optional description (ADR-0068).
+/// How a role's work is performed. This metadata does not change ownership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RoleKind {
+    Human,
+    Agent,
+    Automation,
+}
+
+/// A declared role with optional description and worker kind.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoleSpec {
+    #[serde(default)]
+    pub kind: Option<RoleKind>,
     #[serde(default)]
     pub description: Option<String>,
 }

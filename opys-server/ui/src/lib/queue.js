@@ -11,8 +11,17 @@ export function projectRoles(entries, key) {
   if (!key) return entries;
   return entries.flatMap((role) => {
     const project = role.projects.find((project) => project.key === key);
-    return project ? [{ ...role, total: project.total, projects: [project] }] : [];
+    return project ? [{ ...role, kind: project.kind, total: project.total, projects: [project] }] : [];
   });
+}
+
+/** Explicit links win, then a saved choice, then the first declared human. */
+export function selectRole(entries, explicit, remembered) {
+  return explicit
+    ?? entries.find((entry) => entry.name === remembered)?.name
+    ?? entries.find((entry) => entry.kind === 'human')?.name
+    ?? entries[0]?.name
+    ?? null;
 }
 
 /** Filter before grouping, including errors and attention. */

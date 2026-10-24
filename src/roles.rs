@@ -26,6 +26,10 @@ pub fn description<'a>(pcfg: &'a ProjectConfig, role: &str) -> Option<&'a str> {
     pcfg.roles.get(role)?.description.as_deref()
 }
 
+pub fn kind(pcfg: &ProjectConfig, role: &str) -> Option<crate::project_config::RoleKind> {
+    pcfg.roles.get(role)?.kind
+}
+
 /// The configured intervention recipient, if any. Validation reports a name
 /// that is not declared; readers never invent a fallback recipient.
 pub fn escalation_role(pcfg: &ProjectConfig) -> Option<&str> {
@@ -303,11 +307,11 @@ default_status = "draft"
         assert_eq!(names(&pcfg), ["agent", "human"]);
         assert_eq!(description(&pcfg, "human"), Some("Reviews and decisions"));
         assert_eq!(status_owners(&pcfg, "task", "review"), ["human"]);
-        let bad_key = CONFIG.replace("description =", "kind =");
+        let bad_key = CONFIG.replace("description =", "identity =");
         assert!(toml::from_str::<ProjectConfig>(&bad_key)
             .unwrap_err()
             .to_string()
-            .contains("unknown field `kind`"));
+            .contains("unknown field `identity`"));
         for name in ["Human", "-human", "1human", "human_name", ""] {
             let mut pcfg = config();
             pcfg.roles.insert(name.into(), Default::default());
@@ -315,6 +319,35 @@ default_status = "draft"
                 .validate()
                 .iter()
                 .any(|p| p.contains("must match ^[a-z][a-z0-9-]*$")));
+        }
+    }
+
+    #[test]
+    fn role_kinds_are_optional_closed_metadata_and_never_inferred_from_names() {
+        use crate::project_config::RoleKind;
+        let pcfg = config();
+        assert_eq!(kind(&pcfg, "human"), None);
+        assert_eq!(kind(&pcfg, "agent"), None);
+        for (value, expected) in [
+            ("human", RoleKind::Human),
+            ("agent", RoleKind::Agent),
+            ("automation", RoleKind::Automation),
+        ] {
+            let typed = CONFIG.replace(
+                "[roles.human]",
+                &format!("[roles.human]\nkind = \"{value}\""),
+            );
+            let typed: ProjectConfig = toml::from_str(&typed).unwrap();
+            assert_eq!(kind(&typed, "human"), Some(expected));
+            assert!(typed.validate().is_empty());
+            assert_eq!(status_owners(&typed, "task", "review"), ["human"]);
+        }
+        for value in ["robot", "Human", ""] {
+            let typed = CONFIG.replace(
+                "[roles.human]",
+                &format!("[roles.human]\nkind = \"{value}\""),
+            );
+            assert!(toml::from_str::<ProjectConfig>(&typed).is_err());
         }
     }
 

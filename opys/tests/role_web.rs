@@ -446,3 +446,48 @@ fn project_queue_uses_primary_worktree() {
     assert_eq!(body, cli(&root, &["queue", "human", "--json"]));
     assert_ne!(body, cli(&branch, &["queue", "human", "--json"]));
 }
+
+#[test]
+fn role_kinds_survive_snapshots_and_project_merges_without_guessing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let typed = CONFIG
+        .replace("[roles.human]", "[roles.human]\nkind = \"human\"")
+        .replace("[roles.agent]", "[roles.agent]\nkind = \"agent\"")
+        + "\n[roles.land]\nkind = \"automation\"\n";
+    let first = project(&tmp.path().join("first"), &typed);
+    let second = project(
+        &tmp.path().join("second"),
+        &typed.replace("kind = \"human\"", "kind = \"automation\""),
+    );
+    let legacy = project(&tmp.path().join("legacy"), CONFIG);
+    let node = Node::start(tmp.path(), &[&first, &second, &legacy]);
+    let (status, body) = node.get("/api/roles");
+    assert_eq!(status, 200);
+    let roles = body["roles"].as_array().unwrap();
+    let find = |name: &str| roles.iter().find(|role| role["name"] == name).unwrap();
+    let human = find("human");
+    assert!(
+        human.get("kind").is_none(),
+        "conflicting kinds must remain project-local"
+    );
+    for (root, expected) in [
+        (&first, Some("human")),
+        (&second, Some("automation")),
+        (&legacy, None),
+    ] {
+        let (key, _) = node.project(root);
+        let entry = human["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["key"] == key)
+            .unwrap();
+        assert_eq!(entry.get("kind").and_then(Value::as_str), expected);
+    }
+    assert!(
+        find("agent").get("kind").is_none(),
+        "legacy metadata is unknown"
+    );
+    assert_eq!(find("agent")["projects"][0]["kind"], "agent");
+    assert_eq!(find("land")["kind"], "automation");
+}

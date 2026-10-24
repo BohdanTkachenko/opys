@@ -10,7 +10,7 @@ documents: one file per document, with YAML frontmatter (a stable `PREFIX-NNNN`
 id, status, tags, relation maps) and a markdown body. Every write goes through
 the CLI, so invariants hold at write time; reads are plain files. `opys verify`
 is the CI gate. Everything is configured by one `opys.toml` at the project root.
-No sprints; ownership only as opt-in config on statuses. Roles are plain names,
+No sprints; ownership only as opt-in config on statuses. Roles are declared names with optional human/agent/automation kind metadata,
 and a document's optional owner override lasts for one status visit.
 
 The normative spec is [`skills/opys/references/format.md`](skills/opys/references/format.md).

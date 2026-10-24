@@ -236,17 +236,26 @@ assertion set for `[[rules]]` is `require_field`, `field_matches`,
 
 ### Roles and effective owners (optional)
 
-Roles are plain names, with no kind, identity, flag or special literal name.
-Each `[roles.<name>]` accepts only an optional `description`; any other key is
-a TOML parse error (exit 2). Role names must match `^[a-z][a-z0-9-]*$`.
+Roles are declared names with optional `description` and `kind` metadata.
+`kind` is exactly `human` (a person), `agent` (an AI agent doing the work), or
+`automation` (a deterministic script). It is optional for compatibility with
+existing projects; omission means unknown, never a type inferred from the name.
+Unknown kinds or other keys are TOML parse errors (exit 2). Role names must
+match `^[a-z][a-z0-9-]*$`. Kind changes no ownership, claim, permissions, ranking,
+or dispatch behavior.
 
 ```toml
 escalate_to = "human"                # optional; keep this top-level
 
 [roles.human]
+kind = "human"
 description = "Reviews and decisions"
 [roles.agent-codex]
+kind = "agent"
 [roles.agent-claude]
+kind = "agent"
+[roles.land]
+kind = "automation"
 
 [types.task.owners]
 todo = "agent-codex"                 # strings normalize to one-element lists
@@ -1307,9 +1316,10 @@ verify findings to the shared queue builder; the CLI collects findings fresh.
   "roles": [
     {
       "name": "human",
+      "kind": "human",
       "total": 1,
       "projects": [
-        {"key": "project-a", "label": "Project A", "description": "Reviews", "total": 1}
+        {"key": "project-a", "label": "Project A", "description": "Reviews", "kind": "human", "total": 1}
       ]
     }
   ]
@@ -1317,15 +1327,21 @@ verify findings to the shared queue builder; the CLI collects findings fresh.
 ```
 
 Roles merge by **exact name** and sort by name. Each total sums the role's
-per-project totals. A missing description is omitted. A project that could
+per-project totals. Each project entry carries its declared `kind` when known.
+The merged role's `kind` is present only if every declaring project agrees on
+the same known kind. Conflicting or unknown kinds are never guessed; project
+views use the project-local kind. A missing description or kind is omitted. A project that could
 not be asked appears in `errors: [{key, label, error}]`; failure is never an
 invented zero. Empty `errors` is omitted. `GET /api/roles/{role}` returns `opys.role/1`, with
 `{schema, role, projects}`. Each project entry is either `{key, label, queue}`
 or `{key, label, error}`; projects that do not declare the role are omitted,
 and the rest retain the sidebar's project order.
 
-The UI opens a role at `#/role/<name>`; `#/role` uses the remembered role or
-shows a picker. It refetches on `corpus-reloaded` for primary corpora. Flow
+The UI opens a role at `#/role/<name>`; project pages use
+`#/group/<key>/roles[/<name>]`. Without an explicit role, it selects the last
+remembered role available in that scope, otherwise the first `human` role in
+name order, otherwise the first available role. An empty directory shows the
+picker. Selection is remembered in browser storage; no name is special. It refetches on `corpus-reloaded` for primary corpora. Flow
 nodes carry `owners`: the union of status owners across types in declaration
 order, with duplicates removed and the key omitted when empty. A document
 view carries effective `owners` and a true-only `owner_override`; role fields

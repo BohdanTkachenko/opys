@@ -250,7 +250,9 @@ async fn the_asset_route_cannot_escape_the_bundle() {
 /// the application to ~311 KiB; allow 316 KiB without new dependencies.
 #[test]
 fn the_bundle_stays_small() {
-    const APP_CEILING: usize = 316 * 1024;
+    // Per-project role navigation, scoped counts, and typed role selection
+    // bring the application to ~317 KiB with no new dependency or asset.
+    const APP_CEILING: usize = 320 * 1024;
     const LAYOUT_CEILING: usize = 1450 * 1024;
     let (layout, app): (Vec<_>, Vec<_>) = assets::all().partition(|asset| {
         asset.path.starts_with("ui/elk.bundled-") && asset.path.ends_with(".js")

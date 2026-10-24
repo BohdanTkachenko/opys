@@ -25,6 +25,9 @@ pub struct RolesView {
 #[derive(Debug, Serialize)]
 pub struct RoleSummary {
     pub name: String,
+    /// Present only when every declaring project agrees on a known kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<opys_engine::project_config::RoleKind>,
     pub projects: Vec<RoleProject>,
     pub total: usize,
 }
@@ -33,6 +36,8 @@ pub struct RoleSummary {
 pub struct RoleProject {
     pub key: String,
     pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<opys_engine::project_config::RoleKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub total: usize,
@@ -80,13 +85,18 @@ pub fn roles(projects: Vec<ProjectQueues>) -> RolesView {
                         .entry(role.name.clone())
                         .or_insert_with(|| RoleSummary {
                             name: role.name,
+                            kind: role.kind,
                             projects: Vec::new(),
                             total: 0,
                         });
+                    if entry.kind != role.kind {
+                        entry.kind = None;
+                    }
                     entry.total += role.queue.total;
                     entry.projects.push(RoleProject {
                         key: project.key.clone(),
                         label: project.label.clone(),
+                        kind: role.kind,
                         description: role.description,
                         total: role.queue.total,
                     });

@@ -377,9 +377,14 @@ enters. A same-status `set-status` keeps it. Write overrides only with
 `apply` or the node's set-field action.
 
 The node's **Role queues** page merges matching role names across projects,
-shows attention first, and defaults to `dan` when that role is declared.
-Links to a specific role select it directly. Without `dan`, the page uses the
-last chosen role available in this scope, then the first declared role.
+shows attention first, and remembers the last role you picked in this browser.
+Links to a specific role select it directly. Otherwise the page uses the saved
+role if available, then the first human role, then the first available role.
+Role names have no special meaning. Declare optional `kind = "human"`,
+`kind = "agent"`, or `kind = "automation"` in each `[roles.<name>]` table:
+a person, an AI agent doing the work, or a deterministic script, respectively.
+Existing declarations without a kind remain valid and have unknown kind.
+Kinds describe the worker; they do not change ownership or start workers.
 Each project's sidebar also links to **role queues** at
 `#/group/{key}/roles`: the role picker, counts, attention, and work rows there
 are limited to that project. Role links keep that scope while switching roles.

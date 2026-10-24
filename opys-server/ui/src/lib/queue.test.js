@@ -1,19 +1,19 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { affectsQueues, groupRoleQueues, primaryCorpus, projectRoles, relativeSince, scopeRoleView } from './queue.js';
+import { affectsQueues, groupRoleQueues, primaryCorpus, projectRoles, relativeSince, scopeRoleView, selectRole } from './queue.js';
 
 test('project roles use local counts and declarations without altering the global directory', () => {
   const entries = [
-    { name: 'reviewer', total: 12, projects: [
-      { key: 'a', total: 2, description: 'Review A' }, { key: 'b', total: 10 },
+    { name: 'reviewer', kind: 'human', total: 12, projects: [
+      { key: 'a', kind: 'agent', total: 2, description: 'Review A' }, { key: 'b', total: 10 },
     ] },
     { name: 'planner', total: 3, projects: [{ key: 'b', total: 3 }] },
     { name: 'owner', total: 0, projects: [{ key: 'a', total: 0 }] },
   ];
   const original = JSON.stringify(entries);
   assert.deepEqual(projectRoles(entries, 'a'), [
-    { name: 'reviewer', total: 2, projects: [entries[0].projects[0]] },
-    { name: 'owner', total: 0, projects: [entries[2].projects[0]] },
+    { name: 'reviewer', kind: 'agent', total: 2, projects: [entries[0].projects[0]] },
+    { name: 'owner', kind: undefined, total: 0, projects: [entries[2].projects[0]] },
   ]);
   assert.deepEqual(projectRoles(entries, 'missing'), []);
   assert.equal(projectRoles(entries, null), entries);
@@ -128,4 +128,20 @@ test('claimed_only_queues_remain_visible_with_ref_holder_and_notices', () => {
   const groups = [{ key: 'repo', corpora: [{ cid: 'main', is_primary: true }] }];
   assert.equal(affectsQueues({ events: [{ event: 'refs-changed', project: 'repo' }] }, groups), true);
   assert.equal(affectsQueues({ events: [{ event: 'refs-changed', project: 'other' }] }, groups), false);
+});
+
+test('role selection prefers explicit and remembered choices, then the first human without name inference', () => {
+  const entries = [
+    { name: 'build', kind: 'automation' },
+    { name: 'dan', kind: 'agent' },
+    { name: 'reviewer', kind: 'human' },
+    { name: 'z-owner', kind: 'human' },
+  ];
+  assert.equal(selectRole(entries, null, null), 'reviewer');
+  assert.equal(selectRole(entries, null, 'dan'), 'dan');
+  assert.equal(selectRole(entries, 'build', 'dan'), 'build');
+  assert.equal(selectRole(entries, null, 'removed'), 'reviewer');
+  assert.equal(selectRole([{ name: 'human' }, { name: 'dan' }], null, null), 'human');
+  assert.equal(selectRole([{ name: 'bot', kind: 'agent' }], null, null), 'bot');
+  assert.equal(selectRole([], null, null), null);
 });
