@@ -386,6 +386,9 @@ Role names have no special meaning. Declare optional `kind = "human"`,
 a person, an AI agent doing the work, or a deterministic script, respectively.
 Existing declarations without a kind remain valid and have unknown kind.
 Kinds describe the worker; they do not change ownership or start workers.
+The styled picker groups humans first, then agents and automation, and shows
+a ticket count beside every role. Use arrow keys to move, Enter to choose,
+and Escape to close it.
 Each project's sidebar also links to **role queues** at
 `#/group/{key}/roles`: the role picker, counts, attention, and work rows there
 are limited to that project. Role links keep that scope while switching roles.

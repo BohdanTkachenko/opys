@@ -1,4 +1,6 @@
 <script>
+  import { untrack } from 'svelte';
+  import RolePicker from './RolePicker.svelte';
   import WorkBadge from './WorkBadge.svelte';
   import Icon from './lib/Icon.svelte';
   import { api } from './lib/api.js';
@@ -6,7 +8,7 @@
   import { events } from './lib/events.svelte.js';
   import { priorityChip, shortTime } from './lib/format.js';
   import { omni } from './lib/omni.svelte.js';
-  import { affectsQueues, groupRoles, groupRoleQueues, projectRoles, relativeSince, scopeRoleView, selectRole } from './lib/queue.js';
+  import { affectsQueues, groupRoleQueues, projectRoles, relativeSince, scopeRoleView, selectRole } from './lib/queue.js';
   import { createResource } from './lib/resource.svelte.js';
   import { roles } from './lib/roles.svelte.js';
   import { boardPath, docPath, go, href, projectRolesPath, rolePath } from './lib/router.svelte.js';
@@ -25,7 +27,9 @@
   let cursor = 0;
 
   $effect(() => {
-    if (role) roles.remember(role, projectKey);
+    const wanted = role;
+    const scope = projectKey;
+    if (wanted) untrack(() => roles.remember(wanted, scope));
   });
   $effect(() => {
     const wanted = chosen;
@@ -44,15 +48,17 @@
     return () => clearInterval(timer);
   });
 
-  function choose(event) {
-    const name = event.currentTarget.value;
-    if (name) go(queuePath(name));
+  function choose(name) {
+    if (name) {
+      roles.remember(name, projectKey);
+      go(queuePath(name));
+    }
   }
 
   // Like the board, the cursor is real focus on a document link. Enter is
   // the link's native action; a refresh preserving the row preserves focus.
   function onkeydown(event) {
-    if (omni.open || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+    if (event.defaultPrevented || omni.open || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
     if (event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable]')) return;
     if (!['j', 'k', 'ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
     const rows = [...(listEl?.querySelectorAll('.queue-row[href]') ?? [])]
@@ -98,20 +104,7 @@
 <div class="roles-page">
   <header class="head topbar">
     <div><h1>{projectKey ? `Role queues · ${project?.name ?? projectKey}` : 'Role queues'}</h1><p class="muted">{projectKey ? 'Work waiting on a role in this project.' : 'Everything waiting on a role, across projects.'}</p></div>
-    <label class="role-picker">
-      <span class="small muted">Waiting on</span>
-      <select value={chosen ?? ''} onchange={choose} aria-label="Choose a role">
-        <option value="" disabled>Choose a role…</option>
-        {#if chosen && !available.some((entry) => entry.name === chosen)}<option value={chosen}>{chosen}</option>{/if}
-        {#each groupRoles(available) as group (group.label)}
-          <optgroup label={group.label}>
-            {#each group.entries as entry (entry.name)}
-              <option value={entry.name}>{entry.name} ({entry.total}){entry.projects.some((project) => project.description) ? ` — ${entry.projects.filter((project) => project.description).map((project) => `${project.label}: ${project.description}`).join('; ')}` : ''}</option>
-            {/each}
-          </optgroup>
-        {/each}
-      </select>
-    </label>
+    <RolePicker entries={available} value={chosen} onchange={choose} />
   </header>
 
   {#if roles.error}
@@ -196,8 +189,6 @@
   .head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:1rem; }
   h1 { margin:0; font-size:1.4rem; }
   .head p { margin:0.3rem 0 0; }
-  .role-picker { display:grid; gap:0.3rem; min-width:15rem; max-width:100%; }
-  .role-picker select { max-width:32rem; width:100%; }
   .descriptions { margin:0 0 1.4rem; }
   .descriptions p { margin:0.25rem 0; }
   .queues { display:grid; gap:1.8rem; }
@@ -237,7 +228,6 @@
   .empty { margin:1rem 0; color:var(--muted); }
   @media (max-width:46rem) {
     .head { align-items:stretch; }
-    .role-picker { width:100%; min-width:0; }
     .queue-row { grid-template-columns:6.5rem minmax(0,1fr); gap:0.4rem; }
     .row-marks { grid-column:2; justify-content:flex-start; }
     .group-total { width:100%; margin-left:0; }

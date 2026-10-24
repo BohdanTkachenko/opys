@@ -83,7 +83,7 @@ export function relativeSince(iso, now = Date.now()) {
   return `${days} ${days === 1 ? 'day' : 'days'}`;
 }
 
-/** Native option groups retain engine name order within each worker kind. */
+/** Role picker groups retain engine name order within each worker kind. */
 export function groupRoles(entries) {
   return [
     ['human', 'Human roles'],
