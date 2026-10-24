@@ -377,7 +377,9 @@ enters. A same-status `set-status` keeps it. Write overrides only with
 `apply` or the node's set-field action.
 
 The node's **Role queues** page merges matching role names across projects,
-shows attention first, and remembers the role chosen in this browser.
+shows attention first, and defaults to `dan` when that role is declared.
+Links to a specific role select it directly. Without `dan`, the page uses the
+last chosen role available in this scope, then the first declared role.
 Each project's sidebar also links to **role queues** at
 `#/group/{key}/roles`: the role picker, counts, attention, and work rows there
 are limited to that project. Role links keep that scope while switching roles.

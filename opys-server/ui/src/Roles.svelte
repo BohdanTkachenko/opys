@@ -17,9 +17,11 @@
   const projectErrors = $derived(roles.errors.filter((entry) => !projectKey || entry.key === projectKey));
   function queuePath(name) { return projectKey ? projectRolesPath(projectKey, name) : rolePath(name); }
   const resource = createResource();
-  const chosen = $derived(role ?? (projectKey
-    ? available.find((entry) => entry.name === roles.remembered)?.name ?? available[0]?.name ?? null
-    : roles.remembered));
+  const chosen = $derived(role
+    ?? available.find((entry) => entry.name === 'dan')?.name
+    ?? available.find((entry) => entry.name === roles.remembered)?.name
+    ?? available[0]?.name
+    ?? null);
   const model = $derived(groupRoleQueues(scopeRoleView(resource.data, projectKey), corpora.groups));
   const descriptions = $derived(available.find((entry) => entry.name === chosen)?.projects ?? []);
   let listEl = $state(null);
