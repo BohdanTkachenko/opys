@@ -33,12 +33,12 @@ name = "opys"
 path = "src/main.rs"
 
 [dependencies]
-opys-engine = { path = "..", version = "0.14.0", default-features = false }
-opys-backend-markdown-local = { path = "../opys-backend-markdown-local", version = "0.14.0" }
+opys-engine = { path = "..", version = "0.15.0", default-features = false }
+opys-backend-markdown-local = { path = "../opys-backend-markdown-local", version = "0.15.0" }
 # The always-on node, mounted as `opys web`. Linked unconditionally rather than
 # behind a cargo feature: a `cargo install opys` whose `opys web` did not exist
 # would defeat the reason for folding it in (ADR-0031).
-opys-server = { path = "../opys-server", version = "0.14.0", default-features = false }
+opys-server = { path = "../opys-server", version = "0.15.0", default-features = false }
 clap = { version = "4", features = ["derive", "env"] }
 
 [dev-dependencies]
@@ -48,7 +48,7 @@ clap = { version = "4", features = ["derive", "env"] }
 # for (this one, and `opys-server`'s for its ref-reader tests), so the module
 # reaches no consumer and never ships in the binary or on docs.rs. The feature is a no-op without gix, and `default-features = false`
 # keeps this edge from re-enabling `git` under `--no-default-features`.
-opys-engine = { path = "..", version = "0.14.0", default-features = false, features = [
+opys-engine = { path = "..", version = "0.15.0", default-features = false, features = [
     "test-fixtures",
 ] }
 assert_cmd = "2"
