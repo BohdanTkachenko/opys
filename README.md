@@ -786,7 +786,8 @@ state (clean, *N* problems, or not read yet). Pick one and you get:
   (an opt-in field; see ADR-0046). The keyboard drives it too — arrows move
   between columns and cards, Enter opens, Home/End jump within a column,
   PageUp/PageDown switch projects;
-- **a document** — its frontmatter and rendered body, both edited in place:
+- **a document** — click the ID beneath its title to copy it to the clipboard,
+  with a brief confirmation. Its frontmatter and rendered body are edited in place:
   status, tags, blockers and custom fields on the panel, the markdown body one
   block at a time — double-click a paragraph or list item to edit its
   markdown in place, tick checkboxes directly, click outside to save (there

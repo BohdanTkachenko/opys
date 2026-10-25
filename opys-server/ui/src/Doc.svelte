@@ -1,4 +1,5 @@
 <script>
+  import CopyId from './CopyId.svelte';
   import WorkBadge from './WorkBadge.svelte';
   import VerifyProblems from './VerifyProblems.svelte';
   // View 3: one document — its frontmatter, its rendered body, and the writes
@@ -552,11 +553,10 @@
       {#if d.work.edit_cid}<a href={href(docPath(d.work.edit_cid, d.id))}>Open branch checkout to edit</a>{/if}
     </div>
   {/if}
-  <fieldset class="document-content" disabled={Boolean(d.work?.read_only_reason)}>
   <header class="head page">
     <h1>{d.title || d.id}</h1>
     <div class="chips">
-      <span class="chip mono">{d.id}</span>
+      <CopyId id={d.id} />
       {#if d.type}
         {@const ttone = typeTone(d.type)}
         <span class="chip status" style:--tone={ttone} class:neutral={ttone === null}>
@@ -585,6 +585,7 @@
     </div>
   </header>
 
+  <fieldset class="document-content" disabled={Boolean(d.work?.read_only_reason)}>
   {#if !d.work?.read_only_reason}<div class="page">
     {#key `${cid}:${id}`}
       <VerifyProblems {cid} {id} path={d.path} onreveal={revealFinding} onfindings={receiveFindings} />
