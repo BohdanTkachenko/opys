@@ -10,7 +10,7 @@ resolver = "2"
 # dependency graph implies: opys-engine, then the backend, then opys-server,
 # then the opys binary that links them all.
 [workspace.package]
-version = "0.14.0"
+version = "0.15.0"
 
 [package]
 name = "opys-engine"

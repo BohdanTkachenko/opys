@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/BohdanTkachenko/opys/compare/opys-server-v0.14.0...opys-server-v0.15.0) - 2026-10-25
+
+### Added
+
+- *(ui)* copy document IDs from the title header
+- *(ui)* add grouped role picker with ticket counters
+- *(ui)* group role choices and remember each project separately
+- *(roles)* declare human agent and automation worker kinds
+- *(ui)* add per-project role queue pages
+- *(web)* distinguish empty and blocked lifecycle backgrounds
+- *(web)* show lifecycle totals with blocked badges
+- *(web)* show unblocked over total lifecycle counts
+- *(web)* show claimed cards on the lifecycle
+- *(web)* display claimed work branches and protect branch edits
+- *(ui)* zoom with the wheel and pan the flow canvas
+- *(ui)* show branch ticket versions in the lifecycle view
+- *(flow)* expose labelled progress from branches and worktrees
+
+### Fixed
+
+- *(ui)* keep the role picker within the viewport
+- *(ui)* default role queue pages to dan
+- *(server)* serve cached reads while inventories reload
+- *(server)* keep inventory reads responsive and config watches current
+
+### Other
+
+- *(dev)* retain canvas controls with lifecycle state backgrounds
+- *(dev)* retain canvas controls with lifecycle blocked badges
+- *(dev)* retain canvas controls with lifecycle count ratios
+- *(dev)* retain canvas controls with lifecycle bundle budget
+- *(web)* budget lifecycle claim activity in the bundle
+- *(dev)* retain canvas controls with lifecycle activity
+- *(dev)* retain local flow controls on the work branch UI
+
 ## [0.14.0](https://github.com/BohdanTkachenko/opys/compare/opys-server-v0.13.1...opys-server-v0.14.0) - 2026-10-20
 
 ### Added
